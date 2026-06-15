@@ -11,6 +11,11 @@ export interface NewProjectOptions {
   now?: string; // ISO 文字列。テストの決定論のため注入可能（INV-1 ではないが byte 等価のため）。
 }
 
+// optional フィールドの方針（1 本化）:
+//   「値が存在するものは書く / 機能が不在のものはキーごと省略（null を書かない）」（§5.6-canon）。
+//   - background: comp の塗り（authored な値）なので明示する。
+//   - activeCamera: まだカメラが無い＝機能不在なので省略（未設定 = 正射影, §6.5）。
+//   この規則は createProject の populate と canonicalStringify の undefined 省略で一貫する。
 /** 既定の timeline comp を 1 つ持つ空プロジェクトを生成する。 */
 export function createProject(opts: NewProjectOptions = {}): Project {
   const {

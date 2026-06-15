@@ -1,148 +1,112 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { createProject } from "./core/createProject";
-import { loadProject, saveProject } from "./core/projectFs";
-import { serializeProject } from "./core/serialize";
-import type { Project } from "./core/schema";
-import { IndexedDbFs } from "./fs/IndexedDbFs";
-import { exportZip, importZip } from "./fs/zip";
+import { useCallback, useEffect, useState } from "react";
+import { WorkspaceLayout } from "./editor/WorkspaceLayout";
+import { defaultWorkspace, type LayoutNode, type WorkspaceState } from "./editor/layout";
+import { useEditorStore } from "./editor/store";
 
-const fs = new IndexedDbFs();
+const WORKSPACE_KEY = "mafter-workspace-v1";
+
+function loadWorkspace(): WorkspaceState {
+  try {
+    const raw = localStorage.getItem(WORKSPACE_KEY);
+    if (raw) return JSON.parse(raw) as WorkspaceState;
+  } catch {
+    /* ignore */
+  }
+  return defaultWorkspace();
+}
+
+function saveWorkspace(ws: WorkspaceState) {
+  try {
+    localStorage.setItem(WORKSPACE_KEY, JSON.stringify(ws));
+  } catch {
+    /* ignore */
+  }
+}
 
 export function App() {
-  const [project, setProject] = useState<Project | null>(null);
-  const [log, setLog] = useState<string[]>([]);
-  const [json, setJson] = useState<string>("");
-  const fileInput = useRef<HTMLInputElement>(null);
+  const [workspace, setWorkspace] = useState<WorkspaceState>(loadWorkspace);
 
-  const appendLog = useCallback((msg: string) => {
-    setLog((prev) => [`${new Date().toLocaleTimeString()}  ${msg}`, ...prev]);
-  }, []);
+  const undo = useEditorStore((s) => s.undo);
+  const redo = useEditorStore((s) => s.redo);
+  const loadFromFs = useEditorStore((s) => s.loadFromFs);
+  const undoStack = useEditorStore((s) => s.undoStack);
 
-  const refreshView = useCallback((p: Project) => {
-    setProject(p);
-    setJson(serializeProject(p));
-  }, []);
-
-  // 起動時に既存プロジェクトがあれば読み込む。
+  // 起動時に FS から読み込む
   useEffect(() => {
-    (async () => {
-      try {
-        if (await fs.exists("project.json")) {
-          const { project: p, warnings } = await loadProject(fs);
-          refreshView(p);
-          appendLog(`loaded existing project (${warnings.length} warnings)`);
-        }
-      } catch (e) {
-        appendLog(`load error: ${String(e)}`);
-      }
-    })();
-  }, [appendLog, refreshView]);
+    void loadFromFs();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const onCreate = useCallback(async () => {
-    const p = createProject({ name: "Untitled" });
-    refreshView(p);
-    appendLog(`created project (root comp ${p.rootComposition})`);
-  }, [appendLog, refreshView]);
+  // Undo/Redo キーボードショートカット (Cmd/Ctrl-Z / Shift-Cmd-Z, §17)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement) return;
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && e.key === "z" && !e.shiftKey) { e.preventDefault(); undo(); }
+      if (mod && (e.key === "Z" || (e.key === "z" && e.shiftKey))) { e.preventDefault(); redo(); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [undo, redo]);
 
-  const onSave = useCallback(async () => {
-    if (!project) return;
-    await saveProject(fs, project);
-    appendLog("saved project.json to IndexedDbFs");
-  }, [appendLog, project]);
-
-  const onReload = useCallback(async () => {
-    try {
-      const { project: p, warnings } = await loadProject(fs);
-      const before = json;
-      refreshView(p);
-      const after = serializeProject(p);
-      appendLog(
-        `reloaded — byte-equal to in-memory: ${before === after ? "YES" : "NO"} (${warnings.length} warnings)`,
-      );
-    } catch (e) {
-      appendLog(`reload error: ${String(e)}`);
-    }
-  }, [appendLog, json, refreshView]);
-
-  const onExportZip = useCallback(async () => {
-    const bytes = await exportZip(fs);
-    // Uint8Array<ArrayBufferLike> ↔ BlobPart の lib 型差を吸収（実体は通常の Uint8Array）。
-    const blob = new Blob([bytes as unknown as BlobPart], {
-      type: "application/zip",
+  const handleSizesChange = useCallback((path: number[], sizes: number[]) => {
+    setWorkspace((ws) => {
+      const next = updateLayoutSizes(ws.layout, path, sizes);
+      const updated = { ...ws, layout: next };
+      saveWorkspace(updated);
+      return updated;
     });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "mafter-project.zip";
-    a.click();
-    URL.revokeObjectURL(url);
-    appendLog(`exported zip (${bytes.length} bytes)`);
-  }, [appendLog]);
+  }, []);
 
-  const onImportZip = useCallback(
-    async (file: File) => {
-      try {
-        const buf = await file.arrayBuffer();
-        await importZip(fs, buf);
-        const { project: p, warnings } = await loadProject(fs);
-        refreshView(p);
-        appendLog(`imported zip + reloaded (${warnings.length} warnings)`);
-      } catch (e) {
-        appendLog(`import error: ${String(e)}`);
-      }
-    },
-    [appendLog, refreshView],
-  );
+  const canUndo = undoStack.past.length > 0;
+  const canRedo = undoStack.future.length > 0;
 
   return (
-    <div style={{ fontFamily: "system-ui, sans-serif", padding: 24, maxWidth: 900 }}>
-      <h1 style={{ marginBottom: 4 }}>Mafter Effect</h1>
-      <p style={{ color: "#666", marginTop: 0 }}>M0 Foundations — project.json / IndexedDbFs / zip</p>
-
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
-        <button onClick={onCreate}>New Project</button>
-        <button onClick={onSave} disabled={!project}>Save</button>
-        <button onClick={onReload}>Reload from FS</button>
-        <button onClick={onExportZip}>Export .zip</button>
-        <button onClick={() => fileInput.current?.click()}>Import .zip</button>
-        <input
-          ref={fileInput}
-          type="file"
-          accept=".zip"
-          style={{ display: "none" }}
-          onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (f) void onImportZip(f);
-            e.target.value = "";
-          }}
-        />
+    <div style={{ width: "100vw", height: "100vh", display: "flex", flexDirection: "column", background: "#111", color: "#ccc", overflow: "hidden", fontFamily: "system-ui, sans-serif" }}>
+      {/* menu bar */}
+      <div style={{ flexShrink: 0, display: "flex", alignItems: "center", gap: 4, padding: "4px 12px", background: "#1a1a1a", borderBottom: "1px solid #333", fontSize: 12 }}>
+        <span style={{ fontWeight: "bold", color: "#7fb8f0", marginRight: 8 }}>Mafter Effect</span>
+        <button onClick={undo} disabled={!canUndo} style={menuBtnStyle(canUndo)}>↩ Undo</button>
+        <button onClick={redo} disabled={!canRedo} style={menuBtnStyle(canRedo)}>↪ Redo</button>
+        <span style={{ color: "#444", marginLeft: 4 }}>|</span>
+        <span style={{ color: "#555", fontSize: 11 }}>
+          {canUndo ? `${undoStack.past.length} op` : "clean"}
+        </span>
+        <span style={{ flex: 1 }} />
+        <span style={{ color: "#555", fontSize: 10 }}>M1 preview</span>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-        <section>
-          <h3>project.json (canonical)</h3>
-          <pre
-            style={{
-              background: "#f5f5f5",
-              padding: 12,
-              borderRadius: 6,
-              fontSize: 12,
-              maxHeight: 480,
-              overflow: "auto",
-            }}
-          >
-            {json || "(no project — click New Project)"}
-          </pre>
-        </section>
-        <section>
-          <h3>Log</h3>
-          <ul style={{ fontSize: 13, paddingLeft: 16 }}>
-            {log.map((l, i) => (
-              <li key={i}>{l}</li>
-            ))}
-          </ul>
-        </section>
+      {/* workspace */}
+      <div style={{ flex: 1, overflow: "hidden" }}>
+        <WorkspaceLayout node={workspace.layout} onSizesChange={handleSizesChange} />
       </div>
     </div>
   );
+}
+
+function menuBtnStyle(enabled: boolean): React.CSSProperties {
+  return {
+    background: "transparent",
+    border: "none",
+    color: enabled ? "#bbb" : "#555",
+    cursor: enabled ? "pointer" : "default",
+    padding: "2px 8px",
+    fontSize: 12,
+    borderRadius: 3,
+  };
+}
+
+function updateLayoutSizes(node: LayoutNode, path: number[], sizes: number[]): LayoutNode {
+  if (path.length === 0) {
+    if (node.type === "split") return { ...node, sizes };
+    return node;
+  }
+  if (node.type !== "split") return node;
+  const [head, ...rest] = path;
+  if (head === undefined) return node;
+  return {
+    ...node,
+    children: node.children.map((child, i) =>
+      i === head ? updateLayoutSizes(child, rest, sizes) : child,
+    ),
+  };
 }

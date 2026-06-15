@@ -57,6 +57,7 @@ export interface Transform {
 export interface Component {
   type: string;
   props: Record<string, AnimatedProp<unknown> | unknown>;
+  exportStrategy?: "live" | "bake"; // web bundle export 時の扱い（§11.7）。未指定なら type の既定
 }
 
 export type ParamKind =

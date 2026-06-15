@@ -41,11 +41,19 @@ export function canonicalizeProject(project: Project): Project {
   };
 }
 
+// §5.6-canon: 文字列は Unicode NFC へ正規化し、UTF-8 のまま出力する（JSON.stringify は
+// 非 ASCII を \uXXXX にせず生で出すため、normalize → JSON.stringify で日本語名も生のまま残る）。
+function emitString(s: string): string {
+  return JSON.stringify(s.normalize("NFC"));
+}
+
 /**
- * 決定論的 JSON 文字列化。
- * - オブジェクトのキーを再帰的にアルファベット昇順へ並べる（キー順固定）。
- * - undefined のプロパティは省略（JSON.stringify と同挙動）。
- * - 配列順は保持する（呼び出し前に canonicalizeProject で安定化済み）。
+ * 決定論的 JSON 文字列化（§5.6-canon の byte 直列化, RFC 8785 / JCS 基礎）。
+ * - オブジェクトのキーを NFC 正規化後に UTF-16 code unit 順で再帰ソート（キー順固定）。
+ * - 文字列値は NFC 正規化（生 UTF-8、\uXXXX にしない）。
+ * - 数値は ECMAScript 最短往復表現（JSON.stringify 準拠）。NaN/Infinity は不正。
+ * - undefined のプロパティは省略（null を書かない）。空配列/オブジェクトは [] / {}。
+ * - 配列順は保持する（呼び出し前に canonicalizeProject で集合配列を id 昇順に安定化済み）。
  */
 export function canonicalStringify(value: unknown, indent = 2): string {
   return stringifyValue(value, indent, 0) + "\n";
@@ -61,7 +69,10 @@ function stringifyValue(value: unknown, indent: number, depth: number): string {
     }
     return JSON.stringify(value);
   }
-  if (t === "string" || t === "boolean") {
+  if (t === "string") {
+    return emitString(value as string);
+  }
+  if (t === "boolean") {
     return JSON.stringify(value);
   }
 
@@ -77,18 +88,20 @@ function stringifyValue(value: unknown, indent: number, depth: number): string {
 
   if (t === "object") {
     const obj = value as Record<string, unknown>;
+    // キーを NFC 正規化してから UTF-16 code unit 順でソート（正規化後に並べないと一意性が崩れる）。
     const keys = Object.keys(obj)
       .filter((k) => obj[k] !== undefined)
-      .sort();
+      .map((k) => ({ raw: k, norm: k.normalize("NFC") }))
+      .sort((a, b) => (a.norm < b.norm ? -1 : a.norm > b.norm ? 1 : 0));
     if (keys.length === 0) return "{}";
     const pad = " ".repeat(indent * (depth + 1));
     const closePad = " ".repeat(indent * depth);
     const entries = keys.map(
-      (k) =>
+      ({ raw, norm }) =>
         pad +
-        JSON.stringify(k) +
+        emitString(norm) +
         ": " +
-        stringifyValue(obj[k], indent, depth + 1),
+        stringifyValue(obj[raw], indent, depth + 1),
     );
     return "{\n" + entries.join(",\n") + "\n" + closePad + "}";
   }

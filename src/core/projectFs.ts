@@ -6,7 +6,10 @@ import { validateProject, type ValidationResult } from "./validate";
 
 /**
  * project.json を正準シリアライズして FS に書き込む。
- * 書き込み前に updatedAt を更新する場合は呼び出し側で行う（決定論テストのため here では触らない）。
+ *
+ * updatedAt の方針（minimal diff のため確定）: save では **自動 bump しない**。
+ * `meta.updatedAt` は「実際に内容が変わった編集」でのみ更新する（M1 の command 層で実施）。
+ * no-op save で 1 行 diff が出るのを避けるため、この関数は project を一切変更しない。
  */
 export async function saveProject(
   fs: FileSystem,
