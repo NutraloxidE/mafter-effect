@@ -1,0 +1,154 @@
+// §5 データスキーマ — project.json の中核型。
+// この型が SSoT。散文より優先される（CLAUDE.md / spec §0）。
+
+// §5.1 基本型
+export type ObjectId = string; // ULID. stable, 表示名とは独立 (INV-6)
+export type CompId = string; // ULID
+export type AssetId = string; // ULID
+export type Frame = number; // 整数 (INV-5)
+
+export interface Vec3 {
+  x: number;
+  y: number;
+  z: number;
+}
+
+export interface RGBA {
+  r: number;
+  g: number;
+  b: number;
+  a: number;
+} // 0..1
+
+// §5.3 イージング
+export type Easing =
+  | { type: "linear" }
+  | { type: "hold" } // ステップ補間
+  | { type: "bezier"; bezier: [number, number, number, number] } // CSS cubic-bezier 形式
+  | { type: "preset"; id: string }; // presets/easing/<id>.json を解決
+
+// §5.2 アニメーション可能プロパティ
+export interface ExpressionRef {
+  path: string; // scripts/<objectId>/<param>.js への相対パス
+  enabled: boolean;
+}
+
+export interface Keyframe<T> {
+  frame: Frame;
+  value: T;
+  easing: Easing; // この KF から「次の」KF への区間に適用 (§9)
+}
+
+export interface AnimatedProp<T> {
+  value: T; // base 値（keyframe が空のとき使用）
+  keyframes: Keyframe<T>[]; // frame 昇順。空 = 静的
+  expression?: ExpressionRef;
+}
+
+// §5.4 Transform / Object
+export interface Transform {
+  anchor: AnimatedProp<Vec3>; // アンカーポイント
+  position: AnimatedProp<Vec3>; // z は CSS-3D 奥行き
+  rotation: AnimatedProp<Vec3>; // euler XYZ degrees
+  scale: AnimatedProp<Vec3>; // {1,1,1} = 100%
+}
+
+// §5.5 Component
+export interface Component {
+  type: string;
+  props: Record<string, AnimatedProp<unknown> | unknown>;
+}
+
+export type ParamKind =
+  | "scalar"
+  | "vec2"
+  | "vec3"
+  | "color"
+  | "bool"
+  | "enum"
+  | "string"
+  | "asset";
+
+export interface ParamDescriptor {
+  key: string;
+  label: string;
+  kind: ParamKind;
+  default: unknown;
+  animatable: boolean;
+  min?: number;
+  max?: number;
+  step?: number;
+  options?: string[]; // enum 用
+}
+
+export interface SceneObject {
+  id: ObjectId;
+  name: string; // 表示専用
+  parent: ObjectId | null; // transform 継承のみ。描画順とは無関係
+  zOrder: number; // comp 内グローバル描画順。fractional（小→奥）
+  enabled: boolean;
+  inPoint: Frame; // この comp 内での表示開始
+  outPoint: Frame; // 表示終了
+  transform: Transform;
+  opacity: AnimatedProp<number>; // 0..1, 全 Object 共通
+  components: Component[];
+}
+
+// §5.6 Composition / Project
+export type CompKind = "timeline" | "html";
+
+export interface CompositionMeta {
+  id: CompId;
+  name: string;
+  kind: CompKind;
+  width: number; // px
+  height: number; // px
+  fps: number;
+  duration: Frame; // 総フレーム数
+  background?: RGBA;
+}
+
+export interface TimelineComposition extends CompositionMeta {
+  kind: "timeline";
+  objects: SceneObject[]; // flat list, id 昇順で直列化（§5.4-note）
+  activeCamera?: ObjectId;
+}
+
+export interface HtmlComposition extends CompositionMeta {
+  kind: "html";
+  // 実体は compositions/<id>/ のファイル。params は script.js manifest が宣言（§7）
+}
+
+export type Composition = TimelineComposition | HtmlComposition;
+
+export type AssetKind = "image" | "video" | "font" | "audio" | "other";
+
+export interface AssetEntry {
+  id: AssetId;
+  path: string; // assets/ 下の相対パス
+  kind: AssetKind;
+  meta?: Record<string, unknown>;
+}
+
+export interface PluginRef {
+  id: string;
+  version: string;
+  enabled: boolean;
+}
+
+export interface ProjectMeta {
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Project {
+  schemaVersion: 1;
+  meta: ProjectMeta;
+  assets: AssetEntry[];
+  compositions: Composition[];
+  rootComposition: CompId; // 既定で開く comp
+  pluginRefs: PluginRef[]; // plugins/ の有効化リスト
+}
+
+export const CURRENT_SCHEMA_VERSION = 1 as const;

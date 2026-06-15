@@ -268,9 +268,25 @@ interface AssetEntry {
 interface PluginRef { id: string; version: string; enabled: boolean; }
 ```
 
-`project.json` の正準シリアライズ（キー順固定・**`objects` は id 昇順**・整数 frame・末尾改行）を定義し、INV-4 の byte 等価と Git diff の安定性を保証する。配列順に意味は無く、描画順は各オブジェクトの `zOrder` が持つ（§5.4-note）。
+### §5.6-canon 正準シリアライズ（確定・INV-4 の基準）
 
-**マイグレーション**: load 時 `schemaVersion` が現行未満なら、登録済み migration を順に適用して昇格する。現行より新しい（未知の）バージョンは破壊リスクを避けるため**読み込みを拒否**し、その旨を表示する。
+`project.json` は **一意なバイト列**に直列化する。実装非依存（§14 の Rust/WASM も同一バイトを再現でき、差分テストで検証可能）。2 段階で定義する。
+
+**(a) データ正規化（順序・直列化前）**
+- **集合配列は id 昇順にソート**: `objects` / `assets` / `compositions` / `pluginRefs`。配列順に意味を持たせない（描画順は `zOrder` が持つ、§5.4-note）。
+- **意味順を持つ配列は並べ替えない**: `components`（エフェクト等の重なり順が意味）、各 `AnimatedProp.keyframes`（`frame` 昇順を維持）。
+- 文字列は **Unicode NFC** へ正規化。
+
+**(b) バイト直列化（RFC 8785 / JSON Canonicalization Scheme を基礎）**
+- **オブジェクトのキーは UTF-16 code unit 順に再帰ソート**（読みやすさより実装間一致を優先＝`id` が先頭に来るとは限らない）。
+- **数値は ECMAScript `Number.prototype.toString` 準拠の最短往復表現**（`JSON.stringify` の数値出力と一致）。`Frame` 等の整数は整数表記。`-0`→`0`。`NaN`/`Infinity` は不正（書き込み前に検証してエラー）。
+- 文字列は UTF-8、必須制御文字のみエスケープ。**非 ASCII は生 UTF-8 のまま**（日本語のオブジェクト名を `\uXXXX` にしない）。
+- **不在の optional フィールドはキーごと省略**（`null` を書かない）。空配列/オブジェクトは `[]` / `{}`。
+- **可読化（git diff 用）**: JCS は本来 minify だが、本仕様では **2-space indent・`": "` 区切り・改行 LF・末尾改行 1 個**で pretty-print する。空白規則を固定しているので一意性は保たれる。
+
+> 補足: `AnimatedProp` の浮動小数は **保存される値＝ユーザが入力/ドラッグした authored 値**（`resolve()` の計算結果は保存しない）なので、上記で byte 等価は成立する。float jitter による差分 churn が気になる場合のみ、保存前に固定桁（例 6 桁）へ丸めるオプションを足してよい（lossy、必須ではない）。
+
+**マイグレーション**: load 時 `schemaVersion` が現行未満なら、登録済み migration を順に適用して昇格する。現行より新しい（未知の）バージョンは破壊リスクを避けるため **読み込みを拒否**し、その旨を表示する。
 
 ---
 
