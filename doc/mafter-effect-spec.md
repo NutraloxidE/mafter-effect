@@ -1,4 +1,4 @@
-# Mafter Effect — MVP 仕様書 v0.2
+# Mafter Effect — MVP 仕様書 v0.3
 
 > **Mafter Effect = After Effects, but with Markup language.**
 > Git で管理できる / HTML・CSS・JS をネイティブに扱う / AI フレンドリーな映像制作エンジン。
@@ -34,6 +34,7 @@
 - preview と export が **値レベルで完全一致**する決定論性。
 - 後から重い処理を Rust/Go/WASM に差し替えても I/O 互換。
 - サードパーティ Plugin による拡張。
+- **作品を「実行可能な web-native バンドル」として配信できる**（フレーム精度の動画書き出しに加え、ブラウザで実時間再生する DOM/JS バンドル。§11.7）。Mafter を"ツール"であると同時に"web-native なモーション配信フォーマット+オーサリング環境"として位置づける。
 
 ### 非目標（MVP では追わない）
 - AE 機能互換・パリティ。
@@ -98,6 +99,8 @@ Project/
 - **INV-4（FS 等価）**: `IndexedDbFs` と `NodeFs` は同一のプロジェクトフォルダ（同一パス構成）を生成する。zip 書き出し結果はフォルダ構成と一致する。
 - **INV-5（frame canonical）**: 時間の正準単位は整数 frame。秒は `frame / fps` で導出する派生値。
 - **INV-6（参照は ID）**: オブジェクト・コンポ・アセットの参照はすべて stable ID。表示名 (`name`) は参照に使わない。
+- **INV-7（単一ランタイム核）**: `resolve` + Renderer + module loader + expression engine + 再生クロックは **`@mafter/runtime` という独立ライブラリに括り出し**、(a) エディタ preview / (b) video exporter / (c) web bundle player の 3 者が**同一の核を共有**する。エディタ依存（React/状態管理/UI）を runtime に混ぜない。これが分岐すると bundle 経路で INV-2 が破れる。
+- **INV-8（bundle は別の決定論クラス）**: web bundle player（§11.7）は**実時間・エンドユーザのハード依存**で動き、フレーム精度は保証しない（マスタークロック=音声、frame drop はフレームをスキップして現在 frame に `resolve` でワープ）。フレーム精度の正準出力は MP4/headless 経路のみ。bundle と MP4 を同一の保証として扱わない。
 
 ---
 
@@ -190,6 +193,7 @@ interface SceneObject {
 interface Component {
   type: string;                       // 下記 built-in or plugin 定義
   props: Record<string, AnimatedProp<unknown> | unknown>;
+  exportStrategy?: "live" | "bake";   // web bundle export 時の扱い（§11.7）。未指定なら type の既定
 }
 
 interface ParamDescriptor {
@@ -219,6 +223,8 @@ interface ParamDescriptor {
 plugin はここに新しい type を追加できる（§12）。
 
 > **決定（覆し可）**: `video` と `audio` を MVP に入れた（音楽 MV 用途を想定）。ただし `video` は決定論シーク制約があり browser は best-effort（§11.4）。`audio` は最小（gain 静的・mix なし・export で mux、§11.5）。`compRef`（comp ネスト＝precomp）は曖昧さが大きいため **MVP から外し §16 将来**へ（プリコンポは時間マッピング/collapse 仕様が要るため）。
+
+> **`exportStrategy` の既定（確定）**: web bundle export 時、各 component type が既定を宣言する。**自動判定はしない**（任意の author JS が実用速度で web 実行できるかは静的に分からないため）。既定: `solid`/`text`/`shape`/`image`/`html`/`audio` → `live`、将来の WebGL/particle/3D → `bake`。**plugin（第三者）は既定 `bake`**（§12、配信時に第三者コードをエンドユーザに流さない安全側）。author は per-component で上書き可。`bake` 指定レイヤは export 時に headless 機構（§11.4 / M3.5）で部分 MP4/WebP 化してアセットに差し替える。
 
 ### §5.6 Composition / Project
 
@@ -399,6 +405,8 @@ interface Renderer {
 - **MVP は `DomRenderer` 1 本のみ実装。** HTML comp が主役である以上、DOM/CSS が最も整合する。各 `ResolvedObject` を root の**兄弟** div として生成し `transform: matrix3d(worldTransform)` + `opacity` + `zOrder`→`z-index`、root に `preserve-3d`。ネストしないので opacity 合成も stacking context 閉じ込めも起きない（§5.4-note / §6.3）。
 - `Canvas2DRenderer / WebGLRenderer / WebGPURenderer` は同インターフェースで将来追加（§16）。これらは HTML comp を扱えない or ラスタ化が必要なので、対応 component 型に制約が付く点を将来仕様で明記する。
 
+> **`@mafter/runtime`（INV-7・M1 で境界を切る）**: `resolve` / Renderer / module loader（§11.3）/ expression engine（§9）/ 再生クロックは、エディタ（React/状態管理/UI）から独立した**単一ライブラリ**に括り出す。これを 3 者が共有する: ①エディタ preview（runtime + 編集 UI）②video exporter（runtime + frame ステップ + encoder）③web bundle player（runtime + 音声クロックのみ、§11.7）。**M1 着工時にこの境界を設計する**こと（後から剥がすのは高コスト。今なら設計だけでタダ）。bundle player は実質「runtime + `audioClock → frame → resolve → renderFrame`」の薄いラッパ。
+
 ---
 
 ## §9. エクスプレッション評価エンジン
@@ -532,6 +540,19 @@ interface ExportConfig {
 - `assets/` のフォントは load 時に **`FontFace` API で登録**（`document.fonts.add`）。`text` component の `font` はその family 名で参照。
 - **export 時の埋め込み**: browser の `<foreignObject>` ラスタ化はフォントの inline（base64 `@font-face`）が要る。headless 経路は実フォントが効くので不要。
 
+### §11.7 Web Bundle Export（実行可能 web バンドル）
+
+MP4 とは別の出力経路。作品を**ブラウザで実時間再生する DOM/JS バンドル**として書き出す。プレイヤーは `@mafter/runtime`（INV-7）+ 音声マスタークロックの薄いラッパで、`resolve()` の純粋性（INV-1）により frame drop 時も「現在 frame に resolve でワープ」するだけで状態が壊れない（INV-8）。
+
+- **2 出力モード**:
+  - **Single-file**（全 `live`・vector/text/CSS の軽量作品専用）: プレイヤー JS + 正準 JCS データ + 軽量アセットを **DataURL inline した 1 枚の静的 HTML**。Lottie 上位互換のスイートスポット。**ベイク動画を inline すると「軽量」が即死する**ため、`bake` レイヤがある作品では選べない。
+  - **Folder bundle**（ベイク動画/重アセット有り）: `dist/` に `index.html` + プレイヤー + データ + メディアを出力。**全アセットは相対パス `./...`（Vite `base: './'`）** にしてサブディレクトリ/ローカル double-click でも動くポータビリティを保証。
+- **bake 経路**: `exportStrategy: 'bake'` のレイヤ（将来の WebGL/3D/重 plugin 等）は §11.4 / M3.5 の headless 機構で**そのレイヤだけ**フレーム書き出しして MP4/WebP 化し、`video` アセットとして同 `worldTransform`/`zOrder` で player に差し戻す。重ライティングをテクスチャに焼くゲームエンジン的割り切り。
+- **alpha 動画の制約（要注意）**: ベイクレイヤを live シーンに透過合成するには alpha 動画が要るが、Web の alpha video は VP9 alpha（Chrome/FF）止まりで Safari が弱い、HEVC-alpha は Safari 専用。→ **v1 は不透明ベイクのみ**を保証。透過が要る軽い要素は WebP/PNG 連番、本格的な透過は color+matte 2 ストリーム（§16 将来）。
+- **再生クロック**: マスタークロック = `AudioContext.currentTime`（音声があれば）。`currentFrame = round(t * fps)` を毎 rAF で算出し `resolve(comp, currentFrame)` を描く。低スペックでは中間 frame を描かずスキップ＝音ズレしない（INV-8）。音声が無ければ rAF 経過時間をクロックにする。
+- **セキュリティ**: 公開 bundle は author の JS がエンドユーザのブラウザで走る。**第三者 plugin は既定 `bake`**（§5.5 / §12）でコードを焼き消し、`live` で出るのは author 自筆コードに限るのが安全側。ホスト側 CSP は author の責任範囲として明記。
+- **インタラクティブは v1 では非対応**。click/scroll 応答を入れると `(frame)→絵` が `(frame, 入力状態)→絵` になり決定論・オーサリングモデルが別物になるため、v1 は**タイムライン駆動・音声クロックの再生のみ**（§16 将来）。
+
 ---
 
 ## §12. Plugin API v1（MVP 必須・フル）
@@ -553,7 +574,7 @@ interface PluginManifest {
 export default function activate(ctx: PluginContext): void { /* register 呼び出し */ }
 
 interface PluginContext {
-  registerComponent(def: ComponentDef): void;   // 新 component type（ParamDescriptor[] + DomRenderer 用 render hook）
+  registerComponent(def: ComponentDef): void;   // 新 component type（ParamDescriptor[] + DomRenderer 用 render hook + bundleExportDefault?: "live"|"bake"。既定 "bake"）
   registerEffect(def: EffectDef): void;          // DOM: CSS filter / canvas pass。buffer→buffer 互換契約
   registerEasing(preset: EasingPreset): void;
   registerExprHelper(name: string, fn: PureFn): void; // 決定論必須 (INV-1)。違反検出で無効化
@@ -565,6 +586,7 @@ interface PluginContext {
 ```
 
 - **セキュリティ（MVP）**: plugin JS はページ内実行（trusted-author）。capability-scoped sandbox（iframe/worker、fs ケイパビリティ制限）は §16 の硬化項目。`registerExprHelper` で渡される関数は INV-1 検証（乱数/時刻/DOM/network アクセスを静的・動的に検出したら拒否）。
+- **web bundle export（§11.7）での既定は `bake`**。第三者 plugin のコードを公開 bundle でエンドユーザに流さないため、`registerComponent` の `bundleExportDefault` は既定 `"bake"`。author が個別に `live` 上書きした時だけ live で出る。
 - **EffectDef の I/O 契約**は将来の WASM effect（buffer→buffer）と同一シグネチャに揃え、§14 の差し替えを可能にする。
 
 ---
@@ -597,11 +619,13 @@ SSoT 違反を避けるため、scope と正準性を分離する:
 - **M0 Foundations** — `project.json` schema + `IndexedDbFs` + zip export/import + プロジェクト作成/読込。
   - 受け入れ: 作成 → 保存 → 再読込 → zip DL → 再 import で `project.json` が正準シリアライズ後 byte 等価。`git init` で正常な diff。
 
-- **M1 Core animation + DomRenderer** — Object/Transform/Opacity/Timeline/Keyframe/Easing + `resolve()`（world 行列を焼く）+ `DomRenderer`（フラット matrix3d）+ preview 再生 + Inspector + **Undo/Redo**。
-  - 受け入れ: solid/text/image を配置し position/opacity を bezier easing で keyframe、スクラブ＆実時間再生、値が §6.3 の world 行列と一致、CSS-3D の z が効く、任意の編集を Cmd-Z/Shift-Cmd-Z で往復できる。
+- **M1 Core animation + DomRenderer** — Object/Transform/Opacity/Timeline/Keyframe/Easing + `resolve()`（world 行列を焼く）+ `DomRenderer`（フラット matrix3d）+ preview 再生 + Inspector + **Undo/Redo** + **パネルシステム（固定レイアウト + スプリッタ resize、§19）**。
+  - **境界設計（Opus 案件）**: ここで `@mafter/runtime`（INV-7）とエディタの境界、およびパネルレジストリ + レイアウトツリー（§19）を設計する。**実装前にここを Opus で 1 周**（コア型/境界の凍結ゲート）。
+  - 受け入れ: solid/text/image を配置し position/opacity を bezier easing で keyframe、スクラブ＆実時間再生、値が §6.3 の world 行列と一致、CSS-3D の z が効く、任意の編集を Cmd-Z/Shift-Cmd-Z で往復、パネルをスプリッタで resize でき、レイアウトはユーザ設定に保存され project.json を汚さない。
 
 - **M2 HTML comp + expression** — HTML Composition（Model A, manifest, Shadow DOM）+ エクスプレッションエンジン（純粋・seeded）。
   - 受け入れ: params 宣言済み HTML comp が keyframe でアニメート、expression ファイルがプロパティを駆動、リロード跨ぎで preview 決定論的、`wiggle` 再現可能。
+  - **de-risk spike（推奨）**: 「素の HTML 1 枚に `@mafter/runtime` を置き、エディタ無しで comp が音声クロックで動く」を最小実証。通れば §11.7 web bundle の 9 割が片付く。
 
 - **M3 Export（browser best-effort）** — 決定論 frame ステップ + WebCodecs/PNG 連番エンコード + **音声 mux** + export ダイアログ。video/audio/font 対応。
   - 受け入れ: solid+text+image+video+HTML-comp に audio レイヤを足した 5 秒尺を webm/mp4/連番に書き出し、映像は preview の scene 値と一致、音声が mux される、フォントが反映される。**← ここで「アーティストが作品を公開できる」が成立。**
@@ -609,7 +633,10 @@ SSoT 違反を避けるため、scope と正準性を分離する:
 - **M4 Plugin API v1** — フル登録 API + `plugins/` ロード + サンプル plugin（custom component / effect / easing pack）。
   - 受け入れ: `plugins/` に置いた第三者 plugin が component を登録しタイムラインで使用可、save/load を跨いで生存。
 
-> 注: Plugin API を MVP に含めた選択で M4 まで MVP。コア未安定のまま API を固める懸念は §12 の registration + apiVersion 設計で吸収するが、実務上は **M1–M3 でコア型を一度凍結してから M4 に入る**ことを推奨。
+- **M5 Web Bundle Export（§11.7）** — `@mafter/runtime` ベースの player + Single-file / Folder bundle 出力 + `exportStrategy:'bake'` レイヤの部分 MP4/WebP 化（M3.5 headless 依存）。
+  - 受け入れ: 全 live の軽量作品が Single-file HTML 1 枚で任意のサーバ/ローカルで音声同期再生できる、`bake` レイヤを含む作品が Folder bundle として相対パスで動く、第三者 plugin レイヤは既定 `bake` で焼かれる。
+
+> 注: Plugin API を MVP に含めた選択で M4 まで MVP。コア未安定のまま API を固める懸念は §12 の registration + apiVersion 設計で吸収するが、実務上は **M1–M3 でコア型を一度凍結してから M4 に入る**ことを推奨。M5 は MVP 後の機能だが、依存する `@mafter/runtime` 境界は M1 で先に切っておく。
 
 ---
 
@@ -627,7 +654,13 @@ SSoT 違反を避けるため、scope と正準性を分離する:
 | Undo/Redo（command + 逆 patch） | **MVP (M1)** |
 | Plugin API v1（フル） | **MVP (M4)** |
 | CSS-3D による 2.5D / 最小 Camera | **MVP（M1）** |
+| パネル固定レイアウト + スプリッタ resize（§19） | **MVP (M1)** |
+| `@mafter/runtime` 境界の設計（INV-7） | **MVP（M1 で設計）** |
+| Web Bundle Export（Single-file / Folder, §11.7） | M5（MVP 後・runtime 抽出に依存） |
 | Headless canonical export | 将来（早期推奨, M3.5） |
+| パネルのドラッグ・ドッキング / タブ並べ替え（§19） | 将来 |
+| パネルのデタッチ（別ウィンドウ：browser=window.open+同期, app=OS窓） | 将来 |
+| インタラクティブ bundle（入力応答） / alpha-bake（color+matte） | 将来 |
 | compRef / nested composition（precomp, 時間マッピング） | 将来 |
 | Model B（DOM 内省で要素を Object 化） | 将来 |
 | WebGL/WebGPU レンダラ / 実 3D（深度・ライティング・物理カメラ） | 将来 |
@@ -671,6 +704,41 @@ SSoT 違反を避けるため、scope と正準性を分離する:
 7. **文書/コードの言語**: 散文 = 日本語、スキーマ/識別子 = 英語。→ claude-code 投入用に全英訳版も要るか？
 8. **状態管理**: Zustand 推奨。→ 指定あるか？
 
+### 追加検討の確定（このリビジョン）
+- **Web Bundle Export**（§11.7 / INV-7 / INV-8 / `exportStrategy` / M5）。**確定**（実装は MVP 後、境界は M1 で先取り）。
+- **UI / ワークスペース**（§19）: MVP は固定レイアウト + スプリッタ resize、ドッキング/デタッチは将来。**確定**。
+
 ---
 
-*v0.2 / MVP scope = M0–M4. このファイルが「エンジンを作るための SSoT」。`claude.md` が「エンジンを使うための SSoT」。*
+## §19. UI / ワークスペース（パネル & ドッキング）
+
+> 従来この仕様にウィンドウ構成の規定が無かったため追加。エンジン SSoT とは独立した UI アーキテクチャ層。
+
+### §19.1 方針（確定）
+AE / VSCode / Illustrator 風の **単一ウィンドウ + 複数パネル**。MVP では「ドッキング可能になるよう設計しておくが、実装は固定レイアウト + スプリッタ resize に留める」（レンダラ抽象化と同じく**境界だけ今切る**）。
+
+### §19.2 パネルアーキテクチャ（確定・後方互換のため今決める）
+- **パネルは ID で引ける自己完結ユニット**（`preview` / `timeline` / `project`(assets) / `inspector` / `log` …）。各パネルは自分の状態を持ち、他パネルと直接結合しない（共有は `@mafter/runtime` / エディタストア経由）。
+- **レイアウトは直列化可能なツリー**で表現する（VSCode / 各種 docking lib と同型）:
+
+```ts
+type LayoutNode =
+  | { type: "split"; dir: "row" | "col"; sizes: number[]; children: LayoutNode[] }
+  | { type: "tabs"; active: number; panels: PanelId[] }
+  | { type: "panel"; panel: PanelId };
+```
+
+- **MVP の既定レイアウト**: 中央 `preview` / 下 `timeline` / 左 `project` / 右 `inspector`。MVP はこのツリーを固定し、`split.sizes` のスプリッタ resize のみ可変。ドラッグ・ドッキング、`tabs` 並べ替え、パネル追加/削除は §19.4 将来。
+
+### §19.3 状態の置き場所（確定・重要）
+- **レイアウト/ワークスペース状態は `project.json` に入れない**（作品データではない・Git を汚す・ポータブルでない、INV-4 の minimal diff を壊す）。
+- ユーザ/アプリ設定ストアに保存（ブラウザ=IndexedDB or localStorage の設定領域、アプリ版=OS のユーザ設定）。プロジェクト横断で保持。
+
+### §19.4 将来（§16 にも記載）
+- **ドラッグ・ドッキング / タブ並べ替え / パネル追加削除**: `LayoutNode` ツリーを編集可能にするだけの増分。MVP の固定ツリーが土台になる。
+- **デタッチ（別ウィンドウ）**: ブラウザ = `window.open` 子ウィンドウ + `BroadcastChannel`/`SharedWorker` でストア同期、アプリ版 = ネイティブ OS ウィンドウ。状態同期が要るため独立フェーズ。
+- **実装方針**: ドッキングは自作せず **dockview / FlexLayout / rc-dock / react-mosaic** 等を評価して採用（車輪の再発明回避、Remotion と同じ姿勢）。ただし上記 `LayoutNode` の直列化形と状態置き場所（§19.3）は採用ライブラリに依存せず本仕様側で固定する。
+
+---
+
+*v0.3 / MVP scope = M0–M4（Web Bundle Export は M5）。このファイルが「エンジンを作るための SSoT」。`claude.md` が「エンジンを使うための SSoT」。*
