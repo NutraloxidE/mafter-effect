@@ -12,6 +12,7 @@ export function ProjectPanel() {
   const selectedIds = useEditorStore((s) => s.selectedObjectIds);
   const addSolid = useEditorStore((s) => s.addSolid);
   const addText = useEditorStore((s) => s.addText);
+  const addHtmlComp = useEditorStore((s) => s.addHtmlComp);
   const removeObject = useEditorStore((s) => s.removeObject);
   const selectObjects = useEditorStore((s) => s.selectObjects);
   const newProject = useEditorStore((s) => s.newProject);
@@ -54,10 +55,23 @@ export function ProjectPanel() {
       </div>
 
       {/* add object */}
-      <div style={{ padding: "4px 8px", background: "#1e1e1e", borderBottom: "1px solid #2a2a2a", flexShrink: 0, display: "flex", gap: 4 }}>
+      <div style={{ padding: "4px 8px", background: "#1e1e1e", borderBottom: "1px solid #2a2a2a", flexShrink: 0, display: "flex", gap: 4, flexWrap: "wrap" }}>
         <button onClick={() => { const id = addSolid(); if (id) selectObjects([id]); }} style={btnStyle}>+ Solid</button>
         <button onClick={() => { const id = addText(); if (id) selectObjects([id]); }} style={btnStyle}>+ Text</button>
+        <button onClick={() => { void addHtmlComp(); }} style={btnStyle}>+ HTML Comp</button>
       </div>
+
+      {/* HTML comp 一覧 */}
+      {project && project.compositions.some((c) => c.kind === "html") && (
+        <div style={{ padding: "4px 8px", borderBottom: "1px solid #2a2a2a", flexShrink: 0 }}>
+          <div style={{ color: "#666", fontSize: 10, marginBottom: 2 }}>HTML Compositions</div>
+          {project.compositions.filter((c) => c.kind === "html").map((c) => (
+            <div key={c.id} style={{ color: "#8a8", fontSize: 11, padding: "2px 0" }}>
+              ◇ {c.name}
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* object list */}
       <div style={{ flex: 1, overflow: "auto" }}>

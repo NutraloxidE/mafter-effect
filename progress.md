@@ -10,7 +10,7 @@
 |---|---|
 | M0 Foundations | ✅ 完了 |
 | M1 Core animation + DomRenderer | ✅ 完了 |
-| M2 HTML comp + expression | 未着手 |
+| M2 HTML comp + expression | ✅ 完了 |
 | M3 Export | 未着手 |
 | M4 Plugin API v1 | 未着手 |
 
@@ -109,9 +109,48 @@ M2 着工前に、M1 で挙げた 3 懸念点を実コードで解消（凍結�
 
 ---
 
+### M2 HTML comp + expression（2026-06-16 完了）
+
+- **§9 Expression エンジン**:
+  - [exprHelpers.ts](src/runtime/exprHelpers.ts): `seededRandom`（mulberry32）、`wiggleNumber/wiggleVec3`（smoothstep 補間, per-axis 独立シード）、`linearRemap`/`easeRemap`/`clamp` — 全て純関数（INV-1）。
+  - [moduleLoader.ts](src/runtime/moduleLoader.ts): `ModuleLoader`（FS→Blob→`URL.createObjectURL`→dynamic import→`revokeObjectURL`→キャッシュ）、`MockModuleLoader`（テスト用）。
+  - [expressionEngine.ts](src/runtime/expressionEngine.ts): `ExpressionEngine`（`prepare(comp)` で非同期 preload → `makeEvaluator(comp)` で sync `ExpressionEvaluator` を返す）。`ExprContext<T>` に frame/time/fps/value/thisObject/comp + 全ヘルパー。`thisObject.toWorld/toComp` は parent チェーン走査（non-expression サンプルで再帰回避）。throw → fallback（§9）。
+
+- **§7 HTML Composition (Model A)**:
+  - [htmlComp.ts](src/runtime/htmlComp.ts): `CompositionModule`/`CompRenderContext` interface（§7 仕様準拠）。`HtmlCompPlayer`（Shadow DOM ライフサイクル管理: `prepare→mountObject→renderObject→unmountObject→dispose`）。inPoint 相対 frame（§7「内部時間」）。throw → silent（レンダリング止めない）。
+
+- **DomRenderer に `html` コンポーネントサポートを追加**:
+  - `setHtmlPlayer/setHtmlComps` で HtmlCompPlayer を注入。
+  - `html` component 型のオブジェクトに Shadow DOM マウント + frame ごと `renderObject` 呼び出し。
+
+- **エディタ統合**:
+  - [PreviewPanel.tsx](src/editor/panels/PreviewPanel.tsx): `ExpressionEngine` + `HtmlCompPlayer` をモジュールレベルで作成（per-preview singleton）。comp 変更時に `engine.prepare()` を非同期実行。render 時に `evaluatorRef.current` を `resolve()` に注入。初回フレームは evaluator なし → keyframe/static フォールバック。
+  - [store.ts](src/editor/store.ts): `addHtmlComp()` を追加。FS にスターターファイル（index.html/style.css/script.js）を書き込み + project.json に `HtmlComposition` を追加。
+  - [ProjectPanel.tsx](src/editor/panels/ProjectPanel.tsx): `+ HTML Comp` ボタン + HTML comp 一覧表示。
+
+- **テスト: 84 件全通過**（+20: expr.test.ts 新規）:
+  - seededRandom: 同シード同列、値域[0,1)
+  - wiggle: 決定論、異フレーム差異、zero freq/amp、Vec3 per-axis 独立、振幅上限
+  - 純粋ヘルパー: linearRemap/easeRemap/clamp/lerp
+  - ExpressionEngine: MockModuleLoader でモジュール評価・not found→fallback・throw→fallback・ExprContext フィールド・wiggle 決定論・thisObject.position
+
+**M2 受け入れ条件チェック**:
+| 条件 | 状況 |
+|---|---|
+| params keyframe アニメート | ✅ M1 から継続（component props = AnimatedProp） |
+| expression がプロパティを上書き | ✅ ExpressionEngine.makeEvaluator → resolve(ctx) |
+| reload 決定論 | ✅ seededRandom / pure evaluator → INV-1 |
+| wiggle 再現可能 | ✅ wiggleNumber/Vec3 mulberry32 + smoothstep |
+| HTML comp 追加・FS スターター生成 | ✅ addHtmlComp() |
+| Shadow DOM 隔離（§7） | ✅ HtmlCompPlayer.mountObject |
+
+typecheck ✅ / tests 84 passed ✅ / build ✅
+
+---
+
 ## 進行中・未完了タスク
 
-_なし（M1 完了 + M1→M2 検証完了。M2 着工可）_
+_なし（M2 完了。M3 着工可）_
 
 ---
 
@@ -124,9 +163,24 @@ _なし（M1 完了 + M1→M2 検証完了。M2 着工可）_
 
 ## Next steps（次のセッションでやること）
 
-> ⚠️ **M1 着工前に「コア型 / 境界を Opus で 1 周」凍結ゲート**（spec v0.3 M1 / §15 で明示化）。実装前に設計を固めること。
+### M3 Export に着手
 
-### M1 で先に切る境界（spec v0.3 新規）
+M3 受け入れ条件（§15）: **5 秒尺を webm/mp4/PNG 連番に書き出せる**。
+
+実装項目:
+- **決定論 frame ステップ**: `for frame in range(start, end)` で DomRenderer を駆動（rAF 不使用）
+- **DOM → raster**: SVG `<foreignObject>` シリアライズ → `<img>` → canvas → `drawImage`、または `html2canvas` 相当
+- **WebCodecs VideoEncoder**: webm/mp4 書き出し（first choice）。フォールバック: PNG 連番 + ffmpeg.wasm
+- **PNG 連番**: `canvas.toBlob("image/png")` → zip で配布
+- **音声 mux（§11.2）**: export 後に audio アセットを ffmpeg.wasm で mux
+
+M3 前 spike 推奨（spec §15 M2 de-risk 参照）:
+> **素の HTML 1 枚に @mafter/runtime を置き、エディタ無しで comp が動く** proof-of-concept。
+> → `ExpressionEngine.makeEvaluator` + `DomRenderer` を bare HTML で動かして M5（Web Bundle）の footprint を確認。
+
+> ⚠️ M3 に入る前に Opus による凍結ゲートを推奨（ExportConfig 型の確定 / WebCodecs の決定論クラス）。
+
+### 参考: M1 で先に切った境界（spec v0.3 新規、記録用）
 - **INV-7 `@mafter/runtime` 単一核**: `resolve` / Renderer / module loader(§11.3) / expression engine(§9) / 再生クロック を **エディタ(React/状態/UI)から独立したライブラリ**に括り出す。preview / video exporter / web bundle player の 3 者が同核共有。後から剥がすと高コスト → M1 で境界だけ設計（§8 補足 / §11.7）。
 - **INV-8**: web bundle player は実時間・別の決定論クラス（フレーム精度非保証, マスタークロック=音声）。MP4/headless 経路とは別保証として扱う。
 - **§19 パネルシステム**: `LayoutNode` 直列化ツリー（split/tabs/panel）+ パネルレジストリ。MVP は固定レイアウト + スプリッタ resize のみ。**レイアウト状態は project.json に入れない**（§19.3, ユーザ設定ストアへ）。ドッキングは将来 dockview 等を評価。
@@ -154,3 +208,4 @@ _なし（M1 完了 + M1→M2 検証完了。M2 着工可）_
 | 2026-06-16 | M1 凍結ゲート + 決定論コア完了（@mafter/runtime 境界 / Mat4 / easing / interpolate / resolve / §19 LayoutNode）テスト55件。残: DomRenderer・preview・store・Undo/Redo・Inspector・パネルUI |
 | 2026-06-16 | M1 DOM/UI 層完了（DomRenderer / store / commands / WorkspaceLayout / Preview / Timeline / Inspector / Project panels）typecheck ✅ / tests 55件 ✅ / build ✅ |
 | 2026-06-16 | M1→M2 Opus 検証・リファクタ（background INV-3 除去 / expression シーム凍結 / undo snapshot 確定 / DomRenderer reconcile / scale-to-fit）tests 64件 ✅ |
+| 2026-06-16 | M2 HTML comp + expression 完了（exprHelpers / moduleLoader / ExpressionEngine / HtmlCompPlayer / DomRenderer html 型 / エディタ統合）tests 84件 ✅ |

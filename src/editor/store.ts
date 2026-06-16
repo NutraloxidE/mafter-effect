@@ -7,6 +7,7 @@ import type {
   AnimatedProp,
   Easing,
   Frame,
+  HtmlComposition,
   Keyframe,
   Project,
   SceneObject,
@@ -14,6 +15,7 @@ import type {
   Vec3,
 } from "../core/schema";
 import { IndexedDbFs } from "../fs/IndexedDbFs";
+import { compositionDir } from "../core/paths";
 import { sampleVec3 } from "../runtime/interpolate";
 import {
   cmdAddObject,
@@ -66,6 +68,8 @@ export interface EditorStore {
   // ショートカット: オブジェクトを新規追加して ID を返す
   addSolid: (name?: string) => string | null;
   addText: (name?: string) => string | null;
+  // M2: HTML comp 追加（FS にスターターファイルを書き込む）
+  addHtmlComp: (name?: string) => Promise<string | null>;
 }
 
 export const useEditorStore = create<EditorStore>((set, get) => ({
@@ -138,6 +142,38 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   addObject: (obj) => cmdAddObject(get(), obj),
   removeObject: (id) => cmdRemoveObject(get(), id),
   updateObject: (id, patch, label) => cmdUpdateObject(get(), id, patch, label),
+
+  addHtmlComp: async (name) => {
+    const before = get().project;
+    if (!before) return null;
+    const id = newObjectId();
+    const compDir = compositionDir(id);
+    // §3 HTML comp ファイル構成: compositions/<compId>/index.html/style.css/script.js
+    await fs.write(`${compDir}/index.html`, `<!DOCTYPE html>\n<html><head><link rel="stylesheet" href="style.css"></head><body></body></html>\n`);
+    await fs.write(`${compDir}/style.css`, `/* HTML Composition: ${name ?? id} */\nbody { margin: 0; }\n`);
+    // script.js: §7 CompositionModule default export
+    await fs.write(
+      `${compDir}/script.js`,
+      `// Mafter Effect HTML Composition — §7 CompositionModule\nexport default {\n  manifest: {\n    id: "${id}",\n    params: [],\n  },\n  mount(root) {\n    root.innerHTML = '<div style="color:white;padding:16px;font-family:sans-serif">${name ?? "HTML Comp"}</div>';\n  },\n  render(_ctx) {\n    // animate via ctx.frame / ctx.params\n  },\n};\n`,
+    );
+    const htmlComp: HtmlComposition = {
+      id,
+      name: name ?? "HTML Comp",
+      kind: "html",
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      duration: 150,
+    };
+    const after: Project = {
+      ...before,
+      compositions: [...before.compositions, htmlComp].sort((a, b) =>
+        a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
+      ),
+    };
+    get().applyCommand({ label: "Add HTML Comp", before, after });
+    return id;
+  },
 
   addSolid: (name) => {
     const id = newObjectId();

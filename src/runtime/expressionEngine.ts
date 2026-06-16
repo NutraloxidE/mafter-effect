@@ -7,12 +7,12 @@ import type { ExpressionEvaluator } from "./resolve";
 import {
   clamp,
   easeRemap,
-  lerp,
   linearRemap,
   seededOnce,
   wiggleNumber,
   wiggleVec3,
 } from "./exprHelpers";
+import { lerp } from "./interpolate";
 
 // §9 ExprContext — expression 関数に渡す実行コンテキスト。
 // 全ての helper は決定論的（INV-1）。Math.random / Date.now / DOM / network 禁止。
