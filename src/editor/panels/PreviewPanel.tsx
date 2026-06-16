@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react"; // useState kept for renderTick
 import { resolve, type ExpressionEvaluator } from "../../runtime/resolve";
 import { DomRenderer } from "../../runtime/DomRenderer";
 import { ExpressionEngine } from "../../runtime/expressionEngine";
@@ -27,11 +27,14 @@ export function PreviewPanel() {
   // §20.3 コンポタブ: 編集対象となる timeline comp のみ並べる（html comp は素材なのでタブに出さない）
   const timelineComps = (project?.compositions ?? []).filter((c) => c.kind === "timeline");
 
+  const isPlaying = useEditorStore((s) => s.isPlaying);
+  const setPlaying = useEditorStore((s) => s.setPlaying);
+  const togglePlay = useEditorStore((s) => s.togglePlay);
+
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const fitRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<DomRenderer | null>(null);
-  const [isPlaying, setIsPlaying] = useState(false);
   // prepare() 完了などで再描画を促すための tick（ref の更新は再レンダーを起こさないため）。
   const [renderTick, setRenderTick] = useState(0);
   const rafRef = useRef<number | null>(null);
@@ -129,7 +132,7 @@ export function PreviewPanel() {
         lastTimeRef.current = now - (elapsed % msPerFrame);
         const next = frameRef.current + framesToAdvance;
         if (next >= duration) {
-          setIsPlaying(false);
+          setPlaying(false);
           setFrame(0);
         } else {
           setFrame(next);
@@ -144,19 +147,7 @@ export function PreviewPanel() {
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
       lastTimeRef.current = null;
     };
-  }, [isPlaying, comp, setFrame]);
-
-  const togglePlay = () => setIsPlaying((p) => !p);
-
-  // keyboard: Space = play/pause
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement) return;
-      if (e.code === "Space") { e.preventDefault(); togglePlay(); }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  });
+  }, [isPlaying, comp, setFrame, setPlaying]);
 
   const fps = comp?.fps ?? 30;
   const timeSec = (frame / fps).toFixed(2);
@@ -191,7 +182,7 @@ export function PreviewPanel() {
       </div>
       {/* toolbar */}
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 8px", background: "#222", borderBottom: "1px solid #333", flexShrink: 0 }}>
-        <button onClick={togglePlay} style={btnStyle}>{isPlaying ? "⏸" : "▶"}</button>
+        <button onClick={togglePlay} style={{ ...btnStyle, width: 30, height: 22, padding: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", lineHeight: 1, boxSizing: "border-box" }}>{isPlaying ? "⏸" : "▶"}</button>
         <button onClick={() => setFrame(0)} style={btnStyle}>⏮</button>
         <span style={{ fontSize: 11, color: "#aaa", fontVariantNumeric: "tabular-nums" }}>
           F{frame} / {timeSec}s

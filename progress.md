@@ -437,9 +437,13 @@ Sonnet 実装の M4 を実機（Playwright/Chromium）で end-to-end 検証。**
 
 ## 進行中・未完了タスク
 
-_MVP = M0–M4 全マイルストーン実装・実機検証完了。§20 Project パネル / コンポ管理（MVP 後 UX）実装・実機検証完了。§21 Timeline Tier A 実装完了（実機検証待ち）。_
+_MVP = M0–M4 全マイルストーン実装・実機検証完了。§20 Project パネル / コンポ管理（MVP 後 UX）実装・実機検証完了。§21 Timeline Tier A + P0 実装完了（実機検証待ち）。_
 
 ### Timeline AE 化バックログ（優先度高 — §21.0）
+**→ 詳細・実用性優先度リストは [doc/timeline-panel-wip.md](doc/timeline-panel-wip.md) を参照（SSoT ではなく作業計画）。**
+現状の TimelinePanel と本家 AE の差分を P0〜P3 で整理してある。エンジン側スキーマは対応済みなのに
+UI が殺している穴（イージング編集 / 水平ズーム / component props の KF 行）が Tier A 範囲で最も費用対効果が高い。
+
 ユーザ要望（画像の AE タイムライン全機能）のうち Tier A 以外。各 Tier は **spec §5 スキーマ拡張 + INV 影響評価を伴って**別リビジョンで導入する（散文だけでスキーマを変えない）。
 - **Tier B（additive スキーマ）**: ラベル色 / solo / lock / shy / 親とリンク(parent) ドロップダウン UI。`SceneObject` にフラグ追加。
 - **Tier C（renderer + INV 拡張）**: ブレンドモード（mix-blend-mode）/ トラックマット（mask）。flat DOM レンダラ(INV-3) と export 経路(exporter.ts foreignObject) の both で best-effort 対応が必要。
@@ -524,3 +528,4 @@ M4 実装は完了した。次のセッションでは Opus + Playwright によ�
 | 2026-06-17 | spec v0.6（§21.6 U/UU キー追記）。U キー: 選択レイヤーを KF ありプロパティのみ展開（再押し折りたたむ）。UU キー（300ms 以内に 2 回）: 変更済みプロパティのみ展開。caret クリック= "all" モード。expandMode Map で管理（store 非保存）。typecheck ✅ / tests 86件 ✅。 |
 | 2026-06-17 | spec v0.6（§21.5 KF 複数選択, スキーマ不変）。Timeline KF 複数選択実装: ラバーバンド（全レイヤー/全プロパティ横断, 中心 hit-test, Shift 追加）/ まとめてドラッグ移動 / Delete でまとめて削除 / 選択ハイライト。複数オブジェクト 1-command 用 `cmdUpdateObjects`/`updateObjects` 追加。typecheck ✅ / tests 86件 ✅ / build ✅。実機検証待ち。 |
 | 2026-06-17 | Timeline Tier A 実機検証（Playwright）14/14 PASS。**実バグ修正: graphRef が未接続でスクラブ/バー drag の px→frame 変換が無効化していた**（時間ルーラーのトラック div に ref 接続）。「トリム後スライドでハング」は headless CDP マウス入力の不安定性（アプリ正常・合成 DOM イベントで決定論検証）。typecheck ✅ / tests 86件 ✅ / build ✅。 |
+| 2026-06-17 | Timeline P0（[doc/timeline-panel-wip.md](doc/timeline-panel-wip.md) 参照）実装: **P0-1** Ctrl+スクロールでズーム / Shift+スクロールでパン / `\` でfit all / frameToPercent ですべての位置計算をview範囲にスケーリング / Ruler の適応的目盛り / overflow:hidden でクリッピング / **下部スクロールバー**（サム本体ドラッグ=パン・端ドラッグ=ズーム・◀▶ボタンで微量スクロール）。**P0-2** `isPlaying`をストアに昇格（PreviewPanel・TimelinePanel 両方から制御可）/ タイムラインツールバーに再生ボタン / Space キー統合。**P0-3** KF 右クリックでイージングコンテキストメニュー（Linear/Easy Ease/Ease In/Ease Out/Hold）/ F9=Easy Ease / Ctrl+F9=Linear / Shift+F9=Hold / KF ダイヤ色でeasing type を視覚化（緑=bezier/紫=hold/タン=linear）。**P0-4** ←→ ±1フレーム / Shift+←→ ±10 / Home/End / J=前KF / K=次KF。typecheck ✅ / tests 86件 ✅ / build ✅。実機検証要。 |

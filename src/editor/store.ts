@@ -75,6 +75,7 @@ export interface EditorStore {
   currentCompId: string;
   currentFrame: Frame;
   selectedObjectIds: string[];
+  isPlaying: boolean;
 
   // §12 Plugin 管理
   pluginsVersion: number; // loadPlugins() 完了のたびにインクリメント。PreviewPanel が subscribe して再描画する。
@@ -93,6 +94,10 @@ export interface EditorStore {
   // Undo/Redo
   undo: () => void;
   redo: () => void;
+
+  // 再生制御
+  setPlaying: (v: boolean) => void;
+  togglePlay: () => void;
 
   // ナビゲーション
   setFrame: (frame: Frame) => void;
@@ -144,6 +149,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   currentCompId: "",
   currentFrame: 0,
   selectedObjectIds: [],
+  isPlaying: false,
   pluginsVersion: 0,
   undoStack: emptyStack(),
 
@@ -154,6 +160,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       currentCompId: p.rootComposition,
       currentFrame: 0,
       selectedObjectIds: [],
+      isPlaying: false,
       undoStack: emptyStack(),
     });
   },
@@ -203,6 +210,9 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     set({ project: result.project, undoStack: result.stack });
     void saveProject(fs, result.project);
   },
+
+  setPlaying: (v) => set({ isPlaying: v }),
+  togglePlay: () => set((s) => ({ isPlaying: !s.isPlaying })),
 
   setFrame: (frame) => set({ currentFrame: frame }),
   // §20.3 アクティブ comp 切替時は frame を 0・選択をクリア
