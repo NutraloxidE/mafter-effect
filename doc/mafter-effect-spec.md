@@ -662,6 +662,10 @@ SSoT 違反を避けるため、scope と正準性を分離する:
 | パネルのデタッチ（別ウィンドウ：browser=window.open+同期, app=OS窓） | 将来 |
 | インタラクティブ bundle（入力応答） / alpha-bake（color+matte） | 将来 |
 | compRef / nested composition（precomp, 時間マッピング） | 将来 |
+| Timeline Tier B（ラベル色 / solo / lock / shy / parent ドロップダウン UI, §21.0） | 将来（優先度高） |
+| Timeline Tier C（ブレンドモード / トラックマット, §21.0） | 将来（優先度高） |
+| Timeline Tier D（モーションブラー / フレームブレンド / 3D レイヤー / 調整レイヤー, §21.0） | 将来 |
+| タイムコード ドロップフレーム表示（0;00;00;00, §21.1） | 将来 |
 | Model B（DOM 内省で要素を Object 化） | 将来 |
 | WebGL/WebGPU レンダラ / 実 3D（深度・ライティング・物理カメラ） | 将来 |
 | Blender Camera / Depth Import（IO plugin） | 将来 |
@@ -803,4 +807,54 @@ html comp はタブに出さない（編集対象の timeline ではないため
 
 ---
 
-*v0.4 / MVP scope = M0–M4（Web Bundle Export は M5）。§20 は MVP 後の UX 拡張（UI 層、スキーマ不変）。このファイルが「エンジンを作るための SSoT」。`claude.md` が「エンジンを使うための SSoT」。*
+## §21. Timeline パネル / AE 相当のタイムライン編集（UI 層・MVP 後の UX 拡張）
+
+> §20.4 の Timeline パネル責務を AE に近づけるための詳細規約。**エンジン SSoT（§5 スキーマ）は変更しない** — `inPoint`/`outPoint`/各 `AnimatedProp`/`Keyframe`、および footage 系コンポーネントの源時刻オフセット（`video`/`audio` の `trimStart`、`html` の内部 `inPoint`）は**既存フィールド**である。本節は **UI 層と store 操作の規約**。
+
+### §21.0 スコープ（段階導入・確定）
+
+AE タイムラインの機能を **Tier A〜D** に分け、本リビジョンで **Tier A のみ**を実装する。B〜D は `progress.md` に優先度高めのバックログとして記録し、別リビジョンで §5 スキーマ拡張・INV 影響評価を伴って導入する。
+
+| Tier | 内容 | スキーマ影響 | 区分 |
+|---|---|---|---|
+| **A** | プロパティツリー展開 / per-property ストップウォッチ＋値編集 / KF 行 / レイヤーバーの drag（in/out トリム・スライド）/ 時間ルーラー＋SMPTE タイムコード / レイヤー番号 | **なし**（既存スキーマで成立） | **本リビジョン** |
+| **B** | ラベル色 / solo / lock / shy / 親とリンク(parent) ドロップダウン UI | additive（`SceneObject` にフラグ追加） | 将来（優先度高） |
+| **C** | ブレンドモード / トラックマット | renderer(INV-3)＋export 経路拡張 | 将来（優先度高） |
+| **D** | モーションブラー / フレームブレンド / 3D レイヤー / 調整レイヤー | 大規模・決定論モデル評価要 | 将来 |
+
+### §21.1 タイムコード表示（確定）
+
+- **正準単位は整数 `Frame`（INV-5 不変）**。タイムコードは**派生表示のみ**で、内部状態・直列化には一切影響しない。
+- 表示形式は **SMPTE `HH:MM:SS:FF`（non-drop）**。`f = round(fps)` とし、`FF = frame % f`、`SS = floor(frame/f) % 60`、`MM = floor(frame/(f*60)) % 60`、`HH = floor(frame/(f*3600))`。各 2 桁ゼロ埋め。
+- ドロップフレーム（`0;00;00;00`）は §16 将来（整数 fps では non-drop と一致するため MVP 不要）。
+
+### §21.2 プロパティツリー（確定）
+
+- 各レイヤー行は**展開トグル**（caret）を持ち、展開すると **トランスフォーム**グループ（anchor / position / rotation / scale）＋ **opacity** のプロパティ行を表示する。
+- 各プロパティ行は次を持つ:
+  - **ストップウォッチ**（KF 有効/無効トグル）:
+    - OFF→ON: 現 frame に現在サンプル値で最初の KF を打つ（`keyframes` が 1 個になる）。
+    - ON→OFF: `keyframes` を空にし、`value` を現 frame のサンプル値に固定（静的化）。
+  - **値表示＋インライン編集**（現 frame の値）。編集時、その property が **animated（KF あり）なら現 frame に KF を打つ/更新**、static なら `value` を更新する。
+  - **KF 行**（グラフ領域）: keyframe を frame 位置にダイヤで表示。
+- すべての編集は command 経由（§17, undo 可能）。
+
+### §21.3 レイヤーバーの編集（確定・「どこから/どこまで描画するか」）
+
+グラフ領域のレイヤーバーをドラッグして、長い素材/コンポの可視区間を AE 同様に操作する。frame↔px はトラック領域幅から導出（`comp.duration` を全幅にマップ）。ドラッグ確定時に 1 command を積む（ドラッグ中はプレビュー、mouseup で確定）。
+
+- **右端ドラッグ → `outPoint`（どこまで）**。clamp `[inPoint+1, duration]`。
+- **左端ドラッグ → `inPoint`（どこから, comp 時間）**。clamp `[0, outPoint-1]`。
+  - **footage 系レイヤーは源時刻オフセットを連動**させる（AE と同じく、エッジ下の素材フレームを固定したままトリム = 「素材のどこから描くか」）。Δ = `newInPoint - oldInPoint` を、最初に該当する源オフセットプロップへ加算: `video`/`audio` は `trimStart += Δ`、`html` は内部 `inPoint += Δ`。clamp `≥ 0`。
+- **バー本体ドラッグ → スライド**: `inPoint`/`outPoint` を Δ だけ平行移動（尺保持）。源オフセットは変えない。clamp `inPoint ≥ 0`。
+- **プレイヘッド / 時間ルーラー**: ルーラークリック・プレイヘッドドラッグで `currentFrame` を設定（clamp `[0, duration]`）。
+
+> 源時刻オフセット連動が「素材のどこから描画するか」、`outPoint` トリムが「どこまで描画するか」に対応する。`inPoint`/`outPoint` は既存スキーマ、`trimStart`/html `inPoint` は既存コンポーネントプロップであり、**Tier A はスキーマを一切変更しない**（§4 INV 保持）。
+
+### §21.4 store 操作（Tier A）
+
+既存 `updateObject`（command 経由）で `inPoint`/`outPoint`/`transform`/`opacity`/`components` を patch する。Tier A 専用の最小ヘルパーをパネル内に置く（store API を増やしすぎない）。`currentFrame` は既存 `setFrame`（エディタ状態, undo 対象外）。
+
+---
+
+*v0.5 / MVP scope = M0–M4（Web Bundle Export は M5）。§20–§21 は MVP 後の UX 拡張（UI 層、スキーマ不変）。このファイルが「エンジンを作るための SSoT」。`claude.md` が「エンジンを使うための SSoT」。*

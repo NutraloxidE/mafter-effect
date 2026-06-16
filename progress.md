@@ -383,9 +383,47 @@ Sonnet 実装の M4 を実機（Playwright/Chromium）で end-to-end 検証。**
 
 ---
 
+### §21 Timeline パネル AE 化 — Tier A（2026-06-16, Opus / MVP 後 UX 拡張）
+
+ユーザ要望: タイムラインを画像（AE）相当に充実させる。spec を **v0.4 → v0.5** に更新（§21 追記、**スキーマ不変**）。スコープは AskUserQuestion で確定 → **Tier A のみ実装、B〜D はバックログ**（下記）、タイムコードは **SMPTE non-drop**。
+
+- **spec §21 追記** — Tier A〜D の段階導入定義 / SMPTE タイムコード(§21.1) / プロパティツリー＋ストップウォッチ(§21.2) / レイヤーバー drag による in/out トリム・スライドと footage 源オフセット連動(§21.3) / store 操作(§21.4)。§16 将来テーブルに Tier B/C/D + DF タイムコードを追記。**SSoT のスキーマ(§5)は一切変更せず**、既存 `inPoint`/`outPoint`/`AnimatedProp`/`trimStart`/html `inPoint` のみで成立。
+- **TimelinePanel 全面書き換え** — [TimelinePanel.tsx](src/editor/panels/TimelinePanel.tsx):
+  - **SMPTE タイムコード表示**（`framesToTimecode`, non-drop, `f=round(fps)`）。ツールバー + 時間ルーラーの目盛り。INV-5 保持（表示は派生のみ）。
+  - **時間ルーラー + プレイヘッド**: ルーラークリック/ドラッグで `setFrame`（px→frame 変換, clamp）。プレイヘッドはグラフ列にオーバーレイ。
+  - **プロパティツリー展開**（caret トグル, per-layer）: トランスフォーム（anchor/position/scale/rotation）+ opacity。各行に **ストップウォッチ**（KF 有効/無効: ON で現 frame に現値 KF、OFF で静的化）、**インライン値編集**（animated なら KF 打つ/更新・static なら value 更新, opacity は 0..1 clamp）、**KF ダイヤ行**（現 frame の KF はハイライト）。
+  - **レイヤーバー drag**（§21.3「どこから/どこまで描画するか」）: 右端=`outPoint`、左端=`inPoint`（+ footage は `shiftSourceOffset` で video/audio `trimStart` / html `inPoint` を Δ 連動）、本体=スライド（尺保持）。ドラッグ中は local state でプレビュー、mouseup で 1 command 確定（undo 可）。
+  - レイヤー番号 #、可視トグル、削除を維持。
+- **スキーマ・store API 追加なし** — 既存 `updateObject`（command 経由）/ `setFrame` / `setKeyframe`（store export）のみ使用。
+
+**検証**: typecheck ✅ / tests 86 件 ✅ / build ✅。
+
+**実機検証（2026-06-17, Opus / Playwright swiftshader）— 14/14 PASS:**
+- Timeline 描画 / Solid レイヤー追加 / SMPTE タイムコード(00:00:00:00) / ルーラースクラブで時刻更新(→00:00:03:00) / プロパティツリー展開(位置・不透明度) / ストップウォッチで KF 追加 / 値インライン編集 / レイヤーバー present。
+- レイヤーバー操作: **右端トリム**(width 100%→79.3%) / **本体スライド**(left 0%→14%・尺保持) / **左端トリム**(left 14%→20.7%)。console エラー 0。
+
+**検証中に発見・修正した実バグ（[TimelinePanel.tsx](src/editor/panels/TimelinePanel.tsx)）:**
+1. **【実バグ】`graphRef` が DOM 要素に未接続** — `useRef` を宣言し `pxToFrame` で使うが `ref={graphRef}` をどこにも付けておらず `graphRef.current` が常に null → スクラブ・バー drag の px→frame 変換が全て無効化（ドラッグしても何も動かない）。→ 時間ルーラーのトラック div（レイヤーバーと同じグラフ列幅）に `ref={graphRef}` を接続して修正。
+2. **（誤検出・アプリ正常）「トリム後のスライドでハング」** — Playwright の CDP `page.mouse.move`（実マウス入力）が headless swiftshader で先行 drag 後に固まる既知の不安定性（progress.md 既出の GL backend 問題と同類）。JS メインスレッドは終始応答（`page.evaluate`→2 を確認）、合成 DOM イベント駆動ではスライドは正しく動作。アプリ側バグではないと確定。**検証スクリプトはバー drag/スクラブを合成 DOM イベント駆動に変更**して決定論化した。
+3. 検証用フック追加（軽微・無害）: NumberField に `className="tl-num"`、ツールバータイムコードに `data-testid="tl-timecode"`。
+
+検証スクリプト（verify-timeline.mjs / probe-slide.mjs）は使い捨てのため検証後に削除済み。
+
+---
+
 ## 進行中・未完了タスク
 
-_MVP = M0–M4 全マイルストーン実装・実機検証完了。§20 Project パネル / コンポ管理（MVP 後 UX）実装・実機検証完了。_
+_MVP = M0–M4 全マイルストーン実装・実機検証完了。§20 Project パネル / コンポ管理（MVP 後 UX）実装・実機検証完了。§21 Timeline Tier A 実装完了（実機検証待ち）。_
+
+### Timeline AE 化バックログ（優先度高 — §21.0）
+ユーザ要望（画像の AE タイムライン全機能）のうち Tier A 以外。各 Tier は **spec §5 スキーマ拡張 + INV 影響評価を伴って**別リビジョンで導入する（散文だけでスキーマを変えない）。
+- **Tier B（additive スキーマ）**: ラベル色 / solo / lock / shy / 親とリンク(parent) ドロップダウン UI。`SceneObject` にフラグ追加。
+- **Tier C（renderer + INV 拡張）**: ブレンドモード（mix-blend-mode）/ トラックマット（mask）。flat DOM レンダラ(INV-3) と export 経路(exporter.ts foreignObject) の both で best-effort 対応が必要。
+- **Tier D（大規模）**: モーションブラー / フレームブレンド / 3D レイヤートグル / 調整レイヤー。決定論モデルとの整合評価要。
+- **DF タイムコード**: 29.97/59.94 の `0;00;00;00` 表示（現状は SMPTE non-drop）。
+
+### precomp（コンプのネスト / compRef）— 保留中（ユーザ要望、§16 将来）
+ユーザは「コンプの中にコンプ」「循環参照時の分かりやすいエラー画面」を要望。タイムライン仕様充実を先行させるため**一旦保留**。再開時は時間マッピング / overflow 挙動 / 循環参照 UX を AskUserQuestion で確定 → spec 追記 → 実装の順。
 
 ### 既知の縮退（§20.2 で意図的に MVP 仕様化）
 - 削除した html comp を `compId` 参照する html インスタンス（他 comp 上）はカスケード削除しない。参照先不在は DomRenderer / HtmlCompPlayer 側で「何も描かない」で安全縮退。整合性の自動掃除は将来。
@@ -450,3 +488,5 @@ M4 実装は完了した。次のセッションでは Opus + Playwright によ�
 | 2026-06-16 | Opus 8-angle レビュー後バグ修正 6 件（PNG-seq alpha / buildAudioMix 移動 / DomRenderer unmount / PreviewPanel チラつき / audio trim ズレ / ModuleLoader ネガティブキャッシュ）。tests 86件 ✅ |
 | 2026-06-16 | M3 Opus 再検証 fix #7（webm alpha が透明にならない）修正。M4 GO 判定記録。 |
 | 2026-06-16 | M4 Plugin API v1 実装完了（plugin.ts / pluginRegistry.ts / DomRenderer 拡張 / ExpressionEngine 拡張 / store 拡張 / ProjectPanel UI / PreviewPanel 拡張 / サンプル gradient-rect plugin）。typecheck ✅ / build ✅ / tests 86件 ✅。実機 UI 検証待ち。 |
+| 2026-06-16 | spec v0.5（§21 Timeline AE 化, スキーマ不変）。Timeline Tier A 実装: SMPTE タイムコード / 時間ルーラー+プレイヘッド / プロパティツリー+ストップウォッチ+値編集+KF行 / レイヤーバー drag（in/out トリム・スライド・footage 源オフセット連動）。B〜D + DF + precomp はバックログ。typecheck ✅ / tests 86件 ✅ / build ✅。実機検証待ち。 |
+| 2026-06-17 | Timeline Tier A 実機検証（Playwright）14/14 PASS。**実バグ修正: graphRef が未接続でスクラブ/バー drag の px→frame 変換が無効化していた**（時間ルーラーのトラック div に ref 接続）。「トリム後スライドでハング」は headless CDP マウス入力の不安定性（アプリ正常・合成 DOM イベントで決定論検証）。typecheck ✅ / tests 86件 ✅ / build ✅。 |
