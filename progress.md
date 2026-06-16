@@ -369,9 +369,26 @@ Sonnet 実装の M4 を実機（Playwright/Chromium）で end-to-end 検証。**
 
 ---
 
+### §20 Project パネル / コンポジション管理（2026-06-16, Opus / MVP 後 UX 拡張）
+
+ユーザ要望: AE の「プロジェクト」概念（コンポ・素材の一覧）と、アクティブコンポの明示。spec を **v0.3 → v0.4** に更新（§20 追記、スキーマ不変）。
+
+- **spec §20 追記** — Project パネル責務 / コンポ作成・切替・削除の不変条件 / アクティブコンポ明示 / パネル責務分離。`Project.compositions` / `rootComposition` / `currentCompId` は既存のまま、データモデルに新フィールドを足さない（UI 層 + store 操作の規約）。
+- **store 拡張** — [store.ts](src/editor/store.ts): `addTimelineComp(name?)`（新規 timeline comp → 即アクティブ・連番名 `Comp N`）/ `removeComposition(id)`（最後の timeline comp は削除不可・root 張り替え・current 移動・html comp は FS ファイル掃除）/ `renameComposition(id, name)`。`setCurrentComp` を frame=0・選択クリアに変更（§20.3）。
+- **ProjectPanel 再構成（AE Project パネル化）** — [ProjectPanel.tsx](src/editor/panels/ProjectPanel.tsx): レイヤー一覧を撤去し、**Compositions（timeline+html, アクティブ行ハイライト・ダブルクリックでリネーム・× で削除）/ Footage（assets）/ Plugins** の倉庫ビューに。`+ Comp`/`+ HTML` でコンポ作成。timeline 行クリック=アクティブ化、html 行クリック=配置。
+- **PreviewPanel コンポタブ** — [PreviewPanel.tsx](src/editor/panels/PreviewPanel.tsx): 上部に timeline comp のタブ（アクティブハイライト・クリックで切替）。ツールバーにアクティブ comp 名を追加。
+- **TimelinePanel** — [TimelinePanel.tsx](src/editor/panels/TimelinePanel.tsx): レイヤー追加（`+ Solid`/`+ Text`）と削除（×）を移設（§20.4 パネル責務分離）。ヘッダにアクティブ comp 名。
+
+**検証**: typecheck ✅ / tests 86件 ✅ / build ✅ / **Playwright 実機 13/13 PASS・console エラー 0**（new project / addTimelineComp が即アクティブ / rename / コンポタブ 2 個描画 / setCurrentComp で frame リセット / removeComposition で root 張り替え・current 移動 / 最後の timeline comp 保護）。
+
+---
+
 ## 進行中・未完了タスク
 
-_MVP = M0–M4 全マイルストーン実装・実機検証完了。_
+_MVP = M0–M4 全マイルストーン実装・実機検証完了。§20 Project パネル / コンポ管理（MVP 後 UX）実装・実機検証完了。_
+
+### 既知の縮退（§20.2 で意図的に MVP 仕様化）
+- 削除した html comp を `compId` 参照する html インスタンス（他 comp 上）はカスケード削除しない。参照先不在は DomRenderer / HtmlCompPlayer 側で「何も描かない」で安全縮退。整合性の自動掃除は将来。
 
 ---
 

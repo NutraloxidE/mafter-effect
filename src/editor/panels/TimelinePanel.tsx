@@ -9,6 +9,10 @@ export function TimelinePanel() {
   const selectedIds = useEditorStore((s) => s.selectedObjectIds);
   const setFrame = useEditorStore((s) => s.setFrame);
   const updateObject = useEditorStore((s) => s.updateObject);
+  const addSolid = useEditorStore((s) => s.addSolid);
+  const addText = useEditorStore((s) => s.addText);
+  const removeObject = useEditorStore((s) => s.removeObject);
+  const selectObjects = useEditorStore((s) => s.selectObjects);
 
   const comp = currentTimelineComp(project, compId);
   const duration = comp?.duration ?? 150;
@@ -43,6 +47,10 @@ export function TimelinePanel() {
       {/* toolbar */}
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 8px", background: "#222", borderBottom: "1px solid #333", flexShrink: 0 }}>
         <span style={{ color: "#888" }}>Timeline</span>
+        {comp && <span style={{ color: "#9bd", fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>· {comp.name}</span>}
+        <div style={{ width: 8 }} />
+        <button onClick={() => { const id = addSolid(); if (id) selectObjects([id]); }} disabled={!comp} style={btnStyle}>+ Solid</button>
+        <button onClick={() => { const id = addText(); if (id) selectObjects([id]); }} disabled={!comp} style={btnStyle}>+ Text</button>
         <div style={{ flex: 1 }} />
         {selectedIds.length > 0 && (
           <>
@@ -72,7 +80,7 @@ export function TimelinePanel() {
       <div style={{ flex: 1, overflow: "auto" }}>
         {objects.length === 0 && (
           <div style={{ padding: 16, color: "#444", textAlign: "center" }}>
-            No objects — add some from the Project panel
+            No layers — add one with + Solid / + Text above
           </div>
         )}
         {objects.map((obj) => {
@@ -134,6 +142,12 @@ export function TimelinePanel() {
                   }}
                 />
               </div>
+              {/* delete layer */}
+              <button
+                onClick={(e) => { e.stopPropagation(); removeObject(obj.id); }}
+                style={{ ...btnStyle, padding: "1px 5px", color: "#f44", border: "none", background: "transparent" }}
+                title="レイヤーを削除"
+              >×</button>
             </div>
           );
         })}

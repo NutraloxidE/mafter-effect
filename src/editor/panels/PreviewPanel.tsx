@@ -21,7 +21,11 @@ export function PreviewPanel() {
   const compId = useEditorStore((s) => s.currentCompId);
   const frame = useEditorStore((s) => s.currentFrame);
   const setFrame = useEditorStore((s) => s.setFrame);
+  const setCurrentComp = useEditorStore((s) => s.setCurrentComp);
   const pluginsVersion = useEditorStore((s) => s.pluginsVersion);
+
+  // §20.3 コンポタブ: 編集対象となる timeline comp のみ並べる（html comp は素材なのでタブに出さない）
+  const timelineComps = (project?.compositions ?? []).filter((c) => c.kind === "timeline");
 
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -159,6 +163,32 @@ export function PreviewPanel() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "#1a1a1a" }}>
+      {/* §20.3 composition tabs */}
+      <div style={{ display: "flex", alignItems: "stretch", gap: 1, background: "#161616", borderBottom: "1px solid #333", flexShrink: 0, overflowX: "auto" }}>
+        {timelineComps.map((c) => {
+          const active = c.id === compId;
+          return (
+            <button
+              key={c.id}
+              onClick={() => setCurrentComp(c.id)}
+              title={`${c.name} — ${c.width}×${c.height} @ ${c.fps}fps`}
+              style={{
+                background: active ? "#1a1a1a" : "#202020",
+                border: "none",
+                borderTop: active ? "2px solid #4a8acf" : "2px solid transparent",
+                borderRight: "1px solid #333",
+                color: active ? "#cfe6ff" : "#888",
+                padding: "3px 12px",
+                cursor: "pointer",
+                fontSize: 11,
+                whiteSpace: "nowrap",
+              }}
+            >
+              ▦ {c.name}
+            </button>
+          );
+        })}
+      </div>
       {/* toolbar */}
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 8px", background: "#222", borderBottom: "1px solid #333", flexShrink: 0 }}>
         <button onClick={togglePlay} style={btnStyle}>{isPlaying ? "⏸" : "▶"}</button>
@@ -168,6 +198,7 @@ export function PreviewPanel() {
         </span>
         {comp && (
           <span style={{ fontSize: 10, color: "#666", marginLeft: "auto" }}>
+            <span style={{ color: "#9bd", marginRight: 6 }}>{comp.name}</span>
             {comp.width}×{comp.height} @ {comp.fps}fps
           </span>
         )}

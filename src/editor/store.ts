@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { createProject } from "../core/createProject";
-import { newObjectId } from "../core/ids";
+import { newCompId, newObjectId } from "../core/ids";
 import { loadProject, saveProject } from "../core/projectFs";
 import { defaultTransform, staticProp, vec3 } from "../core/props";
 import type {
@@ -95,6 +95,11 @@ export interface EditorStore {
   setFrame: (frame: Frame) => void;
   setCurrentComp: (id: string) => void;
   selectObjects: (ids: string[]) => void;
+
+  // §20.2 コンポジション管理
+  addTimelineComp: (name?: string) => string | null;
+  removeComposition: (id: string) => void;
+  renameComposition: (id: string, name: string) => void;
 
   // 高レベル編集（→ commands.ts 経由でスタックに積む）
   addObject: (obj: SceneObject) => void;
@@ -191,8 +196,87 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   },
 
   setFrame: (frame) => set({ currentFrame: frame }),
-  setCurrentComp: (id) => set({ currentCompId: id }),
+  // §20.3 アクティブ comp 切替時は frame を 0・選択をクリア
+  setCurrentComp: (id) => set({ currentCompId: id, currentFrame: 0, selectedObjectIds: [] }),
   selectObjects: (ids) => set({ selectedObjectIds: ids }),
+
+  // §20.2 コンポジション管理 ————————————————————————————————
+
+  addTimelineComp: (name) => {
+    const before = get().project;
+    if (!before) return null;
+    const id = newCompId();
+    // 既存 timeline comp 数から連番名（Comp N）を付与
+    const timelineCount = before.compositions.filter((c) => c.kind === "timeline").length;
+    const comp: TimelineComposition = {
+      id,
+      name: name ?? `Comp ${timelineCount + 1}`,
+      kind: "timeline",
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      duration: 150,
+      background: { r: 0, g: 0, b: 0, a: 1 },
+      objects: [],
+    };
+    const after: Project = {
+      ...before,
+      compositions: [...before.compositions, comp].sort((a, b) =>
+        a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
+      ),
+    };
+    get().applyCommand({ label: "Add Composition", before, after });
+    // 作成した comp をアクティブにする（エディタ状態, undo 対象外）
+    set({ currentCompId: id, currentFrame: 0, selectedObjectIds: [] });
+    return id;
+  },
+
+  removeComposition: (id) => {
+    const before = get().project;
+    if (!before) return;
+    const target = before.compositions.find((c) => c.id === id);
+    if (!target) return;
+    // 最後の timeline comp は削除不可（§20.2）
+    const timelineComps = before.compositions.filter((c) => c.kind === "timeline");
+    if (target.kind === "timeline" && timelineComps.length <= 1) return;
+
+    const remaining = before.compositions.filter((c) => c.id !== id);
+    // rootComposition が消えるなら、残った timeline comp（id 昇順先頭）に張り替える
+    let rootComposition = before.rootComposition;
+    if (rootComposition === id) {
+      const firstTimeline = remaining.find((c) => c.kind === "timeline");
+      if (!firstTimeline) return; // ガード（上の不変条件で到達しないはず）
+      rootComposition = firstTimeline.id;
+    }
+    const after: Project = { ...before, compositions: remaining, rootComposition };
+    get().applyCommand({ label: "Remove Composition", before, after });
+
+    // html comp の FS ファイルを掃除（best-effort, §20.2）
+    if (target.kind === "html") {
+      void (async () => {
+        try {
+          for (const f of await fs.list(compositionDir(id))) await fs.delete(f);
+        } catch {
+          // 掃除失敗は無視
+        }
+      })();
+    }
+
+    // currentCompId が消えたら rootComposition に移す
+    if (get().currentCompId === id) {
+      set({ currentCompId: rootComposition, currentFrame: 0, selectedObjectIds: [] });
+    }
+  },
+
+  renameComposition: (id, name) => {
+    const before = get().project;
+    if (!before) return;
+    const after: Project = {
+      ...before,
+      compositions: before.compositions.map((c) => (c.id === id ? { ...c, name } : c)),
+    };
+    get().applyCommand({ label: "Rename Composition", before, after });
+  },
 
   addObject: (obj) => cmdAddObject(get(), obj),
   removeObject: (id) => cmdRemoveObject(get(), id),

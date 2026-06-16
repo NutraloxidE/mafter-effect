@@ -741,4 +741,66 @@ type LayoutNode =
 
 ---
 
-*v0.3 / MVP scope = M0–M4（Web Bundle Export は M5）。このファイルが「エンジンを作るための SSoT」。`claude.md` が「エンジンを使うための SSoT」。*
+## §20. Project パネル / コンポジション管理（UI 層・MVP 後の UX 拡張）
+
+> §19 の続き。「AE の Project パネル概念」と「アクティブコンポジションの明示」を規定する。エンジン SSoT（§5 スキーマ）は変更しない — `Project.compositions` / `rootComposition` / `currentCompId`(エディタ状態) は既存。本節は **UI 層と store 操作の規約**であり、データモデルに新フィールドを足さない。
+
+### §20.1 Project パネル（= AE の Project パネル相当）
+
+`project` パネル（§19.1 の左パネル）は **プロジェクトに属する全アイテムの一覧**を表示する。AE 同様、ここは「素材とコンポの倉庫」であり、**レイヤー一覧ではない**（レイヤーは Timeline パネルが持つ。§20.4）。
+
+表示する 2 系統:
+
+- **Compositions** — `project.compositions` の全要素（`timeline` / `html` 両 kind）。
+  - 各行は `name` ＋ kind バッジ ＋ `width×height @ fps` ＋ `duration`。
+  - **timeline comp** の行クリック = そのコンポを**アクティブにする**（`setCurrentComp(id)`）。アクティブ行はハイライトする。
+  - **html comp** の行クリック = §7 の `html` コンポーネントとして**現アクティブ comp のタイムラインに配置**する（既存 `addHtmlInstance`）。html comp は「タイムラインを持たない素材（footage/precomp 相当）」であり、それ単体を編集対象として開かない（§20.3）。
+- **Footage / Assets** — `project.assets`（audio / image / video / font / other）。クリックで該当レイヤーをアクティブ comp に追加できる（種別が対応するもの。MVP は audio）。
+
+操作:
+- **`+ Composition`**: 新規 timeline comp を作成（既定 1920×1080 @30fps / 5s, name `Comp N`）して即アクティブにする。
+- **`+ HTML Comp`**: 既存どおり html comp を作成（FS スターター生成）。
+- **コンポのリネーム / 削除**を提供する（§20.2）。
+
+### §20.2 コンポジションの作成・切替・削除（store 操作）
+
+エディタ store に以下を追加する（すべて command 経由で undo 可能、§17。`currentCompId` はエディタ状態であり undo 対象外）:
+
+```ts
+addTimelineComp(name?): CompId          // 新規 timeline comp を作成し currentCompId を移す
+removeComposition(id): void             // comp を削除
+renameComposition(id, name): void       // 表示名変更（INV-6: 参照は id なので安全）
+setCurrentComp(id): void                // 既存。アクティブ comp を切替（frame を 0 に戻す）
+```
+
+**削除の不変条件（確定）:**
+- **最後の timeline comp は削除できない**（プロジェクトは最低 1 つの timeline comp を持つ）。
+- 削除対象が `rootComposition` なら、`rootComposition` を残った別の timeline comp（id 昇順で先頭）に張り替える。
+- 削除対象が `currentCompId` なら、`currentCompId` を `rootComposition`（張り替え後）に移す。
+- html comp 削除時は `compositions/<id>/` 配下の FS ファイルも削除する（best-effort）。
+- **ダングリング参照の方針（MVP）**: 削除した html comp を `compId` 参照している `html` コンポーネント（他 comp 上のインスタンス）は**カスケード削除しない**。参照先不在は DomRenderer / HtmlCompPlayer 側で「何も描かない」で安全に縮退する（§7 の throw→silent と同方針）。整合性の自動掃除は §16 将来。
+
+### §20.3 アクティブコンポジションの明示（確定）
+
+「いま編集している comp」を常に視覚的に明示する:
+
+- **Preview パネル上部のコンポタブ**: 全 **timeline comp** をタブとして並べる（AE のコンポビューア相当）。アクティブタブをハイライトし、`name` を表示。タブクリックで `setCurrentComp`。
+- Preview / Timeline のヘッダにアクティブ comp の `name` と `width×height @ fps` を表示する。
+- Project パネルのアクティブ comp 行をハイライトする。
+
+html comp はタブに出さない（編集対象の timeline ではないため。§20.1）。
+
+### §20.4 パネル責務の分離（確定・§19.2 の明確化）
+
+| パネル | 責務 |
+|---|---|
+| `project` | プロジェクトに属する **comp 一覧 + 素材一覧 + plugins**（倉庫）。レイヤーは持たない。 |
+| `timeline` | **アクティブ comp のレイヤー一覧**（`objects`）+ スクラバ + KF + レイヤー追加/削除/可視性。 |
+| `preview` | アクティブ comp の描画 + コンポタブ + 再生コントロール。 |
+| `inspector` | 選択レイヤーのプロパティ。 |
+
+レイヤーの追加（solid/text 等）と削除は **Timeline パネル**で行う（AE と同じく「コンポを開いている状態でレイヤーを足す」モデル）。Project パネルからレイヤー一覧を撤去する。
+
+---
+
+*v0.4 / MVP scope = M0–M4（Web Bundle Export は M5）。§20 は MVP 後の UX 拡張（UI 層、スキーマ不変）。このファイルが「エンジンを作るための SSoT」。`claude.md` が「エンジンを使うための SSoT」。*
