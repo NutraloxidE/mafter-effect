@@ -30,23 +30,31 @@ export function App() {
   const redo = useEditorStore((s) => s.redo);
   const loadFromFs = useEditorStore((s) => s.loadFromFs);
   const undoStack = useEditorStore((s) => s.undoStack);
+  const duplicateSelected = useEditorStore((s) => s.duplicateSelected);
+  const splitSelected = useEditorStore((s) => s.splitSelected);
 
   // 起動時に FS から読み込む
   useEffect(() => {
     void loadFromFs();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Undo/Redo キーボードショートカット (Cmd/Ctrl-Z / Shift-Cmd-Z, §17)
+  // キーボードショートカット
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
       const mod = e.metaKey || e.ctrlKey;
-      if (mod && e.key === "z" && !e.shiftKey) { e.preventDefault(); undo(); }
-      if (mod && (e.key === "Z" || (e.key === "z" && e.shiftKey))) { e.preventDefault(); redo(); }
+      if (!mod) return;
+      // §17 Undo/Redo
+      if (e.key === "z" && !e.shiftKey) { e.preventDefault(); undo(); }
+      if (e.key === "Z" || (e.key === "z" && e.shiftKey)) { e.preventDefault(); redo(); }
+      // §21.7 Duplicate / Split Layer
+      if (e.key === "d" && !e.shiftKey) { e.preventDefault(); duplicateSelected(); }
+      if (e.key === "D" || (e.key === "d" && e.shiftKey)) { e.preventDefault(); splitSelected(); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [undo, redo]);
+  }, [undo, redo, duplicateSelected, splitSelected]);
 
   const handleSizesChange = useCallback((path: number[], sizes: number[]) => {
     setWorkspace((ws) => {

@@ -23,8 +23,11 @@ import type { PluginContext, PluginManifest } from "../runtime/plugin";
 import { globalPluginRegistry } from "../runtime/pluginRegistry";
 import {
   cmdAddObject,
+  cmdDuplicateObjects,
   cmdRemoveObject,
+  cmdSplitObjects,
   cmdUpdateObject,
+  cmdUpdateObjects,
   emptyStack,
   pushCommand,
   redo,
@@ -105,6 +108,12 @@ export interface EditorStore {
   addObject: (obj: SceneObject) => void;
   removeObject: (id: string) => void;
   updateObject: (id: string, patch: Partial<SceneObject>, label?: string) => void;
+  // §21.5 複数オブジェクト横断の patch を 1 command（1 undo）で確定する。
+  updateObjects: (patches: { id: string; patch: Partial<SceneObject> }[], label?: string) => void;
+  // §21.7 Duplicate (Ctrl+D): 選択レイヤーを複製し、複製先を選択状態にする。
+  duplicateSelected: () => void;
+  // §21.7 Split Layer (Ctrl+Shift+D): 選択レイヤーをプレイヘッド位置で分割し、後半レイヤーを選択する。
+  splitSelected: () => void;
 
   // ショートカット: オブジェクトを新規追加して ID を返す
   addSolid: (name?: string) => string | null;
@@ -281,6 +290,25 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   addObject: (obj) => cmdAddObject(get(), obj),
   removeObject: (id) => cmdRemoveObject(get(), id),
   updateObject: (id, patch, label) => cmdUpdateObject(get(), id, patch, label),
+  updateObjects: (patches, label) => cmdUpdateObjects(get(), patches, label),
+
+  duplicateSelected: () => {
+    const s = get();
+    const comp = currentTimelineComp(s.project, s.currentCompId);
+    if (!comp) return;
+    const targets = comp.objects.filter((o) => s.selectedObjectIds.includes(o.id));
+    const newIds = cmdDuplicateObjects(s, targets);
+    if (newIds.length > 0) set({ selectedObjectIds: newIds });
+  },
+
+  splitSelected: () => {
+    const s = get();
+    const comp = currentTimelineComp(s.project, s.currentCompId);
+    if (!comp) return;
+    const targets = comp.objects.filter((o) => s.selectedObjectIds.includes(o.id));
+    const newIds = cmdSplitObjects(s, targets, s.currentFrame);
+    if (newIds.length > 0) set({ selectedObjectIds: newIds });
+  },
 
   addHtmlComp: async (name) => {
     const before = get().project;

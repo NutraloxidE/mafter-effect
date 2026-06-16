@@ -411,6 +411,30 @@ Sonnet 実装の M4 を実機（Playwright/Chromium）で end-to-end 検証。**
 
 ---
 
+### Timeline Tier A ユーザフィードバック修正（2026-06-17, Opus）
+実機で触ったユーザからの指摘 3 件を修正（[TimelinePanel.tsx](src/editor/panels/TimelinePanel.tsx)、spec §21.3 追記）:
+1. **ドラッグで文字選択されてしまう** → パネル root に `user-select: none`、数値入力欄のみ `user-select: text`。
+2. **スライドでキーフレームが追従しない** → §21.3 を AE 準拠に: **スライド（本体ドラッグ）は全 AnimatedProp（transform 各軸 / opacity / component props）の Keyframe.frame を Δ シフト**（`shiftObjectKeyframes`）、ドラッグ中も KF ダイヤがライブ追従（`kfPreviewShift`）。トリム（端ドラッグ）は KF を動かさない。
+3. **【実バグ】数値入力で打った KF がプレイヘッドより一定量右にずれる** → 原因は box-sizing 不一致。各ラベル列が `width:LABEL_W` + content-box で padding/border が加算され、ルーラー spacer=231px / レイヤー見出し=243px / プロパティ行=267px と**列ごとに実幅が違い**、KF グラフ列の原点がルーラー/プレイヘッドより ~36px 右にずれていた。→ 3 列すべてに `box-sizing: border-box` を付け `LABEL_W` を 270 に統一。全グラフ列（バー/KF/ルーラー/プレイヘッド/オーバーレイ）の原点が一致。
+
+**検証**: ⚠ 安全判定（分類器）一時障害により `typecheck/test/build` 未実行（復旧待ち）。コードレビュー上は型・ロジック問題なし。dev サーバ(5173)は HMR 反映済み。
+
+### §21.5 Timeline キーフレーム複数選択（2026-06-17, Opus / Tier A 拡張）
+
+ユーザ要望: 「タイムラインでドラッグしたらキーフレーム複数選択できるように」。AskUserQuestion でスコープ確定 → **全レイヤー・全プロパティ横断のラバーバンド選択 + まとめてドラッグ移動 + まとめて削除 + 選択ハイライト**。spec を **v0.5 → v0.6** に更新（§21.5 追記 + §21.4 に `updateObjects` 規約追記、**スキーマ不変**）。
+
+- **spec §21.5 追記** — 選択モデル `(objectId, propertyPath, frame)` の集合（エディタ一時状態, project.json/undo 非対象）。ラバーバンド（修飾なし=置換 / Shift=追加）、KF クリック/Shift クリック、まとめて移動（Δframe・選択集合の min/max で `[0,duration]` クランプ・移動先上書き・複数オブジェクト 1 command）、Delete/Backspace でまとめて削除。
+- **複数オブジェクト 1-command 編集を追加** — [commands.ts](src/editor/commands.ts) `cmdUpdateObjects(patches, label)` + [store.ts](src/editor/store.ts) `updateObjects`。既存 before/after スナップショット方式（§17）で `withCompObjects` を 1 度だけ通し全 patch を適用 → 横断編集が 1 undo。
+- **TimelinePanel 拡張** — [TimelinePanel.tsx](src/editor/panels/TimelinePanel.tsx):
+  - KF 選択状態 `selectedKfs: Set<string>`（key=`objId|path|frame`）をパネルにリフトアップ。アクティブ comp 切替でクリア。
+  - **ラバーバンド**: rows コンテナの mousedown（グラフ列の空白・`clientX>=graph.left`）でドラッグ開始 → client 座標の矩形に**中心が入る** `[data-kf-key]` ダイヤを hit-test。Shift で追加。ドラッグ直後の click は `dragMovedRef` でレイヤー選択誤発火を抑止。
+  - **まとめて移動**: KF ダイヤの mousedown を `beginKfDrag` に一本化（§21.2 単独移動を一般化）。選択済みダイヤ=全選択を Δ 移動、未選択=単独選択して移動、Shift=選択トグル。`moveKfFrames`/`deleteKfFrames`/`buildKfPatches` で per-object patch を組み 1 command 確定。
+  - **削除**: window keydown（Delete/Backspace, 入力欄フォーカス中は無効）。
+  - 選択 KF はハイライト（青 #5a9ff0 + 白アウトライン）。`PropRowShell` から旧 per-prop drag state（`kfRowRef`/`kfDrag`/`startKfDrag`/`moveKeyframe`）を撤去し、パネルの `kfDrag` プレビュー + `beginKfDrag` に統一。
+- **スキーマ・直列化への影響なし**（INV 全保持。frame は整数=INV-5）。
+
+**検証**: typecheck ✅ / tests 86 件 ✅ / build ✅。実機（Playwright）検証は次セッション候補。
+
 ## 進行中・未完了タスク
 
 _MVP = M0–M4 全マイルストーン実装・実機検証完了。§20 Project パネル / コンポ管理（MVP 後 UX）実装・実機検証完了。§21 Timeline Tier A 実装完了（実機検証待ち）。_
@@ -427,6 +451,13 @@ _MVP = M0–M4 全マイルストーン実装・実機検証完了。§20 Projec
 
 ### 既知の縮退（§20.2 で意図的に MVP 仕様化）
 - 削除した html comp を `compId` 参照する html インスタンス（他 comp 上）はカスケード削除しない。参照先不在は DomRenderer / HtmlCompPlayer 側で「何も描かない」で安全縮退。整合性の自動掃除は将来。
+
+---
+
+### セッションメモ（2026-06-17）
+
+- `scripts/claude-auto-continue.ps1` を追加。
+- `500` を検知したら数秒後に `続けて` を stdin へ送る PowerShell スクリプト。
 
 ---
 
@@ -489,4 +520,7 @@ M4 実装は完了した。次のセッションでは Opus + Playwright によ�
 | 2026-06-16 | M3 Opus 再検証 fix #7（webm alpha が透明にならない）修正。M4 GO 判定記録。 |
 | 2026-06-16 | M4 Plugin API v1 実装完了（plugin.ts / pluginRegistry.ts / DomRenderer 拡張 / ExpressionEngine 拡張 / store 拡張 / ProjectPanel UI / PreviewPanel 拡張 / サンプル gradient-rect plugin）。typecheck ✅ / build ✅ / tests 86件 ✅。実機 UI 検証待ち。 |
 | 2026-06-16 | spec v0.5（§21 Timeline AE 化, スキーマ不変）。Timeline Tier A 実装: SMPTE タイムコード / 時間ルーラー+プレイヘッド / プロパティツリー+ストップウォッチ+値編集+KF行 / レイヤーバー drag（in/out トリム・スライド・footage 源オフセット連動）。B〜D + DF + precomp はバックログ。typecheck ✅ / tests 86件 ✅ / build ✅。実機検証待ち。 |
+| 2026-06-17 | §21.7 Duplicate (Ctrl+D) / Split Layer (Ctrl+Shift+D) 実装。cmdDuplicateObjects/cmdSplitObjects を commands.ts に追加（1 undo）。split 時は footage 系コンポーネントの sources offset を連動調整。操作後は複製/後半レイヤーを選択状態に。typecheck ✅ / tests 86件 ✅。 |
+| 2026-06-17 | spec v0.6（§21.6 U/UU キー追記）。U キー: 選択レイヤーを KF ありプロパティのみ展開（再押し折りたたむ）。UU キー（300ms 以内に 2 回）: 変更済みプロパティのみ展開。caret クリック= "all" モード。expandMode Map で管理（store 非保存）。typecheck ✅ / tests 86件 ✅。 |
+| 2026-06-17 | spec v0.6（§21.5 KF 複数選択, スキーマ不変）。Timeline KF 複数選択実装: ラバーバンド（全レイヤー/全プロパティ横断, 中心 hit-test, Shift 追加）/ まとめてドラッグ移動 / Delete でまとめて削除 / 選択ハイライト。複数オブジェクト 1-command 用 `cmdUpdateObjects`/`updateObjects` 追加。typecheck ✅ / tests 86件 ✅ / build ✅。実機検証待ち。 |
 | 2026-06-17 | Timeline Tier A 実機検証（Playwright）14/14 PASS。**実バグ修正: graphRef が未接続でスクラブ/バー drag の px→frame 変換が無効化していた**（時間ルーラーのトラック div に ref 接続）。「トリム後スライドでハング」は headless CDP マウス入力の不安定性（アプリ正常・合成 DOM イベントで決定論検証）。typecheck ✅ / tests 86件 ✅ / build ✅。 |

@@ -837,6 +837,7 @@ AE タイムラインの機能を **Tier A〜D** に分け、本リビジョン�
     - ON→OFF: `keyframes` を空にし、`value` を現 frame のサンプル値に固定（静的化）。
   - **値表示＋インライン編集**（現 frame の値）。編集時、その property が **animated（KF あり）なら現 frame に KF を打つ/更新**、static なら `value` を更新する。
   - **KF 行**（グラフ領域）: keyframe を frame 位置にダイヤで表示。
+  - **KF ダイヤのドラッグで frame 移動**（確定）: ダイヤを左右ドラッグで `Keyframe.frame` を変更する。**delta ベース**（つかんだ位置からの相対）で `[0, duration]` にクランプ。`value` / `easing` は保持。移動先 frame に**別の KF が既に存在する場合は上書き**（KF は frame をキーとする）。ドラッグ中はライブプレビュー、mouseup で 1 command 確定（§17, undo 可能）。
 - すべての編集は command 経由（§17, undo 可能）。
 
 ### §21.3 レイヤーバーの編集（確定・「どこから/どこまで描画するか」）
@@ -847,7 +848,9 @@ AE タイムラインの機能を **Tier A〜D** に分け、本リビジョン�
 - **左端ドラッグ → `inPoint`（どこから, comp 時間）**。clamp `[0, outPoint-1]`。
   - **footage 系レイヤーは源時刻オフセットを連動**させる（AE と同じく、エッジ下の素材フレームを固定したままトリム = 「素材のどこから描くか」）。Δ = `newInPoint - oldInPoint` を、最初に該当する源オフセットプロップへ加算: `video`/`audio` は `trimStart += Δ`、`html` は内部 `inPoint += Δ`。clamp `≥ 0`。
 - **バー本体ドラッグ → スライド**: `inPoint`/`outPoint` を Δ だけ平行移動（尺保持）。源オフセットは変えない。clamp `inPoint ≥ 0`。
+  - **キーフレーム追従（確定・AE 準拠）**: スライドはレイヤーの**アニメーション全体を一緒に動かす**。すなわち当該オブジェクトの全 `AnimatedProp`（transform 各軸 / opacity / component props の Animated) の各 `Keyframe.frame` を **Δ だけシフト**する。キーフレームは comp 絶対 frame（§5.4-note）だが、スライド時のみまとめてシフトすることでレイヤーに対する相対タイミングを保つ。**トリム（in/out 端ドラッグ）はキーフレームを動かさない**（可視窓だけ変える）。
 - **プレイヘッド / 時間ルーラー**: ルーラークリック・プレイヘッドドラッグで `currentFrame` を設定（clamp `[0, duration]`）。
+- **テキスト選択抑止**: ドラッグ操作で文字列選択が走らないよう、Timeline パネルは `user-select: none`（数値入力欄のみ `user-select: text`）。
 
 > 源時刻オフセット連動が「素材のどこから描画するか」、`outPoint` トリムが「どこまで描画するか」に対応する。`inPoint`/`outPoint` は既存スキーマ、`trimStart`/html `inPoint` は既存コンポーネントプロップであり、**Tier A はスキーマを一切変更しない**（§4 INV 保持）。
 
@@ -855,6 +858,39 @@ AE タイムラインの機能を **Tier A〜D** に分け、本リビジョン�
 
 既存 `updateObject`（command 経由）で `inPoint`/`outPoint`/`transform`/`opacity`/`components` を patch する。Tier A 専用の最小ヘルパーをパネル内に置く（store API を増やしすぎない）。`currentFrame` は既存 `setFrame`（エディタ状態, undo 対象外）。
 
+**複数オブジェクト横断の 1-command 編集**（§21.5 用）: 複数の `SceneObject` への patch を**1 つの command（1 undo）**で確定する `updateObjects(patches, label)` を追加する。`patches` は `{ id, patch }[]`。内部は既存 command 層（before/after スナップショット, §17）で実装し、`withCompObjects` を 1 度だけ通して全 patch を適用する。スキーマには影響しない。
+
+### §21.5 キーフレーム複数選択（確定・Tier A 拡張）
+
+AE 同様、KF 行をまたいで複数キーフレームを選択し、まとめて移動・削除できる。**スキーマ・直列化には一切影響しない**（UI 選択状態はエディタの一時状態であり、undo 対象でも `project.json` 対象でもない）。
+
+- **選択モデル**: 選択は `(objectId, propertyPath, frame)` の集合。`propertyPath` は Tier A で行表示される `transform.anchor` / `transform.position` / `transform.scale` / `transform.rotation` / `opacity`。選択状態は Timeline パネルのローカル状態（store にもプロジェクトにも載せない）。アクティブ comp 切替時にクリアする。
+- **ラバーバンド選択（ドラッグ）**: グラフ領域の**空白部**（KF ダイヤ・レイヤーバー・ラベル列の上以外）で mousedown→ドラッグすると矩形選択を開始。**展開中の全レイヤー・全プロパティ行を横断**し、矩形に**中心が入る** KF ダイヤをすべて選択する。
+  - 修飾なしドラッグ: 矩形内 KF で**置き換え**。空ドラッグ（矩形が KF を含まない）/ 空クリックは選択クリア。
+  - `Shift`+ドラッグ: 既存選択へ**追加**。
+- **KF クリック / Shift クリック**: KF ダイヤを単独クリックすると**その 1 個だけ**選択。`Shift`+クリックで選択に**トグル追加**。
+- **まとめてドラッグ移動**: 選択中の KF ダイヤをドラッグすると、**選択中の全 KF を同じ Δframe で平行移動**する（§21.2 単独移動の一般化）。Δ は**選択集合の最小/最大 frame** が `[0, duration]` を超えないようクランプ。移動先 frame に非選択 KF があれば上書き（§21.2 と同じ frame=キー規約）。ドラッグ中はライブプレビュー、mouseup で **`updateObjects` による 1 command** を確定（undo 可能、複数オブジェクトをまたいでも 1 undo）。移動後は選択を移動先 frame に追従させる。
+  - 非選択 KF をドラッグした場合は、まずその 1 個を選択してから単独移動（= 選択置換）。
+- **まとめて削除**: `Delete` / `Backspace` で選択中の全 KF を削除（入力欄フォーカス中は無効）。`updateObjects` で 1 command 確定。削除後は選択クリア。
+- すべての確定編集は command 経由（§17, undo 可能）。**INV-5 不変**（frame は整数）。
+
+### §21.6 U / UU キー（確定・AE 準拠、Tier A 拡張）
+
+**スキーマ・直列化への影響なし**。展開状態はエディタの一時状態（store/project.json に載せない）。
+
+- **U キー**: 選択レイヤーを「KF ありプロパティ行のみ」展開する。
+  - 対象: `selectedObjectIds` に含まれるレイヤーのみ（選択がなければ無視）。
+  - すでに KF モードで展開中 → 折りたたむ（toggle）。
+  - それ以外（閉じ or 別モード）→ "kf" モードで展開し、KF を持つプロパティ行のみ表示する。
+- **UU キー**（300ms 以内に U を 2 回）: 選択レイヤーを「デフォルト値から変更されたプロパティ行のみ」展開する。
+  - 変更済み判定: **KF あり** OR **static value がデフォルト値と異なる**（anchor/position/rotation: `{x:0,y:0,z:0}`、scale: `{x:1,y:1,z:1}`、opacity: `1`）。
+  - すでに UU モードで展開中 → 折りたたむ（toggle）。
+  - それ以外 → "uu" モードで展開。
+- **UU タイミング**: 2 回目の U キー押下が 1 回目から 300ms 以内なら UU として扱う。1 回目の U が "kf" モードを設定した直後に 2 回目が来た場合は "uu" モードに上書き（1 undo にはならない：展開状態は undo 対象外）。
+- **展開モード**: `"all"`（caret クリック, 全行）/ `"kf"`（U キー）/ `"uu"`（UU キー）。caret クリックは常に "all" に切替（"kf"/"uu" → "all" にアップグレード、"all" → 折りたたむ）。
+- **アクティブ comp 切替**時に展開状態をすべてクリアする。
+- 入力欄（input/textarea/contentEditable）フォーカス中は U/UU を無視する。
+
 ---
 
-*v0.5 / MVP scope = M0–M4（Web Bundle Export は M5）。§20–§21 は MVP 後の UX 拡張（UI 層、スキーマ不変）。このファイルが「エンジンを作るための SSoT」。`claude.md` が「エンジンを使うための SSoT」。*
+*v0.6 / MVP scope = M0–M4（Web Bundle Export は M5）。§20–§21 は MVP 後の UX 拡張（UI 層、スキーマ不変）。このファイルが「エンジンを作るための SSoT」。`claude.md` が「エンジンを使うための SSoT」。*

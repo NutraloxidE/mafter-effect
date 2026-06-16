@@ -24,9 +24,130 @@ function framesToTimecode(frame: Frame, fps: number): string {
 }
 
 // トラックのラベル列幅（左パネル）。グラフ領域はこれを引いた残り。
-const LABEL_W = 230;
+// ラベル列幅。padding/border 込み（box-sizing: border-box）で全列をこの幅に揃え、
+// グラフ列（バー・KF・ルーラー・プレイヘッド）の原点を一致させる。
+const LABEL_W = 270;
 
 type TransformVecKey = "anchor" | "position" | "rotation" | "scale";
+
+// §21.6 U キー展開モード。"kf"=KF あり行のみ / "uu"=変更済み行のみ / "all"=全行。
+type ExpandMode = "all" | "kf" | "uu";
+
+const VEC3_DEFAULTS: Record<TransformVecKey, Vec3> = {
+  anchor:   { x: 0, y: 0, z: 0 },
+  position: { x: 0, y: 0, z: 0 },
+  rotation: { x: 0, y: 0, z: 0 },
+  scale:    { x: 1, y: 1, z: 1 },
+};
+
+function vec3Modified(prop: AnimatedProp<Vec3>, def: Vec3): boolean {
+  if (prop.keyframes.length > 0) return true;
+  const v = prop.value;
+  return v.x !== def.x || v.y !== def.y || v.z !== def.z;
+}
+
+function scalarModified(prop: AnimatedProp<number>, def: number): boolean {
+  return prop.keyframes.length > 0 || prop.value !== def;
+}
+
+// "kf" モード: KF あり → 表示。"uu" モード: KF あり OR 変更済み → 表示。"all": 常に表示。
+function showInMode(mode: ExpandMode, animated: boolean, modified: boolean): boolean {
+  if (mode === "all") return true;
+  if (animated) return true;
+  return mode === "uu" && modified;
+}
+
+// §21.5 KF 複数選択。選択は (objectId, propertyPath, frame) の集合。
+// propertyPath は Tier A で行表示されるプロパティのみ。
+type PropPath =
+  | "transform.anchor"
+  | "transform.position"
+  | "transform.scale"
+  | "transform.rotation"
+  | "opacity";
+
+const KF_SEP = "|"; // objectId(ULID)/path のどちらにも現れない区切り文字
+
+const kfKey = (objId: string, path: PropPath, frame: number): string =>
+  `${objId}${KF_SEP}${path}${KF_SEP}${frame}`;
+
+function parseKfKey(key: string): { objId: string; path: PropPath; frame: number } {
+  const i = key.indexOf(KF_SEP);
+  const j = key.lastIndexOf(KF_SEP);
+  return {
+    objId: key.slice(0, i),
+    path: key.slice(i + 1, j) as PropPath,
+    frame: Number(key.slice(j + 1)),
+  };
+}
+
+function getPropByPath(obj: SceneObject, path: PropPath): AnimatedProp<unknown> {
+  if (path === "opacity") return obj.opacity;
+  const key = path.slice("transform.".length) as TransformVecKey;
+  return obj.transform[key];
+}
+
+// §21.5 選択 frame 集合を Δ シフト。移動先に居る非選択 KF は上書き（§21.2 と同じ frame=キー規約）。
+function moveKfFrames<T>(prop: AnimatedProp<T>, frames: Set<number>, delta: number): AnimatedProp<T> {
+  if (delta === 0) return prop;
+  const targets = new Set<number>();
+  frames.forEach((f) => targets.add(f + delta));
+  const kept = prop.keyframes.filter((k) => !frames.has(k.frame) && !targets.has(k.frame));
+  const moved = prop.keyframes
+    .filter((k) => frames.has(k.frame))
+    .map((k) => ({ ...k, frame: k.frame + delta }));
+  return { ...prop, keyframes: [...kept, ...moved].sort((a, b) => a.frame - b.frame) };
+}
+
+function deleteKfFrames<T>(prop: AnimatedProp<T>, frames: Set<number>): AnimatedProp<T> {
+  return { ...prop, keyframes: prop.keyframes.filter((k) => !frames.has(k.frame)) };
+}
+
+// 選択キー集合を objectId → propertyPath → frame 集合へグループ化。
+function groupSelectedKfs(keys: Iterable<string>): Map<string, Map<PropPath, Set<number>>> {
+  const m = new Map<string, Map<PropPath, Set<number>>>();
+  for (const key of keys) {
+    const { objId, path, frame } = parseKfKey(key);
+    let pm = m.get(objId);
+    if (!pm) { pm = new Map(); m.set(objId, pm); }
+    let fs = pm.get(path);
+    if (!fs) { fs = new Set(); pm.set(path, fs); }
+    fs.add(frame);
+  }
+  return m;
+}
+
+// グループ化済み選択から、各プロパティへ fn を適用した複数オブジェクト patch を作る。
+function buildKfPatches(
+  objects: SceneObject[],
+  group: Map<string, Map<PropPath, Set<number>>>,
+  fn: (prop: AnimatedProp<unknown>, frames: Set<number>) => AnimatedProp<unknown>,
+): { id: string; patch: Partial<SceneObject> }[] {
+  const patches: { id: string; patch: Partial<SceneObject> }[] = [];
+  for (const [objId, pm] of group) {
+    const obj = objects.find((o) => o.id === objId);
+    if (!obj) continue;
+    const patch: Partial<SceneObject> = {};
+    let transform: Transform = obj.transform;
+    let touchedTransform = false;
+    for (const [path, frames] of pm) {
+      const next = fn(getPropByPath(obj, path), frames);
+      if (path === "opacity") {
+        patch.opacity = next as AnimatedProp<number>;
+      } else {
+        const k = path.slice("transform.".length) as TransformVecKey;
+        transform = { ...transform, [k]: next as AnimatedProp<Vec3> };
+        touchedTransform = true;
+      }
+    }
+    if (touchedTransform) patch.transform = transform;
+    patches.push({ id: objId, patch });
+  }
+  return patches;
+}
+
+interface SelectBox { x0: number; y0: number; x1: number; y1: number }
+interface KfDragState { keys: Set<string>; delta: number }
 
 export function TimelinePanel() {
   const project = useEditorStore((s) => s.project);
@@ -39,22 +160,189 @@ export function TimelinePanel() {
   const addText = useEditorStore((s) => s.addText);
   const removeObject = useEditorStore((s) => s.removeObject);
   const selectObjects = useEditorStore((s) => s.selectObjects);
+  const updateObjects = useEditorStore((s) => s.updateObjects);
 
   const comp = currentTimelineComp(project, compId);
   const duration = comp?.duration ?? 150;
   const fps = comp?.fps ?? 30;
   const objects = comp?.objects ?? [];
 
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // caret クリックで "all" / 閉じる。U キーで "kf"、UU で "uu" に切替。
+  const [expandMode, setExpandMode] = useState<Map<string, ExpandMode>>(new Map());
   const graphRef = useRef<HTMLDivElement>(null);
 
   const toggleExpand = (id: string) =>
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+    setExpandMode((prev) => {
+      const next = new Map(prev);
+      // caret: "all" → 閉じる。"kf"/"uu"（U キー開き）→ "all" にアップグレード。閉じ → "all"。
+      if (next.get(id) === "all") next.delete(id);
+      else next.set(id, "all");
       return next;
     });
+
+  // §21.5 KF 複数選択（エディタの一時状態。store/project には載せない）。
+  const [selectedKfs, setSelectedKfs] = useState<Set<string>>(new Set());
+  const [kfDrag, setKfDrag] = useState<KfDragState | null>(null);
+  const [box, setBox] = useState<SelectBox | null>(null);
+  const rowsRef = useRef<HTMLDivElement>(null);
+  // box-select でドラッグが起きた直後の click を抑止する（レイヤー選択の誤発火防止）。
+  const dragMovedRef = useRef(false);
+
+  // §21.5/21.6 アクティブ comp 切替で KF 選択・展開モードをクリア。
+  useEffect(() => { setSelectedKfs(new Set()); setExpandMode(new Map()); }, [compId]);
+
+  // §21.6 U / UU キー: 選択レイヤーを "kf" / "uu" モードで展開（再押し = 折りたたむ）。
+  const lastUPressRef = useRef<number>(0);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "u" && e.key !== "U") return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      if (selectedIds.length === 0) return;
+      e.preventDefault();
+      const now = Date.now();
+      const isUU = now - lastUPressRef.current < 300;
+      lastUPressRef.current = now;
+      const target: ExpandMode = isUU ? "uu" : "kf";
+      setExpandMode((prev) => {
+        const next = new Map(prev);
+        for (const id of selectedIds) {
+          if (next.get(id) === target) next.delete(id); // 同じモード → 折りたたむ
+          else next.set(id, target);                    // 別モード or 閉じ → そのモードへ
+        }
+        return next;
+      });
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedIds]);
+
+  // §21.5 選択中 KF を Δframe でまとめて移動（複数オブジェクト横断で 1 command）。
+  const applyMultiKfMove = (keys: Set<string>, delta: number) => {
+    if (delta === 0 || keys.size === 0) return;
+    const group = groupSelectedKfs(keys);
+    const patches = buildKfPatches(objects, group, (prop, frames) => moveKfFrames(prop, frames, delta));
+    updateObjects(patches, "Move keyframes");
+    // 選択を移動先 frame へ追従。
+    const next = new Set<string>();
+    keys.forEach((k) => {
+      const { objId, path, frame } = parseKfKey(k);
+      next.add(kfKey(objId, path, frame + delta));
+    });
+    setSelectedKfs(next);
+  };
+
+  // §21.5 選択中 KF をまとめて削除。
+  const applyMultiKfDelete = (keys: Set<string>) => {
+    if (keys.size === 0) return;
+    const group = groupSelectedKfs(keys);
+    const patches = buildKfPatches(objects, group, (prop, frames) => deleteKfFrames(prop, frames));
+    updateObjects(patches, "Delete keyframes");
+    setSelectedKfs(new Set());
+  };
+
+  // §21.5 KF ダイヤの mousedown。Shift=選択トグル、選択済み=まとめてドラッグ、未選択=単独選択して移動。
+  const beginKfDrag = (objId: string, path: PropPath, frame: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const key = kfKey(objId, path, frame);
+    if (e.shiftKey) {
+      setSelectedKfs((prev) => {
+        const n = new Set(prev);
+        if (n.has(key)) n.delete(key); else n.add(key);
+        return n;
+      });
+      return;
+    }
+    let dragKeys: Set<string>;
+    if (selectedKfs.has(key)) {
+      dragKeys = new Set(selectedKfs);
+    } else {
+      dragKeys = new Set([key]);
+      setSelectedKfs(dragKeys);
+    }
+    const frames = [...dragKeys].map((k) => parseKfKey(k).frame);
+    const minF = Math.min(...frames);
+    const maxF = Math.max(...frames);
+    const el = graphRef.current;
+    const width = el ? el.getBoundingClientRect().width : 1;
+    const originX = e.clientX;
+    let delta = 0;
+    const move = (ev: MouseEvent) => {
+      const raw = Math.round(((ev.clientX - originX) / width) * duration);
+      delta = Math.max(-minF, Math.min(duration - maxF, raw));
+      setKfDrag({ keys: dragKeys, delta });
+    };
+    const up = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      setKfDrag(null);
+      applyMultiKfMove(dragKeys, delta);
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  };
+
+  // §21.5 ラバーバンド選択。グラフ列の空白で mousedown→ドラッグ。
+  const onRowsMouseDown = (e: React.MouseEvent) => {
+    dragMovedRef.current = false;
+    if (e.button !== 0) return;
+    const g = graphRef.current?.getBoundingClientRect();
+    if (!g || e.clientX < g.left) return; // ラベル列はオブジェクト選択に任せる
+    e.preventDefault();
+    const base = e.shiftKey ? new Set(selectedKfs) : new Set<string>();
+    const x0 = e.clientX;
+    const y0 = e.clientY;
+    setSelectedKfs(base);
+    setBox({ x0, y0, x1: x0, y1: y0 });
+    const move = (ev: MouseEvent) => {
+      dragMovedRef.current = true;
+      const b: SelectBox = { x0, y0, x1: ev.clientX, y1: ev.clientY };
+      setBox(b);
+      setSelectedKfs(hitTestBox(b, base));
+    };
+    const up = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      setBox(null);
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  };
+
+  // 矩形（client 座標）に中心が入る KF ダイヤを base 集合へ追加した新集合を返す。
+  const hitTestBox = (b: SelectBox, base: Set<string>): Set<string> => {
+    const container = rowsRef.current;
+    if (!container) return base;
+    const minX = Math.min(b.x0, b.x1), maxX = Math.max(b.x0, b.x1);
+    const minY = Math.min(b.y0, b.y1), maxY = Math.max(b.y0, b.y1);
+    const next = new Set(base);
+    container.querySelectorAll<HTMLElement>("[data-kf-key]").forEach((el) => {
+      const r = el.getBoundingClientRect();
+      const cx = r.left + r.width / 2;
+      const cy = r.top + r.height / 2;
+      if (cx >= minX && cx <= maxX && cy >= minY && cy <= maxY) {
+        const k = el.getAttribute("data-kf-key");
+        if (k) next.add(k);
+      }
+    });
+    return next;
+  };
+
+  // §21.5 Delete/Backspace で選択 KF をまとめて削除（入力欄フォーカス中は無効）。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Delete" && e.key !== "Backspace") return;
+      if (selectedKfs.size === 0) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      e.preventDefault();
+      applyMultiKfDelete(selectedKfs);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedKfs, objects]);
 
   // ピクセル→frame 変換（グラフ領域基準）。
   const pxToFrame = (clientX: number): Frame => {
@@ -78,7 +366,7 @@ export function TimelinePanel() {
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "#1c1c1c", color: "#ccc", fontSize: 12 }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "#1c1c1c", color: "#ccc", fontSize: 12, userSelect: "none" }}>
       {/* toolbar */}
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 8px", background: "#222", borderBottom: "1px solid #333", flexShrink: 0 }}>
         <span style={{ color: "#888" }}>Timeline</span>
@@ -97,7 +385,7 @@ export function TimelinePanel() {
 
       {/* time ruler */}
       <div style={{ display: "flex", flexShrink: 0, borderBottom: "1px solid #2a2a2a", background: "#202020" }}>
-        <div style={{ width: LABEL_W, flexShrink: 0, borderRight: "1px solid #333" }} />
+        <div style={{ width: LABEL_W, boxSizing: "border-box", flexShrink: 0, borderRight: "1px solid #333" }} />
         <div
           ref={graphRef}
           style={{ position: "relative", flex: 1, height: 22, cursor: "pointer" }}
@@ -109,7 +397,7 @@ export function TimelinePanel() {
       </div>
 
       {/* rows */}
-      <div style={{ flex: 1, overflow: "auto", position: "relative" }}>
+      <div ref={rowsRef} onMouseDown={onRowsMouseDown} style={{ flex: 1, overflow: "auto", position: "relative" }}>
         {objects.length === 0 && (
           <div style={{ padding: 16, color: "#444", textAlign: "center" }}>
             No layers — add one with + Solid / + Text above
@@ -123,10 +411,16 @@ export function TimelinePanel() {
             duration={duration}
             frame={frame}
             selected={selectedIds.includes(obj.id)}
-            isExpanded={expanded.has(obj.id)}
+            expandMode={expandMode.get(obj.id)}
             graphRef={graphRef}
+            selectedKfs={selectedKfs}
+            kfDrag={kfDrag}
+            beginKfDrag={beginKfDrag}
             onToggleExpand={() => toggleExpand(obj.id)}
-            onSelect={() => selectObjects(selectedIds.includes(obj.id) ? [] : [obj.id])}
+            onSelect={() => {
+              if (dragMovedRef.current) return; // box-select 直後の click を無視
+              selectObjects(selectedIds.includes(obj.id) ? [] : [obj.id]);
+            }}
             onRemove={() => removeObject(obj.id)}
             onUpdate={updateObject}
             pxToFrame={pxToFrame}
@@ -138,6 +432,19 @@ export function TimelinePanel() {
             <Playhead frame={frame} duration={duration} />
           </div>
         )}
+        {/* §21.5 ラバーバンド選択の矩形 */}
+        {box && (() => {
+          const rc = rowsRef.current;
+          if (!rc) return null;
+          const cr = rc.getBoundingClientRect();
+          const left = Math.min(box.x0, box.x1) - cr.left + rc.scrollLeft;
+          const top = Math.min(box.y0, box.y1) - cr.top + rc.scrollTop;
+          const w = Math.abs(box.x1 - box.x0);
+          const h = Math.abs(box.y1 - box.y0);
+          return (
+            <div style={{ position: "absolute", left, top, width: w, height: h, border: "1px solid #5a8fd0", background: "rgba(90,143,208,0.15)", pointerEvents: "none", zIndex: 6 }} />
+          );
+        })()}
       </div>
     </div>
   );
@@ -189,8 +496,11 @@ interface LayerRowProps {
   duration: number;
   frame: Frame;
   selected: boolean;
-  isExpanded: boolean;
+  expandMode: ExpandMode | undefined;
   graphRef: React.RefObject<HTMLDivElement | null>;
+  selectedKfs: Set<string>;
+  kfDrag: KfDragState | null;
+  beginKfDrag: (objId: string, path: PropPath, frame: number, e: React.MouseEvent) => void;
   onToggleExpand: () => void;
   onSelect: () => void;
   onRemove: () => void;
@@ -199,11 +509,13 @@ interface LayerRowProps {
 }
 
 function LayerRow(props: LayerRowProps) {
-  const { obj, index, duration, frame, selected, isExpanded, onToggleExpand, onSelect, onRemove, onUpdate, pxToFrame } = props;
+  const { obj, index, duration, frame, selected, expandMode, selectedKfs, kfDrag, beginKfDrag, onToggleExpand, onSelect, onRemove, onUpdate, pxToFrame } = props;
   // ドラッグ中のプレビュー値（mouseup で command 確定）
-  const [drag, setDrag] = useState<{ inPoint: number; outPoint: number } | null>(null);
+  const [drag, setDrag] = useState<{ inPoint: number; outPoint: number; mode: "in" | "out" | "move" } | null>(null);
   const inPoint = drag ? drag.inPoint : obj.inPoint;
   const outPoint = drag ? drag.outPoint : obj.outPoint;
+  // §21.3 スライド中はキーフレームも追従させる（プレビュー）。トリムは 0。
+  const kfPreviewShift = drag && drag.mode === "move" ? drag.inPoint - obj.inPoint : 0;
 
   // §21.3 レイヤーバー drag。mode: "in" | "out" | "move"
   const startBarDrag = (mode: "in" | "out" | "move") => (e: React.MouseEvent) => {
@@ -228,7 +540,7 @@ function LayerRow(props: LayerRowProps) {
         nout = nin + len;
       }
       last = { inPoint: nin, outPoint: nout };
-      setDrag(last);
+      setDrag({ ...last, mode });
     };
     const up = () => {
       window.removeEventListener("mousemove", move);
@@ -248,8 +560,12 @@ function LayerRow(props: LayerRowProps) {
       const dIn = nin - startIn;
       const nextComponents = shiftSourceOffset(obj.components, dIn);
       if (nextComponents) patch.components = nextComponents;
+    } else if (mode === "move") {
+      // §21.3 スライドはアニメーション全体を追従させる: 全 AnimatedProp の KF を Δ シフト。
+      const dIn = nin - startIn;
+      if (dIn !== 0) Object.assign(patch, shiftObjectKeyframes(obj, dIn));
     }
-    onUpdate(obj.id, patch, "Trim layer");
+    onUpdate(obj.id, patch, mode === "move" ? "Slide layer" : "Trim layer");
   };
 
   const rowBg = selected ? "#2a3a4a" : "transparent";
@@ -260,11 +576,11 @@ function LayerRow(props: LayerRowProps) {
       <div style={{ display: "flex", alignItems: "stretch", background: rowBg }}>
         {/* label column */}
         <div
-          style={{ width: LABEL_W, flexShrink: 0, display: "flex", alignItems: "center", gap: 4, padding: "3px 6px", cursor: "pointer", borderRight: "1px solid #2a2a2a" }}
+          style={{ width: LABEL_W, boxSizing: "border-box", flexShrink: 0, display: "flex", alignItems: "center", gap: 4, padding: "3px 6px", cursor: "pointer", borderRight: "1px solid #2a2a2a" }}
           onClick={onSelect}
         >
-          <button onClick={(e) => { e.stopPropagation(); onToggleExpand(); }} style={caretStyle} title="プロパティを展開">
-            {isExpanded ? "▾" : "▸"}
+          <button onClick={(e) => { e.stopPropagation(); onToggleExpand(); }} style={caretStyle} title="プロパティを展開（U=KF / UU=変更済み）">
+            {expandMode ? "▾" : "▸"}
           </button>
           <span style={{ color: "#666", width: 16, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{index}</span>
           <button
@@ -293,14 +609,14 @@ function LayerRow(props: LayerRowProps) {
         </div>
       </div>
 
-      {/* property tree */}
-      {isExpanded && (
+      {/* property tree — mode: undefined=閉じ / "all"=全行 / "kf"=KFあり行 / "uu"=変更済み行 */}
+      {expandMode && (
         <div style={{ background: "#191919" }}>
-          <PropRowVec3 obj={obj} k="anchor" label="アンカーポイント" frame={frame} duration={duration} onUpdate={onUpdate} />
-          <PropRowVec3 obj={obj} k="position" label="位置" frame={frame} duration={duration} onUpdate={onUpdate} />
-          <PropRowVec3 obj={obj} k="scale" label="スケール" frame={frame} duration={duration} onUpdate={onUpdate} />
-          <PropRowVec3 obj={obj} k="rotation" label="回転" frame={frame} duration={duration} onUpdate={onUpdate} />
-          <PropRowOpacity obj={obj} frame={frame} duration={duration} onUpdate={onUpdate} />
+          {showInMode(expandMode, obj.transform.anchor.keyframes.length > 0,   vec3Modified(obj.transform.anchor,   VEC3_DEFAULTS.anchor))   && <PropRowVec3 obj={obj} k="anchor"   label="アンカーポイント" frame={frame} duration={duration} kfShift={kfPreviewShift} selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onUpdate={onUpdate} />}
+          {showInMode(expandMode, obj.transform.position.keyframes.length > 0, vec3Modified(obj.transform.position, VEC3_DEFAULTS.position)) && <PropRowVec3 obj={obj} k="position" label="位置"           frame={frame} duration={duration} kfShift={kfPreviewShift} selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onUpdate={onUpdate} />}
+          {showInMode(expandMode, obj.transform.scale.keyframes.length > 0,    vec3Modified(obj.transform.scale,    VEC3_DEFAULTS.scale))    && <PropRowVec3 obj={obj} k="scale"    label="スケール"         frame={frame} duration={duration} kfShift={kfPreviewShift} selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onUpdate={onUpdate} />}
+          {showInMode(expandMode, obj.transform.rotation.keyframes.length > 0, vec3Modified(obj.transform.rotation, VEC3_DEFAULTS.rotation)) && <PropRowVec3 obj={obj} k="rotation" label="回転"           frame={frame} duration={duration} kfShift={kfPreviewShift} selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onUpdate={onUpdate} />}
+          {showInMode(expandMode, obj.opacity.keyframes.length > 0,            scalarModified(obj.opacity, 1))                                && <PropRowOpacity obj={obj} frame={frame} duration={duration} kfShift={kfPreviewShift} selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onUpdate={onUpdate} />}
         </div>
       )}
     </div>
@@ -342,14 +658,17 @@ function LayerBar({
 // ---- プロパティ行 ----
 
 function PropRowVec3({
-  obj, k, label, frame, duration, onUpdate,
+  obj, k, label, frame, duration, kfShift, selectedKfs, kfDrag, beginKfDrag, onUpdate,
 }: {
-  obj: SceneObject; k: TransformVecKey; label: string; frame: Frame; duration: number;
+  obj: SceneObject; k: TransformVecKey; label: string; frame: Frame; duration: number; kfShift: number;
+  selectedKfs: Set<string>; kfDrag: KfDragState | null;
+  beginKfDrag: (objId: string, path: PropPath, frame: number, e: React.MouseEvent) => void;
   onUpdate: (id: string, patch: Partial<SceneObject>, label?: string) => void;
 }) {
   const prop = obj.transform[k];
   const v = sampleVec3(prop, frame);
   const animated = prop.keyframes.length > 0;
+  const propPath = `transform.${k}` as PropPath;
 
   const writeProp = (next: AnimatedProp<Vec3>, lbl: string) => {
     const transform: Transform = { ...obj.transform, [k]: next };
@@ -373,7 +692,7 @@ function PropRowVec3({
   };
 
   return (
-    <PropRowShell label={label} animated={animated} onStopwatch={toggleStopwatch} prop={prop} frame={frame} duration={duration}>
+    <PropRowShell label={label} animated={animated} onStopwatch={toggleStopwatch} prop={prop} frame={frame} duration={duration} kfShift={kfShift} objId={obj.id} propPath={propPath} selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag}>
       <NumberField value={v.x} onCommit={(r) => editAxis("x", r)} />
       <NumberField value={v.y} onCommit={(r) => editAxis("y", r)} />
       <NumberField value={v.z} onCommit={(r) => editAxis("z", r)} />
@@ -382,9 +701,11 @@ function PropRowVec3({
 }
 
 function PropRowOpacity({
-  obj, frame, duration, onUpdate,
+  obj, frame, duration, kfShift, selectedKfs, kfDrag, beginKfDrag, onUpdate,
 }: {
-  obj: SceneObject; frame: Frame; duration: number;
+  obj: SceneObject; frame: Frame; duration: number; kfShift: number;
+  selectedKfs: Set<string>; kfDrag: KfDragState | null;
+  beginKfDrag: (objId: string, path: PropPath, frame: number, e: React.MouseEvent) => void;
   onUpdate: (id: string, patch: Partial<SceneObject>, label?: string) => void;
 }) {
   const prop = obj.opacity;
@@ -407,21 +728,24 @@ function PropRowOpacity({
   };
 
   return (
-    <PropRowShell label="不透明度" animated={animated} onStopwatch={toggleStopwatch} prop={prop} frame={frame} duration={duration}>
+    <PropRowShell label="不透明度" animated={animated} onStopwatch={toggleStopwatch} prop={prop} frame={frame} duration={duration} kfShift={kfShift} objId={obj.id} propPath="opacity" selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag}>
       <NumberField value={v} onCommit={edit} />
     </PropRowShell>
   );
 }
 
 function PropRowShell({
-  label, animated, onStopwatch, prop, frame, duration, children,
+  label, animated, onStopwatch, prop, frame, duration, kfShift, objId, propPath, selectedKfs, kfDrag, beginKfDrag, children,
 }: {
   label: string; animated: boolean; onStopwatch: () => void;
-  prop: AnimatedProp<unknown>; frame: Frame; duration: number; children: React.ReactNode;
+  prop: AnimatedProp<unknown>; frame: Frame; duration: number; kfShift: number;
+  objId: string; propPath: PropPath; selectedKfs: Set<string>; kfDrag: KfDragState | null;
+  beginKfDrag: (objId: string, path: PropPath, frame: number, e: React.MouseEvent) => void;
+  children: React.ReactNode;
 }) {
   return (
     <div style={{ display: "flex", alignItems: "stretch", borderTop: "1px solid #202020" }}>
-      <div style={{ width: LABEL_W, flexShrink: 0, display: "flex", alignItems: "center", gap: 6, padding: "2px 6px 2px 30px", borderRight: "1px solid #2a2a2a" }}>
+      <div style={{ width: LABEL_W, boxSizing: "border-box", flexShrink: 0, display: "flex", alignItems: "center", gap: 6, padding: "2px 6px 2px 30px", borderRight: "1px solid #2a2a2a" }}>
         <button
           onClick={onStopwatch}
           style={{ ...iconBtn, color: animated ? "#f0c040" : "#666" }}
@@ -434,21 +758,32 @@ function PropRowShell({
       </div>
       {/* keyframe row in graph column */}
       <div style={{ position: "relative", flex: 1, minHeight: 20 }}>
-        {prop.keyframes.map((kf) => (
-          <span
-            key={kf.frame}
-            style={{
-              position: "absolute",
-              left: `${(kf.frame / duration) * 100}%`,
-              top: "50%",
-              transform: "translate(-50%, -50%) rotate(45deg)",
-              width: 7,
-              height: 7,
-              background: kf.frame === frame ? "#f0c040" : "#caa",
-            }}
-            title={`KF @ frame ${kf.frame}`}
-          />
-        ))}
+        {prop.keyframes.map((kf) => {
+          const key = kfKey(objId, propPath, kf.frame);
+          const selected = selectedKfs.has(key);
+          const inDrag = kfDrag !== null && kfDrag.keys.has(key);
+          const displayFrame = (inDrag ? kf.frame + kfDrag.delta : kf.frame) + kfShift;
+          const bg = selected ? "#5a9ff0" : kf.frame === frame ? "#f0c040" : "#caa";
+          return (
+            <span
+              key={kf.frame}
+              data-kf-key={key}
+              onMouseDown={(e) => beginKfDrag(objId, propPath, kf.frame, e)}
+              style={{
+                position: "absolute",
+                left: `${(displayFrame / duration) * 100}%`,
+                top: "50%",
+                transform: "translate(-50%, -50%) rotate(45deg)",
+                width: 9,
+                height: 9,
+                background: bg,
+                outline: selected ? "1px solid #fff" : "none",
+                cursor: "ew-resize",
+              }}
+              title={`KF @ frame ${kf.frame}（ドラッグで移動 / Shift+クリックで選択 / ドラッグで矩形選択）`}
+            />
+          );
+        })}
       </div>
     </div>
   );
@@ -477,6 +812,7 @@ function NumberField({ value, onCommit }: { value: number; onCommit: (raw: strin
         padding: "1px 3px",
         fontSize: 11,
         fontVariantNumeric: "tabular-nums",
+        userSelect: "text",
       }}
     />
   );
@@ -502,6 +838,44 @@ function shiftSourceOffset(components: Component[], deltaFrames: number): Compon
     return c;
   });
   return changed ? next : null;
+}
+
+// §21.3 スライド時: オブジェクトの全 AnimatedProp の Keyframe.frame を Δ シフトする。
+// transform 各軸 / opacity / component props（AnimatedProp なもの）を対象に、KF があるものだけ差し替える。
+function shiftKfProp<T>(prop: AnimatedProp<T>, delta: number): AnimatedProp<T> {
+  if (prop.keyframes.length === 0) return prop;
+  return { ...prop, keyframes: prop.keyframes.map((k) => ({ ...k, frame: k.frame + delta })) };
+}
+
+function isAnimatedProp(v: unknown): v is AnimatedProp<unknown> {
+  return typeof v === "object" && v !== null && Array.isArray((v as { keyframes?: unknown }).keyframes);
+}
+
+function shiftObjectKeyframes(
+  obj: SceneObject,
+  delta: number,
+): Partial<SceneObject> {
+  const transform: Transform = {
+    anchor: shiftKfProp(obj.transform.anchor, delta),
+    position: shiftKfProp(obj.transform.position, delta),
+    rotation: shiftKfProp(obj.transform.rotation, delta),
+    scale: shiftKfProp(obj.transform.scale, delta),
+  };
+  const opacity = shiftKfProp(obj.opacity, delta);
+  const components: Component[] = obj.components.map((c) => {
+    let touched = false;
+    const props: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(c.props)) {
+      if (isAnimatedProp(val) && val.keyframes.length > 0) {
+        props[key] = shiftKfProp(val, delta);
+        touched = true;
+      } else {
+        props[key] = val;
+      }
+    }
+    return touched ? { ...c, props } : c;
+  });
+  return { transform, opacity, components };
 }
 
 const btnStyle: React.CSSProperties = {
