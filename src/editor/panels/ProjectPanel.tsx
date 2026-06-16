@@ -8,6 +8,9 @@ import type { CompositionMeta } from "../../core/schema";
 
 const fs = new IndexedDbFs("mafter-effect-fs");
 
+// Project パネル → Timeline パネル D&D 用 MIME 型。両ファイルで共通文字列を使う。
+export const DRAG_MIME = "application/x-mafter-item";
+
 export function ProjectPanel() {
   const project = useEditorStore((s) => s.project);
   const compId = useEditorStore((s) => s.currentCompId);
@@ -241,7 +244,7 @@ function SectionHeader({ label, children }: { label: string; children?: React.Re
 
 function CompRow({
   comp, active, icon, iconColor, renaming, title,
-  onClick, onStartRename, onCommitRename, onCancelRename, onDelete,
+  onClick, onStartRename, onCommitRename, onCancelRename, onDelete, onDragStart,
 }: {
   comp: CompositionMeta;
   active: boolean;
@@ -254,10 +257,13 @@ function CompRow({
   onCommitRename: (name: string) => void;
   onCancelRename: () => void;
   onDelete?: () => void;
+  onDragStart?: (e: React.DragEvent) => void;
 }) {
   return (
     <div
       title={title}
+      draggable={!!onDragStart}
+      onDragStart={onDragStart}
       onClick={renaming ? undefined : onClick}
       onDoubleClick={onStartRename}
       style={{

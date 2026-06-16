@@ -176,10 +176,15 @@ export function cmdSplitObjects(
         components: shifted ?? o.components,
       });
     }
-    return [
-      ...objs.map((o) => (patchMap.has(o.id) ? { ...o, ...patchMap.get(o.id)! } : o)),
-      ...additions,
-    ];
+    // 新レイヤー（後半）を元レイヤーの直前に挿入 → タイムライン上で元レイヤーの「上」に表示される。
+    const origToNew = new Map(splittable.map((o, i) => [o.id, additions[i]!]));
+    const result: SceneObject[] = [];
+    for (const o of objs) {
+      const newLayer = origToNew.get(o.id);
+      if (newLayer) result.push(newLayer); // 後半レイヤーを先に追加（タイムライン上で上）
+      result.push(patchMap.has(o.id) ? { ...o, ...patchMap.get(o.id)! } : o);
+    }
+    return result;
   });
   store.applyCommand({ label: "Split layer", before, after });
   return newIds;

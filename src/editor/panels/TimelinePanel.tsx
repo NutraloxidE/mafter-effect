@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { currentTimelineComp, setKeyframe, useEditorStore } from "../store";
+import { DRAG_MIME } from "./ProjectPanel";
 import type {
   AnimatedProp,
   Component,
@@ -161,6 +162,9 @@ export function TimelinePanel() {
   const removeObject = useEditorStore((s) => s.removeObject);
   const selectObjects = useEditorStore((s) => s.selectObjects);
   const updateObjects = useEditorStore((s) => s.updateObjects);
+  const addHtmlInstance = useEditorStore((s) => s.addHtmlInstance);
+  const addAudioLayer = useEditorStore((s) => s.addAudioLayer);
+  const addPluginObject = useEditorStore((s) => s.addPluginObject);
 
   const comp = currentTimelineComp(project, compId);
   const duration = comp?.duration ?? 150;
@@ -170,6 +174,22 @@ export function TimelinePanel() {
   // caret クリックで "all" / 閉じる。U キーで "kf"、UU で "uu" に切替。
   const [expandMode, setExpandMode] = useState<Map<string, ExpandMode>>(new Map());
   const graphRef = useRef<HTMLDivElement>(null);
+
+  // Project パネルからの D&D ドロップを処理する。
+  const onTimelineDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDropActive(false);
+    const raw = e.dataTransfer.getData(DRAG_MIME);
+    if (!raw) return;
+    try {
+      const item = JSON.parse(raw) as { kind: string; id?: string; componentType?: string };
+      let newId: string | null = null;
+      if (item.kind === "html-comp" && item.id) newId = addHtmlInstance(item.id);
+      else if (item.kind === "audio-asset" && item.id) newId = addAudioLayer(item.id);
+      else if (item.kind === "plugin-component" && item.componentType) newId = addPluginObject(item.componentType);
+      if (newId) selectObjects([newId]);
+    } catch { /* ignore */ }
+  };
 
   const toggleExpand = (id: string) =>
     setExpandMode((prev) => {
@@ -187,6 +207,8 @@ export function TimelinePanel() {
   const rowsRef = useRef<HTMLDivElement>(null);
   // box-select でドラッグが起きた直後の click を抑止する（レイヤー選択の誤発火防止）。
   const dragMovedRef = useRef(false);
+  // Project パネルからの D&D ドロップゾーン状態。
+  const [dropActive, setDropActive] = useState(false);
 
   // §21.5/21.6 アクティブ comp 切替で KF 選択・展開モードをクリア。
   useEffect(() => { setSelectedKfs(new Set()); setExpandMode(new Map()); }, [compId]);
@@ -397,7 +419,14 @@ export function TimelinePanel() {
       </div>
 
       {/* rows */}
-      <div ref={rowsRef} onMouseDown={onRowsMouseDown} style={{ flex: 1, overflow: "auto", position: "relative" }}>
+      <div
+        ref={rowsRef}
+        onMouseDown={onRowsMouseDown}
+        onDragOver={(e) => { if (e.dataTransfer.types.includes(DRAG_MIME)) { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; setDropActive(true); } }}
+        onDragLeave={(e) => { if (!rowsRef.current?.contains(e.relatedTarget as Node)) setDropActive(false); }}
+        onDrop={onTimelineDrop}
+        style={{ flex: 1, overflow: "auto", position: "relative", outline: dropActive ? "2px solid #5a8fd0" : "none", outlineOffset: -2 }}
+      >
         {objects.length === 0 && (
           <div style={{ padding: 16, color: "#444", textAlign: "center" }}>
             No layers — add one with + Solid / + Text above
