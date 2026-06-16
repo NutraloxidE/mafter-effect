@@ -426,12 +426,6 @@ export function TimelinePanel() {
             pxToFrame={pxToFrame}
           />
         ))}
-        {/* global playhead overlay over graph column */}
-        {objects.length > 0 && (
-          <div style={{ position: "absolute", top: 0, left: LABEL_W, right: 0, bottom: 0, pointerEvents: "none" }}>
-            <Playhead frame={frame} duration={duration} />
-          </div>
-        )}
         {/* §21.5 ラバーバンド選択の矩形 */}
         {box && (() => {
           const rc = rowsRef.current;
@@ -487,6 +481,26 @@ function Playhead({ frame, duration }: { frame: number; duration: number }) {
     >
       <div style={{ position: "absolute", top: 0, left: -3, width: 7, height: 7, background: "#f04" }} />
     </div>
+  );
+}
+
+// 各行の graph セルに描く細いプレイヘッド線。
+// overflow:auto コンテナ内で position:absolute bottom:0 が scrollHeight まで伸びない問題を回避するため、
+// オーバーレイ 1 枚ではなく全行に個別描画して自然にスクロールコンテンツ全体をカバーする。
+function PlayheadTick({ frame, duration }: { frame: number; duration: number }) {
+  return (
+    <div
+      style={{
+        position: "absolute",
+        left: `${(frame / duration) * 100}%`,
+        top: 0,
+        width: 1,
+        height: "100%",
+        background: "#f04",
+        pointerEvents: "none",
+        zIndex: 4,
+      }}
+    />
   );
 }
 
@@ -606,6 +620,7 @@ function LayerRow(props: LayerRowProps) {
             onOut={startBarDrag("out")}
             onMove={startBarDrag("move")}
           />
+          <PlayheadTick frame={frame} duration={duration} />
         </div>
       </div>
 
@@ -758,6 +773,7 @@ function PropRowShell({
       </div>
       {/* keyframe row in graph column */}
       <div style={{ position: "relative", flex: 1, minHeight: 20 }}>
+        <PlayheadTick frame={frame} duration={duration} />
         {prop.keyframes.map((kf) => {
           const key = kfKey(objId, propPath, kf.frame);
           const selected = selectedKfs.has(key);
