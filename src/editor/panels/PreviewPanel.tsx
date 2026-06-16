@@ -21,12 +21,15 @@ export function PreviewPanel() {
   const compId = useEditorStore((s) => s.currentCompId);
   const frame = useEditorStore((s) => s.currentFrame);
   const setFrame = useEditorStore((s) => s.setFrame);
+  const pluginsVersion = useEditorStore((s) => s.pluginsVersion);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const fitRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<DomRenderer | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
+  // prepare() 完了などで再描画を促すための tick（ref の更新は再レンダーを起こさないため）。
+  const [renderTick, setRenderTick] = useState(0);
   const rafRef = useRef<number | null>(null);
   const lastTimeRef = useRef<number | null>(null);
   const frameRef = useRef(frame);
@@ -43,13 +46,6 @@ export function PreviewPanel() {
     if (!el || !comp) return;
     const r = new DomRenderer();
     r.setHtmlPlayer(_htmlPlayer);
-    // HTML comp メタを DomRenderer に注入
-    const htmlComps = new Map(
-      (project?.compositions ?? [])
-        .filter((c): c is HtmlComposition => c.kind === "html")
-        .map((c) => [c.id, c]),
-    );
-    r.setHtmlComps(htmlComps);
     r.mount(el, comp);
     rendererRef.current = r;
     return () => {
@@ -58,29 +54,38 @@ export function PreviewPanel() {
     };
   }, [comp?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // M2: expression engine の prepare（非同期。初回フレームは evaluator なし → fallback）
+  // HTML comp メタを毎 project 変更で DomRenderer に注入し、§9 expression と §7 html module を preload。
+  // prepare() は非async なので、完了したら renderTick を進めて再描画する。
   useEffect(() => {
     if (!comp) return;
-    evaluatorRef.current = undefined;
     const htmlComps = (project?.compositions ?? []).filter(
       (c): c is HtmlComposition => c.kind === "html",
     );
+    rendererRef.current?.setHtmlComps(new Map(htmlComps.map((c) => [c.id, c])));
+    // evaluatorRef はリセットしない。古い evaluator をそのまま使い続け、
+    // prepare 完了後に新しい evaluator に差し替える（リセットするとその間の
+    // フレームで expression が fallback 値にスナップしてチラつく）。
     void Promise.all([
       _exprEngine.prepare(comp).then(() => {
         evaluatorRef.current = _exprEngine.makeEvaluator(comp);
       }),
       _htmlPlayer.prepare(htmlComps, (id) => `${compositionDir(id)}/script.js`),
-    ]);
+    ]).then(() => setRenderTick((t) => t + 1));
   }, [comp?.id, project]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // render on frame or project change（background は DomRenderer が mount で comp から取得済み）
+  // plugin がロードされたら再描画をトリガー（DomRenderer / ExpressionEngine は globalPluginRegistry を lazy 参照）
+  useEffect(() => {
+    setRenderTick((t) => t + 1);
+  }, [pluginsVersion]);
+
+  // render on frame / project / prepare 完了（background は DomRenderer が mount で comp から取得済み）
   useEffect(() => {
     if (!comp || !rendererRef.current) return;
     rendererRef.current.renderFrame(
       resolve(comp, frame, { expressions: evaluatorRef.current }),
       frame,
     );
-  }, [comp, frame]);
+  }, [comp, frame, renderTick]);
 
   // scale-to-fit: 固定 px の comp ステージを利用可能領域に収まるよう transform: scale する。
   useEffect(() => {

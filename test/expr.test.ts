@@ -11,8 +11,9 @@ import {
 } from "../src/runtime/exprHelpers";
 import { ExpressionEngine } from "../src/runtime/expressionEngine";
 import { MockModuleLoader } from "../src/runtime/moduleLoader";
+import { HtmlCompPlayer } from "../src/runtime/htmlComp";
 import { defaultTransform, staticProp, vec3 } from "../src/core/props";
-import type { TimelineComposition } from "../src/core/schema";
+import type { HtmlComposition, TimelineComposition } from "../src/core/schema";
 
 // ─── seededRandom ────────────────────────────────────────────────────────────
 
@@ -148,7 +149,7 @@ function makeObjWithExpr(id: string, param = "opacity.js"): TimelineComposition[
 describe("ExpressionEngine — module evaluation (§9)", () => {
   it("evaluates expression and returns overridden value", async () => {
     const loader = new MockModuleLoader();
-    loader.register("scripts/obj/opacity.js", (ctx) => (ctx as { value: number }).value * 0.5);
+    loader.register("scripts/obj/opacity.js", (ctx: unknown) => (ctx as { value: number }).value * 0.5);
     const engine = new ExpressionEngine(loader);
     const obj = makeObjWithExpr("obj");
     const comp = makeComp([obj]);
@@ -204,7 +205,7 @@ describe("ExpressionEngine — module evaluation (§9)", () => {
   it("ExprContext has correct frame/time/fps/value", async () => {
     const seen: unknown[] = [];
     const loader = new MockModuleLoader();
-    loader.register("scripts/obj/opacity.js", (ctx) => {
+    loader.register("scripts/obj/opacity.js", (ctx: unknown) => {
       seen.push(ctx);
       return (ctx as { value: number }).value;
     });
@@ -225,7 +226,7 @@ describe("ExpressionEngine — module evaluation (§9)", () => {
 
   it("ExprContext.wiggle is deterministic (INV-1)", async () => {
     const loader = new MockModuleLoader();
-    loader.register("scripts/obj/opacity.js", (ctx) => {
+    loader.register("scripts/obj/opacity.js", (ctx: unknown) => {
       const c = ctx as { frame: number; fps: number; value: number; wiggle: (f: number, a: number) => number };
       return c.wiggle(2, 0.1);
     });
@@ -244,7 +245,7 @@ describe("ExpressionEngine — module evaluation (§9)", () => {
   it("ExprContext.thisObject has position/opacity", async () => {
     const seen: unknown[] = [];
     const loader = new MockModuleLoader();
-    loader.register("scripts/obj/opacity.js", (ctx) => {
+    loader.register("scripts/obj/opacity.js", (ctx: unknown) => {
       seen.push((ctx as { thisObject: unknown }).thisObject);
       return (ctx as { value: number }).value;
     });
@@ -271,5 +272,42 @@ describe("ExpressionEngine — module evaluation (§9)", () => {
     expect(view.position.x).toBeCloseTo(100);
     expect(view.position.y).toBeCloseTo(200);
     expect(view.opacity).toBeCloseTo(1);
+  });
+});
+
+// ─── HtmlCompPlayer — module loading (§7) ────────────────────────────────────
+// 回帰テスト: ModuleLoader が「オブジェクト default export」(CompositionModule) を
+// 拒否していたバグ。§7 のモジュールは関数ではなくオブジェクト。
+
+describe("HtmlCompPlayer — accepts object CompositionModule (§7)", () => {
+  const htmlComp: HtmlComposition = {
+    id: "comp1",
+    name: "Comp1",
+    kind: "html",
+    width: 320,
+    height: 240,
+    fps: 30,
+    duration: 60,
+  };
+
+  it("registers an object module exposing mount/render", async () => {
+    const loader = new MockModuleLoader();
+    // CompositionModule はオブジェクト（関数ではない）。
+    loader.register("compositions/comp1/script.js", {
+      manifest: { id: "comp1", params: [] },
+      mount() {},
+      render() {},
+    });
+    const player = new HtmlCompPlayer(loader);
+    await player.prepare([htmlComp], (id) => `compositions/${id}/script.js`);
+    expect(player.hasModule("comp1")).toBe(true);
+  });
+
+  it("rejects a module missing mount/render", async () => {
+    const loader = new MockModuleLoader();
+    loader.register("compositions/comp1/script.js", { manifest: { id: "comp1", params: [] } });
+    const player = new HtmlCompPlayer(loader);
+    await player.prepare([htmlComp], (id) => `compositions/${id}/script.js`);
+    expect(player.hasModule("comp1")).toBe(false);
   });
 });

@@ -1,5 +1,6 @@
 import type { CompositionMeta, Frame, HtmlComposition, RGBA } from "../core/schema";
 import type { HtmlCompPlayer } from "./htmlComp";
+import { globalPluginRegistry } from "./pluginRegistry";
 import type { Renderer } from "./renderer";
 import type { ResolvedComponent, ResolvedObject, ResolvedScene } from "./resolved";
 
@@ -102,6 +103,11 @@ export class DomRenderer implements Renderer {
     this.root.style.height = `${h}px`;
   }
 
+  /** §11.2 export 用: マウントした root 要素を返す。 */
+  getRoot(): HTMLElement | null {
+    return this.root;
+  }
+
   dispose(): void {
     if (this.root) {
       this.root.remove();
@@ -118,6 +124,10 @@ export class DomRenderer implements Renderer {
 
     const sig = obj.components.map((c) => c.type).join("|");
     if (sig !== entry.childSig) {
+      // html comp が含まれていた場合は player のエントリも解放してから作り直す
+      if (entry.childSig.split("|").includes("html")) {
+        this.htmlPlayer?.unmountObject(obj.id);
+      }
       // 構造が変わった: 子を作り直す
       entry.div.innerHTML = "";
       entry.children = obj.components.map((c) => {
@@ -132,6 +142,20 @@ export class DomRenderer implements Renderer {
       const el = entry.children[i];
       if (el) updateComponentEl(el, c.type, c.props);
 
+      // Plugin component: registry から ComponentDef.render を呼ぶ（組み込み型は未登録でスキップ）
+      if (el) {
+        const pluginDef = globalPluginRegistry.getComponentDef(c.type);
+        if (pluginDef) {
+          pluginDef.render({
+            el,
+            props: c.props as Record<string, unknown>,
+            frame,
+            width: this.currentComp?.width ?? 0,
+            height: this.currentComp?.height ?? 0,
+          });
+        }
+      }
+
       // html comp: HtmlCompPlayer に mount/render を委譲
       if (c.type === "html" && this.htmlPlayer && el) {
         const compId = (c.props["compId"] as string | undefined) ?? "";
@@ -145,6 +169,9 @@ export class DomRenderer implements Renderer {
           const htmlComp: HtmlComposition | null =
             this.pendingHtmlComps?.get(compId) ?? null;
           if (htmlComp) {
+            // host div に comp 寸法を与える（Shadow DOM は 100% で追従する）。
+            el.style.width = `${htmlComp.width}px`;
+            el.style.height = `${htmlComp.height}px`;
             this.htmlPlayer.mountObject(obj.id, compId, el);
             this.htmlPlayer.renderObject(
               obj.id,

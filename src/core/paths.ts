@@ -16,3 +16,15 @@ export function compositionDir(compId: string): string {
 export function scriptPath(objectId: string, param: string): string {
   return `${DIR_SCRIPTS}/${objectId}/${param}.js`;
 }
+
+export function pluginDir(pluginId: string): string {
+  return `${DIR_PLUGINS}/${pluginId}`;
+}
+
+export function pluginManifestPath(pluginId: string): string {
+  return `${DIR_PLUGINS}/${pluginId}/plugin.json`;
+}
+
+export function pluginEntryPath(pluginId: string, entry: string): string {
+  return `${DIR_PLUGINS}/${pluginId}/${entry}`;
+}

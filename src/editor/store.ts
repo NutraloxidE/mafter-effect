@@ -5,6 +5,7 @@ import { loadProject, saveProject } from "../core/projectFs";
 import { defaultTransform, staticProp, vec3 } from "../core/props";
 import type {
   AnimatedProp,
+  AssetEntry,
   Easing,
   Frame,
   HtmlComposition,
@@ -15,8 +16,11 @@ import type {
   Vec3,
 } from "../core/schema";
 import { IndexedDbFs } from "../fs/IndexedDbFs";
-import { compositionDir } from "../core/paths";
+import { compositionDir, DIR_ASSETS, pluginEntryPath, pluginManifestPath, scriptPath } from "../core/paths";
 import { sampleVec3 } from "../runtime/interpolate";
+import { ModuleLoader } from "../runtime/moduleLoader";
+import type { PluginContext, PluginManifest } from "../runtime/plugin";
+import { globalPluginRegistry } from "../runtime/pluginRegistry";
 import {
   cmdAddObject,
   cmdRemoveObject,
@@ -32,6 +36,35 @@ import {
 // §17: プロジェクトデータの正は FS（IndexedDbFs）。ストアはその投影。
 
 const fs = new IndexedDbFs("mafter-effect-fs");
+const pluginLoader = new ModuleLoader(fs);
+
+// §12 サンプルプラグイン JS（gradient-rect component）。installSamplePlugin() で FS に書き込む。
+const SAMPLE_PLUGIN_JS = `// Mafter Effect Sample Plugin — gradient-rect component
+export default function activate(ctx) {
+  ctx.registerComponent({
+    type: "gradient-rect",
+    label: "Gradient Rect",
+    params: [
+      { key: "width",  label: "Width",   kind: "scalar", default: 400, animatable: true, min: 1 },
+      { key: "height", label: "Height",  kind: "scalar", default: 300, animatable: true, min: 1 },
+      { key: "colorA", label: "Color A", kind: "color",  default: { r: 1, g: 0.2, b: 0.5, a: 1 }, animatable: true },
+      { key: "colorB", label: "Color B", kind: "color",  default: { r: 0.1, g: 0.5, b: 1, a: 1 }, animatable: true },
+      { key: "angle",  label: "Angle",   kind: "scalar", default: 90, animatable: true, min: 0, max: 360 },
+    ],
+    render({ el, props }) {
+      const w = typeof props.width === "number" ? props.width : 400;
+      const h = typeof props.height === "number" ? props.height : 300;
+      const a = props.colorA && typeof props.colorA === "object" ? props.colorA : { r: 1, g: 0.2, b: 0.5, a: 1 };
+      const b = props.colorB && typeof props.colorB === "object" ? props.colorB : { r: 0.1, g: 0.5, b: 1, a: 1 };
+      const angle = typeof props.angle === "number" ? props.angle : 90;
+      const rgba = (c) => \`rgba(\${Math.round(c.r*255)},\${Math.round(c.g*255)},\${Math.round(c.b*255)},\${c.a ?? 1})\`;
+      el.style.width = w + "px";
+      el.style.height = h + "px";
+      el.style.background = \`linear-gradient(\${angle}deg, \${rgba(a)}, \${rgba(b)})\`;
+    },
+  });
+}
+`;
 
 export interface EditorStore {
   // データ
@@ -39,6 +72,9 @@ export interface EditorStore {
   currentCompId: string;
   currentFrame: Frame;
   selectedObjectIds: string[];
+
+  // §12 Plugin 管理
+  pluginsVersion: number; // loadPlugins() 完了のたびにインクリメント。PreviewPanel が subscribe して再描画する。
 
   // Undo/Redo スタック（セッション内のみ, §17）
   undoStack: UndoRedoStack;
@@ -67,9 +103,26 @@ export interface EditorStore {
 
   // ショートカット: オブジェクトを新規追加して ID を返す
   addSolid: (name?: string) => string | null;
+  // fs アクセス（外部公開：ExportDialog など）
+  getFs: () => IndexedDbFs;
   addText: (name?: string) => string | null;
   // M2: HTML comp 追加（FS にスターターファイルを書き込む）
+  // M3 実装はインターフェース末尾（importAudioAsset / addAudioLayer）
   addHtmlComp: (name?: string) => Promise<string | null>;
+  // M2: HTML comp を現タイムラインに html component オブジェクトとして配置する
+  addHtmlInstance: (compId: string) => string | null;
+  // M2: 選択プロパティに wiggle expression を付与する（FS に式ファイルを書き込む）
+  addWiggleExpression: (objectId: string) => Promise<void>;
+  // M3: 音声アセットをインポートして project.assets に追加する
+  importAudioAsset: (file: File) => Promise<string | null>;
+  // M3: audio component を持つ SceneObject を追加する
+  addAudioLayer: (assetId: string, name?: string) => string | null;
+
+  // M4: plugin ロード・管理
+  loadPlugins: () => Promise<void>;
+  installSamplePlugin: () => Promise<void>;
+  togglePlugin: (id: string, enabled: boolean) => void;
+  addPluginObject: (componentType: string) => string | null;
 }
 
 export const useEditorStore = create<EditorStore>((set, get) => ({
@@ -77,6 +130,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   currentCompId: "",
   currentFrame: 0,
   selectedObjectIds: [],
+  pluginsVersion: 0,
   undoStack: emptyStack(),
 
   newProject: () => {
@@ -100,6 +154,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         selectedObjectIds: [],
         undoStack: emptyStack(),
       });
+      await get().loadPlugins();
     } catch {
       // FS に project.json が無い場合など: 新規作成
       get().newProject();
@@ -152,9 +207,27 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     await fs.write(`${compDir}/index.html`, `<!DOCTYPE html>\n<html><head><link rel="stylesheet" href="style.css"></head><body></body></html>\n`);
     await fs.write(`${compDir}/style.css`, `/* HTML Composition: ${name ?? id} */\nbody { margin: 0; }\n`);
     // script.js: §7 CompositionModule default export
+    const label = name ?? "HTML Comp";
     await fs.write(
       `${compDir}/script.js`,
-      `// Mafter Effect HTML Composition — §7 CompositionModule\nexport default {\n  manifest: {\n    id: "${id}",\n    params: [],\n  },\n  mount(root) {\n    root.innerHTML = '<div style="color:white;padding:16px;font-family:sans-serif">${name ?? "HTML Comp"}</div>';\n  },\n  render(_ctx) {\n    // animate via ctx.frame / ctx.params\n  },\n};\n`,
+      [
+        `// Mafter Effect HTML Composition — §7 CompositionModule`,
+        `export default {`,
+        `  manifest: { id: "${id}", params: [] },`,
+        `  mount(root) {`,
+        `    root.innerHTML =`,
+        `      '<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#1d2b4a;color:#fff;font-family:sans-serif">'`,
+        `      + '<div style="font-size:48px;font-weight:700">${label}</div>'`,
+        `      + '<div class="frame" style="font-size:24px;opacity:.7;margin-top:8px"></div>'`,
+        `      + '</div>';`,
+        `  },`,
+        `  render(ctx) {`,
+        `    const el = ctx.root.querySelector(".frame");`,
+        `    if (el) el.textContent = "frame " + ctx.frame;`,
+        `  },`,
+        `};`,
+        ``,
+      ].join("\n"),
     );
     const htmlComp: HtmlComposition = {
       id,
@@ -173,6 +246,51 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     };
     get().applyCommand({ label: "Add HTML Comp", before, after });
     return id;
+  },
+
+  addHtmlInstance: (compId) => {
+    const p = get().project;
+    const htmlComp = p?.compositions.find((c) => c.id === compId && c.kind === "html");
+    if (!htmlComp) return null;
+    const comp = currentTimelineComp(p, get().currentCompId);
+    const duration = comp?.duration ?? 150;
+    const id = newObjectId();
+    const obj: SceneObject = {
+      id,
+      name: htmlComp.name,
+      parent: null,
+      zOrder: nextZOrder(comp ?? undefined),
+      enabled: true,
+      inPoint: 0,
+      outPoint: duration,
+      transform: defaultTransform(),
+      opacity: staticProp(1),
+      // §7 html component: compId 参照 + 内部時間用 inPoint（plain value, AnimatedProp ではない）
+      components: [{ type: "html", props: { compId, inPoint: 0 } }],
+    };
+    cmdAddObject(get(), obj);
+    return id;
+  },
+
+  addWiggleExpression: async (objectId) => {
+    const before = get().project;
+    const comp = currentTimelineComp(before, get().currentCompId);
+    const obj = comp?.objects.find((o) => o.id === objectId);
+    if (!before || !comp || !obj) return;
+    // §9 expression ファイル: scripts/<objectId>/position.js（純関数 default export）
+    const path = scriptPath(objectId, "position");
+    await fs.write(
+      path,
+      `// Mafter Effect expression — wiggle position (§9)\nexport default (ctx) => ctx.wiggle(2, 60);\n`,
+    );
+    const nextObj: SceneObject = {
+      ...obj,
+      transform: {
+        ...obj.transform,
+        position: { ...obj.transform.position, expression: { path, enabled: true } },
+      },
+    };
+    get().updateObject(objectId, { transform: nextObj.transform }, "Add wiggle expression");
   },
 
   addSolid: (name) => {
@@ -231,6 +349,148 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
           },
         },
       ],
+    };
+    cmdAddObject(get(), obj);
+    return id;
+  },
+
+  getFs: () => fs,
+
+  importAudioAsset: async (file) => {
+    const before = get().project;
+    if (!before) return null;
+    const id = newObjectId();
+    const ext = file.name.split(".").pop() ?? "audio";
+    const assetPath = `${DIR_ASSETS}/${id}.${ext}`;
+    const buf = await file.arrayBuffer();
+    await fs.write(assetPath, new Uint8Array(buf));
+    const asset: AssetEntry = { id, path: assetPath, kind: "audio" };
+    const after: Project = {
+      ...before,
+      assets: [...before.assets, asset].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+    };
+    get().applyCommand({ label: "Import Audio", before, after });
+    return id;
+  },
+
+  addAudioLayer: (assetId, name) => {
+    const p = get().project;
+    const comp = p?.compositions.find((c) => c.id === get().currentCompId) as TimelineComposition | undefined;
+    if (!p || !comp) return null;
+    const asset = p.assets.find((a) => a.id === assetId);
+    if (!asset) return null;
+    const id = newObjectId();
+    const obj: SceneObject = {
+      id,
+      name: name ?? asset.path.split("/").pop() ?? "Audio",
+      parent: null,
+      zOrder: nextZOrder(comp),
+      enabled: true,
+      inPoint: 0,
+      outPoint: comp.duration,
+      transform: defaultTransform(),
+      opacity: staticProp(1),
+      components: [{ type: "audio", props: { asset: assetId, gain: 1, trimStart: 0 } }],
+    };
+    cmdAddObject(get(), obj);
+    return id;
+  },
+
+  // M4: plugin ロード —————————————————————————————————————————————
+
+  loadPlugins: async () => {
+    const p = get().project;
+    if (!p) return;
+
+    globalPluginRegistry.clear();
+    pluginLoader.clear();
+
+    const activeRefs = p.pluginRefs.filter((r) => r.enabled);
+    for (const ref of activeRefs) {
+      try {
+        const manifestText = await fs.readText(pluginManifestPath(ref.id));
+        const manifest = JSON.parse(manifestText) as PluginManifest;
+        if (manifest.apiVersion !== 1) continue;
+
+        const entryPath = pluginEntryPath(ref.id, manifest.entry);
+        const loaded = await pluginLoader.load(entryPath);
+        if (typeof loaded !== "function") continue;
+
+        globalPluginRegistry.activate(manifest, loaded as (ctx: PluginContext) => void, fs);
+      } catch {
+        // plugin のロード失敗はスキップ（エラーをバブルさせない）
+      }
+    }
+
+    set((s) => ({ pluginsVersion: s.pluginsVersion + 1 }));
+  },
+
+  installSamplePlugin: async () => {
+    const before = get().project;
+    if (!before) return;
+
+    const sampleId = "com.example.sample";
+    const manifest: PluginManifest = {
+      id: sampleId,
+      name: "Sample Gradient Plugin",
+      version: "1.0.0",
+      apiVersion: 1,
+      entry: "entry.js",
+      capabilities: ["component"],
+    };
+    await fs.write(pluginManifestPath(sampleId), JSON.stringify(manifest, null, 2) + "\n");
+    await fs.write(pluginEntryPath(sampleId, "entry.js"), SAMPLE_PLUGIN_JS);
+
+    // pluginRefs に未登録なら追加
+    const existing = before.pluginRefs.find((r) => r.id === sampleId);
+    if (!existing) {
+      const after: Project = {
+        ...before,
+        pluginRefs: [...before.pluginRefs, { id: sampleId, version: "1.0.0", enabled: true }]
+          .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+      };
+      get().applyCommand({ label: "Install Sample Plugin", before, after });
+    } else if (!existing.enabled) {
+      get().togglePlugin(sampleId, true);
+    }
+
+    await get().loadPlugins();
+  },
+
+  togglePlugin: (id, enabled) => {
+    const before = get().project;
+    if (!before) return;
+    const refs = before.pluginRefs.map((r) => r.id === id ? { ...r, enabled } : r);
+    const after: Project = { ...before, pluginRefs: refs };
+    get().applyCommand({ label: enabled ? "Enable Plugin" : "Disable Plugin", before, after });
+    void get().loadPlugins();
+  },
+
+  addPluginObject: (componentType) => {
+    const componentDef = globalPluginRegistry.getComponentDef(componentType);
+    if (!componentDef) return null;
+    const p = get().project;
+    const comp = p?.compositions.find((c) => c.id === get().currentCompId) as TimelineComposition | undefined;
+    if (!p || !comp) return null;
+
+    const id = newObjectId();
+    const props: Record<string, AnimatedProp<unknown> | unknown> = {};
+    for (const param of componentDef.params) {
+      props[param.key] = param.animatable
+        ? { value: param.default, keyframes: [] }
+        : param.default;
+    }
+    const obj: SceneObject = {
+      id,
+      name: componentDef.label,
+      parent: null,
+      zOrder: nextZOrder(comp),
+      enabled: true,
+      inPoint: 0,
+      outPoint: comp.duration,
+      transform: defaultTransform(),
+      opacity: staticProp(1),
+      components: [{ type: componentType, props }],
     };
     cmdAddObject(get(), obj);
     return id;

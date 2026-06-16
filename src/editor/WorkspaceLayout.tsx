@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { Fragment, useCallback, useRef, useState } from "react";
 import type { LayoutNode, PanelId } from "./layout";
 import { InspectorPanel } from "./panels/InspectorPanel";
 import { PreviewPanel } from "./panels/PreviewPanel";
@@ -116,9 +116,8 @@ function SplitPane({
       }}
     >
       {childArr.map((child, i) => (
-        <>
+        <Fragment key={`pane-${i}`}>
           <div
-            key={`child-${i}`}
             style={{
               flex: `0 0 ${(localSizes[i] ?? 1 / childArr.length) * 100}%`,
               overflow: "hidden",
@@ -130,7 +129,6 @@ function SplitPane({
           </div>
           {i < childArr.length - 1 && (
             <div
-              key={`splitter-${i}`}
               onMouseDown={(e) => startDrag(i, e)}
               style={{
                 flex: "0 0 4px",
@@ -140,7 +138,7 @@ function SplitPane({
               }}
             />
           )}
-        </>
+        </Fragment>
       ))}
     </div>
   );

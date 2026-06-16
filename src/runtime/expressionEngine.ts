@@ -3,6 +3,7 @@ import { sampleScalar, sampleVec3 } from "./interpolate";
 import { identity, localMatrix, multiply } from "./mat4";
 import type { Mat4 } from "./mat4";
 import type { IModuleLoader } from "./moduleLoader";
+import { globalPluginRegistry } from "./pluginRegistry";
 import type { ExpressionEvaluator } from "./resolve";
 import {
   clamp,
@@ -218,8 +219,9 @@ export class ExpressionEngine {
     await Promise.all(
       [...paths].map(async (path) => {
         if (this.loaded.has(path)) return;
-        const fn = await this.loader.load(path);
-        if (fn) this.loaded.set(path, fn);
+        const mod = await this.loader.load(path);
+        // expression は関数 default export のみ採用（§9）。
+        if (typeof mod === "function") this.loaded.set(path, mod as (ctx: unknown) => unknown);
       }),
     );
   }
@@ -233,6 +235,12 @@ export class ExpressionEngine {
       const fn = loaded.get(path);
       if (!fn) return value;
       const ctx = buildContext(frame, fps, value, objectId, comp);
+      // Plugin expr helpers を ctx に注入（INV-1: plugin 側の責任で決定論を保証）
+      const extras = globalPluginRegistry.getExprHelpers();
+      const keys = Object.keys(extras);
+      if (keys.length > 0) {
+        Object.assign(ctx as object, extras);
+      }
       return fn(ctx);
     };
   }

@@ -153,3 +153,12 @@ export interface Project {
 }
 
 export const CURRENT_SCHEMA_VERSION = 1 as const;
+
+// §11.2 ExportConfig — browser best-effort エクスポート設定。
+export interface ExportConfig {
+  range: [Frame, Frame];
+  fps: number;
+  scale: number;
+  format: "mp4" | "webm" | "png-seq";
+  alpha: boolean;
+}

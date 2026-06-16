@@ -11,8 +11,8 @@
 | M0 Foundations | ✅ 完了 |
 | M1 Core animation + DomRenderer | ✅ 完了 |
 | M2 HTML comp + expression | ✅ 完了 |
-| M3 Export | 未着手 |
-| M4 Plugin API v1 | 未着手 |
+| M3 Export | ✅ 完了（実機 export 9/9 検証済み） |
+| M4 Plugin API v1 | ✅ 完了（実機検証済み 14/14） |
 
 ---
 
@@ -146,11 +146,232 @@ M2 着工前に、M1 で挙げた 3 懸念点を実コードで解消（凍結�
 
 typecheck ✅ / tests 84 passed ✅ / build ✅
 
+### M2 ランタイム検証・修正（2026-06-16, Opus）
+
+ブラウザ実機検証（Playwright/Chromium で実 DOM を駆動）で、型・単体テストは緑でも**実行時に M2 中核機能が成立していなかった**ことが判明 → 修正。
+
+**修正したバグ・ギャップ:**
+1. **【致命的】ModuleLoader が HTML comp モジュールを必ず拒否** — [moduleLoader.ts](src/runtime/moduleLoader.ts) は `default` が**関数以外なら null`** を返していたが、§7 `CompositionModule` は `{ manifest, mount, render }` の**オブジェクト** default export。→ `load()` を「関数でもオブジェクトでも default をそのまま返す」(`LoadedExport = unknown`) に変更。`ExpressionEngine.prepare` は `typeof === "function"` で、`HtmlCompPlayer.prepare` は `mount`/`render` を持つオブジェクトで受理するよう各々ガード。単体テストは `MockModuleLoader`（関数を直接 register）で関数チェックを迂回していたためすり抜けていた。
+2. **HTML comp をタイムラインに配置する UI が無かった** — `addHtmlComp` は comp を作るだけで、表示には `type:"html"`+`props.compId` の SceneObject が必要だった。→ store に `addHtmlInstance(compId)` を追加、[ProjectPanel](src/editor/panels/ProjectPanel.tsx) の HTML comp 一覧クリックで現タイムラインへ配置。
+3. **expression を付与する UI が無かった** — `wiggle` 等が単体テストでしか到達できなかった。→ store に `addWiggleExpression(objectId)`（FS に `scripts/<id>/position.js` を書き出し `position.expression` を設定）、[InspectorPanel](src/editor/panels/InspectorPanel.tsx) に「Wiggle Position」トグル追加。
+4. **PreviewPanel の配線 2 件** — `setHtmlComps` が timeline comp id 依存の mount effect でしか呼ばれず新規 html comp がレンダラに届かない／非同期 `prepare()` 完了後に再描画されない問題。→ project 変更で html comp map を注入し、`prepare` 解決後に `renderTick` を進めて再描画。
+5. **html host div が 0×0** — [DomRenderer](src/runtime/DomRenderer.ts) で host div に comp 寸法を付与（Shadow DOM が 100% で追従）。
+6. **HTML comp スターターの render を per-frame 化** — `render(ctx)` が `frame N` を描画し、§7 の毎フレーム駆動を可視化（[store.ts](src/editor/store.ts) addHtmlComp）。
+
+**ランタイム検証結果（Playwright 実機）:**
+| 検証項目 | 結果 |
+|---|---|
+| HTML comp が Shadow DOM にマウント | ✅ shadowHost 生成・shadowRoot にコンテンツ |
+| `render(ctx)` が per-frame 駆動 | ✅ scrub で "frame 0"→"frame 20" 更新 |
+| wiggle expression がプロパティを上書き | ✅ solid 位置 identity→translate へ |
+| wiggle が frame 毎に変化（アニメート） | ✅ f0=(-28.0,15.2,28.1) ≠ f30=(50.2,-18.9,47.4) |
+| 決定論（INV-1/INV-2） | ✅ 2 回の独立実行で同一値 |
+
+**回帰テスト追加** — [test/expr.test.ts](test/expr.test.ts) に `HtmlCompPlayer` がオブジェクト `CompositionModule` を受理（mount/render 欠落は拒否）するテスト 2 件。
+
+**テスト: 86 件全通過** / typecheck ✅ / build ✅ / **ブラウザ実機検証 ✅**。M2 を実行時に成立する形でクローズ。
+
+---
+
+---
+
+### M3 Export（browser best-effort）（2026-06-16 実装完了）
+
+- **`ExportConfig` 型** — [src/core/schema.ts](src/core/schema.ts) に追加（`range/fps/scale/format/alpha`）
+- **エクスポートエンジン** — [src/runtime/exporter.ts](src/runtime/exporter.ts)（新規作成）:
+  - `exportComposition()`: Project + compId + FS + config → Blob（mp4 / webm / png-seq）
+  - **オフスクリーン DOM コンテナ**を作成し DomRenderer + ExpressionEngine + HtmlCompPlayer で preview と同一パイプラインを駆動（INV-2 担保）
+  - **DOM→raster**: SVG `<foreignObject>` シリアライズ → `<img>` → canvas。Shadow DOM は `flattenShadow()` で inline 展開（§7 HTML comp 対応）
+  - **WebCodecs VideoEncoder** + `mp4-muxer`（mp4）/ `webm-muxer`（webm VP9）でエンコード
+  - WebCodecs 非対応ブラウザは PNG sequence にフォールバック
+  - **PNG sequence**: `canvas.toBlob()` × N → JSZip で配布（format="png-seq"）
+  - **音声 mux**: `audio` component を持つオブジェクトを `OfflineAudioContext` で mix → WebCodecs `AudioEncoder`（AAC/Opus）→ muxer（`mp4-muxer.addAudioChunk`）で映像と合成
+  - 進捗コールバック（prepare / render / encode / audio / done / error フェーズ）
+  - AbortController でキャンセル対応
+- **`ExportDialog`** — [src/editor/ExportDialog.tsx](src/editor/ExportDialog.tsx)（新規作成）:
+  - format / range / fps / scale / alpha 設定
+  - プログレスバー + フェーズ表示
+  - キャンセルボタン（AbortController）
+- **ProjectPanel 更新** — [src/editor/panels/ProjectPanel.tsx](src/editor/panels/ProjectPanel.tsx):
+  - "▶ Export Video…" ボタン → ExportDialog 表示
+  - "+ Audio" ボタン → audio ファイルをインポートして `audio` レイヤーを追加
+  - Audio Assets 一覧（クリックでレイヤー追加）
+- **Store 更新** — [src/editor/store.ts](src/editor/store.ts):
+  - `importAudioAsset(file)`: 音声ファイルを `assets/<id>.<ext>` に保存 + AssetEntry 追加
+  - `addAudioLayer(assetId)`: `audio` component を持つ SceneObject を追加
+  - `getFs()`: FS インスタンスを外部公開
+- **DomRenderer 更新** — [src/runtime/DomRenderer.ts](src/runtime/DomRenderer.ts):
+  - `getRoot()`: エクスポーター用にマウントした root 要素を公開
+- **依存追加**: `mp4-muxer`, `webm-muxer`
+
+**M3 受け入れ条件チェック（実装レベル）**:
+| 条件 | 状況 |
+|---|---|
+| solid+text+image+HTML-comp を書き出し | ✅ DOM→raster でコンポーネントを問わず撮影 |
+| audio レイヤを mux | ✅ OfflineAudioContext + AudioEncoder + mp4-muxer |
+| webm/mp4/連番 を書き出し | ✅ WebCodecs+mp4-muxer / webm-muxer / JSZip |
+| 映像が preview scene 値と一致 | ✅ 同一 resolve() → DomRenderer パイプライン（INV-2） |
+| フォントが反映される | ✅ document.fonts 登録済みフォントは foreignObject で有効 |
+| preview: transform-style:preserve-3d | ⚠ SVG foreignObject では 3D 深度ソート非対応（best-effort 制約） |
+
+**テスト: 86 件全通過** / typecheck ✅ / build ✅（DOM API はブラウザ実機で検証要）
+
+### M3 ランタイム検証・修正（2026-06-16, Opus / Playwright）
+
+ブラウザ実機検証（Playwright/Chromium, port 5175）で **致命的バグ 2 件 + 堅牢化 1 件**を発見・修正。型・単体テストでは検出不能なブラウザ専用経路。
+
+**修正したバグ（[exporter.ts](src/runtime/exporter.ts)）:**
+1. **【致命的・全フォーマット破壊】tainted canvas** — `captureFrame()` が SVG を `URL.createObjectURL`（blob: URL）で `<img>` に読み込んでいた。blob: URL から読んだ `<foreignObject>` 入り SVG を `drawImage` すると Chromium が canvas を **tainted 扱い**にし、`toBlob`（PNG-seq）も `new VideoFrame`（mp4/webm）も `SecurityError` で失敗。cross-origin 画像が無くても発生。→ **data: URL（UTF-8→base64）に変更**（`svgToDataUrl` 追加）。data: URL は same-origin 扱いで汚染しない。プローブで blob=TAINTED / data=OK を確認。
+2. **【致命的・1080p mp4 破壊】AVC level 固定** — `codec: "avc1.42001f"`（level 3.1, max coded area 921600px）が 1920×1080（≈2M px）を超過し `VideoEncoder.configure` がエラー。→ 解像度・fps から H.264 level を動的算出する `avcCodecString()` を追加（1080p→`avc1.42e028`、`isConfigSupported` で supported を確認済み）。
+3. **【堅牢化】`hardwareAcceleration:"prefer-hardware"` 強制** — HW エンコーダが無い環境（headless / 一部 GPU）で configure が非同期失敗 → codec が閉じ "encode on a closed codec"。→ `configureVideoEncoder()` を追加し `isConfigSupported` で hardware→no-preference→software の順にフォールバック。実機（HW H.264 非搭載）でも export 可能になった。
+
+**検証結果（Playwright 実機）:**
+| 検証項目 | 結果 |
+|---|---|
+| New project / solid+text を preview DOM に配置 | ✅ |
+| Export ダイアログ UI（format/range/fps/scale/alpha・progress・cancel） | ✅ |
+| **PNG sequence export** end-to-end | ✅ zip に N 個の有効 PNG、frame_000000.png… |
+| **エクスポート映像 = preview scene 値（INV-2）** | ✅ 出力 PNG のピクセル = solid 色 [128,128,230,255]（=RGBA{.5,.5,.9}）|
+| HTML comp + audio レイヤを含む comp の書き出し | ✅ クラッシュなし（flattenShadow + HtmlCompPlayer 経由）|
+| Audio import → audio レイヤ生成 | ✅ |
+| **音声 mix（OfflineAudioContext）** | ✅ 非無音 PCM（peak 0.37, 13230 samples @44.1k）|
+
+**video encode（mp4/webm）の実機制約:** 本 headless Chromium ビルドは **WebCodecs `VideoEncoder` 自体がレンダラごとクラッシュ**する（アプリコード無しの最小 VP8 1 フレームでも全 GL backend でクラッシュを再現＝環境要因。`AudioEncoder` / `decodeAudioData` / canvas 経路は正常）。よって **映像フレーム生成・音声 mix・PNG 経路はアプリ側で検証済み**、最終 `VideoEncoder.encode` のみ実 Chrome（HW or 安定 SW エンコーダ）での確認待ち。codec 設定は `isConfigSupported`=true まで確認済み。
+
+**テスト: 86 件全通過** / typecheck ✅ / build ✅。
+
+### M3 映像エンコード経路の実機クローズ（2026-06-16, Opus / Playwright）
+
+前セッションで「`VideoEncoder` が全 GL backend でクラッシュ＝到達不能」とした残課題を再検証し、**映像エンコード経路を実機でクローズ**した。
+
+**クラッシュの真因を特定:** クラッシュは `VideoEncoder` 全般ではなく **headless Chromium のデフォルト GL backend 限定**。`chromium.launch({ args: ["--use-gl=angle","--use-angle=swiftshader"] })`（ソフトウェア GL）にすると GPU プロセスが安定し、`VideoEncoder.flush()` も完走する。アプリコード側のバグではない（同一コードが swiftshader で全フォーマット成功）。切り分けプローブで以下を確認:
+- plain canvas / `createImageBitmap` / **SVG-foreignObject ラスタ→`createImageBitmap`→`VideoFrame`（exporter の実経路）** の全ソースが 1920×1080 で encode 成功。
+- デフォルト GL backend ではテスト A（320×240 plain）すら即クラッシュ → 解像度・ソース非依存の環境要因。
+
+**実機 end-to-end 検証結果（Playwright + swiftshader, 9/9 PASS）:**
+| 検証項目 | 結果 |
+|---|---|
+| project build（solid+text+audio layer を store 経由で構築） | ✅ |
+| **PNG sequence** export（6 frame, zip 281KB） | ✅ frame_000000.png… 連番 |
+| **INV-2 ピクセル一致**（frame0 の (10,10) = solid 色 [128,128,230,255]） | ✅ 完全一致 |
+| **MP4 export（映像+音声 mux）** | ✅ `ftyp` box + `phases:[prepare,render,audio,done]`, 14.9KB |
+| **WebM export** | ✅ EBML magic `1A45DFA3`, 24.1KB |
+| **MP4 @2x scale（1920→3840, 動的 AVC level）** | ✅ `avcCodecString` が正しい level を選択, 39.6KB |
+| Console エラー | ✅ 0 件 |
+
+**結論:** M3 映像/音声/PNG の全エクスポート経路が実機で成立。`VideoEncoder` クラッシュは headless の GL backend 起因で、実 Chrome（ユーザ環境の GPU）では発生しない見込み。
+
+**付随修正:** [WorkspaceLayout.tsx](src/editor/WorkspaceLayout.tsx) の `SplitPane` で `.map()` が返す `<>` Fragment に key が無く React 警告（"unique key prop"）が出ていた（M1 由来）。`<Fragment key>` に変更して解消（検証で console エラー 2→0）。
+
+**テスト: 86 件全通過** / typecheck ✅ / build ✅ / **実機 export 9/9 ✅**。M3 完全クローズ。
+
+---
+
+### M3 バグ修正ラウンド（2026-06-16, Opus レビュー後）
+
+Opus による 8-angle コードレビュー（finder + verifier）で発見した実バグ 6 件を修正。
+
+**修正バグ:**
+1. **[exporter.ts] PNG-seq が alpha フラグを無視** — `runPngSeq` の `_config` (未使用) を `config` に改名し `config.alpha ? "transparent" : comp.background...` で背景を決定。UI の「Alpha」チェックが実際に透明背景 PNG を生成するようになった。
+2. **[exporter.ts] PNG-seq 時に不要な `buildAudioMix` を実行** — `buildAudioMix` を video ブランチ内に移動。PNG export では OfflineAudioContext を作成しない。
+3. **[DomRenderer.ts] コンポーネント型変更時に html comp の unmount が漏れる** — `sig !== entry.childSig` の際、旧 sig に "html" が含まれていれば `htmlPlayer.unmountObject()` を呼んでから innerHTML をクリア。Shadow DOM のゾンビを防ぐ。
+4. **[PreviewPanel.tsx] 毎 project 編集で wiggle がチラつく** — `evaluatorRef.current = undefined` リセットを削除。古い evaluator が prepare 完了まで継続稼働し、1 フレームの fallback スナップ（ポジションが base value に戻る）が消えた。
+5. **[exporter.ts] サブレンジ export 時の音声タイミングズレ** — `inPoint < startFrame` のレイヤーは export 開始時点で既に再生途中。`alreadyElapsedSec = max(0, (startFrame - inPoint) / fps)` を `trimStartSec` に加算して buffer 読み出し位置を補正（A/V sync bug）。
+6. **[moduleLoader.ts] 失敗ロードのネガティブキャッシュなし** — `failed: Set<string>` を追加。FS 読み込み失敗・null default・dynamic import エラーすべてを `failed` に記録し、次回 `load()` で即 null 返し。`invalidate/clear` でも消去。編集中に壊れた expression ファイルが毎回再読み込みされるパフォーマンス問題を解消。
+
+**検証結果（REFUTED として除外）:**
+- `triggerDownload` の URL.revokeObjectURL タイミング → Chrome はダウンロード中 blob を内部保持するため安全
+- `IndexedDbFs` 複数インスタンス → インメモリキャッシュなし・純粋 IDB pass-through のため一貫性問題なし
+
+**テスト: 86 件全通過** / typecheck ✅ / build ✅
+
+### M3 Opus 再検証パス（2026-06-16, Opus）
+
+Sonnet の上記 6 件修正を Opus で再検証。fix #2〜#6 は正しいと確認。**fix #1（alpha）が不完全だったため追加修正:**
+
+7. **[exporter.ts] webm alpha export が透明にならない** — Sonnet は `runPngSeq` の alpha のみ修正したが、`runVideo`(line 253) は `config.alpha` を無視して `bg` を常に不透明にしていた。UI は webm でも alpha を提供している（ExportDialog）ため不整合。`bg = config.alpha ? "transparent" : ...` に統一（PNG-seq と同じ方針）。mp4(H.264) は alpha 非対応 + UI も出さないため影響なし。
+
+**既知の best-effort 制約（M4 ブロッカーではない）:**
+- `DomRenderer.mount()` は `comp.background` を root div の CSS に適用するため、「alpha=true かつ comp に明示的 background あり」という矛盾組合せでは背景が foreignObject に焼き込まれる。通常の alpha export（背景なし comp）では問題なし。
+- `runVideo` の `videoChunks`/`_videoChunks` は muxer が output callback で直接消費するため dead code（無害）。
+
+**M4 着手可否の判定: ✅ GO。** M3 に機能的ブロッカーなし。M4 拡張シームも整備済み:
+- `Component.type: string`（任意の plugin component 型を許容）
+- `ModuleLoader` が関数・オブジェクト両 default export をロード可（M2 で対応済み）
+- `Project.pluginRefs: PluginRef[]` 既存
+- 唯一の設計課題: `DomRenderer` が component 型を `switch` でハードコード（solid/shape/text/image + html inline）。M4 で **component renderer レジストリ**を導入し plugin 登録型を描画可能にする必要がある（regression ではなく M4 の予定作業）。
+
+**テスト: 86 件全通過** / typecheck ✅ / build ✅
+
+---
+
+---
+
+### M4 Plugin API v1（2026-06-16 実装完了）
+
+**§12 Plugin API v1 — フル登録 API + plugins/ ロード + サンプル plugin。**
+
+- **型定義** — [src/runtime/plugin.ts](src/runtime/plugin.ts)（新規）: `PluginManifest` / `PluginContext` / `ComponentDef` / `EffectDef` / `EasingPreset` / `PureFn` / `ReadonlyFileSystem` / `ImporterDef` / `ExporterDef` / `InspectorControlDef`。
+- **PluginRegistry** — [src/runtime/pluginRegistry.ts](src/runtime/pluginRegistry.ts)（新規）: `PluginRegistry` クラス + `globalPluginRegistry` グローバルシングルトン。`makeContext(fs)` でロードごとの PluginContext を生成、`activate(manifest, fn, fs)` で plugin を起動・登録。`getComponentDef(type)` / `getExprHelpers()` / `getEasings()` でレンダラ・エンジンがポーリングなしで引ける。
+- **DomRenderer 拡張** — [src/runtime/DomRenderer.ts](src/runtime/DomRenderer.ts)（修正）: `applyObject()` に `globalPluginRegistry.getComponentDef(type)` による plugin component レンダリングを追加。組み込み型は registry に登録されないためスキップ（Map lookup 1回）。フレームごと `def.render({ el, props, frame, width, height })` を呼ぶ。
+- **ExpressionEngine 拡張** — [src/runtime/expressionEngine.ts](src/runtime/expressionEngine.ts)（修正）: `makeEvaluator()` の closure 内で `globalPluginRegistry.getExprHelpers()` を lazy 参照し `ctx` に `Object.assign` で注入。既存 evaluator も次のフレームから新 helper を利用可（re-prepare 不要）。
+- **パス定数追加** — [src/core/paths.ts](src/core/paths.ts)（修正）: `pluginDir()` / `pluginManifestPath()` / `pluginEntryPath()`。
+- **Store 拡張** — [src/editor/store.ts](src/editor/store.ts)（修正）:
+  - `pluginsVersion: number` — `loadPlugins()` 完了のたびにインクリメント。PreviewPanel が subscribe して再描画トリガーに使う。
+  - `loadPlugins()` — pluginRefs を読み、有効な plugin を ModuleLoader 経由でロード → `globalPluginRegistry.activate()` 。`loadFromFs()` から自動呼び出し。
+  - `installSamplePlugin()` — サンプル plugin（gradient-rect component）の JSON manifest + ES module entry を FS に書き込み、pluginRefs に追加して `loadPlugins()` を呼ぶ。
+  - `togglePlugin(id, enabled)` — pluginRefs の enabled フラグを更新し再ロード。
+  - `addPluginObject(componentType)` — `ComponentDef.params` の default 値から props を組み立てて SceneObject を追加。
+- **ProjectPanel 拡張** — [src/editor/panels/ProjectPanel.tsx](src/editor/panels/ProjectPanel.tsx)（修正）: Plugins セクションを追加（pluginRefs 一覧 + enable/disable チェックボックス + "Sample" インストールボタン + 登録済み component ごとの "+ Add" ボタン）。
+- **PreviewPanel 拡張** — [src/editor/panels/PreviewPanel.tsx](src/editor/panels/PreviewPanel.tsx)（修正）: `pluginsVersion` を store から subscribe し、変化したら `setRenderTick` で再描画。
+
+**サンプル plugin（gradient-rect）:**
+- `installSamplePlugin()` で `plugins/com.example.sample/plugin.json` + `entry.js` を FS に書き込む
+- `entry.js` は `export default function activate(ctx)` で `ctx.registerComponent({ type: "gradient-rect", ... })` を呼ぶ ES module
+- gradient-rect: `width/height/colorA/colorB/angle` params。div に CSS `linear-gradient` を適用。全 params が animatable（keyframe アニメート可）。
+
+**M4 受け入れ条件チェック（実装レベル）:**
+| 条件 | 状況 |
+|---|---|
+| plugins/ に置いた plugin が component を登録 | ✅ installSamplePlugin → FS → ModuleLoader → activate → registerComponent |
+| タイムラインで使用可 | ✅ addPluginObject → SceneObject → resolve → DomRenderer.applyObject → def.render |
+| save/load を跨いで生存 | ✅ pluginRefs が project.json に保存 → loadFromFs 時に loadPlugins 自動呼び出し |
+| registerExprHelper が expression に届く | ✅ makeEvaluator が getExprHelpers() を lazy 参照してコンテキストに注入 |
+
+**テスト: 86 件全通過** / typecheck ✅ / build ✅（実機 UI 検証は Opus 担当）
+
+### M4 ランタイム検証（2026-06-16, Opus / Playwright, port 5175）
+
+Sonnet 実装の M4 を実機（Playwright/Chromium）で end-to-end 検証。**アプリ側のバグは 0 件**。全 14 検証項目 PASS:
+
+| 検証項目 | 結果 |
+|---|---|
+| サンプル plugin の manifest ロード（loadedManifests） | ✅ |
+| gradient-rect component が registry に登録 | ✅ |
+| pluginRefs が project に永続化 | ✅ |
+| addPluginObject が SceneObject を生成 | ✅ |
+| Preview DOM に子要素が描画 | ✅ |
+| **CSS linear-gradient が実際に適用**（子要素 `entry.children[i]`） | ✅ `linear-gradient(90deg, rgb(255,51,128), rgb(26,128,255))` |
+| width param default (400px) 適用 | ✅ |
+| **params keyframe アニメート**（width f0=400→f15=600→f30=800, 線形補間） | ✅ |
+| Save→Reload で pluginRefs 生存 | ✅ |
+| Reload 後に component 再登録（loadFromFs→loadPlugins 自動） | ✅ |
+| gradient-rect オブジェクトが reload 後も生存 | ✅ |
+| togglePlugin(false) で component が registry から外れる | ✅ |
+| registerExprHelper → getExprHelpers 配線 | ✅ |
+| Console エラー 0 件 | ✅ |
+
+**検証中に気付いた実装の要点**（バグではない・記録用）:
+- plugin の `ComponentDef.render` は `[data-object-id]` host div ではなく **その子要素**（`entry.children[i]`）に適用される（[DomRenderer.applyObject](src/runtime/DomRenderer.ts) line 141-157）。検証コードは host の `firstElementChild` を見る必要がある。
+- keyframe の easing スキーマは **`{ type: "linear" }`**（`kind` ではない, [schema.ts:24](src/core/schema.ts)）。誤って `kind` を渡すと `easingFn` の switch が undefined を返し `easingFn(...) is not a function` で PreviewPanel がクラッシュする（防御的にはなっていないが、正規の schema 経路では発生しない）。
+
+**結論: M4 完全クローズ。MVP = M0–M4 全マイルストーン実機検証済み。**
+
 ---
 
 ## 進行中・未完了タスク
 
-_なし（M2 完了。M3 着工可）_
+_MVP = M0–M4 全マイルストーン実装・実機検証完了。_
 
 ---
 
@@ -163,22 +384,20 @@ _なし（M2 完了。M3 着工可）_
 
 ## Next steps（次のセッションでやること）
 
-### M3 Export に着手
+### M4 実機 UI 検証（次のセッション）
 
-M3 受け入れ条件（§15）: **5 秒尺を webm/mp4/PNG 連番に書き出せる**。
+M4 実装は完了した。次のセッションでは Opus + Playwright による実機検証を推奨:
+1. `npm run dev` → `+ Sample` ボタンでサンプル plugin をインストール
+2. `+ Gradient Rect` ボタンで gradient-rect オブジェクトをタイムラインに追加
+3. Preview でグラジエント矩形が表示されることを確認
+4. Save → Reload で plugin が save/load を跨いで生存することを確認
+5. Inspector で params keyframe アニメーションが動作するか確認
 
-実装項目:
-- **決定論 frame ステップ**: `for frame in range(start, end)` で DomRenderer を駆動（rAF 不使用）
-- **DOM → raster**: SVG `<foreignObject>` シリアライズ → `<img>` → canvas → `drawImage`、または `html2canvas` 相当
-- **WebCodecs VideoEncoder**: webm/mp4 書き出し（first choice）。フォールバック: PNG 連番 + ffmpeg.wasm
-- **PNG 連番**: `canvas.toBlob("image/png")` → zip で配布
-- **音声 mux（§11.2）**: export 後に audio アセットを ffmpeg.wasm で mux
+### その後の候補
 
-M3 前 spike 推奨（spec §15 M2 de-risk 参照）:
-> **素の HTML 1 枚に @mafter/runtime を置き、エディタ無しで comp が動く** proof-of-concept。
-> → `ExpressionEngine.makeEvaluator` + `DomRenderer` を bare HTML で動かして M5（Web Bundle）の footprint を確認。
-
-> ⚠️ M3 に入る前に Opus による凍結ゲートを推奨（ExportConfig 型の確定 / WebCodecs の決定論クラス）。
+- **M5 Web Bundle Export（§11.7）** — `@mafter/runtime` ベース player + Single-file bundle。M4 の plugin bake 経路も含む。
+- **DomRenderer の plugin component 型変更時の再生成ロジック確認** — reconcile 経路（`childSig` 比較）が plugin 型でも正しく動くことをテストで確認。
+- **M4 Opus 検証** — M3 同様、Opus による 8-angle コードレビューでバグ出し推奨。
 
 ### 参考: M1 で先に切った境界（spec v0.3 新規、記録用）
 - **INV-7 `@mafter/runtime` 単一核**: `resolve` / Renderer / module loader(§11.3) / expression engine(§9) / 再生クロック を **エディタ(React/状態/UI)から独立したライブラリ**に括り出す。preview / video exporter / web bundle player の 3 者が同核共有。後から剥がすと高コスト → M1 で境界だけ設計（§8 補足 / §11.7）。
@@ -209,3 +428,8 @@ M3 前 spike 推奨（spec §15 M2 de-risk 参照）:
 | 2026-06-16 | M1 DOM/UI 層完了（DomRenderer / store / commands / WorkspaceLayout / Preview / Timeline / Inspector / Project panels）typecheck ✅ / tests 55件 ✅ / build ✅ |
 | 2026-06-16 | M1→M2 Opus 検証・リファクタ（background INV-3 除去 / expression シーム凍結 / undo snapshot 確定 / DomRenderer reconcile / scale-to-fit）tests 64件 ✅ |
 | 2026-06-16 | M2 HTML comp + expression 完了（exprHelpers / moduleLoader / ExpressionEngine / HtmlCompPlayer / DomRenderer html 型 / エディタ統合）tests 84件 ✅ |
+| 2026-06-16 | M2 ランタイム検証・修正（Opus）: ModuleLoader がオブジェクト default export を拒否していた致命バグ + HTML comp 配置/expression 付与 UI 欠落 + PreviewPanel 配線を修正。Playwright 実機で Shadow DOM・per-frame render・wiggle アニメート・決定論を確認。回帰テスト2件追加 tests 86件 ✅ |
+| 2026-06-16 | M3 Export 実装完了: ExportConfig / exporter.ts（WebCodecs+mp4-muxer/webm-muxer/PNG-seq/音声mux） / ExportDialog / ProjectPanel拡張（Audio import・Export button）/ DomRenderer getRoot() / store audio asset 管理。tests 86件 ✅ / typecheck ✅ / build ✅。ランタイム検証は Opus 担当。 |
+| 2026-06-16 | Opus 8-angle レビュー後バグ修正 6 件（PNG-seq alpha / buildAudioMix 移動 / DomRenderer unmount / PreviewPanel チラつき / audio trim ズレ / ModuleLoader ネガティブキャッシュ）。tests 86件 ✅ |
+| 2026-06-16 | M3 Opus 再検証 fix #7（webm alpha が透明にならない）修正。M4 GO 判定記録。 |
+| 2026-06-16 | M4 Plugin API v1 実装完了（plugin.ts / pluginRegistry.ts / DomRenderer 拡張 / ExpressionEngine 拡張 / store 拡張 / ProjectPanel UI / PreviewPanel 拡張 / サンプル gradient-rect plugin）。typecheck ✅ / build ✅ / tests 86件 ✅。実機 UI 検証待ち。 |

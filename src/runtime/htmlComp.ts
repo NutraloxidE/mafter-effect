@@ -63,14 +63,11 @@ export class HtmlCompPlayer {
     await Promise.all(
       htmlComps.map(async (comp) => {
         if (this.modules.has(comp.id)) return;
-        const fn = await this.loader.load(scriptPathOf(comp.id));
-        if (typeof fn === "function") {
-          // CompositionModule は default export されたオブジェクト（関数ではない）。
-          // ModuleLoader は default export を返すので、fn がオブジェクトの場合も許容する。
-          const mod = fn as unknown as CompositionModule;
-          if (mod && typeof mod.mount === "function") {
-            this.modules.set(comp.id, mod);
-          }
+        const def = await this.loader.load(scriptPathOf(comp.id));
+        // §7 CompositionModule は { manifest, mount, render } のオブジェクト default export。
+        const mod = def as CompositionModule | null;
+        if (mod && typeof mod.mount === "function" && typeof mod.render === "function") {
+          this.modules.set(comp.id, mod);
         }
       }),
     );

@@ -22,6 +22,7 @@ export function InspectorPanel() {
   const frame = useEditorStore((s) => s.currentFrame);
   const selectedIds = useEditorStore((s) => s.selectedObjectIds);
   const updateObject = useEditorStore((s) => s.updateObject);
+  const addWiggleExpression = useEditorStore((s) => s.addWiggleExpression);
 
   const comp = currentTimelineComp(project, compId);
   const obj = comp?.objects.find((o) => o.id === selectedIds[0]);
@@ -57,6 +58,24 @@ export function InspectorPanel() {
     updateObject(obj.id, { opacity: setKeyframe(obj.opacity, frame, v) }, "Set opacity");
   };
 
+  const posExprOn = obj.transform.position.expression?.enabled === true;
+  const toggleWiggle = () => {
+    if (posExprOn) {
+      // expression を無効化（ファイルは残す）
+      updateObject(obj.id, {
+        transform: {
+          ...obj.transform,
+          position: {
+            ...obj.transform.position,
+            expression: { ...obj.transform.position.expression!, enabled: false },
+          },
+        },
+      }, "Disable wiggle");
+    } else {
+      void addWiggleExpression(obj.id);
+    }
+  };
+
   return (
     <div style={{ fontSize: 12, color: "#ccc", padding: 8, overflow: "auto", height: "100%", background: "#1c1c1c" }}>
       <div style={{ marginBottom: 8, fontWeight: "bold", color: "#eee" }}>{obj.name}</div>
@@ -87,6 +106,15 @@ export function InspectorPanel() {
           />
           <NumInput value={opacity} onChange={setOpacityKf} step={0.01} />
         </Row>
+      </Section>
+
+      <Section label="Expression">
+        <button
+          style={{ ...btnStyle, fontSize: 10, color: posExprOn ? "#f0c040" : "#bbb", borderColor: posExprOn ? "#aa7" : "#444" }}
+          onClick={toggleWiggle}
+        >
+          {posExprOn ? "● Wiggle Position (on)" : "○ Wiggle Position"}
+        </button>
       </Section>
 
       {/* Keyframe easing selector for selected prop */}
