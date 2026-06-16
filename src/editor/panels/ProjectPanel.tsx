@@ -126,12 +126,16 @@ export function ProjectPanel() {
             icon="◇"
             iconColor="#8a8"
             renaming={renamingId === c.id}
-            title="クリックでアクティブ comp のタイムラインに配置"
+            title="クリック or ドラッグでアクティブ comp のタイムラインに配置"
             onClick={() => { const id = addHtmlInstance(c.id); if (id) selectObjects([id]); }}
             onStartRename={() => setRenamingId(c.id)}
             onCommitRename={(name) => { if (name.trim()) renameComposition(c.id, name.trim()); setRenamingId(null); }}
             onCancelRename={() => setRenamingId(null)}
             onDelete={() => removeComposition(c.id)}
+            onDragStart={(e) => {
+              e.dataTransfer.setData(DRAG_MIME, JSON.stringify({ kind: "html-comp", id: c.id }));
+              e.dataTransfer.effectAllowed = "copy";
+            }}
           />
         ))}
 
@@ -145,8 +149,14 @@ export function ProjectPanel() {
         {assets.map((a) => (
           <div
             key={a.id}
-            title="クリックでアクティブ comp に配置"
+            title={a.kind === "audio" ? "クリック or ドラッグでアクティブ comp に配置" : undefined}
             onClick={() => { if (a.kind === "audio") { const id = addAudioLayer(a.id); if (id) selectObjects([id]); } }}
+            draggable={a.kind === "audio"}
+            onDragStart={(e) => {
+              if (a.kind !== "audio") { e.preventDefault(); return; }
+              e.dataTransfer.setData(DRAG_MIME, JSON.stringify({ kind: "audio-asset", id: a.id }));
+              e.dataTransfer.effectAllowed = "copy";
+            }}
             style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 10px", cursor: a.kind === "audio" ? "pointer" : "default" }}
             onMouseEnter={(e) => (e.currentTarget.style.background = "#262626")}
             onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
@@ -193,8 +203,13 @@ export function ProjectPanel() {
               <button
                 key={def.type}
                 onClick={() => { const id = addPluginObject(def.type); if (id) selectObjects([id]); }}
+                draggable
+                onDragStart={(e) => {
+                  e.dataTransfer.setData(DRAG_MIME, JSON.stringify({ kind: "plugin-component", componentType: def.type }));
+                  e.dataTransfer.effectAllowed = "copy";
+                }}
                 style={{ ...miniBtn, color: "#cca", borderColor: "#665533" }}
-                title={`Add ${def.label} to active comp`}
+                title={`Add ${def.label} to active comp（ドラッグ可）`}
               >
                 + {def.label}
               </button>
