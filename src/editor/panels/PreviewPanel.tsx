@@ -77,6 +77,7 @@ export function PreviewPanel() {
   const fitRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<DomRenderer | null>(null);
   const fontCacheRef = useRef(new FontOutlineCache());
+  const textQualityRef = useRef<"draft" | "precise">("draft");
   const [renderTick, setRenderTick] = useState(0);
   const rafRef = useRef<number | null>(null);
   const lastTimeRef = useRef<number | null>(null);
@@ -149,6 +150,7 @@ export function PreviewPanel() {
     const r = new DomRenderer();
     r.setHtmlPlayer(_htmlPlayer);
     r.setFontCache(fontCacheRef.current);
+    r.setTextQuality(textQualityRef.current); // 生成時に現在の品質を反映（effect は値不変時 re-run しない）
     r.mount(el, comp);
     rendererRef.current = r;
     return () => {
@@ -188,6 +190,7 @@ export function PreviewPanel() {
   const effectiveTextQuality =
     previewQualityEditing ? "draft" : viewerSettings.previewQuality;
 
+  textQualityRef.current = effectiveTextQuality;
   useEffect(() => {
     rendererRef.current?.setTextQuality(effectiveTextQuality);
     setRenderTick((t) => t + 1);

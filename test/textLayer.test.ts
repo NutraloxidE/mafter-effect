@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { sampleAny, sampleRgba } from "../src/runtime/interpolate";
 import { staticProp, defaultTransform } from "../src/core/props";
 import type { AnimatedProp, RGBA, SceneObject, TimelineComposition } from "../src/core/schema";
-import { computeTextContentBounds, layoutGlyphsForDecompose, layoutTextLines, textLineHeightPx } from "../src/runtime/textLayout";
+import { computeTextContentBounds, layoutGlyphsForDecompose, layoutTextLines, textBaselineY, textLineHeightPx } from "../src/runtime/textLayout";
+import type { Font } from "opentype.js";
 import { parseTextProps } from "../src/runtime/textRender";
 import { buildGlyphDecomposeObjects, createFixedMeasureContext } from "../src/editor/glyphDecompose";
 
@@ -66,6 +67,28 @@ describe("layoutTextLines", () => {
     expect(b.minX).toBe(0);
     expect(b.maxX).toBeCloseTo(12, 5);
     expect(b.maxY).toBeCloseTo(textLineHeightPx(10, 0), 5);
+  });
+});
+
+describe("textBaselineY (§26.4 Draft/Best baseline 一致)", () => {
+  // CSS line-box の baseline 配置に一致させる:
+  //   baseline = (line-height - (ascent + descent)) / 2 + ascent
+  // ascent/descent はフォントメトリクス。インク高さ(actualBoundingBox)で代用してはならない。
+  const fakeFont = { unitsPerEm: 1000, ascender: 800, descender: -200 } as unknown as Font;
+
+  it("uses font metrics + half-leading, not ink ascent", () => {
+    // size=100, leading=0 → lh=120, ascent=80, descent=20, fontHeight=100
+    // halfLeading=(120-100)/2=10, baseline=0+10+80=90
+    expect(textBaselineY(0, 100, 0, fakeFont)).toBeCloseTo(90, 5);
+  });
+
+  it("explicit leading sets line-height directly", () => {
+    // leading=160 → lh=160, halfLeading=(160-100)/2=30, baseline=30+80=110
+    expect(textBaselineY(0, 100, 160, fakeFont)).toBeCloseTo(110, 5);
+  });
+
+  it("offsets by lineY for subsequent lines", () => {
+    expect(textBaselineY(120, 100, 0, fakeFont)).toBeCloseTo(210, 5);
   });
 });
 

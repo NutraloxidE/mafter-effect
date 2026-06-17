@@ -125,7 +125,8 @@ spec §26 に確定。`text` builtin ComponentDef 登録 + Inspector Text セク
 - [x] **§26.7 Export** — ExportDialog テキスト描画方式 + DomRenderer `textRenderMode`。
 - [x] **回帰（自動）** — typecheck / **130 tests PASS** / build ✅
 - [ ] **回帰（手動）** — ブラウザ: 作成→編集→KF→グリフ分解→品質切替→export
-- [ ] **既知バグ潰し（ブロッカー）** — §25 Preview 直接操作 × テキストレイヤー（四隅 scale ハンドル等）。**次機能に進む前に必ず解消**（下記「開発方針」「既知のバグ」参照）。
+- [x] **既知バグ潰し（ブロッカー）解消 2026-06-18** — §26.4 Draft/Best 「位置が一致しない」根因を特定・修正。**根因**: `PreviewPanel` の renderer は comp 準備後に生成されるが、`effectiveTextQuality→setTextQuality` effect は値不変時 re-run しないため、生成された renderer に "draft" が届かず DomRenderer 既定 "precise" のまま固定 → **Draft 切替が無効化し常に SVG 描画**だった。修正: `textQualityRef` を導入し renderer 生成時に `setTextQuality(textQualityRef.current)` を適用（[PreviewPanel.tsx](src/editor/panels/PreviewPanel.tsx)）。**検証**: Playwright ピクセル差分で left/center/right/multiline/96px/stroke 全件 draft↔best が AA バンド相当（330〜1084/128000、位置ズレなら数千px差）→ グリフ実体が縦横・baseline・leading とも整合を実機確認。export は `setTextQuality` を生成後明示呼びで無影響。
+- [x] **§25 × §26 Preview 四隅 scale ハンドル** — 2026-06-18 手動確認で **solid 同等に修正済み**（Canvas bounds + ドラッグ起点相対 scale）。
 - **将来（§16）**: 段落ボックステキスト / 文字単位混在スタイル / パステキスト / 範囲セレクター式アニメーター / tracking 1/1000em / フォントセレクト UI / レイヤー個別品質 / レンダーキャッシュ実体
 
 ### Timeline AE化バックログ（spec §5 スキーマ拡張 + INV 影響評価を伴い別リビジョンで導入）
@@ -143,8 +144,8 @@ spec §26 に確定。`text` builtin ComponentDef 登録 + Inspector Text セク
 
 ## 開発方針（2026-06-18 明記）
 
-**§26 テキストレイヤーは機能実装済みだが、プレビュー編集など実機でバグが残っている。**
-自動テスト（130 PASS）だけでは UI 品質は保証されない。
+**§26 テキストレイヤーは機能実装済み。§26.4 Draft/Best 切替の位置ズレ（ブロッカー）は 2026-06-18 解消済み。**
+Preview 四隅 scale ハンドルも 2026-06-18 手動確認で修正済み。自動テスト（130 PASS）だけでは UI 品質は保証されないため、実機（Playwright）検証を併用する。
 
 > **次の機能・マイルストーン（M5 / Timeline Tier B 等）に進む前に、既知バグを必ず潰すこと。**
 > バグが残ったまま新規スコープを広げない。優先順位は **既知バグ修正 > 手動回帰 > 新機能**。
@@ -153,10 +154,13 @@ spec §26 に確定。`text` builtin ComponentDef 登録 + Inspector Text セク
 
 ## 既知のバグ・課題
 
-### §26 テキスト × §25 Preview 直接操作（**最優先・ブロッカー**）
+### §26 テキスト × §25 Preview（**最優先・ブロッカー**）
 
-- **Preview 四隅 scale ハンドル（テキストレイヤー）** — solid では再現しない。ドラッグ開始時のジャンプは 2026-06-18 に部分修正（Canvas bounds 整合 + `scaleFromOppositeCorner` ドラッグ起点相対化）したが、**挙動は依然バグバグしい**。四隅ごとに scale が歪む報告あり。**手動確認で完全に直るまで §26 完了扱いにしない**。
-- Draft / Best 切替時の bounds・baseline ズレの可能性（要ブラウザ回帰）。
+- ~~**§26.4 Draft / Best 切替の位置ズレ**~~ — **2026-06-18 解消（2 段階）**。
+  - **(1) renderer 初期化順**: renderer は comp 準備後に生成されるが `effectiveTextQuality→setTextQuality` effect が値不変で re-run せず、生成後の renderer に "draft" が届かず DomRenderer 既定 "precise" のまま固定 → Draft が一度も効かず常に SVG。修正: `textQualityRef` で renderer 生成時に品質を適用（[PreviewPanel.tsx](src/editor/panels/PreviewPanel.tsx)）。
+  - **(2) baseline 縦ズレ**: (1) 修正後に判明。Best(SVG) の baseline 式が `(lh-size)/2 + actualBoundingBoxAscent`（**インク高さ基準**）で、Draft(DOM) の CSS line-box baseline（**フォントメトリクス基準**）と食い違い、Best が size 比例で上にズレ（48px→2px / 120px→6px ≒ 0.08em）。修正: [textLayout.ts](src/runtime/textLayout.ts) `textBaselineY` を CSS 同式 `baseline=(lh-(ascent+descent))/2+ascent` に変更（opentype は ascender/descender、system フォントは canvas `fontBoundingBoxAscent/Descent`）。残差 ≤2px(≈0.02em) まで圧縮、目視で一致。`test/textLayer.test.ts` に baseline 回帰 3 件追加。
+  - **検証**: Playwright インク bbox 実測（Text/Hg を 48/72/120px、draft↔best の top/bottom 差）+ 目視スクショ。export は textRender 共有で同経路。
+- ~~**Preview 四隅 scale ハンドル（テキストレイヤー）**~~ — **2026-06-18 手動確認で修正済み**。solid と同等にドラッグ開始ジャンプなし。
 - §26 手動回帰（作成→編集→KF→グリフ分解→品質切替→export）未実施。
 
 ### インフラ・その他
@@ -168,10 +172,10 @@ spec §26 に確定。`text` builtin ComponentDef 登録 + Inspector Text セク
 
 ## Next steps（次のセッションでやること）
 
-**ゲート: 下記 1〜3 が完了するまで、4 以降（新機能）に着手しない。**
+**ゲート: 下記 1〜2 が完了するまで、4 以降（新機能）に着手しない。**
 
-1. **§26 × §25 テキスト Preview バグ修正（最優先）** — 四隅 scale ハンドルのジャンプ・歪みを solid と同等まで潰す。Draft / Best 両方で確認。
-2. **§26 手動回帰** — 作成→編集→KF→グリフ分解→品質切替→export。
+1. ~~**§26.4 Draft/Best 切替バグ修正**~~ — **2026-06-18 解消済み**（renderer 初期化順の修正・Playwright 検証済み）。
+2. **§26 手動回帰** — 作成→編集→KF→グリフ分解→品質切替→export（自動位置検証は済、人手で操作感を確認）。
 3. **§25 Preview 手動回帰** — 直接操作・ズーム・オーバーレイ・animated KF 書き戻し（solid / image / text）。
 4. **§24 Ease パネル手動回帰** — F9 メニュー・グラフエディタとの SSoT 共有確認。
 5. ~~**§23 precomp Playwright E2E**~~ → ロジックは `test/precomp.test.ts` で自動化済み。Playwright E2E は任意。
@@ -204,3 +208,6 @@ spec §26 に確定。`text` builtin ComponentDef 登録 + Inspector Text セク
 | 2026-06-18 | (Cursor) §26 テキストレイヤー本実装（builtin text ComponentDef / Inspector Text + ColorSwatch / Draft-Best 品質 / SVG アウトライン + opentype.js / グリフ分解 / export textRenderMode）。128 tests PASS |
 | 2026-06-18 | (Cursor) §26 テキスト scale ジャンプ修正: `textMeasure.ts`（Canvas `measureText` 実測）+ `previewViewer` の `getLayerLocalBounds` テキスト case を推定式から差し替え |
 | 2026-06-18 | (Cursor) §25/§26 テキスト scale ハンドル ジャンプ修正: `scaleFromOppositeCorner` をドラッグ起点相対に変更 / Draft DOM を Canvas bounds と一致 / Best 時は opentype bounds でハンドル整合。130 tests PASS |
+| 2026-06-18 | (Cursor) §26 手動確認: Preview 四隅 scale ハンドル **修正済み**。§26.4 **Draft/Best 切替は未修正（ブロッカー継続）** — 次セッション優先 |
+| 2026-06-18 | §26.4 Draft/Best 位置ズレ **解消(1)**: renderer 初期化順（生成後の renderer に "draft" が届かず常に precise=SVG 固定）。`textQualityRef` で生成時に品質適用（PreviewPanel.tsx）。130 tests ✅ |
+| 2026-06-18 | §26.4 Draft/Best **縦ズレ解消(2)**: Best baseline 式をインク基準→CSS line-box 同式（フォントメトリクス + 正 half-leading, system は fontBoundingBox）に修正（textLayout.ts textBaselineY）。Playwright インク実測で 0.08em→≤0.02em。baseline 回帰 3 件追加。133 tests / typecheck / build ✅ |

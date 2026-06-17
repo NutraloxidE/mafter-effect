@@ -35,17 +35,29 @@ export function textBaselineY(
   sampleChar?: string,
 ): number {
   const lh = textLineHeightPx(size, leading);
-  const halfLeading = Math.max(0, (lh - size) / 2);
+  // CSS line-box の baseline 配置に一致させる:
+  //   baseline = halfLeading + ascent,  halfLeading = (line-height - (ascent + descent)) / 2
+  // ascent/descent はフォントメトリクス（CSS が行送り計算に使う値）であって
+  // グリフのインク高さ（actualBoundingBox）ではない。ここを取り違えると Draft(DOM) と
+  // Best(SVG) で baseline が縦にズレる（§26.4）。
   if (font && font.unitsPerEm > 0) {
-    return lineY + halfLeading + (font.ascender / font.unitsPerEm) * size;
+    const ascent = (font.ascender / font.unitsPerEm) * size;
+    const descent = (-font.descender / font.unitsPerEm) * size; // descender は負値
+    return lineY + (lh - (ascent + descent)) / 2 + ascent;
   }
   if (measureCtx) {
-    const m = measureCtx.measureText(sampleChar ?? "M");
+    const m = measureCtx.measureText(sampleChar ?? "Mg");
+    const fba = m.fontBoundingBoxAscent;
+    const fbd = m.fontBoundingBoxDescent;
+    if (fba > 0 && fbd >= 0) {
+      return lineY + (lh - (fba + fbd)) / 2 + fba;
+    }
     if (m.actualBoundingBoxAscent > 0) {
-      return lineY + halfLeading + m.actualBoundingBoxAscent;
+      // fontBoundingBox 非対応環境のフォールバック（近似）
+      return lineY + Math.max(0, (lh - size) / 2) + m.actualBoundingBoxAscent;
     }
   }
-  return lineY + halfLeading + textAscenderPx(size, null);
+  return lineY + Math.max(0, (lh - size) / 2) + textAscenderPx(size, null);
 }
 
 /** 描画・プレビューハンドル共用のコンテンツ境界（content-local, 原点左上）。 */
