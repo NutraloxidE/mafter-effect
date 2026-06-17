@@ -95,7 +95,7 @@ export function buildGlyphDecomposeObjects(
             size: staticProp(size),
             color: staticProp(color),
             tracking: staticProp(0),
-            leading: staticProp(0),
+            leading: staticProp(leading),
             strokeColor: staticProp(strokeColor),
             strokeWidth: staticProp(strokeWidth),
             font,

@@ -147,5 +147,25 @@ describe("glyph decompose", () => {
   it("layoutGlyphsForDecompose skips whitespace", () => {
     const glyphs = layoutGlyphsForDecompose("A B", 10, 0, 0, "left", () => 10);
     expect(glyphs.map((g) => g.char)).toEqual(["A", "B"]);
+    // 空白はレイヤー化しないが advance（10px）は B の x に反映される。
+    expect(glyphs.map((g) => g.x)).toEqual([0, 20]);
+  });
+
+  it("layoutGlyphsForDecompose applies bounds.minX like renderPreciseText (center align)", () => {
+    const glyphs = layoutGlyphsForDecompose("AB", 10, 0, 0, "center", () => 10);
+    expect(glyphs.map((g) => g.x)).toEqual([0, 10]);
+  });
+
+  it("layoutGlyphsForDecompose preserves multiline y with explicit leading", () => {
+    const glyphs = layoutGlyphsForDecompose("A\nB", 10, 0, 160, "left", () => 10);
+    expect(glyphs[0]!.y).toBe(0);
+    expect(glyphs[1]!.y).toBe(160);
+  });
+
+  it("layoutGlyphsForDecompose matches render-local origin (no double minX offset)", () => {
+    const measure = (c: string) => (c === "A" ? 10 : 8);
+    const glyphs = layoutGlyphsForDecompose("AB", 10, 0, 0, "center", measure);
+    // line width 18, minX=-9 → A at 0, B at 10
+    expect(glyphs.map((g) => g.x)).toEqual([0, 10]);
   });
 });

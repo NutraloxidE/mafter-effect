@@ -68,10 +68,11 @@ export function computeTextContentBounds(
   leading: number,
   align: TextAlign,
   font: Font | null,
+  measureChar?: (char: string) => number,
 ): LocalBounds {
   if (size <= 0) return { minX: 0, minY: 0, maxX: 1, maxY: 1 };
   const lineHeight = textLineHeightPx(size, leading);
-  const lines = layoutTextLines(text, size, tracking, lineHeight, align, font);
+  const lines = layoutTextLines(text, size, tracking, lineHeight, align, font, measureChar);
   if (lines.length === 0) {
     return { minX: 0, minY: 0, maxX: Math.max(1, size * 0.5), maxY: lineHeight };
   }
@@ -91,7 +92,9 @@ export function computeTextContentBounds(
       lineMin = Math.min(lineMin, g.x);
       const adv = font
         ? font.getAdvanceWidth(g.char, size)
-        : size * 0.6;
+        : measureChar
+          ? measureChar(g.char)
+          : size * 0.6;
       lineMax = Math.max(lineMax, g.x + adv);
     }
     minX = Math.min(minX, lineMin);
@@ -165,6 +168,28 @@ export function layoutTextLines(
   return lines;
 }
 
+/** 描画・グリフ分解・bounds 計算の共有レイアウト（§26.4 / §26.5 単一の正）。 */
+export interface ResolvedTextLayout {
+  lines: LayoutLine[];
+  bounds: LocalBounds;
+  lineHeight: number;
+}
+
+export function resolveTextLayout(
+  text: string,
+  size: number,
+  tracking: number,
+  leading: number,
+  align: TextAlign,
+  font: Font | null,
+  measureChar?: (char: string) => number,
+): ResolvedTextLayout {
+  const lineHeight = textLineHeightPx(size, leading);
+  const lines = layoutTextLines(text, size, tracking, lineHeight, align, font, measureChar);
+  const bounds = computeTextContentBounds(text, size, tracking, leading, align, font, measureChar);
+  return { lines, bounds, lineHeight };
+}
+
 /** §26.5 グリフ分解用: 空白文字を除く配置一覧。 */
 export interface GlyphPlacement {
   char: string;
@@ -180,13 +205,17 @@ export function layoutGlyphsForDecompose(
   align: TextAlign,
   measureChar: (char: string) => number,
 ): GlyphPlacement[] {
-  const lh = leading > 0 ? leading : size * 1.2;
-  const lines = layoutTextLines(text, size, tracking, lh, align, null, measureChar);
+  const { lines, bounds } = resolveTextLayout(text, size, tracking, leading, align, null, measureChar);
   const out: GlyphPlacement[] = [];
   for (const line of lines) {
     for (const g of line.glyphs) {
       if (!g.char.trim()) continue;
-      out.push({ char: g.char, x: g.x, y: g.y });
+      // renderPreciseText / applyDraftText と同じ content-local 原点（bounds 左上）に揃える。
+      out.push({
+        char: g.char,
+        x: g.x - bounds.minX,
+        y: g.y - bounds.minY,
+      });
     }
   }
   return out;

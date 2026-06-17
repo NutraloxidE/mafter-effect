@@ -2,7 +2,7 @@ import type { Font } from "opentype.js";
 import type { RGBA } from "../core/schema";
 import {
   computeTextContentBounds,
-  layoutTextLines,
+  resolveTextLayout,
   textBaselineY,
   textLineHeightPx,
   type LocalBounds,
@@ -151,22 +151,28 @@ export function computeTextBoundsForHandles(
   if (useFontMetrics && font) {
     return computeTextContentBounds(p.text, p.size, p.tracking, p.leading, p.align, font);
   }
-  return measureTextCanvasBounds(p);
+  const measureCtx = createMeasureCtx();
+  if (measureCtx) applyMeasureFont(measureCtx, p);
+  const measureChar = (char: string): number =>
+    measureCtx ? measureCtx.measureText(char).width : p.size * 0.6;
+  return resolveTextLayout(
+    p.text, p.size, p.tracking, p.leading, p.align, null, measureChar,
+  ).bounds;
 }
 
-/** §26.4 DOM 描画。GG 分解前のプレビュー Draft はこれを正とする。 */
+/** §26.4 DOM 描画。レイアウト座標で 1 文字ずつ配置し Best / グリフ分解と一致させる。 */
 export function applyDraftText(el: HTMLElement, p: TextStyleProps): void {
-  el.style.whiteSpace = "pre-wrap";
+  el.style.whiteSpace = "normal";
   el.style.margin = "0";
   el.style.padding = "0";
+  el.style.position = "relative";
   el.style.color = rgbaCss(p.color);
   el.style.fontFamily = p.font;
   el.style.fontSize = `${p.size}px`;
   el.style.fontWeight = String(p.weight);
   el.style.fontStyle = p.italic ? "italic" : "normal";
-  el.style.textAlign = p.align;
-  el.style.letterSpacing = `${p.tracking}px`;
-  el.style.lineHeight = `${textLineHeightPx(p.size, p.leading)}px`;
+  el.style.letterSpacing = "0";
+  el.style.textAlign = "left";
   if (p.strokeWidth > 0) {
     el.style.webkitTextStroke = `${p.strokeWidth}px ${rgbaCss(p.strokeColor)}`;
     el.style.paintOrder = "stroke fill";
@@ -174,17 +180,36 @@ export function applyDraftText(el: HTMLElement, p: TextStyleProps): void {
     el.style.webkitTextStroke = "";
     el.style.paintOrder = "";
   }
-  if (el.textContent !== p.text) el.textContent = p.text;
 
-  const bounds = measureTextCanvasBounds(p);
+  const measureCtx = createMeasureCtx();
+  if (measureCtx) applyMeasureFont(measureCtx, p);
+  const measureChar = (char: string): number =>
+    measureCtx ? measureCtx.measureText(char).width : p.size * 0.6;
+  const { lines, bounds, lineHeight } = resolveTextLayout(
+    p.text, p.size, p.tracking, p.leading, p.align, null, measureChar,
+  );
+
   const boxW = bounds.maxX - bounds.minX;
   const boxH = bounds.maxY - bounds.minY;
   el.style.width = `${Math.max(1, boxW)}px`;
   el.style.height = `${Math.max(1, boxH)}px`;
+  el.style.lineHeight = `${lineHeight}px`;
   el.style.overflow = "visible";
-  const tx = bounds.minX !== 0 ? -bounds.minX : 0;
-  const ty = bounds.minY !== 0 ? -bounds.minY : 0;
-  el.style.transform = tx !== 0 || ty !== 0 ? `translate(${tx}px, ${ty}px)` : "";
+  el.style.transform = "";
+
+  el.textContent = "";
+  for (const line of lines) {
+    for (const g of line.glyphs) {
+      if (!g.char || g.char === "\n") continue;
+      const span = document.createElement("span");
+      span.style.position = "absolute";
+      span.style.left = `${g.x - bounds.minX}px`;
+      span.style.top = `${g.y - bounds.minY}px`;
+      span.style.lineHeight = `${lineHeight}px`;
+      span.textContent = g.char;
+      el.appendChild(span);
+    }
+  }
 }
 
 /** §26.4.1 precise: SVG アウトライン（asset フォント）または SVG `<text>` フォールバック。 */
@@ -203,17 +228,18 @@ export function renderPreciseText(
   }
   while (svg.firstChild) svg.removeChild(svg.firstChild);
 
-  const lh = textLineHeightPx(p.size, p.leading);
   const measureCtx = createMeasureCtx();
   if (measureCtx) applyMeasureFont(measureCtx, p);
   const sampleChar = p.text.match(/\S/)?.[0];
-  const lines = layoutTextLines(p.text, p.size, p.tracking, lh, p.align, font);
-  const bounds = computeTextContentBounds(p.text, p.size, p.tracking, p.leading, p.align, font);
+  const { lines, bounds } = resolveTextLayout(
+    p.text, p.size, p.tracking, p.leading, p.align, font,
+    measureCtx ? (char) => measureCtx.measureText(char).width : undefined,
+  );
   const boxW = bounds.maxX - bounds.minX;
   const boxH = bounds.maxY - bounds.minY;
   svg.setAttribute("width", String(Math.ceil(Math.max(1, boxW))));
   svg.setAttribute("height", String(Math.ceil(Math.max(1, boxH))));
-  svg.style.transform = bounds.minX !== 0 ? `translate(${-bounds.minX}px, 0)` : "";
+  svg.style.transform = "";
 
   const fill = rgbaCss(p.color);
   const stroke = rgbaCss(p.strokeColor);
@@ -240,7 +266,7 @@ export function renderPreciseText(
     return;
   }
 
-  // system フォント: SVG <text> フォールバック
+  // system フォント: グリフ単位 SVG <tspan>（layoutTextLines 座標 = グリフ分解と一致）
   const textEl = document.createElementNS("http://www.w3.org/2000/svg", "text");
   textEl.setAttribute("fill", fill);
   textEl.setAttribute("font-family", p.font);
@@ -254,14 +280,14 @@ export function renderPreciseText(
   }
   for (const line of lines) {
     const baseline = textBaselineY(line.y, p.size, p.leading, null, measureCtx, sampleChar);
-    const tspan = document.createElementNS("http://www.w3.org/2000/svg", "tspan");
-    tspan.setAttribute("x", String(line.offsetX - bounds.minX));
-    tspan.setAttribute("y", String(baseline));
-    tspan.setAttribute("letter-spacing", String(p.tracking));
-    if (p.align === "center") tspan.setAttribute("text-anchor", "middle");
-    else if (p.align === "right") tspan.setAttribute("text-anchor", "end");
-    tspan.textContent = line.text;
-    textEl.appendChild(tspan);
+    for (const g of line.glyphs) {
+      if (!g.char || g.char === "\n") continue;
+      const tspan = document.createElementNS("http://www.w3.org/2000/svg", "tspan");
+      tspan.setAttribute("x", String(g.x - bounds.minX));
+      tspan.setAttribute("y", String(baseline));
+      tspan.textContent = g.char;
+      textEl.appendChild(tspan);
+    }
   }
   svg.appendChild(textEl);
 }
