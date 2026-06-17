@@ -577,16 +577,34 @@ export function applyRotationFromDrag(
   return deg;
 }
 
+/** Inspector/Timeline スクラブ中の patch を SceneObject にマージ（ハンドル bounds 用）。 */
+export function mergeObjectPreviewOverride(
+  obj: SceneObject,
+  previewOverride: { objectId: string; patch: Partial<SceneObject> } | null | undefined,
+): SceneObject {
+  if (!previewOverride || previewOverride.objectId !== obj.id) return obj;
+  return { ...obj, ...previewOverride.patch };
+}
+
 /** ドラッグ中の transform を comp に一時適用（resolve 用）。 */
 export function compWithTransformOverride(
   comp: TimelineComposition,
   objectId: string,
   transform: Transform,
 ): TimelineComposition {
+  return compWithObjectPatch(comp, objectId, { transform });
+}
+
+/** Inspector/Timeline スクラブ中の patch を comp に一時適用（resolve 用）。 */
+export function compWithObjectPatch(
+  comp: TimelineComposition,
+  objectId: string,
+  patch: Partial<SceneObject>,
+): TimelineComposition {
   return {
     ...comp,
     objects: comp.objects.map((o) =>
-      o.id === objectId ? { ...o, transform } : o,
+      o.id === objectId ? { ...o, ...patch } : o,
     ),
   };
 }

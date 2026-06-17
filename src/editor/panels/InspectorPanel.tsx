@@ -28,6 +28,7 @@ export function InspectorPanel() {
   const updateObjects = useEditorStore((s) => s.updateObjects);
   const addWiggleExpression = useEditorStore((s) => s.addWiggleExpression);
   const setPreviewQualityEditing = useEditorStore((s) => s.setPreviewQualityEditing);
+  const setPreviewOverride = useEditorStore((s) => s.setPreviewOverride);
   const decomposeGlyphs = useEditorStore((s) => s.decomposeGlyphs);
 
   const comp = currentTimelineComp(project, compId);
@@ -47,7 +48,20 @@ export function InspectorPanel() {
   const scl = propVec3ToDisplay(obj.transform.scale, frame);
   const opacity = sampleScalar(obj.opacity, frame);
 
-  // Vec3 プロパティを設定。複数選択時は deltaParts を使って各オブジェクトに差分適用。
+  const previewPatch = (patch: Partial<SceneObject>) => {
+    if (selectedIds.length > 1) return;
+    setPreviewOverride({ objectId: obj.id, patch });
+  };
+
+  const buildTransformPreview = (
+    key: "position" | "anchor" | "rotation" | "scale",
+    value: Vec3,
+  ): Transform => ({
+    ...obj.transform,
+    [key]: obj.transform[key].keyframes.length > 0
+      ? setKeyframe(obj.transform[key], frame, value)
+      : { ...obj.transform[key], value },
+  });
   const setVec3Kf = (
     key: "position" | "anchor" | "rotation" | "scale",
     v: Vec3,
@@ -135,21 +149,25 @@ export function InspectorPanel() {
       <Section label="Transform">
         <Vec3Row label="Position" vals={pos}
           onChange={(v, dp) => setVec3Kf("position", v, dp)}
+          onLiveChange={(v) => previewPatch({ transform: buildTransformPreview("position", v) })}
           hasKf={obj.transform.position.keyframes.length > 0}
           speeds={{ x: 1, y: 1, z: 1 }}
         />
         <Vec3Row label="Anchor" vals={anchor}
           onChange={(v, dp) => setVec3Kf("anchor", v, dp)}
+          onLiveChange={(v) => previewPatch({ transform: buildTransformPreview("anchor", v) })}
           hasKf={obj.transform.anchor.keyframes.length > 0}
           speeds={{ x: 1, y: 1, z: 1 }}
         />
         <Vec3Row label="Rotation" vals={rot}
           onChange={(v, dp) => setVec3Kf("rotation", v, dp)}
+          onLiveChange={(v) => previewPatch({ transform: buildTransformPreview("rotation", v) })}
           hasKf={obj.transform.rotation.keyframes.length > 0}
           speeds={{ x: 0.5, y: 0.5, z: 0.5 }}
         />
         <Vec3Row label="Scale" vals={scl}
           onChange={(v, dp) => setVec3Kf("scale", v, dp)}
+          onLiveChange={(v) => previewPatch({ transform: buildTransformPreview("scale", v) })}
           hasKf={obj.transform.scale.keyframes.length > 0}
           speeds={{ x: 0.01, y: 0.01, z: 0.01 }}
         />
@@ -162,6 +180,11 @@ export function InspectorPanel() {
           />
           <ScrubNumber
             value={opacity}
+            onLiveChange={(v) => previewPatch({
+              opacity: obj.opacity.keyframes.length > 0
+                ? setKeyframe(obj.opacity, frame, v)
+                : { ...obj.opacity, value: v },
+            })}
             onCommit={(v, d) => setOpacityKf(v, d)}
             speed={0.01}
             decimals={2}
@@ -176,6 +199,7 @@ export function InspectorPanel() {
         obj={obj}
         frame={frame}
         updateObject={updateObject}
+        previewPatch={previewPatch}
         onEditFocus={() => setPreviewQualityEditing(true)}
         onEditBlur={() => setPreviewQualityEditing(false)}
         onDecompose={() => decomposeGlyphs(obj.id)}
@@ -253,6 +277,7 @@ function TextSection({
   obj,
   frame,
   updateObject,
+  previewPatch,
   onEditFocus,
   onEditBlur,
   onDecompose,
@@ -260,6 +285,7 @@ function TextSection({
   obj: SceneObject;
   frame: number;
   updateObject: (id: string, patch: Partial<SceneObject>, label?: string) => void;
+  previewPatch: (patch: Partial<SceneObject>) => void;
   onEditFocus: () => void;
   onEditBlur: () => void;
   onDecompose: () => void;
@@ -277,8 +303,20 @@ function TextSection({
     updateObject(obj.id, { components: nextComponents }, label);
   };
 
+  const previewComponents = (nextProps: Component["props"]) => {
+    previewPatch({
+      components: obj.components.map((c, i) =>
+        i === compIdx ? { ...c, props: nextProps } : c,
+      ),
+    });
+  };
+
   const writeAnim = <T,>(key: string, next: AnimatedProp<T>, label: string) => {
     writeComponents({ ...props, [key]: next }, label);
+  };
+
+  const previewAnim = <T,>(key: string, next: AnimatedProp<T>) => {
+    previewComponents({ ...props, [key]: next });
   };
 
   const writeStatic = (key: string, value: unknown, label: string) => {
@@ -326,8 +364,16 @@ function TextSection({
             value={textVal}
             rows={3}
             onFocus={onEditFocus}
-            onBlur={onEditBlur}
             onChange={(e) => {
+              const v = e.target.value;
+              if (textProp.keyframes.length > 0) {
+                previewAnim("text", setKeyframe(textProp, frame, v, { type: "hold" }));
+              } else {
+                previewAnim("text", { ...textProp, value: v });
+              }
+            }}
+            onBlur={(e) => {
+              onEditBlur();
               const v = e.target.value;
               if (textProp.keyframes.length > 0) {
                 writeAnim("text", setKeyframe(textProp, frame, v, { type: "hold" }), "Edit Source Text");
@@ -359,6 +405,10 @@ function TextSection({
             if (sizeProp.keyframes.length > 0) writeAnim("size", setKeyframe(sizeProp as AnimatedProp<number>, frame, v), "Edit size");
             else writeAnim("size", { ...sizeProp, value: v }, "Edit size");
           }}
+          onLiveChange={(v) => {
+            if (sizeProp.keyframes.length > 0) previewAnim("size", setKeyframe(sizeProp as AnimatedProp<number>, frame, v));
+            else previewAnim("size", { ...sizeProp, value: v });
+          }}
           onFocus={onEditFocus}
           onBlur={onEditBlur}
           min={1}
@@ -374,6 +424,10 @@ function TextSection({
               onCommit={(v) => {
                 if (colorProp.keyframes.length > 0) writeAnim("color", setKeyframe(colorProp as AnimatedProp<RGBA>, frame, v), "Edit fill");
                 else writeAnim("color", { ...colorProp, value: v }, "Edit fill");
+              }}
+              onLiveChange={(v) => {
+                if (colorProp.keyframes.length > 0) previewAnim("color", setKeyframe(colorProp as AnimatedProp<RGBA>, frame, v));
+                else previewAnim("color", { ...colorProp, value: v });
               }}
               onFocus={onEditFocus}
               onBlur={onEditBlur}
@@ -391,6 +445,10 @@ function TextSection({
               onCommit={(v) => {
                 if (strokeColorProp.keyframes.length > 0) writeAnim("strokeColor", setKeyframe(strokeColorProp as AnimatedProp<RGBA>, frame, v), "Edit stroke");
                 else writeAnim("strokeColor", { ...strokeColorProp, value: v }, "Edit stroke");
+              }}
+              onLiveChange={(v) => {
+                if (strokeColorProp.keyframes.length > 0) previewAnim("strokeColor", setKeyframe(strokeColorProp as AnimatedProp<RGBA>, frame, v));
+                else previewAnim("strokeColor", { ...strokeColorProp, value: v });
               }}
               onFocus={onEditFocus}
               onBlur={onEditBlur}
@@ -420,6 +478,10 @@ function TextSection({
             if (trackingProp.keyframes.length > 0) writeAnim("tracking", setKeyframe(trackingProp as AnimatedProp<number>, frame, v), "Edit tracking");
             else writeAnim("tracking", { ...trackingProp, value: v }, "Edit tracking");
           }}
+          onLiveChange={(v) => {
+            if (trackingProp.keyframes.length > 0) previewAnim("tracking", setKeyframe(trackingProp as AnimatedProp<number>, frame, v));
+            else previewAnim("tracking", { ...trackingProp, value: v });
+          }}
           onFocus={onEditFocus}
           onBlur={onEditBlur}
         />
@@ -434,6 +496,10 @@ function TextSection({
           onCommit={(v) => {
             if (leadingProp.keyframes.length > 0) writeAnim("leading", setKeyframe(leadingProp as AnimatedProp<number>, frame, v), "Edit leading");
             else writeAnim("leading", { ...leadingProp, value: v }, "Edit leading");
+          }}
+          onLiveChange={(v) => {
+            if (leadingProp.keyframes.length > 0) previewAnim("leading", setKeyframe(leadingProp as AnimatedProp<number>, frame, v));
+            else previewAnim("leading", { ...leadingProp, value: v });
           }}
           onFocus={onEditFocus}
           onBlur={onEditBlur}
@@ -450,6 +516,10 @@ function TextSection({
           onCommit={(v) => {
             if (strokeWidthProp.keyframes.length > 0) writeAnim("strokeWidth", setKeyframe(strokeWidthProp as AnimatedProp<number>, frame, v), "Edit stroke width");
             else writeAnim("strokeWidth", { ...strokeWidthProp, value: v }, "Edit stroke width");
+          }}
+          onLiveChange={(v) => {
+            if (strokeWidthProp.keyframes.length > 0) previewAnim("strokeWidth", setKeyframe(strokeWidthProp as AnimatedProp<number>, frame, v));
+            else previewAnim("strokeWidth", { ...strokeWidthProp, value: v });
           }}
           onFocus={onEditFocus}
           onBlur={onEditBlur}
@@ -499,7 +569,7 @@ function Stopwatch({ active, onClick }: { active: boolean; onClick: () => void }
 }
 
 function AnimScalarRow({
-  label, prop, value, onToggle, onCommit, min,
+  label, prop, value, onToggle, onCommit, onLiveChange, min,
 }: {
   label: string;
   prop: AnimatedProp<number>;
@@ -507,6 +577,7 @@ function AnimScalarRow({
   frame: number;
   onToggle: () => void;
   onCommit: (v: number) => void;
+  onLiveChange?: (v: number) => void;
   onFocus?: () => void;
   onBlur?: () => void;
   min?: number;
@@ -517,6 +588,7 @@ function AnimScalarRow({
       <ScrubNumber
         value={value}
         onCommit={(v) => onCommit(v)}
+        onLiveChange={onLiveChange}
         speed={1}
         min={min}
         style={numInputStyle}
@@ -544,11 +616,12 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 }
 
 function Vec3Row({
-  label, vals, onChange, hasKf, speeds,
+  label, vals, onChange, onLiveChange, hasKf, speeds,
 }: {
   label: string;
   vals: { x: string; y: string; z: string };
   onChange: (v: Vec3, deltaParts?: Partial<Vec3>) => void;
+  onLiveChange?: (v: Vec3) => void;
   hasKf: boolean;
   speeds?: { x: number; y: number; z: number };
 }) {
@@ -564,6 +637,16 @@ function Vec3Row({
     onChange(v, deltaParts);
   };
 
+  const live = (axis: "x" | "y" | "z", newVal: number) => {
+    if (!Number.isFinite(newVal) || !onLiveChange) return;
+    const base = {
+      x: parseFloat(vals.x),
+      y: parseFloat(vals.y),
+      z: parseFloat(vals.z),
+    };
+    onLiveChange({ ...base, [axis]: newVal });
+  };
+
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 4 }}>
       <span style={{ color: "#666", width: 52, textAlign: "right", flexShrink: 0 }}>{label}</span>
@@ -574,6 +657,7 @@ function Vec3Row({
           <ScrubNumber
             value={parseFloat(vals[ax])}
             onCommit={(v, d) => commit(ax, v, d)}
+            onLiveChange={(v) => live(ax, v)}
             speed={speeds?.[ax] ?? 1}
             style={numInputStyle}
           />

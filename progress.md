@@ -214,3 +214,4 @@ Preview 四隅 scale ハンドルも 2026-06-18 手動確認で修正済み。�
 | 2026-06-18 | (Cursor) エージェントルール更新: 実装→修正ループで **Playwright + Chromium 実機検証を必須**と明記（`.cursor/rules/mafter-effect-agent.mdc` / `debug-visual-render-bug.mdc` / skill 同期） |
 | 2026-06-18 | (Cursor) §26 グリフ分解: 分解前テキストを **`{name} (source)`** レイヤーとして複製保存（`enabled: false` で二重描画回避）。元 ID は従来どおり空テキスト container + glyph 子。133 tests ✅ |
 | 2026-06-18 | (Cursor) §26.5 グリフ分解位置ズレ **解消**: 原因は (1) center/right で SVG `text-anchor` 行描画と per-glyph レイアウトの不一致 (2) `translate(-minX)` + `g.x-minX` の二重オフセット。修正: `resolveTextLayout` を Draft/Best/分解の単一正に、per-glyph 描画へ統一。Playwright 実測 center/right/multiline dx≈0（37px→0）。136 tests ✅ |
+| 2026-06-18 | (Cursor) Inspector/Timeline プロパティ編集の **Preview 即時反映**: `previewOverride`（スクラブ/カラーピッカー中の undo 対象外 patch）+ `ScrubNumber`/`ColorSwatch` `onLiveChange` + `PreviewPanel` `renderComp` マージ。選択ハンドルも `mergeObjectPreviewOverride` で bounds/transform 追従。136 tests ✅ |

@@ -2,6 +2,7 @@ import { useCallback, useMemo, useRef } from "react";
 import type { Font } from "opentype.js";
 import type { Frame, Project, SceneObject, TimelineComposition, Transform, Vec3 } from "../../core/schema";
 import type { ResolveContext } from "../../runtime/resolve";
+import type { PreviewOverride } from "../store";
 import {
   anchorCompPosition,
   applyRotationFromDrag,
@@ -11,6 +12,7 @@ import {
   compWithTransformOverride,
   computeWorldTransforms,
   getLayerLocalBounds,
+  mergeObjectPreviewOverride,
   movedPosition,
   oppositeControlPoint,
   parentWorldMatrix,
@@ -42,6 +44,7 @@ interface PreviewViewerOverlayProps {
   viewPan: { x: number; y: number };
   hostRect: { left: number; top: number };
   selectedObject: SceneObject | null;
+  previewOverride: PreviewOverride | null;
   draftTransform: Transform | null;
   onDraftChange: (t: Transform | null) => void;
   onCommit: (transform: Transform, label: string) => void;
@@ -74,6 +77,7 @@ export function PreviewViewerOverlay({
   viewPan,
   hostRect,
   selectedObject,
+  previewOverride,
   draftTransform,
   onDraftChange,
   onCommit,
@@ -95,7 +99,12 @@ export function PreviewViewerOverlay({
   } | null>(null);
   const lastDraftRef = useRef<Transform | null>(null);
 
-  const activeTransform = draftTransform ?? selectedObject?.transform ?? null;
+  const effectiveObject = useMemo(
+    () => (selectedObject ? mergeObjectPreviewOverride(selectedObject, previewOverride) : null),
+    [selectedObject, previewOverride],
+  );
+
+  const activeTransform = draftTransform ?? effectiveObject?.transform ?? null;
   const activeResolved = activeTransform
     ? resolveTransformAtFrame(activeTransform, frame)
     : null;
@@ -106,7 +115,7 @@ export function PreviewViewerOverlay({
   );
 
   const selectionAabb = computeSelectionAabb(
-    selectedObject,
+    effectiveObject,
     activeTransform,
     comp,
     project,
@@ -117,7 +126,7 @@ export function PreviewViewerOverlay({
 
   const beginDrag = useCallback(
     (mode: DragMode, e: React.MouseEvent) => {
-      if (!selectedObject || !activeTransform || !activeResolved) {
+      if (!effectiveObject || !activeTransform || !activeResolved) {
         if (mode.kind === "pan") {
           dragRef.current = {
             mode,
@@ -126,7 +135,7 @@ export function PreviewViewerOverlay({
             startTransform: { anchor: { x: 0, y: 0, z: 0 }, position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } },
             startPan: { ...viewPan },
             startMouse: { x: e.clientX, y: e.clientY },
-            baseTransform: selectedObject?.transform ?? comp.objects[0]?.transform!,
+            baseTransform: effectiveObject?.transform ?? selectedObject?.transform ?? comp.objects[0]?.transform!,
           };
           const move = (ev: MouseEvent) => {
             const d = dragRef.current;
@@ -149,13 +158,13 @@ export function PreviewViewerOverlay({
       e.preventDefault();
       e.stopPropagation();
       const startComp = screenToComp(e.clientX, e.clientY, hostRect, viewZoom, viewPan);
-      const parentWorld = parentWorldMatrix(comp, selectedObject.id, frame, resolveCtx);
+      const parentWorld = parentWorldMatrix(comp, effectiveObject.id, frame, resolveCtx);
       const startLocal = compToObjectLocal(startComp, parentWorld, activeResolved) ?? startComp;
 
       let fixedComp: Vec3 | undefined;
       let scaleBounds: import("../previewViewer").LocalBounds | undefined;
       if (mode.kind === "scale") {
-        scaleBounds = getLayerLocalBounds(selectedObject, frame, project, boundsCtx);
+        scaleBounds = getLayerLocalBounds(effectiveObject, frame, project, boundsCtx);
         const fixedLocal = oppositeControlPoint(scaleBounds, mode.handle);
         const startWorld = multiply(
           parentWorld,
@@ -184,9 +193,9 @@ export function PreviewViewerOverlay({
 
       const move = (ev: MouseEvent) => {
         const d = dragRef.current;
-        if (!d || !selectedObject) return;
+        if (!d || !effectiveObject) return;
         const curComp = screenToComp(ev.clientX, ev.clientY, hostRect, viewZoom, viewPan);
-        const pw = parentWorldMatrix(comp, selectedObject.id, frame, resolveCtx);
+        const pw = parentWorldMatrix(comp, effectiveObject.id, frame, resolveCtx);
         let patch: Partial<Record<"anchor" | "position" | "rotation" | "scale", Vec3>> = {};
 
         if (d.mode.kind === "move") {
@@ -256,7 +265,7 @@ export function PreviewViewerOverlay({
       window.addEventListener("mousemove", move);
       window.addEventListener("mouseup", up);
     },
-    [activeResolved, activeTransform, boundsCtx, comp, draftTransform, frame, hostRect, onCommit, onDraftChange, onPan, project, resolveCtx, selectedObject, viewPan, viewZoom],
+    [activeResolved, activeTransform, boundsCtx, comp, draftTransform, effectiveObject, frame, hostRect, onCommit, onDraftChange, onPan, project, resolveCtx, selectedObject, viewPan, viewZoom],
   );
 
   const gridStep = Math.max(10, Math.round(comp.width / 10));
@@ -339,11 +348,11 @@ export function PreviewViewerOverlay({
         </g>
       )}
 
-      {selectionAabb && selectedObject && activeResolved && (
+      {selectionAabb && effectiveObject && activeResolved && (
         <SelectionHandles
           aabb={selectionAabb}
           resolved={activeResolved}
-          parentWorld={parentWorldMatrix(comp, selectedObject.id, frame, resolveCtx)}
+          parentWorld={parentWorldMatrix(comp, effectiveObject.id, frame, resolveCtx)}
           onBegin={beginDrag}
         />
       )}

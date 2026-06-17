@@ -9,6 +9,7 @@ import { IndexedDbFs } from "../../fs/IndexedDbFs";
 import { compositionDir } from "../../core/paths";
 import {
   compWithTransformOverride,
+  compWithObjectPatch,
   computeFitPan,
   computeFitZoom,
   resolutionProxyScale,
@@ -65,6 +66,7 @@ export function PreviewPanel() {
   const previewQualityEditing = useEditorStore((s) => s.previewQualityEditing);
   const setPreviewQuality = useEditorStore((s) => s.setPreviewQuality);
   const projectRevision = useEditorStore((s) => s.projectRevision);
+  const previewOverride = useEditorStore((s) => s.previewOverride);
 
   const timelineComps = (project?.compositions ?? []).filter((c) => c.kind === "timeline");
 
@@ -102,6 +104,18 @@ export function PreviewPanel() {
     [comp, project, compId, selectedIds],
   );
   const primaryObject = selected[0] ?? null;
+
+  const renderComp = useMemo(() => {
+    if (!comp) return null;
+    let c = comp;
+    if (previewOverride) {
+      c = compWithObjectPatch(c, previewOverride.objectId, previewOverride.patch);
+    }
+    if (draftTransform && primaryObject) {
+      c = compWithTransformOverride(c, primaryObject.id, draftTransform);
+    }
+    return c;
+  }, [comp, draftTransform, primaryObject?.id, previewOverride]);
 
   // §25.7 comp 切替時に設定を読み込む
   useEffect(() => {
@@ -203,18 +217,18 @@ export function PreviewPanel() {
     setRenderTick((t) => t + 1);
   }, [projectRevision]);
 
+  useEffect(() => {
+    setRenderTick((t) => t + 1);
+  }, [previewOverride]);
+
   // render on frame / project / draft transform
   useEffect(() => {
-    if (!comp || !rendererRef.current) return;
-    const renderComp =
-      draftTransform && primaryObject
-        ? compWithTransformOverride(comp, primaryObject.id, draftTransform)
-        : comp;
+    if (!renderComp || !rendererRef.current) return;
     rendererRef.current.renderFrame(
       resolve(renderComp, frame, { expressions: evaluatorRef.current }),
       frame,
     );
-  }, [comp, frame, renderTick, draftTransform, primaryObject?.id, projectRevision]);
+  }, [renderComp, frame, renderTick, projectRevision]);
 
   // §25.2 解像度プロキシ: DomRenderer のラスタ解像度のみ変更（INV-2 scene 値不変）
   useEffect(() => {
@@ -576,6 +590,7 @@ export function PreviewPanel() {
                   viewPan={effectivePan}
                   hostRect={hostRect}
                   selectedObject={primaryObject}
+                  previewOverride={previewOverride}
                   draftTransform={draftTransform}
                   onDraftChange={setDraftTransform}
                   onCommit={handleCommitTransform}

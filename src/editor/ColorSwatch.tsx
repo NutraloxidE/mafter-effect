@@ -6,6 +6,8 @@ export interface ColorSwatchProps {
   value: RGBA;
   /** 1 操作 1 undo（ScrubNumber 同様）。ドラッグ中は draft のみ更新し確定時に呼ぶ。 */
   onCommit: (next: RGBA) => void;
+  /** カラーピッカー/アルファスライダー操作中に Preview へ即反映（undo なし）。 */
+  onLiveChange?: (next: RGBA) => void;
   onFocus?: () => void;
   onBlur?: () => void;
 }
@@ -28,7 +30,7 @@ function rgbaEqual(a: RGBA, b: RGBA): boolean {
   return a.r === b.r && a.g === b.g && a.b === b.b && a.a === b.a;
 }
 
-export function ColorSwatch({ label, value, onCommit, onFocus, onBlur }: ColorSwatchProps) {
+export function ColorSwatch({ label, value, onCommit, onLiveChange, onFocus, onBlur }: ColorSwatchProps) {
   const [draft, setDraft] = useState(value);
   const draftRef = useRef(value);
   const editingColorRef = useRef(false);
@@ -53,6 +55,12 @@ export function ColorSwatch({ label, value, onCommit, onFocus, onBlur }: ColorSw
     commitBaseRef.current = next;
   };
 
+  const pushLive = (next: RGBA) => {
+    setDraft(next);
+    draftRef.current = next;
+    onLiveChange?.(next);
+  };
+
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
       <span style={{ color: "#666", width: 52, textAlign: "right", flexShrink: 0, fontSize: 11 }}>{label}</span>
@@ -61,7 +69,7 @@ export function ColorSwatch({ label, value, onCommit, onFocus, onBlur }: ColorSw
         value={rgbaToHex(draft)}
         onChange={(e) => {
           const rgb = hexToRgb(e.target.value);
-          if (rgb) setDraft({ ...rgb, a: draft.a });
+          if (rgb) pushLive({ ...rgb, a: draft.a });
         }}
         onFocus={() => {
           editingColorRef.current = true;
@@ -79,7 +87,7 @@ export function ColorSwatch({ label, value, onCommit, onFocus, onBlur }: ColorSw
         min={0}
         max={100}
         value={Math.round(draft.a * 100)}
-        onChange={(e) => setDraft({ ...draft, a: Number(e.target.value) / 100 })}
+        onChange={(e) => pushLive({ ...draft, a: Number(e.target.value) / 100 })}
         onPointerDown={() => {
           draggingAlphaRef.current = true;
           onFocus?.();

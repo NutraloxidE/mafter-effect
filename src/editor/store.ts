@@ -40,6 +40,12 @@ import {
 } from "./commands";
 import { buildGlyphDecomposeObjects, createCanvasMeasureContext } from "./glyphDecompose";
 
+/** スクラブ/カラーピッカー中に Preview へだけ反映する一時 patch。 */
+export interface PreviewOverride {
+  objectId: string;
+  patch: Partial<SceneObject>;
+}
+
 registerBuiltinComponents();
 
 // §17: プロジェクトデータの正は FS（IndexedDbFs）。ストアはその投影。
@@ -101,6 +107,11 @@ export interface EditorStore {
   undoStack: UndoRedoStack;
   /** project スナップショットが変わるたびに増える。Preview 等が確実に再描画するための tick。 */
   projectRevision: number;
+
+  /** Inspector/Timeline スクラブ中のプレビュー専用 patch（undo 対象外）。 */
+  previewOverride: PreviewOverride | null;
+  setPreviewOverride: (override: PreviewOverride | null) => void;
+  clearPreviewOverride: () => void;
 
   // FS 操作
   newProject: () => void;
@@ -181,6 +192,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   pluginsVersion: 0,
   undoStack: emptyStack(),
   projectRevision: 0,
+  previewOverride: null,
 
   newProject: () => {
     const p = createProject({ name: "Untitled" });
@@ -193,6 +205,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       isPlaying: false,
       undoStack: emptyStack(),
       projectRevision: 0,
+      previewOverride: null,
     });
   },
 
@@ -207,6 +220,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         selectedKfKeys: [],
         undoStack: emptyStack(),
         projectRevision: get().projectRevision + 1,
+        previewOverride: null,
       });
       await get().loadPlugins();
     } catch {
@@ -226,6 +240,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       project: cmd.after,
       undoStack: pushCommand(s.undoStack, cmd),
       projectRevision: s.projectRevision + 1,
+      previewOverride: null,
     }));
     // バックグラウンドで自動保存
     void saveProject(fs, cmd.after);
@@ -238,6 +253,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       project: result.project,
       undoStack: result.stack,
       projectRevision: s.projectRevision + 1,
+      previewOverride: null,
     }));
     void saveProject(fs, result.project);
   },
@@ -249,6 +265,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       project: result.project,
       undoStack: result.stack,
       projectRevision: s.projectRevision + 1,
+      previewOverride: null,
     }));
     void saveProject(fs, result.project);
   },
@@ -268,6 +285,9 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
   setPreviewQuality: (mode) => set({ previewQuality: mode }),
   setPreviewQualityEditing: (editing) => set({ previewQualityEditing: editing }),
+
+  setPreviewOverride: (override) => set({ previewOverride: override }),
+  clearPreviewOverride: () => set({ previewOverride: null }),
 
   decomposeGlyphs: (objectId) => {
     const before = get().project;

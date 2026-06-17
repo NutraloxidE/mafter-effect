@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from "react";
 export function ScrubNumber({
   value,
   onCommit,
+  onLiveChange,
   speed = 1,
   decimals,
   min,
@@ -18,6 +19,8 @@ export function ScrubNumber({
   value: number;
   /** スクラブ終了 or テキスト確定時に呼ばれる。delta はスクラブ移動量（テキスト入力時は newValue - oldValue）。 */
   onCommit: (newValue: number, delta: number) => void;
+  /** スクラブ中に Preview へ即反映する（undo なし）。 */
+  onLiveChange?: (newValue: number) => void;
   speed?: number;
   decimals?: number;
   min?: number;
@@ -59,7 +62,9 @@ export function ScrubNumber({
       if (!state.dragging && Math.abs(dx) < 3) return;
       state.dragging = true;
       const mod = ev.shiftKey ? 10 : ev.ctrlKey || ev.metaKey ? 0.1 : 1;
-      setLiveValue(clamp(state.startValue + dx * speed * mod));
+      const next = clamp(state.startValue + dx * speed * mod);
+      setLiveValue(next);
+      onLiveChange?.(next);
     };
 
     const onUp = (ev: MouseEvent) => {

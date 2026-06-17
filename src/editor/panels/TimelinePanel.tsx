@@ -104,6 +104,7 @@ export function TimelinePanel() {
   const removeObject = useEditorStore((s) => s.removeObject);
   const selectObjects = useEditorStore((s) => s.selectObjects);
   const updateObjects = useEditorStore((s) => s.updateObjects);
+  const setPreviewOverride = useEditorStore((s) => s.setPreviewOverride);
   const removeObjects = useEditorStore((s) => s.removeObjects);
   const pasteObjects = useEditorStore((s) => s.pasteObjects);
   const addHtmlInstance = useEditorStore((s) => s.addHtmlInstance);
@@ -941,6 +942,7 @@ export function TimelinePanel() {
             onSelectLayer={(e) => handleLayerSelect(obj.id, e)}
             onRemove={() => removeObject(obj.id)}
             onUpdate={updateObject}
+            onPreviewPatch={(id, patch) => setPreviewOverride({ objectId: id, patch })}
             frameToPercent={frameToPercent}
             sourceExtent={project ? getLayerSourceExtent(obj, project, fps) : null}
             onLayerDragStart={() => {
@@ -1272,6 +1274,7 @@ interface LayerRowProps {
   onSelectLayer: (e: React.MouseEvent) => void;
   onRemove: () => void;
   onUpdate: (id: string, patch: Partial<SceneObject>, label?: string) => void;
+  onPreviewPatch?: (id: string, patch: Partial<SceneObject>) => void;
   frameToPercent: (f: number) => number;
   sourceExtent: LayerSourceExtent | null;
   onLayerDragStart: () => void;
@@ -1281,7 +1284,7 @@ interface LayerRowProps {
 }
 
 function LayerRow(props: LayerRowProps) {
-  const { obj, index, frame, selected, expandMode, selectedKfs, kfDrag, isDropTarget, barDrag, graphMode, viewRange, sourceExtent, onSetProp, beginKfDrag, beginLayerBarDrag, onKfRightClick, onToggleExpand, onSelectLayer, onRemove, onUpdate, frameToPercent, onLayerDragStart, onLayerDragOver, onLayerDrop, onLayerDragEnd } = props;
+  const { obj, index, frame, selected, expandMode, selectedKfs, kfDrag, isDropTarget, barDrag, graphMode, viewRange, sourceExtent, onSetProp, beginKfDrag, beginLayerBarDrag, onKfRightClick, onToggleExpand, onSelectLayer, onRemove, onUpdate, onPreviewPatch, frameToPercent, onLayerDragStart, onLayerDragOver, onLayerDrop, onLayerDragEnd } = props;
   // P1-6: バードラッグのプレビューはパネル管理の barDrag から導出（複数選択を一括移動するため）。
   const dDelta = barDrag ? barDrag.delta : 0;
   const inPoint = barDrag && barDrag.mode !== "out" ? obj.inPoint + dDelta : obj.inPoint;
@@ -1372,11 +1375,11 @@ function LayerRow(props: LayerRowProps) {
       {/* property tree */}
       {expandMode && (
         <div style={{ background: "#191919" }}>
-          {showInMode(expandMode, obj.transform.anchor.keyframes.length > 0,   vec3Modified(obj.transform.anchor,   VEC3_DEFAULTS.anchor))   && <PropRowVec3 obj={obj} k="anchor"   label="アンカーポイント" frame={frame} kfShift={kfPreviewShift} selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onKfRightClick={onKfRightClick} onUpdate={onUpdate} frameToPercent={frameToPercent} graphMode={graphMode} viewRange={viewRange} onSetProp={onSetProp} />}
-          {showInMode(expandMode, obj.transform.position.keyframes.length > 0, vec3Modified(obj.transform.position, VEC3_DEFAULTS.position)) && <PropRowVec3 obj={obj} k="position" label="位置"           frame={frame} kfShift={kfPreviewShift} selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onKfRightClick={onKfRightClick} onUpdate={onUpdate} frameToPercent={frameToPercent} graphMode={graphMode} viewRange={viewRange} onSetProp={onSetProp} />}
-          {showInMode(expandMode, obj.transform.scale.keyframes.length > 0,    vec3Modified(obj.transform.scale,    VEC3_DEFAULTS.scale))    && <PropRowVec3 obj={obj} k="scale"    label="スケール"         frame={frame} kfShift={kfPreviewShift} selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onKfRightClick={onKfRightClick} onUpdate={onUpdate} frameToPercent={frameToPercent} graphMode={graphMode} viewRange={viewRange} onSetProp={onSetProp} />}
-          {showInMode(expandMode, obj.transform.rotation.keyframes.length > 0, vec3Modified(obj.transform.rotation, VEC3_DEFAULTS.rotation)) && <PropRowVec3 obj={obj} k="rotation" label="回転"           frame={frame} kfShift={kfPreviewShift} selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onKfRightClick={onKfRightClick} onUpdate={onUpdate} frameToPercent={frameToPercent} graphMode={graphMode} viewRange={viewRange} onSetProp={onSetProp} />}
-          {showInMode(expandMode, obj.opacity.keyframes.length > 0,            scalarModified(obj.opacity, 1))                                && <PropRowOpacity obj={obj} frame={frame} kfShift={kfPreviewShift} selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onKfRightClick={onKfRightClick} onUpdate={onUpdate} frameToPercent={frameToPercent} graphMode={graphMode} viewRange={viewRange} onSetProp={onSetProp} />}
+          {showInMode(expandMode, obj.transform.anchor.keyframes.length > 0,   vec3Modified(obj.transform.anchor,   VEC3_DEFAULTS.anchor))   && <PropRowVec3 obj={obj} k="anchor"   label="アンカーポイント" frame={frame} kfShift={kfPreviewShift} selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onKfRightClick={onKfRightClick} onUpdate={onUpdate} onPreviewPatch={onPreviewPatch} frameToPercent={frameToPercent} graphMode={graphMode} viewRange={viewRange} onSetProp={onSetProp} />}
+          {showInMode(expandMode, obj.transform.position.keyframes.length > 0, vec3Modified(obj.transform.position, VEC3_DEFAULTS.position)) && <PropRowVec3 obj={obj} k="position" label="位置"           frame={frame} kfShift={kfPreviewShift} selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onKfRightClick={onKfRightClick} onUpdate={onUpdate} onPreviewPatch={onPreviewPatch} frameToPercent={frameToPercent} graphMode={graphMode} viewRange={viewRange} onSetProp={onSetProp} />}
+          {showInMode(expandMode, obj.transform.scale.keyframes.length > 0,    vec3Modified(obj.transform.scale,    VEC3_DEFAULTS.scale))    && <PropRowVec3 obj={obj} k="scale"    label="スケール"         frame={frame} kfShift={kfPreviewShift} selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onKfRightClick={onKfRightClick} onUpdate={onUpdate} onPreviewPatch={onPreviewPatch} frameToPercent={frameToPercent} graphMode={graphMode} viewRange={viewRange} onSetProp={onSetProp} />}
+          {showInMode(expandMode, obj.transform.rotation.keyframes.length > 0, vec3Modified(obj.transform.rotation, VEC3_DEFAULTS.rotation)) && <PropRowVec3 obj={obj} k="rotation" label="回転"           frame={frame} kfShift={kfPreviewShift} selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onKfRightClick={onKfRightClick} onUpdate={onUpdate} onPreviewPatch={onPreviewPatch} frameToPercent={frameToPercent} graphMode={graphMode} viewRange={viewRange} onSetProp={onSetProp} />}
+          {showInMode(expandMode, obj.opacity.keyframes.length > 0,            scalarModified(obj.opacity, 1))                                && <PropRowOpacity obj={obj} frame={frame} kfShift={kfPreviewShift} selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onKfRightClick={onKfRightClick} onUpdate={onUpdate} onPreviewPatch={onPreviewPatch} frameToPercent={frameToPercent} graphMode={graphMode} viewRange={viewRange} onSetProp={onSetProp} />}
           {/* P1-7: component props の animatable KF 行 */}
           {obj.components.map((comp, compIdx) => {
             const def = globalPluginRegistry.getComponentDef(comp.type);
@@ -1403,6 +1406,7 @@ function LayerRow(props: LayerRowProps) {
                   beginKfDrag={beginKfDrag}
                   onKfRightClick={onKfRightClick}
                   onUpdate={onUpdate}
+                  onPreviewPatch={onPreviewPatch}
                   frameToPercent={frameToPercent}
                   graphMode={graphMode}
                   viewRange={viewRange}
@@ -1494,13 +1498,14 @@ function LayerBar({
 // ---- プロパティ行 ----
 
 function PropRowVec3({
-  obj, k, label, frame, kfShift, selectedKfs, kfDrag, beginKfDrag, onKfRightClick, onUpdate, frameToPercent, graphMode, viewRange, onSetProp,
+  obj, k, label, frame, kfShift, selectedKfs, kfDrag, beginKfDrag, onKfRightClick, onUpdate, onPreviewPatch, frameToPercent, graphMode, viewRange, onSetProp,
 }: {
   obj: SceneObject; k: TransformVecKey; label: string; frame: Frame; kfShift: number;
   selectedKfs: Set<string>; kfDrag: KfDragState | null;
   beginKfDrag: (objId: string, path: PropPath, frame: number, e: React.MouseEvent) => void;
   onKfRightClick: (key: string, x: number, y: number) => void;
   onUpdate: (id: string, patch: Partial<SceneObject>, label?: string) => void;
+  onPreviewPatch?: (id: string, patch: Partial<SceneObject>) => void;
   frameToPercent: (f: number) => number;
   graphMode: boolean; viewRange: { start: number; end: number };
   onSetProp: (objId: string, path: PropPath, next: AnimatedProp<unknown>, label: string) => void;
@@ -1530,23 +1535,33 @@ function PropRowVec3({
     else writeProp({ ...prop, value: nextVal }, `Edit ${k}`);
   };
 
+  const previewAxis = (axis: "x" | "y" | "z", num: number) => {
+    if (!Number.isFinite(num) || !onPreviewPatch) return;
+    const nextVal: Vec3 = { ...v, [axis]: num };
+    const nextProp = animated
+      ? setKeyframe<Vec3>(prop, frame, nextVal, { type: "linear" } as Easing)
+      : { ...prop, value: nextVal };
+    onPreviewPatch(obj.id, { transform: { ...obj.transform, [k]: nextProp } });
+  };
+
   return (
     <PropRowShell label={label} animated={animated} onStopwatch={toggleStopwatch} prop={prop} frame={frame} kfShift={kfShift} objId={obj.id} propPath={propPath} selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onKfRightClick={onKfRightClick} frameToPercent={frameToPercent} graphMode={graphMode} viewRange={viewRange} onSetProp={onSetProp}>
-      <NumberField value={v.x} onCommit={(n) => editAxis("x", n)} />
-      <NumberField value={v.y} onCommit={(n) => editAxis("y", n)} />
-      <NumberField value={v.z} onCommit={(n) => editAxis("z", n)} />
+      <NumberField value={v.x} onCommit={(n) => editAxis("x", n)} onLiveChange={(n) => previewAxis("x", n)} />
+      <NumberField value={v.y} onCommit={(n) => editAxis("y", n)} onLiveChange={(n) => previewAxis("y", n)} />
+      <NumberField value={v.z} onCommit={(n) => editAxis("z", n)} onLiveChange={(n) => previewAxis("z", n)} />
     </PropRowShell>
   );
 }
 
 function PropRowOpacity({
-  obj, frame, kfShift, selectedKfs, kfDrag, beginKfDrag, onKfRightClick, onUpdate, frameToPercent, graphMode, viewRange, onSetProp,
+  obj, frame, kfShift, selectedKfs, kfDrag, beginKfDrag, onKfRightClick, onUpdate, onPreviewPatch, frameToPercent, graphMode, viewRange, onSetProp,
 }: {
   obj: SceneObject; frame: Frame; kfShift: number;
   selectedKfs: Set<string>; kfDrag: KfDragState | null;
   beginKfDrag: (objId: string, path: PropPath, frame: number, e: React.MouseEvent) => void;
   onKfRightClick: (key: string, x: number, y: number) => void;
   onUpdate: (id: string, patch: Partial<SceneObject>, label?: string) => void;
+  onPreviewPatch?: (id: string, patch: Partial<SceneObject>) => void;
   frameToPercent: (f: number) => number;
   graphMode: boolean; viewRange: { start: number; end: number };
   onSetProp: (objId: string, path: PropPath, next: AnimatedProp<unknown>, label: string) => void;
@@ -1569,16 +1584,25 @@ function PropRowOpacity({
     else writeProp({ ...prop, value: clamped }, "Edit opacity");
   };
 
+  const preview = (num: number) => {
+    if (!Number.isFinite(num) || !onPreviewPatch) return;
+    const clamped = Math.min(1, Math.max(0, num));
+    const next = animated
+      ? setKeyframe<number>(prop, frame, clamped, { type: "linear" } as Easing)
+      : { ...prop, value: clamped };
+    onPreviewPatch(obj.id, { opacity: next });
+  };
+
   return (
     <PropRowShell label="不透明度" animated={animated} onStopwatch={toggleStopwatch} prop={prop} frame={frame} kfShift={kfShift} objId={obj.id} propPath="opacity" selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onKfRightClick={onKfRightClick} frameToPercent={frameToPercent} graphMode={graphMode} viewRange={viewRange} onSetProp={onSetProp}>
-      <NumberField value={v} onCommit={edit} />
+      <NumberField value={v} onCommit={edit} onLiveChange={preview} />
     </PropRowShell>
   );
 }
 
 // P1-7: component の animatable prop 行
 function PropRowComponent({
-  obj, compIdx, propKey, label, kind, frame, kfShift, selectedKfs, kfDrag, beginKfDrag, onKfRightClick, onUpdate, frameToPercent, graphMode, viewRange, onSetProp,
+  obj, compIdx, propKey, label, kind, frame, kfShift, selectedKfs, kfDrag, beginKfDrag, onKfRightClick, onUpdate, onPreviewPatch, frameToPercent, graphMode, viewRange, onSetProp,
 }: {
   obj: SceneObject; compIdx: number; propKey: string; label: string; kind: ParamKind;
   frame: Frame; kfShift: number;
@@ -1586,6 +1610,7 @@ function PropRowComponent({
   beginKfDrag: (objId: string, path: PropPath, frame: number, e: React.MouseEvent) => void;
   onKfRightClick: (key: string, x: number, y: number) => void;
   onUpdate: (id: string, patch: Partial<SceneObject>, label?: string) => void;
+  onPreviewPatch?: (id: string, patch: Partial<SceneObject>) => void;
   frameToPercent: (f: number) => number;
   graphMode: boolean; viewRange: { start: number; end: number };
   onSetProp: (objId: string, path: PropPath, next: AnimatedProp<unknown>, label: string) => void;
@@ -1606,6 +1631,15 @@ function PropRowComponent({
     onUpdate(obj.id, { components: nextComponents }, lbl);
   };
 
+  const previewProp = (next: AnimatedProp<unknown>) => {
+    if (!onPreviewPatch) return;
+    onPreviewPatch(obj.id, {
+      components: obj.components.map((c, i) =>
+        i === compIdx ? { ...c, props: { ...c.props, [propKey]: next } } : c
+      ),
+    });
+  };
+
   const toggleStopwatch = () => {
     if (animated) writeProp({ value: prop.value, keyframes: [] }, `Disable ${propKey} keyframes`);
     else writeProp(setKeyframe(prop as AnimatedProp<unknown>, frame, prop.value, { type: "linear" } as Easing), `Enable ${propKey} keyframes`);
@@ -1618,6 +1652,10 @@ function PropRowComponent({
           if (!Number.isFinite(num)) return;
           if (animated) writeProp(setKeyframe(prop as AnimatedProp<unknown>, frame, num, { type: "linear" } as Easing), `Edit ${propKey}`);
           else writeProp({ ...prop, value: num }, `Edit ${propKey}`);
+        }} onLiveChange={(num) => {
+          if (!Number.isFinite(num)) return;
+          if (animated) previewProp(setKeyframe(prop as AnimatedProp<unknown>, frame, num, { type: "linear" } as Easing));
+          else previewProp({ ...prop, value: num });
         }} />
       ) : kind === "string" && typeof sampled === "string" ? (
         <input
@@ -1907,11 +1945,20 @@ function PropRowShell({
   );
 }
 
-function NumberField({ value, onCommit }: { value: number; onCommit: (v: number) => void }) {
+function NumberField({
+  value,
+  onCommit,
+  onLiveChange,
+}: {
+  value: number;
+  onCommit: (v: number) => void;
+  onLiveChange?: (v: number) => void;
+}) {
   return (
     <ScrubNumber
       value={value}
       onCommit={(v) => onCommit(v)}
+      onLiveChange={onLiveChange}
       speed={1}
       className="tl-num"
       style={{
