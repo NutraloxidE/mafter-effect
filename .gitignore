@@ -12,6 +12,7 @@ npm-debug.log*
 .DS_Store
 .vscode/
 .idea/
+.env
 
 # vite / vitest cache
 .vite/

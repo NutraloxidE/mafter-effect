@@ -928,3 +928,67 @@ INV-1〜6 を保持。Phase 1 は resolve・スキーマ・直列化に影響し
 ---
 
 *v0.7 / MVP scope = M0–M4（Web Bundle Export は M5）。§20–§22 は MVP 後の UX 拡張（UI 層）。§22 Phase 1 はスキーマ不変、Phase 2/3 は additive 拡張として将来。このファイルが「エンジンを作るための SSoT」。`claude.md` が「エンジンを使うための SSoT」。*
+
+---
+
+## §23 コンポジション・レイヤー（comp layer / precomp）
+
+timeline composition を別の timeline composition のレイヤーとして配置する機能（AE の precomp 相当）。
+
+### §23.0 スコープ（Phase 1・スキーマ不変）
+
+- **Phase 1（本リビジョン・スキーマ不変）**: `SceneObject.components[].type = "comp"` を新種として使用。スキーマ側は `Component.type: string` が任意文字列を許容しているため **追加型定義不要**。
+- **Phase 2（将来）**: Inspector から `trimStart` を編集可能にする。子コンプのダブルクリックで切替（§20.3 準拠）。時間リマップ（AnimatedProp として `timeRemap` を追加）。
+- **Phase 3（将来）**: ネスト内の html/plugin component のフル対応（現状は solid/text/image のみ正式サポート）。
+
+### §23.1 データモデル（Phase 1）
+
+```
+SceneObject.components = [
+  {
+    type: "comp",
+    props: {
+      compId: string,    // 参照先 TimelineComposition.id（ULID, INV-6）
+      trimStart: Frame,  // 子コンプの再生開始オフセット（デフォルト 0）
+    }
+  }
+]
+```
+
+`compRef` は将来の仮名であったが、実装は `Component.type = "comp"` として統合した（`Component.type` は open-string なので既存スキーマに変更なし）。
+
+### §23.2 時間マッピング（Phase 1）
+
+```
+childFrame = clamp(parentFrame - layer.inPoint + trimStart, 0, childComp.duration - 1)
+```
+
+- 親フレームが子コンプの `duration` を超えた場合は **最終フレームで停止（Freeze）** — AE のデフォルト同等。
+- 1:1 時間マッピング（時間リマップなし）。
+- `layer.inPoint` は DomRenderer が `resolve()` を通じて受け取る（resolved component props に `_inPoint` として注入）。
+
+### §23.3 レンダリング（Phase 1）
+
+**nest アプローチ（AE の non-collapse 相当）**: 各 comp レイヤーに対してコンテナ div を作り、子コンプの objects をその内部に描画する。
+
+- `DomRenderer.renderNestedComp(container, childComp, childFrame, depth)` が担当。
+- depth ≤ 4 の再帰ネストを許可（循環参照が追加時に排除されるが念のためガード）。
+- Phase 1 制限: コンテナ内での html/plugin component は描画されない（Phase 3 で対応）。
+- 親レイヤーの `opacity`（`entry.div.opacity`）は CSS opacity の継承で自動的に子全体に乗算される。
+
+### §23.4 循環参照制御
+
+- `store.addCompLayer(compId)` において BFS で循環を検出し、循環が生じる場合は追加を拒否する（`null` 返却）。
+- FS インポート等で循環が混入した場合は、`renderNestedComp` の depth guard で深度 4 以上の再帰を打ち切る（最悪でも無限ループにならない）。
+
+### §23.5 AE との比較
+
+| 項目 | AE | Mafter Phase 1 |
+|------|-----|---------------|
+| 配置方法 | Project パネル → Timeline DnD | 同じ（DnD のみ） |
+| time mapping | 1:1（デフォルト） | 1:1（trimStart オフセットのみ） |
+| time remapping | AnimatedProp として設定可 | Phase 2 以降 |
+| collapse / non-collapse | 2 モード切替 | 常に non-collapse 相当 |
+| precomp opacity | レイヤー全体で適用 | 同じ（CSS opacity 継承） |
+| 循環参照 | UI 拒否 | 追加時に BFS 検出・拒否 |
+| nested html/plugin comp | 専用レンダラ | Phase 3 以降 |

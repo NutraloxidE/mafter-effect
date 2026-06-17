@@ -1,0 +1,510 @@
+#!/usr/bin/env node
+
+import { spawn } from "node:child_process";
+import { access, readFile, readdir, stat } from "node:fs/promises";
+import path from "node:path";
+import process from "node:process";
+import { Client } from "ssh2";
+
+const HELP_TEXT = `Deploy local build artifacts to a remote host over SSH.
+
+Usage:
+  npm run deploy:ssh
+  npm run deploy:ssh -- [options]
+
+Options:
+  --host <host>               Remote host (required if DEPLOY_HOST is not set)
+  --user <user>               SSH user (required if DEPLOY_HOST is not user@host)
+  --port <port>               SSH port (default: 22)
+  --identity <file>           SSH private key file
+  --password <password>       SSH password (prefer DEPLOY_PASSWORD in .env)
+  --local-path <path>         Local directory to upload (default: dist)
+  --remote-path <path>        Remote destination directory (default: ~/mafter-effect)
+  --site-host <host>          Public host for HTTPS cert (default: DEPLOY_HOST host part)
+  --tls-email <email>         ACME account email used by Caddy (optional)
+  --no-serve                  Skip remote 80/443 web server setup
+  --build                     Run "npm run build" before deploying
+  --clean                     Remove remote-path contents before upload
+  --help                      Show this help
+
+.env keys:
+  DEPLOY_HOST, DEPLOY_USER, DEPLOY_PORT, DEPLOY_PASSWORD, DEPLOY_IDENTITY,
+  DEPLOY_LOCAL_PATH, DEPLOY_REMOTE_PATH, DEPLOY_SITE_HOST, DEPLOY_TLS_EMAIL,
+  DEPLOY_BUILD, DEPLOY_CLEAN, DEPLOY_ENABLE_WEB
+
+Example:
+  npm run deploy:ssh
+  npm run deploy:ssh -- --host root@ssh.gycp.party --port 10000
+  npm run deploy:ssh -- --host 192.168.1.20 --user ubuntu --remote-path /var/www/app --build --clean
+`;
+
+function parseArgs(argv) {
+  const options = {
+    host: "",
+    user: "",
+    port: "",
+    identity: "",
+    password: "",
+    localPath: "",
+    remotePath: "",
+    siteHost: "",
+    tlsEmail: "",
+    serve: true,
+    build: false,
+    clean: false,
+    help: false,
+  };
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === "--build") {
+      options.build = true;
+      continue;
+    }
+    if (arg === "--clean") {
+      options.clean = true;
+      continue;
+    }
+    if (arg === "--help" || arg === "-h") {
+      options.help = true;
+      continue;
+    }
+    if (arg === "--no-serve") {
+      options.serve = false;
+      continue;
+    }
+    if (!arg.startsWith("--")) {
+      throw new Error(`Unknown argument: ${arg}`);
+    }
+
+    const next = argv[i + 1];
+    if (!next || next.startsWith("--")) {
+      throw new Error(`Missing value for ${arg}`);
+    }
+
+    switch (arg) {
+      case "--host":
+        options.host = next;
+        break;
+      case "--user":
+        options.user = next;
+        break;
+      case "--port":
+        options.port = next;
+        break;
+      case "--identity":
+        options.identity = next;
+        break;
+      case "--password":
+        options.password = next;
+        break;
+      case "--local-path":
+        options.localPath = next;
+        break;
+      case "--remote-path":
+        options.remotePath = next;
+        break;
+      case "--site-host":
+        options.siteHost = next;
+        break;
+      case "--tls-email":
+        options.tlsEmail = next;
+        break;
+      default:
+        throw new Error(`Unknown option: ${arg}`);
+    }
+    i += 1;
+  }
+
+  return options;
+}
+
+async function readDotEnv(envPath) {
+  try {
+    const raw = await readFile(envPath, "utf8");
+    const values = {};
+    for (const originalLine of raw.split(/\r?\n/)) {
+      const line = originalLine.trim();
+      if (!line || line.startsWith("#")) {
+        continue;
+      }
+      const separator = line.indexOf("=");
+      if (separator <= 0) {
+        continue;
+      }
+      const key = line.slice(0, separator).trim();
+      const rawValue = line.slice(separator + 1).trim();
+      const doubleQuoted = rawValue.startsWith('"') && rawValue.endsWith('"');
+      const singleQuoted = rawValue.startsWith("'") && rawValue.endsWith("'");
+      const value = doubleQuoted || singleQuoted ? rawValue.slice(1, -1) : rawValue;
+      values[key] = value;
+    }
+    return values;
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      return {};
+    }
+    throw error;
+  }
+}
+
+function parseBoolean(value, fallback) {
+  if (!value) {
+    return fallback;
+  }
+  return /^(1|true|yes|on)$/i.test(value);
+}
+
+function mergeOptions(cliOptions, envValues) {
+  const options = { ...cliOptions };
+  options.host = options.host || envValues.DEPLOY_HOST || "";
+  options.user = options.user || envValues.DEPLOY_USER || "";
+  options.port = options.port || envValues.DEPLOY_PORT || "22";
+  options.identity = options.identity || envValues.DEPLOY_IDENTITY || "";
+  options.password = options.password || envValues.DEPLOY_PASSWORD || "";
+  options.localPath = options.localPath || envValues.DEPLOY_LOCAL_PATH || "dist";
+  options.remotePath = options.remotePath || envValues.DEPLOY_REMOTE_PATH || "~/mafter-effect";
+  options.siteHost = options.siteHost || envValues.DEPLOY_SITE_HOST || "";
+  options.tlsEmail = options.tlsEmail || envValues.DEPLOY_TLS_EMAIL || "";
+  options.serve = options.serve && parseBoolean(envValues.DEPLOY_ENABLE_WEB, true);
+  options.build = options.build || parseBoolean(envValues.DEPLOY_BUILD, false);
+  options.clean = options.clean || parseBoolean(envValues.DEPLOY_CLEAN, false);
+  return options;
+}
+
+function splitUserFromHost(options) {
+  if (options.user || !options.host.includes("@")) {
+    return options;
+  }
+  const at = options.host.indexOf("@");
+  if (at <= 0 || at >= options.host.length - 1) {
+    return options;
+  }
+  return {
+    ...options,
+    user: options.host.slice(0, at),
+    host: options.host.slice(at + 1),
+  };
+}
+
+function shellQuote(value) {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function defaultSiteHost(host) {
+  return host.replace(/^\[|\]$/g, "");
+}
+
+function isIpAddress(value) {
+  return /^(\d{1,3}\.){3}\d{1,3}$/.test(value) || value.includes(":");
+}
+
+function normalizeRemotePath(remotePath) {
+  return remotePath.replace(/\\/g, "/");
+}
+
+function resolveRemotePath(remotePath, remoteHome) {
+  const normalized = normalizeRemotePath(remotePath.trim());
+  if (normalized === "~") {
+    return remoteHome;
+  }
+  if (normalized.startsWith("~/")) {
+    return path.posix.join(remoteHome, normalized.slice(2));
+  }
+  return path.posix.normalize(normalized);
+}
+
+function buildCaddyfile(options) {
+  const globalOptions = options.tlsEmail ? `{\n  email ${options.tlsEmail}\n}\n\n` : "";
+  const commonBody = [
+    "  root * /srv",
+    "  encode gzip zstd",
+    "  file_server",
+    "  try_files {path} /index.html",
+  ].join("\n");
+
+  if (options.siteHost) {
+    return `${globalOptions}${options.siteHost} {\n${commonBody}\n}\n`;
+  }
+
+  return `:80 {\n${commonBody}\n}\n\n:443 {\n  tls internal\n${commonBody}\n}\n`;
+}
+
+function runLocalCommand(command, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      stdio: "inherit",
+      shell: false,
+    });
+    child.on("error", (error) => reject(error));
+    child.on("exit", (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`${command} exited with code ${code ?? "null"}`));
+      }
+    });
+  });
+}
+
+function assertSafeCleanTarget(remotePath) {
+  const normalized = remotePath.trim();
+  if (!normalized || normalized === "/" || normalized === "~" || normalized === "." || normalized === "..") {
+    throw new Error(`Refusing to clean unsafe remote path: "${remotePath}"`);
+  }
+}
+
+async function ensureLocalDirectory(localPath) {
+  await access(localPath);
+  const fileStat = await stat(localPath);
+  if (!fileStat.isDirectory()) {
+    throw new Error(`Local path is not a directory: ${localPath}`);
+  }
+}
+
+async function collectLocalFiles(rootPath, currentPath = rootPath) {
+  const entries = await readdir(currentPath, { withFileTypes: true });
+  const files = [];
+  for (const entry of entries) {
+    const absolutePath = path.join(currentPath, entry.name);
+    const relativePath = path.relative(rootPath, absolutePath).replace(/\\/g, "/");
+    if (entry.isDirectory()) {
+      files.push(...(await collectLocalFiles(rootPath, absolutePath)));
+      continue;
+    }
+    if (!entry.isFile()) {
+      continue;
+    }
+    files.push({
+      localPath: absolutePath,
+      relativePath,
+      remotePath: relativePath.split("/").join(path.posix.sep),
+    });
+  }
+  return files;
+}
+
+async function loadPrivateKey(identityPath) {
+  if (!identityPath) {
+    return undefined;
+  }
+  const resolvedPath = path.resolve(process.cwd(), identityPath);
+  return readFile(resolvedPath, "utf8");
+}
+
+async function connectSsh(options) {
+  const privateKey = await loadPrivateKey(options.identity);
+  return await new Promise((resolve, reject) => {
+    const client = new Client();
+    client.on("ready", () => resolve(client));
+    client.on("error", (error) => reject(error));
+    client.connect({
+      host: options.host,
+      port: Number(options.port),
+      username: options.user,
+      password: options.password || undefined,
+      privateKey,
+      readyTimeout: 20000,
+    });
+  });
+}
+
+function execRemote(client, command, captureStdout = false) {
+  return new Promise((resolve, reject) => {
+    client.exec(command, (error, stream) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+
+      let stdout = "";
+      let stderr = "";
+
+      stream.on("close", (code) => {
+        if (code === 0) {
+          resolve(stdout.trim());
+        } else {
+          reject(new Error(stderr.trim() || `remote command exited with code ${code ?? "null"}`));
+        }
+      });
+
+      stream.on("data", (chunk) => {
+        const text = chunk.toString();
+        if (captureStdout) {
+          stdout += text;
+        } else {
+          process.stdout.write(text);
+        }
+      });
+
+      stream.stderr.on("data", (chunk) => {
+        const text = chunk.toString();
+        stderr += text;
+        process.stderr.write(text);
+      });
+    });
+  });
+}
+
+function openSftp(client) {
+  return new Promise((resolve, reject) => {
+    client.sftp((error, sftp) => {
+      if (error) {
+        reject(error);
+      } else {
+        resolve(sftp);
+      }
+    });
+  });
+}
+
+function sftpFastPut(sftp, localPath, remotePath) {
+  return new Promise((resolve, reject) => {
+    sftp.fastPut(localPath, remotePath, (error) => {
+      if (error) {
+        reject(error);
+      } else {
+        resolve();
+      }
+    });
+  });
+}
+
+function sftpWriteFile(sftp, remotePath, content) {
+  return new Promise((resolve, reject) => {
+    const stream = sftp.createWriteStream(remotePath, { encoding: "utf8", mode: 0o644 });
+    stream.on("error", (error) => reject(error));
+    stream.on("close", () => resolve());
+    stream.end(content);
+  });
+}
+
+async function uploadDirectory(client, localRoot, remoteRoot) {
+  const files = await collectLocalFiles(localRoot);
+  const directories = new Set([remoteRoot]);
+  for (const file of files) {
+    const parentDirectory = path.posix.dirname(path.posix.join(remoteRoot, file.remotePath));
+    directories.add(parentDirectory);
+  }
+
+  const mkdirCommand = `mkdir -p ${Array.from(directories)
+    .sort()
+    .map((directory) => shellQuote(directory))
+    .join(" ")}`;
+  await execRemote(client, mkdirCommand);
+
+  const sftp = await openSftp(client);
+  try {
+    for (const file of files) {
+      const remoteFilePath = path.posix.join(remoteRoot, file.remotePath);
+      await sftpFastPut(sftp, file.localPath, remoteFilePath);
+    }
+  } finally {
+    sftp.end();
+  }
+}
+
+async function configureRemoteServer(client, options, remoteRoot, remoteHome) {
+  const deployRoot = path.posix.join(remoteHome, ".mafter-deploy");
+  const caddyData = path.posix.join(deployRoot, "caddy-data");
+  const caddyConfig = path.posix.join(deployRoot, "caddy-config");
+  const caddyfilePath = path.posix.join(deployRoot, "Caddyfile");
+  const caddyfile = buildCaddyfile(options);
+
+  await execRemote(
+    client,
+    `mkdir -p ${shellQuote(remoteRoot)} ${shellQuote(deployRoot)} ${shellQuote(caddyData)} ${shellQuote(caddyConfig)}`
+  );
+
+  const sftp = await openSftp(client);
+  try {
+    await sftpWriteFile(sftp, caddyfilePath, caddyfile);
+  } finally {
+    sftp.end();
+  }
+
+  const serveCommand = [
+    "set -eu",
+    "if ! command -v docker >/dev/null 2>&1; then",
+    "  echo 'docker command not found on remote host. Install Docker or run with --no-serve.' >&2",
+    "  exit 1",
+    "fi",
+    "docker rm -f mafter-caddy >/dev/null 2>&1 || true",
+    "docker run -d --name mafter-caddy --restart unless-stopped " +
+      "-p 80:80 -p 443:443 " +
+      `-v ${shellQuote(remoteRoot)}:/srv ` +
+      `-v ${shellQuote(caddyfilePath)}:/etc/caddy/Caddyfile ` +
+      `-v ${shellQuote(caddyData)}:/data ` +
+      `-v ${shellQuote(caddyConfig)}:/config ` +
+      "caddy:2-alpine >/dev/null",
+  ].join("; ");
+
+  await execRemote(client, serveCommand);
+}
+
+async function main() {
+  const cliOptions = parseArgs(process.argv.slice(2));
+  if (cliOptions.help) {
+    console.log(HELP_TEXT);
+    return;
+  }
+
+  const envValues = await readDotEnv(path.resolve(process.cwd(), ".env"));
+  const mergedOptions = mergeOptions(cliOptions, envValues);
+  const options = splitUserFromHost(mergedOptions);
+
+  if (!options.host) {
+    throw new Error("--host is required (or set DEPLOY_HOST in .env).\n\n" + HELP_TEXT);
+  }
+  if (!options.user) {
+    throw new Error("--user is required (or include user@host in DEPLOY_HOST / --host).");
+  }
+  if (options.password && options.identity) {
+    throw new Error("Use either --identity (key auth) or --password / DEPLOY_PASSWORD, not both.");
+  }
+  if (!options.password && !options.identity) {
+    throw new Error("Set either DEPLOY_PASSWORD / --password, or DEPLOY_IDENTITY / --identity.");
+  }
+
+  if (!options.siteHost) {
+    const inferredHost = defaultSiteHost(options.host);
+    options.siteHost = isIpAddress(inferredHost) ? "" : inferredHost;
+  }
+
+  const localPath = path.resolve(process.cwd(), options.localPath);
+  if (options.build) {
+    await runLocalCommand("npm", ["run", "build"]);
+  }
+  await ensureLocalDirectory(localPath);
+
+  const client = await connectSsh(options);
+  try {
+    const remoteHome = await execRemote(client, 'printf %s "$HOME"', true);
+    const remoteRoot = resolveRemotePath(options.remotePath, remoteHome);
+
+    if (options.clean) {
+      assertSafeCleanTarget(options.remotePath);
+      await execRemote(
+        client,
+        `mkdir -p ${shellQuote(remoteRoot)} && find ${shellQuote(remoteRoot)} -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +`
+      );
+    } else {
+      await execRemote(client, `mkdir -p ${shellQuote(remoteRoot)}`);
+    }
+
+    await uploadDirectory(client, localPath, remoteRoot);
+
+    if (options.serve) {
+      await configureRemoteServer(client, options, remoteRoot, remoteHome);
+    }
+  } finally {
+    client.end();
+  }
+
+  console.log(`Deployment completed: ${localPath} -> ${options.user}@${options.host}:${options.remotePath}`);
+}
+
+main().catch((error) => {
+  console.error(`[deploy:ssh] ${error instanceof Error ? error.message : String(error)}`);
+  process.exitCode = 1;
+});

@@ -437,7 +437,7 @@ Sonnet 実装の M4 を実機（Playwright/Chromium）で end-to-end 検証。**
 
 ## 進行中・未完了タスク
 
-_MVP = M0–M4 全マイルストーン実装・実機検証完了。§20 Project パネル / コンポ管理（MVP 後 UX）実装・実機検証完了。§21 Timeline Tier A + P0 実装完了（実機検証待ち）。_
+_MVP = M0–M4 全マイルストーン実装・実機検証完了。§20 Project パネル / コンポ管理（MVP 後 UX）実装・実機検証完了。§21 Timeline Tier A + P0 実装完了。§23 comp layer (precomp) Phase 1 実装完了（実機検証待ち）。_
 
 ### Timeline AE 化バックログ（優先度高 — §21.0）
 **→ 詳細・実用性優先度リストは [doc/timeline-panel-wip.md](doc/timeline-panel-wip.md) を参照（SSoT ではなく作業計画）。**
@@ -462,6 +462,11 @@ UI が殺している穴（イージング編集 / 水平ズーム / component p
 
 - `scripts/claude-auto-continue.ps1` を追加。
 - `500` を検知したら数秒後に `続けて` を stdin へ送る PowerShell スクリプト。
+- `vite.config.ts` の `server.host = true` を設定し、`npm run dev` で LAN から直接アクセスできるように変更。
+- `scripts/deploy-ssh.mjs` を追加し、`npm run deploy:ssh -- --host ... --remote-path ...` で `dist`（または指定ディレクトリ）を任意 SSH ホストへ配備可能にした（`--build` / `--clean` / `--identity` / `--port` 対応）。
+- `deploy:ssh` の UX を改善し、`--remote-path` を省略可能に変更（既定 `~/mafter-effect`）。`--host root@ssh.gycp.party --port 10000` のように最小引数で実行できるようにした。
+- `deploy:ssh` を `.env` 読み込み対応に拡張し、`DEPLOY_HOST` / `DEPLOY_PASSWORD` などの設定だけで `npm run deploy:ssh` 実行可能にした。`.env` は `.gitignore` に追加。
+- `deploy:ssh` 実行後にリモートで Caddy コンテナを自動構成し、80/443 を同時待受する処理を追加（`--no-serve` で無効化可）。`DEPLOY_SITE_HOST` / `DEPLOY_TLS_EMAIL` で HTTPS 証明書設定を制御可能。
 
 ---
 
@@ -528,6 +533,7 @@ M4 実装は完了した。次のセッションでは Opus + Playwright によ�
 | 2026-06-17 | spec v0.6（§21.6 U/UU キー追記）。U キー: 選択レイヤーを KF ありプロパティのみ展開（再押し折りたたむ）。UU キー（300ms 以内に 2 回）: 変更済みプロパティのみ展開。caret クリック= "all" モード。expandMode Map で管理（store 非保存）。typecheck ✅ / tests 86件 ✅。 |
 | 2026-06-17 | spec v0.6（§21.5 KF 複数選択, スキーマ不変）。Timeline KF 複数選択実装: ラバーバンド（全レイヤー/全プロパティ横断, 中心 hit-test, Shift 追加）/ まとめてドラッグ移動 / Delete でまとめて削除 / 選択ハイライト。複数オブジェクト 1-command 用 `cmdUpdateObjects`/`updateObjects` 追加。typecheck ✅ / tests 86件 ✅ / build ✅。実機検証待ち。 |
 | 2026-06-17 | Timeline Tier A 実機検証（Playwright）14/14 PASS。**実バグ修正: graphRef が未接続でスクラブ/バー drag の px→frame 変換が無効化していた**（時間ルーラーのトラック div に ref 接続）。「トリム後スライドでハング」は headless CDP マウス入力の不安定性（アプリ正常・合成 DOM イベントで決定論検証）。typecheck ✅ / tests 86件 ✅ / build ✅。 |
+| 2026-06-17 | 開発サーバの LAN 公開設定: `vite.config.ts` に `server.host = true` を追加。`npm run dev` で外部端末からアクセス可能に変更。 |
 | 2026-06-17 | Timeline P0（[doc/timeline-panel-wip.md](doc/timeline-panel-wip.md) 参照）実装: **P0-1** Ctrl+スクロールでズーム / Shift+スクロールでパン / `\` でfit all / frameToPercent ですべての位置計算をview範囲にスケーリング / Ruler の適応的目盛り / overflow:hidden でクリッピング / **下部スクロールバー**（サム本体ドラッグ=パン・端ドラッグ=ズーム・◀▶ボタンで微量スクロール）。**P0-2** `isPlaying`をストアに昇格（PreviewPanel・TimelinePanel 両方から制御可）/ タイムラインツールバーに再生ボタン / Space キー統合。**P0-3** KF 右クリックでイージングコンテキストメニュー（Linear/Easy Ease/Ease In/Ease Out/Hold）/ F9=Easy Ease / Ctrl+F9=Linear / Shift+F9=Hold / KF ダイヤ色でeasing type を視覚化（緑=bezier/紫=hold/タン=linear）。**P0-4** ←→ ±1フレーム / Shift+←→ ±10 / Home/End / J=前KF / K=次KF。typecheck ✅ / tests 86件 ✅ / build ✅。実機検証要。 |
 | 2026-06-17 | Timeline P1（[doc/timeline-panel-wip.md](doc/timeline-panel-wip.md) 参照）実装（スキーマ不変）: **P1-5** レイヤードラッグ並べ替え（⋮⋮ハンドル HTML5 DnD、zOrder 更新、1 undo）。**P1-6** 複数レイヤー選択（Shift=範囲・Ctrl=トグル・通常=単独）。**P1-7** component props の animatable KF 行（plugin params を globalPluginRegistry から取得、scalar は NumberField 編集可、PropPath を string 型に拡張してコンポーネントパスに対応）。**P1-8** スナップ（ツールバー ⊡ ボタン、秒単位境界に 8px 半径で吸着）。**P1-9** KF コピー/ペースト（Cmd+C でコピー・Cmd+V で現フレームにオフセットペースト、undo 可）。typecheck ✅ / tests 86件 ✅ / build ✅。 |
 | 2026-06-17 | J/K（前/次 KF ジャンプ）が IME 環境で効かない問題を修正。**原因**: `e.key` 判定のみだと日本語 IME 入力中は `e.key="Process"` になり 'j'/'k' に一致しない（合成イベントでは再現せず実機 IME でのみ発生）。→ **物理キー `e.code`（"KeyJ"/"KeyK"/"KeyU"）でも判定**し、Ctrl/Cmd/Alt 併用時は無視（コピペ等と非衝突）。U/UU キーも同様に修正。**Playwright 検証**: IME 想定（key="Process", code="KeyK/KeyJ"）で frame 10→30→60→30 と移動 PASS ✅。typecheck ✅ / tests 86件 ✅ / build ✅。 |
@@ -535,3 +541,8 @@ M4 実装は完了した。次のセッションでは Opus + Playwright によ�
 | 2026-06-17 | Timeline ペースト位置 + カット（実機検証済）: **(1)ペーストが再生ヘッド位置に置かれない** → レイヤーペーストを **現フレーム基準**に変更（最も早い inPoint を再生ヘッドへ揃え、相対オフセット保持・KF も一緒にシフト・duration でクランプ）。KF ペーストは従来どおり再生ヘッド基準。**(2)Ctrl+X カット実装** → コピー + 削除（KF 選択中は KF カット、それ以外はレイヤーカット）。コピー処理を `copySelectedKfsToClipboard`/`copySelectedLayersToClipboard`/`pasteKfsAtPlayhead`/`pasteLayersAtPlayhead` ヘルパに整理し C/X/V から共用。**Playwright 実機検証（swiftshader, 全 PASS）**: F30 でペースト→inPoint=30 / Ctrl+X でレイヤー削除 / カット後 F50 でペースト→inPoint=50 / console エラー 0。typecheck ✅ / tests 86件 ✅ / build ✅。 |
 | 2026-06-17 | Timeline P1 コピペ修正（実機検証済）: **根本原因** — Ctrl+C/V を **KF 選択時のみ**処理しており、ユーザは AE 同様レイヤー選択状態で押すため何も起きなかった（Ctrl+D はレイヤー対象なので動く＝対比で不自然だった）。→ **AE 準拠の文脈分岐**に変更: KF 選択中は KF を、それ以外は選択レイヤーをコピペ。レイヤーペースト用に `cmdRemoveObjects`/`pasteObjects`（cmdDuplicateObjects 再利用, 1 undo）追加、`clipboardRef` を `{kind:"kf"|"layers"}` 判別共用体に。**Playwright 実機検証（swiftshader, 全 PASS）**: レイヤー Ctrl+C/V で objCount 1→2 / paste の undo / KF を frame0→20 へコピペ `[0,10,20]` / console エラー 0。検証用 window.__store フックと verify-copypaste.mjs は検証後に削除。typecheck ✅ / tests 86件 ✅ / build ✅。 |
 | 2026-06-17 | Timeline P1 ユーザフィードバック修正: **(5)並べ替えが効かない** → タイムライン表示を **zOrder 降順ソート**に変更（従来は配列順表示なので zOrder 変更が反映されなかった）+ 並べ替えで zOrder を再採番（最上段=最大）。レイヤー番号も AE 式に上=#1。**(6)複数選択で移動不可** → レイヤーバー drag（trim/slide）を **パネルにリフトアップ**し、掴んだレイヤーが複数選択に含まれれば選択全体を一括 trim/slide（1 undo, `barDrag` state でプレビュー）。**複数レイヤー一括削除**（Delete キー, KF 未選択時, `cmdRemoveObjects`/`removeObjects` 1 undo）追加。**(8)スナップ不明瞭** → `snapFrame` を再生ヘッド/秒境界/0/終端に ~10px 吸着へ拡張、scrub・バー drag・KF drag に適用（pxToFrame は生値に戻した）。**(9)コピペ不明** → `flashStatus` でツールバーに「📋 N キーフレームをコピー/貼り付け」フィードバック表示。**(オフトピック)シークバー左側ズレ** → P1-5 で追加したドラッグハンドルを **LABEL_W 列の外側**に置き列幅が LABEL_W を超えていた → ハンドルを列内に移動し全グラフ列原点を LABEL_W に再統一。typecheck ✅ / tests 86件 ✅ / build ✅。実機再確認待ち。 |
+| 2026-06-17 | デプロイスクリプト追加: `scripts/deploy-ssh.mjs` を新規作成し、`npm run deploy:ssh` を package scripts に追加。任意の SSH ホストへ `dist`（または `--local-path` 指定）を再帰転送、`--build` で事前ビルド、`--clean` で転送前クリーン、`--identity` / `--port` で接続指定できるようにした。 |
+| 2026-06-17 | デプロイスクリプト改善: `deploy:ssh` の `--remote-path` 必須を解除し、既定値を `~/mafter-effect` に設定。`--host root@ssh.gycp.party --port 10000` のような最小引数呼び出しをサポート。 |
+| 2026-06-17 | デプロイスクリプト改善: `.env`（`DEPLOY_HOST`/`DEPLOY_PASSWORD` 等）を読み込むようにし、`npm run deploy:ssh` 無引数実行をサポート。パスワード認証は `sshpass` または Windows の `plink`+`pscp` を自動選択。`.env` を `.gitignore` に追加。 |
+| 2026-06-17 | デプロイスクリプト改善: 配備後に Caddy コンテナを自動起動し 80/443 を待受する処理を追加。`DEPLOY_SITE_HOST`（または `--site-host`）を使った公開 HTTPS、`--no-serve` / `DEPLOY_ENABLE_WEB=false` で無効化をサポート。 |
+| 2026-06-17 | **§23 comp layer (precomp) Phase 1 実装**（スキーマ不変）: Project パネルの timeline comp 行を draggable 化・HTML comp の onClick 廃止（DnD 必須化）。`store.addCompLayer(compId)` + BFS 循環参照検出（自己参照・深さ無制限 BFS）。DomRenderer に `setTimelineComps()` / `renderNestedComp(depth≤4)` を追加（non-collapse 相当, AE default）。`resolve()` が `comp` type 用に `_inPoint` を resolved props に注入し DomRenderer が childFrame = clamp(parentFrame - inPoint + trimStart, 0, duration-1) で Freeze 挙動を実現。PreviewPanel が project 変更のたびに timeline comps を DomRenderer に注入。spec §23 追記。typecheck ✅ / tests 86件 ✅ / build ✅。実機検証待ち。 |

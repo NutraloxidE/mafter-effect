@@ -146,6 +146,9 @@ export interface EditorStore {
   installSamplePlugin: () => Promise<void>;
   togglePlugin: (id: string, enabled: boolean) => void;
   addPluginObject: (componentType: string) => string | null;
+
+  // §23 comp layer: timeline comp をアクティブコンプにレイヤーとして配置する
+  addCompLayer: (compId: string, name?: string) => string | null;
 }
 
 export const useEditorStore = create<EditorStore>((set, get) => ({
@@ -635,6 +638,33 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     cmdAddObject(get(), obj);
     return id;
   },
+
+  addCompLayer: (compId, name) => {
+    const p = get().project;
+    if (!p) return null;
+    const srcComp = p.compositions.find((c) => c.id === compId && c.kind === "timeline") as TimelineComposition | undefined;
+    if (!srcComp) return null;
+    const currentComp = currentTimelineComp(p, get().currentCompId);
+    if (!currentComp) return null;
+    if (currentComp.id === compId) return null; // 自己参照は直接ブロック
+    if (compWouldCreateCycle(p, currentComp.id, compId)) return null;
+
+    const id = newObjectId();
+    const obj: SceneObject = {
+      id,
+      name: name ?? srcComp.name,
+      parent: null,
+      zOrder: nextZOrder(currentComp),
+      enabled: true,
+      inPoint: 0,
+      outPoint: currentComp.duration,
+      transform: defaultTransform(),
+      opacity: staticProp(1),
+      components: [{ type: "comp", props: { compId, trimStart: 0 } }],
+    };
+    cmdAddObject(get(), obj);
+    return id;
+  },
 }));
 
 // ---- ユーティリティ ----
@@ -642,6 +672,33 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 function nextZOrder(comp: TimelineComposition | undefined): number {
   if (!comp || comp.objects.length === 0) return 1;
   return Math.max(...comp.objects.map((o) => o.zOrder)) + 1;
+}
+
+/**
+ * §23 循環参照検出: parentCompId に childCompId を追加したとき循環が生じるか確認する。
+ * childCompId から BFS し、parentCompId に到達できれば true。
+ */
+function compWouldCreateCycle(p: import("../core/schema").Project, parentCompId: string, childCompId: string): boolean {
+  const visited = new Set<string>();
+  const stack = [childCompId];
+  while (stack.length > 0) {
+    const curr = stack.pop()!;
+    if (visited.has(curr)) continue;
+    visited.add(curr);
+    const comp = p.compositions.find((c) => c.id === curr && c.kind === "timeline") as TimelineComposition | undefined;
+    if (!comp) continue;
+    for (const obj of comp.objects) {
+      for (const component of obj.components) {
+        if (component.type === "comp") {
+          const nestedId = component.props["compId"] as string | undefined;
+          if (!nestedId) continue;
+          if (nestedId === parentCompId) return true;
+          stack.push(nestedId);
+        }
+      }
+    }
+  }
+  return false;
 }
 
 /** 指定オブジェクトの AnimatedProp<number> に現 frame のキーフレームを追加/更新する。 */

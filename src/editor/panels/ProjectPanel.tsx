@@ -15,7 +15,6 @@ export function ProjectPanel() {
   const project = useEditorStore((s) => s.project);
   const compId = useEditorStore((s) => s.currentCompId);
   const addHtmlComp = useEditorStore((s) => s.addHtmlComp);
-  const addHtmlInstance = useEditorStore((s) => s.addHtmlInstance);
   const addTimelineComp = useEditorStore((s) => s.addTimelineComp);
   const removeComposition = useEditorStore((s) => s.removeComposition);
   const renameComposition = useEditorStore((s) => s.renameComposition);
@@ -68,7 +67,7 @@ export function ProjectPanel() {
   const assets = project?.assets ?? [];
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "#1c1c1c", color: "#ccc", fontSize: 12 }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "#1c1c1c", color: "#ccc", fontSize: 12, userSelect: "none" }}>
       {/* header — project actions */}
       <div style={{ padding: "6px 8px", background: "#222", borderBottom: "1px solid #333", flexShrink: 0 }}>
         <div style={{ fontWeight: "bold", color: "#ddd", marginBottom: 4 }}>
@@ -112,11 +111,16 @@ export function ProjectPanel() {
               icon="▦"
               iconColor="#7fb8f0"
               renaming={renamingId === c.id}
+              title="クリックでアクティブ切替 / ドラッグで別コンプにプリコンプレイヤーとして配置"
               onClick={() => setCurrentComp(c.id)}
               onStartRename={() => setRenamingId(c.id)}
               onCommitRename={(name) => { if (name.trim()) renameComposition(c.id, name.trim()); setRenamingId(null); }}
               onCancelRename={() => setRenamingId(null)}
               onDelete={timelineComps.length > 1 ? () => removeComposition(c.id) : undefined}
+              onDragStart={(e) => {
+                e.dataTransfer.setData(DRAG_MIME, JSON.stringify({ kind: "timeline-comp", id: c.id }));
+                e.dataTransfer.effectAllowed = "copy";
+              }}
             />
           );
         })}
@@ -129,8 +133,8 @@ export function ProjectPanel() {
             icon="◇"
             iconColor="#8a8"
             renaming={renamingId === c.id}
-            title="クリック or ドラッグでアクティブ comp のタイムラインに配置"
-            onClick={() => { const id = addHtmlInstance(c.id); if (id) selectObjects([id]); }}
+            title="ドラッグでアクティブ comp のタイムラインに配置"
+            onClick={() => { /* DnD専用: クリックでは追加しない */ }}
             onStartRename={() => setRenamingId(c.id)}
             onCommitRename={(name) => { if (name.trim()) renameComposition(c.id, name.trim()); setRenamingId(null); }}
             onCancelRename={() => setRenamingId(null)}
@@ -289,7 +293,7 @@ function CompRow({
             if (e.key === "Enter") onCommitRename(e.currentTarget.value);
             if (e.key === "Escape") onCancelRename();
           }}
-          style={{ flex: 1, background: "#2a2a2a", border: "1px solid #4a8acf", color: "#fff", borderRadius: 3, padding: "1px 4px", fontSize: 11 }}
+          style={{ flex: 1, background: "#2a2a2a", border: "1px solid #4a8acf", color: "#fff", borderRadius: 3, padding: "1px 4px", fontSize: 11, userSelect: "text" }}
         />
       ) : (
         <span style={{ flex: 1, color: active ? "#cfe6ff" : "#bbb", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>

@@ -208,7 +208,9 @@ export function TimelinePanel() {
   const pasteObjects = useEditorStore((s) => s.pasteObjects);
   const addHtmlInstance = useEditorStore((s) => s.addHtmlInstance);
   const addAudioLayer = useEditorStore((s) => s.addAudioLayer);
+  const importAudioAsset = useEditorStore((s) => s.importAudioAsset);
   const addPluginObject = useEditorStore((s) => s.addPluginObject);
+  const addCompLayer = useEditorStore((s) => s.addCompLayer);
   // P0-2: 再生制御はストアで共有
   const isPlaying = useEditorStore((s) => s.isPlaying);
   const togglePlay = useEditorStore((s) => s.togglePlay);
@@ -318,6 +320,30 @@ export function TimelinePanel() {
   const onTimelineDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setDropActive(false);
+
+    // レイヤー並べ替え DnD が ruler/空エリア上でドロップされた場合
+    // (LayerRow.onDrop は stopPropagation するのでここには ruler 上またはレイヤー行がない空エリアのみ来る)
+    if (e.dataTransfer.types.includes("text/x-layer-drag")) {
+      handleLayerDrop(layerDrag?.dropIdx ?? 0);
+      return;
+    }
+
+    // OS からのオーディオファイルドロップ（Windows Explorer 等）
+    const files = Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith("audio/") || /\.(mp3|wav|ogg|flac|aac|m4a)$/i.test(f.name));
+    if (files.length > 0) {
+      void (async () => {
+        for (const file of files) {
+          const assetId = await importAudioAsset(file);
+          if (assetId) {
+            const layerId = addAudioLayer(assetId, file.name.replace(/\.[^.]+$/, ""));
+            if (layerId) selectObjects([layerId]);
+          }
+        }
+      })();
+      return;
+    }
+
+    // ProjectPanel からのアイテムドロップ
     const raw = e.dataTransfer.getData(DRAG_MIME);
     if (!raw) return;
     try {
@@ -326,6 +352,7 @@ export function TimelinePanel() {
       if (item.kind === "html-comp" && item.id) newId = addHtmlInstance(item.id);
       else if (item.kind === "audio-asset" && item.id) newId = addAudioLayer(item.id);
       else if (item.kind === "plugin-component" && item.componentType) newId = addPluginObject(item.componentType);
+      else if (item.kind === "timeline-comp" && item.id) newId = addCompLayer(item.id);
       if (newId) selectObjects([newId]);
     } catch { /* ignore */ }
   };
@@ -935,28 +962,28 @@ export function TimelinePanel() {
         {statusMsg && <span style={{ color: "#8d8", fontSize: 10, marginLeft: 4 }}>{statusMsg}</span>}
       </div>
 
-      {/* time ruler */}
-      <div style={{ display: "flex", flexShrink: 0, borderBottom: "1px solid #2a2a2a", background: "#202020" }}>
-        <div style={{ width: LABEL_W, boxSizing: "border-box", flexShrink: 0, borderRight: "1px solid #333" }} />
-        <div
-          ref={graphRef}
-          style={{ position: "relative", flex: 1, height: 22, cursor: "pointer", overflow: "hidden" }}
-          onMouseDown={startScrub}
-        >
-          <Ruler viewRange={viewRange} duration={duration} fps={fps} frameToPercent={frameToPercent} />
-          <Playhead frame={frame} frameToPercent={frameToPercent} />
-        </div>
-      </div>
-
-      {/* rows */}
+      {/* rows — ruler is sticky first-child so it shares the scroll container's content width with layer rows.
+           This ensures the graph column widths match and the playhead cursor aligns correctly when zoomed. */}
       <div
         ref={rowsRef}
         onMouseDown={onRowsMouseDown}
-        onDragOver={(e) => { if (e.dataTransfer.types.includes(DRAG_MIME)) { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; setDropActive(true); } }}
-        onDragLeave={(e) => { if (!rowsRef.current?.contains(e.relatedTarget as Node)) setDropActive(false); }}
+        onDragOver={(e) => { const t = [...e.dataTransfer.types]; if (t.includes("text/x-layer-drag")) { e.preventDefault(); return; } if (t.includes(DRAG_MIME) || t.includes("Files")) { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; setDropActive(true); } }}
+        onDragLeave={(e) => { const rt = e.relatedTarget as Node | null; if (!rt || !rowsRef.current?.contains(rt)) setDropActive(false); }}
         onDrop={onTimelineDrop}
         style={{ flex: 1, overflowY: "auto", overflowX: "hidden", position: "relative", outline: dropActive ? "2px solid #5a8fd0" : "none", outlineOffset: -2 }}
       >
+        {/* time ruler — sticky so it stays visible while layers scroll */}
+        <div style={{ position: "sticky", top: 0, zIndex: 10, display: "flex", flexShrink: 0, borderBottom: "1px solid #2a2a2a", background: "#202020" }}>
+          <div style={{ width: LABEL_W, boxSizing: "border-box", flexShrink: 0, borderRight: "1px solid #333" }} />
+          <div
+            ref={graphRef}
+            style={{ position: "relative", flex: 1, height: 22, cursor: "pointer", overflow: "hidden" }}
+            onMouseDown={(e) => { e.stopPropagation(); startScrub(e); }}
+          >
+            <Ruler viewRange={viewRange} duration={duration} fps={fps} frameToPercent={frameToPercent} />
+            <Playhead frame={frame} frameToPercent={frameToPercent} />
+          </div>
+        </div>
         {objects.length === 0 && (
           <div style={{ padding: 16, color: "#444", textAlign: "center" }}>
             No layers — add one with + Solid / + Text above
@@ -1331,8 +1358,16 @@ function LayerRow(props: LayerRowProps) {
   return (
     <div
       style={{ borderBottom: "1px solid #222", borderTop: isDropTarget ? "2px solid #5a8fd0" : "none" }}
-      onDragOver={(e) => { if (e.dataTransfer.types.includes("text/x-layer-drag")) { e.preventDefault(); onLayerDragOver(); } }}
-      onDrop={(e) => { if (e.dataTransfer.types.includes("text/x-layer-drag")) { e.preventDefault(); onLayerDrop(); } }}
+      onDragOver={(e) => {
+        const t = [...e.dataTransfer.types];
+        if (t.includes("text/x-layer-drag")) { e.preventDefault(); onLayerDragOver(); return; }
+        // DRAG_MIME / OS ファイルドロップは親 rowsRef にバブルさせつつここでも accept
+        if (t.includes(DRAG_MIME) || t.includes("Files")) { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; }
+      }}
+      onDrop={(e) => {
+        if (e.dataTransfer.types.includes("text/x-layer-drag")) { e.preventDefault(); e.stopPropagation(); onLayerDrop(); return; }
+        // DRAG_MIME / OS ファイルは rowsRef の onDrop へバブルさせる（stopPropagation しない）
+      }}
     >
       {/* layer header row */}
       <div style={{ display: "flex", alignItems: "stretch", background: rowBg }}>

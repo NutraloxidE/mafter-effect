@@ -1,8 +1,9 @@
-import type { CompositionMeta, Frame, HtmlComposition, RGBA } from "../core/schema";
+import type { CompositionMeta, Frame, HtmlComposition, RGBA, TimelineComposition } from "../core/schema";
 import type { HtmlCompPlayer } from "./htmlComp";
 import { globalPluginRegistry } from "./pluginRegistry";
 import type { Renderer } from "./renderer";
 import type { ResolvedComponent, ResolvedObject, ResolvedScene } from "./resolved";
+import { resolve } from "./resolve";
 
 // §8 DomRenderer — フラット matrix3d レンダラ。
 // 各 ResolvedObject を root の兄弟 div として並べる。ネストしない。
@@ -156,6 +157,20 @@ export class DomRenderer implements Renderer {
         }
       }
 
+      // §23 comp: 子 timeline comp をコンテナ div にネスト描画
+      if (c.type === "comp" && el) {
+        const compId = (c.props["compId"] as string | undefined) ?? "";
+        const childComp = this.pendingTimelineComps?.get(compId);
+        if (childComp) {
+          const inPoint = (c.props["_inPoint"] as number) ?? 0;
+          const trimStart = (c.props["trimStart"] as number) ?? 0;
+          const rawChildFrame = frame - inPoint + trimStart;
+          // Freeze: clamp to [0, duration-1]
+          const childFrame = Math.max(0, Math.min(Math.round(rawChildFrame), childComp.duration - 1));
+          this.renderNestedComp(el, childComp, childFrame, 1);
+        }
+      }
+
       // html comp: HtmlCompPlayer に mount/render を委譲
       if (c.type === "html" && this.htmlPlayer && el) {
         const compId = (c.props["compId"] as string | undefined) ?? "";
@@ -193,6 +208,52 @@ export class DomRenderer implements Renderer {
 
   setHtmlComps(comps: Map<string, HtmlComposition>): void {
     this.pendingHtmlComps = comps;
+  }
+
+  // §23 timeline comp ネスト用: 現プロジェクトの timeline comp 一覧を注入する。
+  private pendingTimelineComps: Map<string, TimelineComposition> | null = null;
+
+  setTimelineComps(comps: Map<string, TimelineComposition>): void {
+    this.pendingTimelineComps = comps;
+  }
+
+  // §23 ネスト comp をコンテナ div に描画する (Phase 1: 非 reconcile、solid/text/image のみ対応)。
+  // html/plugin component を含む子オブジェクトは描画されない（Phase 2 以降で対応）。
+  // depth で無限ループを防ぐ（循環参照が挿入時に阻止されるが念のため）。
+  private renderNestedComp(container: HTMLElement, childComp: TimelineComposition, childFrame: Frame, depth: number): void {
+    if (depth > 4) return; // safety guard: 最大ネスト深度
+    const childScene = resolve(childComp, childFrame);
+    container.style.cssText = `position:absolute;top:0;left:0;width:${childComp.width}px;height:${childComp.height}px;overflow:hidden;transform-style:preserve-3d`;
+    if (childComp.background) container.style.background = rgbaCss(childComp.background);
+    else container.style.background = "";
+
+    // 毎フレーム再描画（Phase 1 簡易実装。html/plugin comp は対象外）
+    container.innerHTML = "";
+    for (const obj of childScene.objects) {
+      const div = document.createElement("div");
+      div.style.cssText = `position:absolute;top:0;left:0;transform-origin:0 0;transform:${mat4ToCss(obj.worldTransform)};opacity:${obj.opacity};z-index:${Math.round(obj.zOrder * BASE_Z)}`;
+      for (const c of obj.components) {
+        if (c.type === "comp") {
+          // ネストされた comp は再帰描画（深度制限付き）
+          const nestedCompId = c.props["compId"] as string | undefined;
+          const nestedComp = this.pendingTimelineComps?.get(nestedCompId ?? "");
+          if (nestedComp) {
+            const innerEl = document.createElement("div");
+            const inPoint = (c.props["_inPoint"] as number) ?? 0;
+            const trimStart = (c.props["trimStart"] as number) ?? 0;
+            const rawFrame = childFrame - inPoint + trimStart;
+            const nestedFrame = Math.max(0, Math.min(Math.round(rawFrame), nestedComp.duration - 1));
+            this.renderNestedComp(innerEl, nestedComp, nestedFrame, depth + 1);
+            div.appendChild(innerEl);
+          }
+          continue;
+        }
+        const el = createComponentEl(c.type);
+        updateComponentEl(el, c.type, c.props);
+        div.appendChild(el);
+      }
+      container.appendChild(div);
+    }
   }
 }
 

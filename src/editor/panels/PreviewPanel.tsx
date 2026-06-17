@@ -7,7 +7,7 @@ import { ModuleLoader } from "../../runtime/moduleLoader";
 import { IndexedDbFs } from "../../fs/IndexedDbFs";
 import { compositionDir } from "../../core/paths";
 import { currentTimelineComp, useEditorStore } from "../store";
-import type { HtmlComposition } from "../../core/schema";
+import type { HtmlComposition, TimelineComposition } from "../../core/schema";
 
 // M2: expression engine + HTML comp player は preview インスタンスに 1 つ。
 const _previewFs = new IndexedDbFs("mafter-effect-fs");
@@ -69,6 +69,11 @@ export function PreviewPanel() {
       (c): c is HtmlComposition => c.kind === "html",
     );
     rendererRef.current?.setHtmlComps(new Map(htmlComps.map((c) => [c.id, c])));
+    // §23 comp layer: 現コンプ以外の timeline comp を DomRenderer に注入する（ネスト描画用）。
+    const timelineCompsForNesting = (project?.compositions ?? []).filter(
+      (c): c is TimelineComposition => c.kind === "timeline" && c.id !== comp?.id,
+    );
+    rendererRef.current?.setTimelineComps(new Map(timelineCompsForNesting.map((c) => [c.id, c])));
     // evaluatorRef はリセットしない。古い evaluator をそのまま使い続け、
     // prepare 完了後に新しい evaluator に差し替える（リセットするとその間の
     // フレームで expression が fallback 値にスナップしてチラつく）。

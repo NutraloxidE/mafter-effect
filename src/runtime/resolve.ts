@@ -83,7 +83,7 @@ function resolverFor(comp: TimelineComposition, ctx: ResolveContext | undefined)
     );
   }
 
-  function resolveComponent(c: Component, frame: Frame, objectId: ObjectId): ResolvedComponent {
+  function resolveComponent(c: Component, frame: Frame, objectId: ObjectId, objInPoint: Frame = 0): ResolvedComponent {
     const props: Record<string, unknown> = {};
     for (const key of Object.keys(c.props)) {
       const raw = c.props[key];
@@ -93,6 +93,8 @@ function resolverFor(comp: TimelineComposition, ctx: ResolveContext | undefined)
         ? applyExpr(raw, sampled, frame, objectId)
         : sampled;
     }
+    // comp type: DomRenderer が子フレームを計算できるよう層の inPoint を注入する。
+    if (c.type === "comp") props["_inPoint"] = objInPoint;
     const out: ResolvedComponent = { type: c.type, props };
     if (c.exportStrategy !== undefined) out.exportStrategy = c.exportStrategy;
     return out;
@@ -157,7 +159,7 @@ export function resolve(
       worldTransform: worldOf(obj.id),
       zOrder: obj.zOrder,
       opacity: scalarProp(obj.opacity, frame, obj.id),
-      components: obj.components.map((c) => resolveComponent(c, frame, obj.id)),
+      components: obj.components.map((c) => resolveComponent(c, frame, obj.id, obj.inPoint)),
     });
   }
 
