@@ -475,7 +475,7 @@ function TextSection({
           {italic ? "On" : "Off"}
         </button>
       </Row>
-      <button onClick={onDecompose} style={{ ...btnStyle, marginTop: 4, fontSize: 10 }} title="§26.5 1文字=1レイヤーに分解">
+      <button onClick={onDecompose} style={{ ...btnStyle, marginTop: 4, fontSize: 10 }} title="§26.5 1文字=1レイヤーに分解（原文は (source) レイヤーとして残る）">
         Decompose Glyphs
       </button>
     </Section>

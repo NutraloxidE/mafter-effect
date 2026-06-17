@@ -135,9 +135,12 @@ describe("glyph decompose", () => {
     const ctx = createFixedMeasureContext(10);
     const result = buildGlyphDecomposeObjects(obj, comp, 0, ctx);
     expect(result).not.toBeNull();
-    expect(result!.length).toBe(3); // container + A + B
-    expect(result![0]!.components[0]!.props["text"]).toEqual(staticProp(""));
-    const glyphs = result!.slice(1);
+    expect(result!.length).toBe(4); // source + container + A + B
+    expect(result![0]!.name).toBe("Text (source)");
+    expect(result![0]!.enabled).toBe(false);
+    expect((result![0]!.components[0]!.props["text"] as { value: string }).value).toBe("A B");
+    expect(result![1]!.components[0]!.props["text"]).toEqual(staticProp(""));
+    const glyphs = result!.slice(2);
     expect(glyphs.map((g) => (g.components[0]!.props["text"] as { value: string }).value)).toEqual(["A", "B"]);
   });
 

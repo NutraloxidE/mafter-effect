@@ -212,3 +212,4 @@ Preview 四隅 scale ハンドルも 2026-06-18 手動確認で修正済み。�
 | 2026-06-18 | §26.4 Draft/Best 位置ズレ **解消(1)**: renderer 初期化順（生成後の renderer に "draft" が届かず常に precise=SVG 固定）。`textQualityRef` で生成時に品質適用（PreviewPanel.tsx）。130 tests ✅ |
 | 2026-06-18 | §26.4 Draft/Best **縦ズレ解消(2)**: Best baseline 式をインク基準→CSS line-box 同式（フォントメトリクス + 正 half-leading, system は fontBoundingBox）に修正（textLayout.ts textBaselineY）。Playwright インク実測で 0.08em→≤0.02em。baseline 回帰 3 件追加。133 tests / typecheck / build ✅ |
 | 2026-06-18 | (Cursor) エージェントルール更新: 実装→修正ループで **Playwright + Chromium 実機検証を必須**と明記（`.cursor/rules/mafter-effect-agent.mdc` / `debug-visual-render-bug.mdc` / skill 同期） |
+| 2026-06-18 | (Cursor) §26 グリフ分解: 分解前テキストを **`{name} (source)`** レイヤーとして複製保存（`enabled: false` で二重描画回避）。元 ID は従来どおり空テキスト container + glyph 子。133 tests ✅ |

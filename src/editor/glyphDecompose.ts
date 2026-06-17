@@ -62,6 +62,9 @@ export function buildGlyphDecomposeObjects(
   const placements = layoutGlyphsForDecompose(sourceText, size, tracking, leading, align, ctx.measureChar);
   if (placements.length === 0) return null;
 
+  /** 分解前のテキストをそのまま保持する参照レイヤー（二重描画を避けるため既定は非表示）。 */
+  const sourceLayer = preserveDecomposeSourceLayer(obj);
+
   const baseZ = obj.zOrder;
   const glyphObjects: SceneObject[] = [];
   let z = baseZ;
@@ -120,7 +123,18 @@ export function buildGlyphDecomposeObjects(
     ),
   };
 
-  return [container, ...glyphObjects];
+  return [sourceLayer, container, ...glyphObjects];
+}
+
+/** 分解直前の SceneObject を複製して残す（編集・参照用。描画は glyph 側を正とする）。 */
+function preserveDecomposeSourceLayer(obj: SceneObject): SceneObject {
+  const clone = structuredClone(obj) as SceneObject;
+  clone.id = newObjectId();
+  clone.name = `${obj.name} (source)`;
+  clone.parent = null;
+  clone.zOrder = obj.zOrder - 0.01;
+  clone.enabled = false;
+  return clone;
 }
 
 /** Canvas 2D measureText ベースの計測コンテキスト（ブラウザ/editor 専用）。 */
