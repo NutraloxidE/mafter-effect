@@ -1,0 +1,66 @@
+---
+description: Mafter Effect エージェント初期化 — CLAUDE.md を正本として従う
+alwaysApply: true
+---
+
+# Mafter Effect Agent
+
+このリポジトリで作業する Agent は **必ず `CLAUDE.md` に従う**。
+矛盾がある場合は CLAUDE.md → `doc/mafter-effect-spec.md`（SSoT）の優先順位に従う。
+
+## 役割分担（Claude Code / Cursor 共存ルール）
+
+このプロジェクトは **2 つの AI が分業**する。Cursor（Composer 2.5）は主に**実装**を担当する。
+
+| 担当 | 主な役割 | やること |
+|------|---------|---------|
+| **Claude Code (Opus)** | 設計 | 仕様策定、`doc/mafter-effect-spec.md`（spec）の追記・更新、スキーマ・不変条件の決定、アーキテクチャ判断 |
+| **Cursor (Composer 2.5)** | 実装 | 確定済み spec に沿ったコード実装、型・テスト・ビルドを緑にする、リファクタ |
+
+### Cursor が守ること
+
+- **spec / スキーマを勝手に変えない。** Cursor は spec を「正」として実装する側。
+  実装中に spec の不足・矛盾・曖昧さを見つけたら、**自分で型や不変条件を変更せず**、
+  その箇所をユーザーに報告し設計判断（Claude Code 側）を仰ぐ。
+- **CLAUDE.md は編集しない**（Claude Code 用の ground truth）。読むのは可。
+- spec に未定義の挙動を実装で「事実上の仕様」にしない。曖昧なら先に確認。
+- `project.json` のスキーマ・直列化形式に手を入れる変更は spec 更新を伴うため、勝手に進めない。
+
+## セッション開始時（実装・仕様変更の前）
+
+1. `progress.md` を読み、前セッションの状態を把握する
+2. 実装判断は `doc/mafter-effect-spec.md` を正とする（§5 型 > §4 INVARIANTS > §15 受け入れ条件 > その他散文）
+3. 散文を根拠にスキーマを変えない
+
+## 実装ワークフロー（Cursor 向け）
+
+1. **現状把握** — spec・progress・関連実装を読む
+2. **spec 確認** — 実装対象が spec に確定済みか確認。未確定なら実装せずユーザーに確認（選択肢 + 推奨案を提示）
+3. **実装** — `npm run typecheck` / `npm test` / 必要なら `npm run build` を緑にする
+4. **回帰確認** — 共有 UI・ストア・イベントハンドラの影響範囲を確認（typecheck/test が通っても UI ランタイムは別途確認）
+5. **記録** — 完了後 `progress.md` を更新する
+
+### progress.md の運用（コンフリクト回避）
+
+- 追記は**末尾に日付・担当（Cursor / Claude Code）を明記**して行う。既存の記述は書き換えず追記する。
+- 「次にやるべきこと（Next steps）」は設計側（Claude Code）が更新することが多い。実装で消化したら done に移すだけにし、勝手に再設計しない。
+
+## 不変条件（絶対に破らない）
+
+| ID | 条件 |
+|----|------|
+| INV-1 | `resolve(comp, frame)` は純関数（乱数は seeded helper のみ。`Math.random`/`Date.now`/DOM/network 禁止） |
+| INV-2 | 同一 frame の preview / browser export / headless export で scene 解決値が一致 |
+| INV-3 | Renderer は `ResolvedScene` のみ受け取る（SceneObject/Composition/Timeline/Keyframe はレンダラ非依存） |
+| INV-4 | `IndexedDbFs` と `NodeFs` は同一パス構成（zip も一致） |
+| INV-5 | 時間の正準は整数 `Frame`。秒は `frame / fps` の派生値 |
+| INV-6 | 参照は ULID（stable ID）。`name` は参照に使わない |
+
+## 実装ガイドライン
+
+- TypeScript strict、`any` 禁止
+- `project.json` は正準シリアライズ（キー順固定・id 昇順・末尾改行）を通す
+- コメントは「なぜ」が非自明な場合のみ
+- Transform 合成順: `L = T(position)·R(rotation)·S(scale)·T(-anchor)` / Euler は Z·Y·X(deg) / 原点左上 +x右 +y下 +z手前
+
+詳細（アーキテクチャ・マイルストーン M0–M4・設計決定）は `CLAUDE.md` と `doc/mafter-effect-spec.md` を参照。
