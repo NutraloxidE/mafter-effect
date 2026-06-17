@@ -1,6 +1,13 @@
 import type { Font } from "opentype.js";
 import type { RGBA } from "../core/schema";
-import { layoutTextLines, type TextAlign } from "./textLayout";
+import {
+  computeTextContentBounds,
+  layoutTextLines,
+  textBaselineY,
+  textLineHeightPx,
+  type LocalBounds,
+  type TextAlign,
+} from "./textLayout";
 
 export interface TextStyleProps {
   text: string;
@@ -56,13 +63,102 @@ export function rgbaCss(c: RGBA): string {
   return `rgba(${Math.round(c.r * 255)},${Math.round(c.g * 255)},${Math.round(c.b * 255)},${c.a})`;
 }
 
-function lineHeightPx(size: number, leading: number): number {
-  return leading > 0 ? leading : size * 1.2;
+function createMeasureCtx(): CanvasRenderingContext2D | null {
+  if (typeof document === "undefined") return null;
+  const canvas = document.createElement("canvas");
+  return canvas.getContext("2d");
 }
 
-/** §26.4 draft: DOM テキスト描画。 */
+function applyMeasureFont(ctx: CanvasRenderingContext2D, p: TextStyleProps): void {
+  ctx.font = `${p.italic ? "italic" : "normal"} ${p.weight} ${p.size}px ${p.font}`;
+}
+
+/** 1 行の幅（letter-spacing 込み）を Canvas 2D で測る。 */
+function measureLineWidthCanvas(
+  ctx: CanvasRenderingContext2D,
+  line: string,
+  tracking: number,
+): number {
+  if (line.length === 0) return 0;
+  let w = 0;
+  for (let i = 0; i < line.length; i++) {
+    w += ctx.measureText(line[i]!).width;
+    if (i < line.length - 1) w += tracking;
+  }
+  return w;
+}
+
+/**
+ * Draft DOM / プレビューハンドル共用の Canvas 実測境界（content-local）。
+ * solid の props.size と同様、描画 box とハンドル bounds を一致させる。
+ */
+export function measureTextCanvasBounds(p: TextStyleProps): LocalBounds {
+  if (typeof document === "undefined") {
+    return computeTextContentBounds(
+      p.text, p.size, p.tracking, p.leading, p.align, null,
+    );
+  }
+
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    return computeTextContentBounds(
+      p.text, p.size, p.tracking, p.leading, p.align, null,
+    );
+  }
+
+  applyMeasureFont(ctx, p);
+  const lineHeight = textLineHeightPx(p.size, p.leading);
+  const lines = p.text.split("\n");
+
+  let minX = 0;
+  let maxX = 0;
+  let maxY = 0;
+
+  for (const line of lines) {
+    const lineW = measureLineWidthCanvas(ctx, line, p.tracking);
+    if (p.align === "center") {
+      minX = Math.min(minX, -lineW / 2);
+      maxX = Math.max(maxX, lineW / 2);
+    } else if (p.align === "right") {
+      minX = Math.min(minX, -lineW);
+      maxX = Math.max(maxX, 0);
+    } else {
+      maxX = Math.max(maxX, lineW);
+    }
+    maxY += lineHeight;
+  }
+
+  if (lines.length === 0 || (lines.length === 1 && lines[0] === "")) {
+    maxX = Math.max(maxX, p.size * 0.5);
+    maxY = lineHeight;
+  }
+
+  return {
+    minX,
+    minY: 0,
+    maxX: Math.max(maxX, minX + 1),
+    maxY: Math.max(lineHeight, maxY),
+  };
+}
+
+/** Best=precise 時は opentype、Draft 時は Canvas 実測でハンドル bounds を決める。 */
+export function computeTextBoundsForHandles(
+  p: TextStyleProps,
+  font: Font | null,
+  useFontMetrics: boolean,
+): LocalBounds {
+  if (useFontMetrics && font) {
+    return computeTextContentBounds(p.text, p.size, p.tracking, p.leading, p.align, font);
+  }
+  return measureTextCanvasBounds(p);
+}
+
+/** §26.4 DOM 描画。GG 分解前のプレビュー Draft はこれを正とする。 */
 export function applyDraftText(el: HTMLElement, p: TextStyleProps): void {
   el.style.whiteSpace = "pre-wrap";
+  el.style.margin = "0";
+  el.style.padding = "0";
   el.style.color = rgbaCss(p.color);
   el.style.fontFamily = p.font;
   el.style.fontSize = `${p.size}px`;
@@ -70,7 +166,7 @@ export function applyDraftText(el: HTMLElement, p: TextStyleProps): void {
   el.style.fontStyle = p.italic ? "italic" : "normal";
   el.style.textAlign = p.align;
   el.style.letterSpacing = `${p.tracking}px`;
-  el.style.lineHeight = p.leading > 0 ? `${p.leading}px` : "normal";
+  el.style.lineHeight = `${textLineHeightPx(p.size, p.leading)}px`;
   if (p.strokeWidth > 0) {
     el.style.webkitTextStroke = `${p.strokeWidth}px ${rgbaCss(p.strokeColor)}`;
     el.style.paintOrder = "stroke fill";
@@ -79,6 +175,16 @@ export function applyDraftText(el: HTMLElement, p: TextStyleProps): void {
     el.style.paintOrder = "";
   }
   if (el.textContent !== p.text) el.textContent = p.text;
+
+  const bounds = measureTextCanvasBounds(p);
+  const boxW = bounds.maxX - bounds.minX;
+  const boxH = bounds.maxY - bounds.minY;
+  el.style.width = `${Math.max(1, boxW)}px`;
+  el.style.height = `${Math.max(1, boxH)}px`;
+  el.style.overflow = "visible";
+  const tx = bounds.minX !== 0 ? -bounds.minX : 0;
+  const ty = bounds.minY !== 0 ? -bounds.minY : 0;
+  el.style.transform = tx !== 0 || ty !== 0 ? `translate(${tx}px, ${ty}px)` : "";
 }
 
 /** §26.4.1 precise: SVG アウトライン（asset フォント）または SVG `<text>` フォールバック。 */
@@ -97,17 +203,17 @@ export function renderPreciseText(
   }
   while (svg.firstChild) svg.removeChild(svg.firstChild);
 
-  const lh = lineHeightPx(p.size, p.leading);
+  const lh = textLineHeightPx(p.size, p.leading);
+  const measureCtx = createMeasureCtx();
+  if (measureCtx) applyMeasureFont(measureCtx, p);
+  const sampleChar = p.text.match(/\S/)?.[0];
   const lines = layoutTextLines(p.text, p.size, p.tracking, lh, p.align, font);
-
-  let maxW = 0;
-  let totalH = 0;
-  for (const line of lines) {
-    maxW = Math.max(maxW, line.width);
-    totalH = Math.max(totalH, line.y + lh);
-  }
-  svg.setAttribute("width", String(Math.ceil(maxW)));
-  svg.setAttribute("height", String(Math.ceil(totalH)));
+  const bounds = computeTextContentBounds(p.text, p.size, p.tracking, p.leading, p.align, font);
+  const boxW = bounds.maxX - bounds.minX;
+  const boxH = bounds.maxY - bounds.minY;
+  svg.setAttribute("width", String(Math.ceil(Math.max(1, boxW))));
+  svg.setAttribute("height", String(Math.ceil(Math.max(1, boxH))));
+  svg.style.transform = bounds.minX !== 0 ? `translate(${-bounds.minX}px, 0)` : "";
 
   const fill = rgbaCss(p.color);
   const stroke = rgbaCss(p.strokeColor);
@@ -115,9 +221,10 @@ export function renderPreciseText(
 
   if (font) {
     for (const line of lines) {
+      const baseline = textBaselineY(line.y, p.size, p.leading, font, measureCtx, sampleChar);
       for (const g of line.glyphs) {
         if (!g.char || g.char === "\n") continue;
-        const path = font.getPath(g.char, g.x, g.y + p.size * 0.8, p.size);
+        const path = font.getPath(g.char, g.x - bounds.minX, baseline, p.size);
         const d = path.toPathData(2);
         const pathEl = document.createElementNS("http://www.w3.org/2000/svg", "path");
         pathEl.setAttribute("d", d);
@@ -146,9 +253,10 @@ export function renderPreciseText(
     textEl.setAttribute("paint-order", "stroke fill");
   }
   for (const line of lines) {
+    const baseline = textBaselineY(line.y, p.size, p.leading, null, measureCtx, sampleChar);
     const tspan = document.createElementNS("http://www.w3.org/2000/svg", "tspan");
-    tspan.setAttribute("x", String(line.offsetX));
-    tspan.setAttribute("y", String(line.y + p.size * 0.8));
+    tspan.setAttribute("x", String(line.offsetX - bounds.minX));
+    tspan.setAttribute("y", String(baseline));
     tspan.setAttribute("letter-spacing", String(p.tracking));
     if (p.align === "center") tspan.setAttribute("text-anchor", "middle");
     else if (p.align === "right") tspan.setAttribute("text-anchor", "end");
@@ -158,7 +266,7 @@ export function renderPreciseText(
   svg.appendChild(textEl);
 }
 
-/** draft/precise 切替。precise 時は inner DOM を SVG に差し替える。 */
+/** draft/precise 切替。Draft=DOM が正、Best は DOM line box に合わせる。 */
 export function applyTextEl(
   el: HTMLElement,
   props: Record<string, unknown>,
@@ -170,7 +278,7 @@ export function applyTextEl(
     const svg = el.querySelector("svg[data-mafter-text]");
     if (svg) svg.remove();
     applyDraftText(el, p);
-  } else {
-    renderPreciseText(el, p, font);
+    return;
   }
+  renderPreciseText(el, p, font);
 }

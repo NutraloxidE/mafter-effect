@@ -185,13 +185,14 @@ describe("previewViewer — §25.3 transform edits", () => {
     const fixedLocal = oppositeControlPoint(bounds, "se");
     const fixedComp = transformPoint(startWorld, fixedLocal);
     const handleCompStart = transformPoint(startWorld, handleControlPoint(bounds, "se"));
+    const startComp = handleCompStart;
     const curComp = {
       x: fixedComp.x + (handleCompStart.x - fixedComp.x) * 1.2,
       y: fixedComp.y + (handleCompStart.y - fixedComp.y) * 1.2,
       z: 0,
     };
 
-    const result = scaleFromOppositeCorner(start, bounds, "se", fixedComp, curComp, identity(), false);
+    const result = scaleFromOppositeCorner(start, bounds, "se", fixedComp, startComp, curComp, identity(), false);
 
     const afterWorld = localMatrix(start.anchor, result.position, start.rotation, result.scale);
     const fixedAfter = transformPoint(afterWorld, fixedLocal);
@@ -213,18 +214,47 @@ describe("previewViewer — §25.3 transform edits", () => {
     const fixedLocal = oppositeControlPoint(bounds, "nw");
     const fixedComp = transformPoint(startWorld, fixedLocal);
     const handleCompStart = transformPoint(startWorld, handleControlPoint(bounds, "nw"));
+    const startComp = handleCompStart;
     const curComp = {
       x: fixedComp.x + (handleCompStart.x - fixedComp.x) * 0.8,
       y: fixedComp.y + (handleCompStart.y - fixedComp.y) * 0.8,
       z: 0,
     };
 
-    const result = scaleFromOppositeCorner(start, bounds, "nw", fixedComp, curComp, identity(), false);
+    const result = scaleFromOppositeCorner(start, bounds, "nw", fixedComp, startComp, curComp, identity(), false);
     const afterWorld = localMatrix(start.anchor, result.position, start.rotation, result.scale);
     const fixedAfter = transformPoint(afterWorld, fixedLocal);
     expect(fixedAfter.x).toBeCloseTo(fixedComp.x, 4);
     expect(fixedAfter.y).toBeCloseTo(fixedComp.y, 4);
     expect(result.scale.x).toBeCloseTo(0.8, 4);
     expect(result.scale.y).toBeCloseTo(0.8, 4);
+  });
+
+  it("scaleFromOppositeCorner does not jump when mousedown is offset on handle", () => {
+    const bounds = { minX: 0, minY: 0, maxX: 120, maxY: 48 };
+    const start = {
+      anchor: vec3(0, 0, 0),
+      position: vec3(100, 50, 0),
+      rotation: vec3(0, 0, 0),
+      scale: vec3(1, 1, 1),
+    };
+    const startWorld = localMatrix(start.anchor, start.position, start.rotation, start.scale);
+    const fixedComp = transformPoint(startWorld, oppositeControlPoint(bounds, "se"));
+    const handleCompStart = transformPoint(startWorld, handleControlPoint(bounds, "se"));
+    const startComp = { x: handleCompStart.x + 3, y: handleCompStart.y - 2, z: 0 };
+
+    const result = scaleFromOppositeCorner(
+      start,
+      bounds,
+      "se",
+      fixedComp,
+      startComp,
+      startComp,
+      identity(),
+      false,
+    );
+
+    expect(result.scale.x).toBeCloseTo(1, 5);
+    expect(result.scale.y).toBeCloseTo(1, 5);
   });
 });

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { sampleAny, sampleRgba } from "../src/runtime/interpolate";
 import { staticProp, defaultTransform } from "../src/core/props";
 import type { AnimatedProp, RGBA, SceneObject, TimelineComposition } from "../src/core/schema";
-import { layoutGlyphsForDecompose, layoutTextLines } from "../src/runtime/textLayout";
+import { computeTextContentBounds, layoutGlyphsForDecompose, layoutTextLines, textLineHeightPx } from "../src/runtime/textLayout";
 import { parseTextProps } from "../src/runtime/textRender";
 import { buildGlyphDecomposeObjects, createFixedMeasureContext } from "../src/editor/glyphDecompose";
 
@@ -59,6 +59,13 @@ describe("layoutTextLines", () => {
     const lines = layoutTextLines("AB", 10, 0, 12, "center", null, () => 10);
     expect(lines[0]!.glyphs[0]!.x).toBe(-10);
     expect(lines[0]!.glyphs[1]!.x).toBe(0);
+  });
+
+  it("computeTextContentBounds matches layout (left align)", () => {
+    const b = computeTextContentBounds("AB", 10, 0, 0, "left", null);
+    expect(b.minX).toBe(0);
+    expect(b.maxX).toBeCloseTo(12, 5);
+    expect(b.maxY).toBeCloseTo(textLineHeightPx(10, 0), 5);
   });
 });
 

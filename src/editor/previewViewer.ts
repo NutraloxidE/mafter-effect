@@ -10,6 +10,7 @@ import type {
   Vec3,
 } from "../core/schema";
 import { sampleAny, sampleVec3 } from "../runtime/interpolate";
+import { computeTextBoundsForHandles, parseTextProps } from "../runtime/textRender";
 import { identity, invert, localMatrix, multiply, rotationEuler, scaling, transformPoint, type Mat4 } from "../runtime/mat4";
 import type { ResolveContext } from "../runtime/resolve";
 
@@ -45,6 +46,11 @@ export interface LocalBounds {
   minY: number;
   maxX: number;
   maxY: number;
+}
+
+export interface LayerBoundsContext {
+  getFont?: (family: string) => import("opentype.js").Font | null;
+  textQuality?: "draft" | "precise";
 }
 
 export interface ResolvedTransform {
@@ -225,6 +231,7 @@ export function getLayerLocalBounds(
   obj: SceneObject,
   frame: Frame,
   project: Project,
+  boundsCtx?: LayerBoundsContext,
 ): LocalBounds {
   let minX = 0;
   let minY = 0;
@@ -233,7 +240,7 @@ export function getLayerLocalBounds(
   let found = false;
 
   for (const c of obj.components) {
-    const b = boundsForComponent(c.type, c.props, frame, project);
+    const b = boundsForComponent(c.type, c.props, frame, project, boundsCtx);
     if (!b) continue;
     if (!found) {
       minX = b.minX;
@@ -253,11 +260,23 @@ export function getLayerLocalBounds(
   return { minX, minY, maxX, maxY };
 }
 
+function resolveTextPropsAtFrame(
+  props: Record<string, unknown>,
+  frame: Frame,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...props };
+  for (const key of ["text", "size", "tracking", "leading", "color", "strokeColor", "strokeWidth"] as const) {
+    if (key in props) out[key] = sampleAny(props[key], frame);
+  }
+  return out;
+}
+
 function boundsForComponent(
   type: string,
   props: Record<string, unknown>,
   frame: Frame,
   project: Project,
+  boundsCtx?: LayerBoundsContext,
 ): LocalBounds | null {
   switch (type) {
     case "solid":
@@ -268,11 +287,10 @@ function boundsForComponent(
       return { minX: 0, minY: 0, maxX: w, maxY: h };
     }
     case "text": {
-      const fontSize = (sampleAny(props["size"], frame) as number | undefined) ?? 48;
-      const text = (sampleAny(props["text"], frame) as string | undefined) ?? "";
-      const w = Math.max(40, text.length * fontSize * 0.55);
-      const h = Math.max(fontSize * 1.2, fontSize);
-      return { minX: 0, minY: 0, maxX: w, maxY: h };
+      const p = parseTextProps(resolveTextPropsAtFrame(props, frame));
+      const font = boundsCtx?.getFont?.(p.font) ?? null;
+      const useFontMetrics = boundsCtx?.textQuality === "precise";
+      return computeTextBoundsForHandles(p, font, useFontMetrics);
     }
     case "image": {
       const w = (props["width"] as number | undefined) ?? 200;
@@ -475,6 +493,7 @@ export function scaleFromOppositeCorner(
   bounds: LocalBounds,
   handle: ScaleHandle,
   fixedComp: Vec3,
+  startComp: Vec3,
   curComp: Vec3,
   parentWorld: Mat4,
   uniform: boolean,
@@ -498,8 +517,8 @@ export function scaleFromOppositeCorner(
     z: 0,
   };
   const deltaNow = {
-    x: curComp.x - fixedComp.x,
-    y: curComp.y - fixedComp.y,
+    x: deltaStart.x + (curComp.x - startComp.x),
+    y: deltaStart.y + (curComp.y - startComp.y),
     z: 0,
   };
 

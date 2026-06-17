@@ -571,6 +571,8 @@ export function PreviewPanel() {
                   onCommit={handleCommitTransform}
                   resolveCtx={{ expressions: evaluatorRef.current }}
                   onPan={handlePan}
+                  textQuality={effectiveTextQuality}
+                  getFont={(family) => fontCacheRef.current.getFont(family) ?? null}
                 />
               )}
             </div>

@@ -1,4 +1,5 @@
-import { useCallback, useRef } from "react";
+import { useCallback, useMemo, useRef } from "react";
+import type { Font } from "opentype.js";
 import type { Frame, Project, SceneObject, TimelineComposition, Transform, Vec3 } from "../../core/schema";
 import type { ResolveContext } from "../../runtime/resolve";
 import {
@@ -18,6 +19,7 @@ import {
   resolveTransformAtFrame,
   scaleFromOppositeCorner,
   screenToComp,
+  type LayerBoundsContext,
   type ResolvedTransform,
   type ScaleHandle,
 } from "../previewViewer";
@@ -45,6 +47,8 @@ interface PreviewViewerOverlayProps {
   onCommit: (transform: Transform, label: string) => void;
   resolveCtx?: ResolveContext;
   onPan: (delta: { x: number; y: number }) => void;
+  textQuality?: "draft" | "precise";
+  getFont?: (family: string) => Font | null;
 }
 
 const HANDLE_SIZE = 8;
@@ -75,6 +79,8 @@ export function PreviewViewerOverlay({
   onCommit,
   resolveCtx,
   onPan,
+  textQuality = "draft",
+  getFont,
 }: PreviewViewerOverlayProps) {
   const dragRef = useRef<{
     mode: DragMode;
@@ -94,6 +100,11 @@ export function PreviewViewerOverlay({
     ? resolveTransformAtFrame(activeTransform, frame)
     : null;
 
+  const boundsCtx = useMemo<LayerBoundsContext>(
+    () => ({ textQuality, getFont }),
+    [textQuality, getFont],
+  );
+
   const selectionAabb = computeSelectionAabb(
     selectedObject,
     activeTransform,
@@ -101,6 +112,7 @@ export function PreviewViewerOverlay({
     project,
     frame,
     resolveCtx,
+    boundsCtx,
   );
 
   const beginDrag = useCallback(
@@ -143,7 +155,7 @@ export function PreviewViewerOverlay({
       let fixedComp: Vec3 | undefined;
       let scaleBounds: import("../previewViewer").LocalBounds | undefined;
       if (mode.kind === "scale") {
-        scaleBounds = getLayerLocalBounds(selectedObject, frame, project);
+        scaleBounds = getLayerLocalBounds(selectedObject, frame, project, boundsCtx);
         const fixedLocal = oppositeControlPoint(scaleBounds, mode.handle);
         const startWorld = multiply(
           parentWorld,
@@ -196,6 +208,7 @@ export function PreviewViewerOverlay({
             d.scaleBounds,
             d.mode.handle,
             d.fixedComp,
+            d.startComp,
             curComp,
             pw,
             ev.shiftKey,
@@ -243,7 +256,7 @@ export function PreviewViewerOverlay({
       window.addEventListener("mousemove", move);
       window.addEventListener("mouseup", up);
     },
-    [activeResolved, activeTransform, comp, draftTransform, frame, hostRect, onCommit, onDraftChange, onPan, project, resolveCtx, selectedObject, viewPan, viewZoom],
+    [activeResolved, activeTransform, boundsCtx, comp, draftTransform, frame, hostRect, onCommit, onDraftChange, onPan, project, resolveCtx, selectedObject, viewPan, viewZoom],
   );
 
   const gridStep = Math.max(10, Math.round(comp.width / 10));
@@ -430,10 +443,11 @@ function computeSelectionAabb(
   project: Project,
   frame: Frame,
   ctx?: ResolveContext,
+  boundsCtx?: LayerBoundsContext,
 ): import("../previewViewer").LocalBounds | null {
   if (!obj || !transform) return null;
   const renderComp = compWithTransformOverride(comp, obj.id, transform);
-  const bounds = getLayerLocalBounds(obj, frame, project);
+  const bounds = getLayerLocalBounds(obj, frame, project, boundsCtx);
   const worlds = computeWorldTransforms(renderComp, frame, ctx);
   const world = worlds.get(obj.id);
   if (!world) return null;

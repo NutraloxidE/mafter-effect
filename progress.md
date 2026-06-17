@@ -17,7 +17,7 @@
 
 **MVP = M0–M4 全マイルストーン実装・実機検証完了。** その後 §20 Project パネル / §21 Timeline AE化 / §22 グラフエディタ / §23 precomp を MVP 後 UX として拡張中。
 
-現行テスト: **128 件全通過** / typecheck ✅ / build ✅（2026-06-18）。
+現行テスト: **130 件全通過** / typecheck ✅ / build ✅（2026-06-18）。
 
 ---
 
@@ -118,13 +118,14 @@ spec §26 に確定。`text` builtin ComponentDef 登録 + Inspector Text セク
 - [x] **§26.1 スキーマ** — `addText` 既定値（tracking/leading/weight/italic/stroke）。静的 props は raw 値、animatable は AnimatedProp。
 - [x] **§26.2 builtin ComponentDef** — [builtinComponents.ts](src/runtime/builtinComponents.ts) + Timeline PropRow kind 拡張（string/color/enum/bool）。
 - [x] **§26.3 Inspector Text** — [InspectorPanel.tsx](src/editor/panels/InspectorPanel.tsx) + [ColorSwatch.tsx](src/editor/ColorSwatch.tsx)。編集中 draft 自動降格。
-- [x] **§26.4 品質モード** — Preview Draft/Best トグル + [previewViewerStorage.ts](src/editor/previewViewerStorage.ts) 永続化。[textRender.ts](src/runtime/textRender.ts) draft DOM / precise SVG。[fontOutlineCache.ts](src/runtime/fontOutlineCache.ts) + opentype.js。
+- [x] **§26.4 品質モード** — Preview Draft/Best トグル + [previewViewerStorage.ts](src/editor/previewViewerStorage.ts) 永続化。[textRender.ts](src/runtime/textRender.ts) **Draft=DOM（分解前の正）** / Best=SVG（DOM line box に baseline 合わせ）。[fontOutlineCache.ts](src/runtime/fontOutlineCache.ts) + opentype.js。
 - [x] **§26.4.2 キャッシュ IF** — [frameRenderCache.ts](src/runtime/frameRenderCache.ts) no-op。
 - [x] **§26.5 グリフ分解** — [glyphDecompose.ts](src/editor/glyphDecompose.ts) + store `decomposeGlyphs` + Inspector ボタン。
 - [x] **§26.6 補間** — `sampleRgba` + string hold（[interpolate.ts](src/runtime/interpolate.ts)）。
 - [x] **§26.7 Export** — ExportDialog テキスト描画方式 + DomRenderer `textRenderMode`。
-- [x] **回帰（自動）** — typecheck / **128 tests PASS** / build ✅
+- [x] **回帰（自動）** — typecheck / **130 tests PASS** / build ✅
 - [ ] **回帰（手動）** — ブラウザ: 作成→編集→KF→グリフ分解→品質切替→export
+- [ ] **既知バグ潰し（ブロッカー）** — §25 Preview 直接操作 × テキストレイヤー（四隅 scale ハンドル等）。**次機能に進む前に必ず解消**（下記「開発方針」「既知のバグ」参照）。
 - **将来（§16）**: 段落ボックステキスト / 文字単位混在スタイル / パステキスト / 範囲セレクター式アニメーター / tracking 1/1000em / フォントセレクト UI / レイヤー個別品質 / レンダーキャッシュ実体
 
 ### Timeline AE化バックログ（spec §5 スキーマ拡張 + INV 影響評価を伴い別リビジョンで導入）
@@ -140,22 +141,42 @@ spec §26 に確定。`text` builtin ComponentDef 登録 + Inspector Text セク
 
 ---
 
+## 開発方針（2026-06-18 明記）
+
+**§26 テキストレイヤーは機能実装済みだが、プレビュー編集など実機でバグが残っている。**
+自動テスト（130 PASS）だけでは UI 品質は保証されない。
+
+> **次の機能・マイルストーン（M5 / Timeline Tier B 等）に進む前に、既知バグを必ず潰すこと。**
+> バグが残ったまま新規スコープを広げない。優先順位は **既知バグ修正 > 手動回帰 > 新機能**。
+
+---
+
 ## 既知のバグ・課題
+
+### §26 テキスト × §25 Preview 直接操作（**最優先・ブロッカー**）
+
+- **Preview 四隅 scale ハンドル（テキストレイヤー）** — solid では再現しない。ドラッグ開始時のジャンプは 2026-06-18 に部分修正（Canvas bounds 整合 + `scaleFromOppositeCorner` ドラッグ起点相対化）したが、**挙動は依然バグバグしい**。四隅ごとに scale が歪む報告あり。**手動確認で完全に直るまで §26 完了扱いにしない**。
+- Draft / Best 切替時の bounds・baseline ズレの可能性（要ブラウザ回帰）。
+- §26 手動回帰（作成→編集→KF→グリフ分解→品質切替→export）未実施。
+
+### インフラ・その他
 
 - `npm install` 時に transitive deps の脆弱性警告（moderate×3 / high×1 / critical×1）。dev/build ツールチェーン由来で実行時影響なし。`npm audit` で精査推奨。
 - IndexedDbFs.list は全 key 取得 → prefix フィルタ。アセット増加時は IDBKeyRange 範囲クエリへ最適化（§11.1 注記）。
-- 2026-06-17 の Timeline フィードバック修正 + レイヤー DnD ref 修正 + comp trimStart/ゴースト表示は typecheck/test/build 緑（2026-06-18 再確認: **100 tests PASS**）。
 
 ---
 
 ## Next steps（次のセッションでやること）
 
-1. **§25 Preview ビューア編集 手動回帰** — 直接操作・ズーム・オーバーレイ・animated KF 書き戻し（実装済み・自動テスト 119 PASS）。
-2. **§24 Ease パネル手動回帰** — F9 メニュー・グラフエディタとの SSoT 共有確認（実装済み・自動テスト 119 PASS）。
-3. ~~**§23 precomp Playwright E2E**~~ → ロジックは `test/precomp.test.ts` で自動化済み。Playwright E2E は任意。
-4. **M5 Web Bundle Export（§11.7）** — `@mafter/runtime` ベース player + Single-file/Folder bundle + `exportStrategy:'bake'` レイヤの部分 MP4/WebP 化。境界は M1 で先取り済み。
-5. ~~**§26 テキストレイヤー本実装**~~ — 実装済み（128 tests PASS）。手動回帰のみ残。
-6. **Timeline バックログ Tier B〜D / グラフエディタ Phase 2**（要 spec 追記・INV 評価）。
+**ゲート: 下記 1〜3 が完了するまで、4 以降（新機能）に着手しない。**
+
+1. **§26 × §25 テキスト Preview バグ修正（最優先）** — 四隅 scale ハンドルのジャンプ・歪みを solid と同等まで潰す。Draft / Best 両方で確認。
+2. **§26 手動回帰** — 作成→編集→KF→グリフ分解→品質切替→export。
+3. **§25 Preview 手動回帰** — 直接操作・ズーム・オーバーレイ・animated KF 書き戻し（solid / image / text）。
+4. **§24 Ease パネル手動回帰** — F9 メニュー・グラフエディタとの SSoT 共有確認。
+5. ~~**§23 precomp Playwright E2E**~~ → ロジックは `test/precomp.test.ts` で自動化済み。Playwright E2E は任意。
+6. **M5 Web Bundle Export（§11.7）** — 上記ゲート通過後。`@mafter/runtime` player + bundle export。
+7. **Timeline バックログ Tier B〜D / グラフエディタ Phase 2** — 上記ゲート通過後（要 spec 追記・INV 評価）。
 
 ### 参考: 先取り済みの境界（spec v0.3 新規）
 - **INV-7 `@mafter/runtime` 単一核**: resolve / Renderer / module loader(§11.3) / expression engine(§9) / 再生クロック をエディタ非依存ライブラリに括出し。preview / video exporter / web bundle player が共有。
@@ -181,3 +202,5 @@ spec §26 に確定。`text` builtin ComponentDef 登録 + Inspector Text セク
 | 2026-06-18 | §24 Flow 風 Ease パネル Phase 1 実装（EasePanel / easingApply / builtin presets / FS 保存 / store KF 選択共有）。107 tests PASS |
 | 2026-06-18 | spec v0.8 §24 Flow 風イージングプリセットパネル仕様確定（独立常設パネル / in-out-both 3 モード / カーブ編集+★保存 / cubic-bezier プリセットのみ・bounce/elastic は Phase 2）。実装は progress バックログに記載・未着手 |
 | 2026-06-18 | (Cursor) §26 テキストレイヤー本実装（builtin text ComponentDef / Inspector Text + ColorSwatch / Draft-Best 品質 / SVG アウトライン + opentype.js / グリフ分解 / export textRenderMode）。128 tests PASS |
+| 2026-06-18 | (Cursor) §26 テキスト scale ジャンプ修正: `textMeasure.ts`（Canvas `measureText` 実測）+ `previewViewer` の `getLayerLocalBounds` テキスト case を推定式から差し替え |
+| 2026-06-18 | (Cursor) §25/§26 テキスト scale ハンドル ジャンプ修正: `scaleFromOppositeCorner` をドラッグ起点相対に変更 / Draft DOM を Canvas bounds と一致 / Best 時は opentype bounds でハンドル整合。130 tests PASS |
