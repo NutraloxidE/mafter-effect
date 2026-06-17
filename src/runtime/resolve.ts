@@ -114,7 +114,7 @@ function isAnimatedProp(v: unknown): v is AnimatedProp<unknown> {
 }
 
 function isVisible(obj: SceneObject, frame: Frame): boolean {
-  return obj.enabled && frame >= obj.inPoint && frame <= obj.outPoint;
+  return obj.enabled && frame >= obj.inPoint && frame < obj.outPoint;
 }
 
 export function resolve(

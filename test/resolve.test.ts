@@ -80,6 +80,12 @@ describe("resolve — visibility & ordering", () => {
     expect(scene.objects.map((o) => o.id)).toEqual(["on"]);
   });
 
+  it("treats outPoint as exclusive (last visible frame is outPoint - 1)", () => {
+    const c = comp([makeObject({ id: "on", inPoint: 0, outPoint: 30 })]);
+    expect(resolve(c, 29).objects.map((o) => o.id)).toEqual(["on"]);
+    expect(resolve(c, 30).objects).toHaveLength(0);
+  });
+
   it("sorts objects by zOrder ascending (small = back)", () => {
     const scene = resolve(
       comp([
