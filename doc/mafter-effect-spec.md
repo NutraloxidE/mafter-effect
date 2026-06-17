@@ -212,7 +212,7 @@ interface ParamDescriptor {
 | type        | 役割                              | 主な params                          |
 |-------------|-----------------------------------|--------------------------------------|
 | `solid`     | 単色塗り（AE Solid 相当）          | `color: RGBA`, `size: vec2`          |
-| `text`      | テキスト（DOM レンダリング）        | `text`, `font`, `size`, `color`, `align` |
+| `text`      | テキスト（DOM/SVG レンダリング, §26） | `text`, `font`, `size`, `color`, `align`, `tracking`, `leading`, `weight`, `italic`, `strokeColor`, `strokeWidth` |
 | `image`     | 画像アセット表示                   | `asset: AssetId`, `fit`              |
 | `shape`     | rect / ellipse（最小図形）          | `kind`, `fill: RGBA`, `radius`, `size: vec2` |
 | `html`      | HTML Composition（Model A, §7）     | `compId: CompId`, + comp が宣言した params |
@@ -1143,3 +1143,187 @@ INV-1〜8 を保持する。
 - §25.1/§25.2 はビューア表示専用で **scene 解決値・export・ラスタに影響しない**（INV-2）。`resolve()` は不変（INV-1）。
 - §25.3〜§25.5 の編集はすべて既存スキーマの Transform プロパティへの書き込みのみ（§5 不変）で、command 経由（§17, undo 可）。KF frame は整数（INV-5）。
 - 逆行列・座標変換はエディタ層のみ。runtime（INV-7 の核）には新 API を足さない（既存 `invert`/`transformPoint` を利用）。
+
+---
+
+## §26 テキストレイヤー（Text）— 文字機能の本実装
+
+### §26.0 スコープ（確定）
+
+現状の `text` component は DOM 上の 5 属性（`text`/`font`/`size`/`color`/`align`）を**描画できるだけ**で、編集 UI が全パネルに無く、builtin ComponentDef も未登録（→ Timeline で `kind` が scalar にフォールバックし color/string 編集が壊れている）。本節はこれを「ユーザが作品として触れる」水準まで引き上げる。**AE 100% 一致は非目標**。下表の範囲のみを正式サポートとする。
+
+| 機能 | 採否 | 根拠（このリビジョンの確定） |
+|---|---|---|
+| 基本 5 属性（内容/フォント/サイズ/色/整列） | ✅ | 最低限 |
+| 字間 `tracking` / 行間 `leading` | ✅ | アニメ効果大・CSS で安価 |
+| ウェイト `weight` / イタリック `italic` | ✅ | フォント対応前提で安価 |
+| ストローク `strokeColor` / `strokeWidth` | ✅ | AE 頻用。厳密モード（§26.4）で正確 |
+| 編集 UX | **Inspector フォーム**（AE Character パネル相当） | §26.3 |
+| テキストアニメーション | **グリフ分解（GG 分解）**（§26.5） | 専用エンジン不要・既存 Transform/KF を最大活用 |
+| プレビュー品質 | **グローバル 1 ボタンで 軽量⇄厳密 切替**（§26.4） | Draft/Best 相当 |
+| 厳密描画 | **SVG アウトライン**まで今回実装（キャッシュ基盤は将来・IF だけ確保） | §26.4 |
+| 段落（ボックス）テキスト / 文字単位の混在スタイル / パステキスト / 範囲セレクター式アニメーター | ❌ 将来（§16） | グリフ分解で代替できるため MVP 外 |
+
+### §26.1 データモデル（スキーマ確定）
+
+`text` component の props を以下に確定する。`animatable: true` のものは `AnimatedProp<T>`、`false` のものは素の値で `props` に格納する（`Component.props` は `AnimatedProp<unknown> | unknown` の両対応・§5.5 不変）。
+
+```ts
+// text component props（builtin ComponentDef として登録する。§26.2）
+interface TextProps {
+  text:        AnimatedProp<string>;  // Source Text。補間は hold のみ（文字列は連続補間しない・§26.6）
+  size:        AnimatedProp<number>;  // px, > 0
+  color:       AnimatedProp<RGBA>;    // 塗り
+  tracking:    AnimatedProp<number>;  // 字間 px（CSS letter-spacing）。0 = 詰めなし
+  leading:     AnimatedProp<number>;  // 行間 px（CSS line-height）。0 = normal（size×1.2 相当）
+  strokeColor: AnimatedProp<RGBA>;    // 縁取り色
+  strokeWidth: AnimatedProp<number>;  // px, 0 = ストロークなし
+
+  font:   string;                     // family 名（assets フォント §11.6 or system）。animatable: false
+  align:  "left" | "center" | "right";// animatable: false（justify は将来）
+  weight: number;                     // 100..900（CSS font-weight）。animatable: false
+  italic: boolean;                    // animatable: false
+}
+```
+
+- 既定値（`addText` が積む初期 props）: `text="Text"`, `size=48`, `color=白`, `tracking=0`, `leading=0`, `strokeColor=黒`, `strokeWidth=0`, `font="sans-serif"`, `align="left"`, `weight=400`, `italic=false`。
+- 単位の確定: `tracking`・`leading` は **px**（AE の 1/1000 em 方式は将来）。`leading=0` は CSS `line-height: normal`。
+- ストローク描画順: 塗りの**外側**にストローク（CSS `paint-order: stroke fill` / SVG も同順）。`strokeWidth` は中心揃えではなく外側基準とする（厳密モード基準・§26.4）。
+
+### §26.2 builtin ComponentDef 登録（バグ修正含む・確定）
+
+`text`（および将来は `solid`/`shape` 等の builtin）を **`ParamDescriptor[]` 付きで `globalPluginRegistry.registerComponent` に登録**する。これにより Timeline の KF 行（[TimelinePanel.tsx:1381](../src/editor/panels/TimelinePanel.tsx#L1381)）が正しい `kind`/`label` を引け、現状の **scalar フォールバック不具合が解消**する。登録は plugin ロードと独立に、エディタ初期化時（store 初期化）に行う。
+
+```ts
+registerComponent({
+  type: "text", label: "Text",
+  params: [
+    { key: "text",        label: "Source Text", kind: "string", default: "Text", animatable: true },
+    { key: "font",        label: "Font",        kind: "string", default: "sans-serif", animatable: false },
+    { key: "size",        label: "Size",        kind: "scalar", default: 48, animatable: true, min: 1 },
+    { key: "color",       label: "Fill",        kind: "color",  default: { r:1,g:1,b:1,a:1 }, animatable: true },
+    { key: "align",       label: "Align",       kind: "enum",   default: "left", animatable: false, options: ["left","center","right"] },
+    { key: "tracking",    label: "Tracking",    kind: "scalar", default: 0, animatable: true },
+    { key: "leading",     label: "Leading",     kind: "scalar", default: 0, animatable: true, min: 0 },
+    { key: "weight",      label: "Weight",      kind: "enum",   default: 400, animatable: false, options: ["100","200","300","400","500","600","700","800","900"] },
+    { key: "italic",      label: "Italic",      kind: "bool",   default: false, animatable: false },
+    { key: "strokeColor", label: "Stroke",      kind: "color",  default: { r:0,g:0,b:0,a:1 }, animatable: true },
+    { key: "strokeWidth", label: "Stroke Width",kind: "scalar", default: 0, animatable: true, min: 0 },
+  ],
+});
+```
+
+> 既存 `ParamKind`（§5.5）に `string` / `enum` / `color` / `bool` は既に在る。Timeline / Inspector の汎用 PropRow がこれら kind を編集 UI として描けるよう拡張する（color は §26.3 のスウォッチ、enum はセレクト、bool はトグル、string はテキスト入力）。
+
+### §26.3 編集 UX — Inspector フォーム（確定）
+
+選択オブジェクトが `text` component を持つとき、Inspector（[InspectorPanel.tsx](../src/editor/panels/InspectorPanel.tsx)）に **"Text" セクション**を表示する（AE Character パネル相当）。フィールド:
+
+| フィールド | UI | KF |
+|---|---|---|
+| Source Text | 複数行 textarea | ◇（hold） |
+| Font | テキスト入力（将来: assets フォントのセレクト, §11.6） | — |
+| Size | ScrubNumber | ◇ |
+| Fill / Stroke 色 | **カラースウォッチ + ピッカー**（新規 UI） | ◇ |
+| Align | 3 ボタン（L/C/R） | — |
+| Tracking / Leading | ScrubNumber | ◇ |
+| Stroke Width | ScrubNumber | ◇ |
+| Weight | セレクト（100–900） | — |
+| Italic | トグル | — |
+
+- 各 animatable フィールドは既存 PropRow と同じ **ストップウォッチ（◇）で keyframe 化**でき、書き込みは command 経由（undo 可・§17）。値・KF 書き込みは既存 `updateObject` / `setKeyframe` 経路を流用し、`components[i].props[key]` を更新する（[store.ts](../src/editor/store.ts) のパターン）。
+- **カラーピッカーは新規コンポーネント**（現状エディタに無い）。最小実装は `<input type="color">` + alpha スライダで可。
+- **編集中フォールバック（§26.4 連動）**: Source Text の textarea / 数値・色フィールドに**フォーカスがある間はプレビューを軽量モードに自動降格**し、blur で元の品質へ戻す（タイプごとの SVG 再生成を避ける）。
+
+### §26.4 プレビュー品質モード（軽量 / 厳密）— 確定
+
+プレビューに**グローバル 1 ボタン**（AE の Draft/Best 相当）を置き、レンダリング品質を切り替える。粒度はグローバルのみ（レイヤー個別フラグは将来）。
+
+| モード | 描画 | 用途 |
+|---|---|---|
+| **軽量（draft）** | 現状の **DOM テキスト**描画（[DomRenderer.ts:302](../src/runtime/DomRenderer.ts#L302)）。CSS の `letter-spacing`/`line-height`/`font-weight`/`font-style`/`-webkit-text-stroke`(or `paint-order`) を全属性に反映 | 高速・編集追従用の近似プレビュー |
+| **厳密（precise）** | **SVG アウトライン**描画（§26.4.1）。塗り・ストロークを path で正確に。**最終 export と一致する基準**（§26.7） | 仕上がり確認・書き出し基準 |
+
+- ボタン状態は**ビューア設定**として永続化（§25.7 と同じ機構）。**project.json は汚さない**（INV-3/§19.3）。
+- store に `previewQuality: "draft" | "precise"` を持つ。`§26.3` の編集中フォールバックはこの値を一時上書きする（永続値は変えない）。
+
+#### §26.4.1 SVG アウトライン描画（今回スコープの上限）
+
+- 文字を**グリフのアウトライン path** に変換して `<svg><path fill stroke paint-order="stroke">` で描く。フォント実体に依存せず per-glyph 変形・正確なストロークが可能になり、**Web Bundle export（§11.7）でのフォント埋め込みが不要**になる（§26.7 と synergy）。
+- アウトライン抽出は**フォントバイナリのパースが必要**。実現方針:
+  - **assets として取り込んだフォント**（§11.6, `.ttf/.otf/.woff`）: フォントパーサ（推奨 `opentype.js`、差し替え可）でグリフ path を取得 → 正確なアウトライン。**これが厳密モードの正路**。
+  - **system フォント**（アセット実体なし）: ブラウザは外形 path を公開しないため正確なアウトライン化は不可。**SVG `<text>`（ベクタだが font 依存）にフォールバック**し、ストロークは `paint-order` で近似する。→ 「厳密モードを正確に使うにはフォントを asset として取り込む」を UX 上の前提とする（Inspector / export ダイアログに注記）。
+- 文字レイアウト（advance/改行/align/tracking/leading）の算出は**決定論**であること（INV-1）。パーサのメトリクスのみを用い、`Math.random`/`Date.now`/DOM measureText を resolve 経路に持ち込まない。アウトライン生成はレンダラ層（`ResolvedScene` 受領後）で行い、`resolve()` 自体は不変。
+
+#### §26.4.2 レンダーキャッシュ（将来・IF のみ今回確保）
+
+将来「重いポストエフェクトのフレーム描画をキャッシュして厳密プレビューを軽くする」ための**インターフェースだけ**今回切る（実体は no-op）。
+
+```ts
+// 将来拡張用。MVP は get() が常に miss を返す no-op 実装。
+interface FrameRenderCache {
+  get(key: { objectId: ObjectId; frame: Frame; propsHash: string }): CachedFrame | null;
+  put(key: { objectId: ObjectId; frame: Frame; propsHash: string }, value: CachedFrame): void;
+  invalidate(objectId: ObjectId): void;
+}
+```
+
+- キャッシュキーは決定論的（INV-1/2）に算出可能なものに限る（frame は整数・INV-5、props は正準ハッシュ）。**キャッシュは描画の高速化のみで scene 解決値・出力ピクセルの正には影響しない**。
+
+### §26.5 グリフ分解（GG 分解）— テキストアニメーションの代替（確定）
+
+AE のテキストアニメーター＋範囲セレクターは実装せず、**「1 文字 = 1 SceneObject」に分解する破壊的コマンド**で代替する。各グリフは独立した `text` レイヤーになり、**既存の Transform + キーフレーム機構だけ**で個別アニメーション（文字送り・タイポアニメ等）が作れる。
+
+#### §26.5.1 コマンド仕様
+
+「Decompose Glyphs（グリフ分解）」コマンド（Timeline / 右クリックメニュー / Inspector ボタンから起動、undo 可）:
+
+1. **現在フレームの Source Text とスタイル**（font/size/tracking/leading/weight/italic）から**文字レイアウトを測定**する。測定は**エディタ層**で Canvas 2D `measureText`（または §26.4 のフォントパーサ）を用いる。→ **`resolve()` の純粋性（INV-1）を保つため、測定は編集時に一度だけ行い、結果の座標を静的 Transform に焼き込む**（resolve 経路では測定しない）。
+2. 改行・align・tracking・leading を考慮し、各グリフの**ブロック内原点 (x, y)** を算出。
+3. グリフ 1 つにつき `SceneObject` を 1 つ生成:
+   - `text` component に**その 1 文字**を格納。font/size/color/stroke/weight/italic を元レイヤーからコピー。
+   - `transform.position` に焼き込んだ原点、`anchor` をグリフ基準点に設定。
+   - `parent` = **元レイヤー**（下記 4 でコンテナ化）。→ ブロック全体の Transform/アニメをグリフが継承（§5.4 parent 継承）。
+   - `zOrder` は元レイヤー近傍に連番付与（fractional・§5.4）。新 ID は ULID（INV-6）。
+   - 空白文字は**レイヤーを作らず advance（送り幅）だけ**反映。
+4. **元レイヤー**は Source Text を空にして**トランスフォーム専用のコンテナ**（= 実質 null/group）として残す。これによりブロック単位の移動・回転・スケールが 1 箇所で効き、各文字は個別 KF で動かせる。
+5. 全変更を **1 command（1 undo）**で確定する（§17, §21.5 の複数オブジェクト patch と同様）。
+
+#### §26.5.2 性質・トレードオフ（明記）
+
+- **破壊的・一方向**: AE の非破壊アニメーターと異なり、分解後は「文字列の編集」が各グリフ個別になる。元に戻すのは undo のみ（再結合コマンドは将来）。
+- 分解時点のスタイルで焼き込むため、**分解後のフォント/サイズ変更は再レイアウトされない**（各グリフを個別調整）。これを許容コストとして受け入れる。
+- INV-1/5/6 を保持（測定は編集時のみ・frame 整数・新規 ULID）。
+
+### §26.6 補間規則（確定）
+
+- `text`（Source Text, string）の KF 補間は **hold のみ**（連続補間しない）。frame ≥ 直近 KF の値を表示。これにより差し替え式テキストアニメが書ける。
+- `color`/`strokeColor`（RGBA）は各成分を §6.4 の補間規則で連続補間。
+- `size`/`tracking`/`leading`/`strokeWidth`（number）は通常の数値補間。
+- `font`/`align`/`weight`/`italic` は非アニメーション（静的値）。
+
+### §26.7 Export との関係（INV-2 の扱い・確定）
+
+- **厳密モード（SVG アウトライン）が最終出力の基準**。`§26.4` の厳密プレビューと export のテキスト描画は一致する。
+- **HTML / 映像書き出し時にテキスト描画方式を選択可能**にする（export ダイアログ）:
+  - **厳密（SVG アウトライン）のみ** — フォント非依存・埋め込み不要・per-glyph 正確（既定）。
+  - **可能な限り軽量（DOM テキスト）** — 出力サイズ/速度優先。フォント実体が要る場合は §11.6 の埋め込みを併用。
+- **INV-2 の解釈**: 不変条件が要求する「同一 frame の preview / browser export / headless export の一致」は **`resolve()` の scene 解決値の一致**を指す。軽量・厳密は同一 `ResolvedScene` の**ラスタライズ方式の違い**であり、`resolve()` は不変（INV-1）。ピクセル一致の基準は**厳密モード**とし、軽量モードは高速近似プレビュー（サブピクセル差を許容）と位置づける。
+
+### §26.8 影響ファイル（実装の入口・参考）
+
+- スキーマ/登録: [src/core/schema.ts](../src/core/schema.ts)（ParamKind は既存で足りる）, builtin ComponentDef 登録（store 初期化, [src/editor/store.ts](../src/editor/store.ts)）。
+- 描画: [src/runtime/DomRenderer.ts](../src/runtime/DomRenderer.ts)（軽量: 全属性反映）, 新規 SVG アウトラインレンダラ（厳密）, [src/editor/previewViewer.ts](../src/editor/previewViewer.ts)（サンプリング）。
+- UI: [src/editor/panels/InspectorPanel.tsx](../src/editor/panels/InspectorPanel.tsx)（Text セクション + カラースウォッチ）, [src/editor/panels/TimelinePanel.tsx](../src/editor/panels/TimelinePanel.tsx)（kind 別 PropRow 拡張）, [src/editor/panels/PreviewPanel.tsx](../src/editor/panels/PreviewPanel.tsx)（品質トグルボタン）, [src/editor/ExportDialog.tsx](../src/editor/ExportDialog.tsx)（テキスト描画方式）。
+- コマンド: [src/editor/commands.ts](../src/editor/commands.ts)（Decompose Glyphs）。
+- 既定値: [src/editor/store.ts](../src/editor/store.ts) `addText`。
+
+### §26.9 不変条件
+
+INV-1〜8 を保持する。
+
+- `resolve()` は不変。グリフ分解の測定・SVG アウトライン化はすべて **編集時 or レンダラ層**で行い、resolve 経路に DOM/measure/乱数を持ち込まない（INV-1）。
+- 軽量/厳密は同一 `ResolvedScene` のラスタライズ違い。scene 解決値は一致（INV-2）。基準は厳密モード（§26.7）。
+- 品質トグルはビューア設定で project.json を汚さない（INV-3, §19.3）。
+- 焼き込み座標・新規オブジェクトは整数 frame / ULID（INV-5/6）。
+- レンダーキャッシュ（§26.4.2）は将来 IF のみ。導入時もキャッシュは高速化専用で出力の正に影響しない。
