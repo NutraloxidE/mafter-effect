@@ -6,6 +6,7 @@ export type PanelId =
   | "timeline"
   | "project" // assets
   | "inspector"
+  | "ease"
   | "log";
 
 // §19.2 直列化可能なレイアウトツリー（VSCode / docking lib と同型）。
@@ -34,7 +35,7 @@ export function defaultLayout(): LayoutNode {
           { type: "panel", panel: "timeline" },
         ],
       },
-      { type: "panel", panel: "inspector" },
+      { type: "tabs", active: 0, panels: ["inspector", "ease"] },
     ],
   };
 }

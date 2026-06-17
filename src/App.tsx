@@ -23,6 +23,22 @@ function saveWorkspace(ws: WorkspaceState) {
   }
 }
 
+function updateLayoutTabs(node: LayoutNode, path: number[], active: number): LayoutNode {
+  if (path.length === 0) {
+    if (node.type === "tabs") return { ...node, active };
+    return node;
+  }
+  if (node.type !== "split") return node;
+  const [head, ...rest] = path;
+  if (head === undefined) return node;
+  return {
+    ...node,
+    children: node.children.map((child, i) =>
+      i === head ? updateLayoutTabs(child, rest, active) : child,
+    ),
+  };
+}
+
 export function App() {
   const [workspace, setWorkspace] = useState<WorkspaceState>(loadWorkspace);
 
@@ -65,6 +81,15 @@ export function App() {
     });
   }, []);
 
+  const handleTabsChange = useCallback((path: number[], active: number) => {
+    setWorkspace((ws) => {
+      const next = updateLayoutTabs(ws.layout, path, active);
+      const updated = { ...ws, layout: next };
+      saveWorkspace(updated);
+      return updated;
+    });
+  }, []);
+
   const canUndo = undoStack.past.length > 0;
   const canRedo = undoStack.future.length > 0;
 
@@ -85,7 +110,7 @@ export function App() {
 
       {/* workspace */}
       <div style={{ flex: 1, overflow: "hidden" }}>
-        <WorkspaceLayout node={workspace.layout} onSizesChange={handleSizesChange} />
+        <WorkspaceLayout node={workspace.layout} onSizesChange={handleSizesChange} onTabsChange={handleTabsChange} />
       </div>
     </div>
   );

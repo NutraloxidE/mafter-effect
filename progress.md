@@ -17,7 +17,7 @@
 
 **MVP = M0–M4 全マイルストーン実装・実機検証完了。** その後 §20 Project パネル / §21 Timeline AE化 / §22 グラフエディタ / §23 precomp を MVP 後 UX として拡張中。
 
-現行テスト: **86 件全通過** / typecheck ✅ / build ✅。
+現行テスト: **107 件全通過** / typecheck ✅ / build ✅（2026-06-18）。
 
 ---
 
@@ -69,8 +69,10 @@ AE の Project パネル化。store に `addTimelineComp`/`removeComposition`（
 ツールバー 📈 で値カーブレーンに切替。実サンプラでカーブ描画（hold/オーバーシュート反映, Vec3 は x/y/z 色分け）。KF 点ドラッグで時間+値編集 / ベジェハンドルで区間 easing 編集（linear→bezier 自動変換・y クランプ無し）。参照軸=|Δ|最大。1 操作 1 undo（`setPropByPath`）。`GraphLane` コンポーネント。
 **未実装（Phase 2/3）**: ① per-axis 値カーブ（Vec3 軸独立カーブ=`Keyframe<Vec3>` per-axis easing override の additive スキーマ要）② 空間モーションパス（spatial tangent + resolve 補間拡張 + INV-1/2 再検証）③ 速度グラフ ④ グラフ内 KF 追加/削除・ラバーバンド ⑤ opacity 等の値域クランプ。詳細は spec §22.0。
 
-### §23 comp layer (precomp) Phase 1（スキーマ不変, ⚠ 実機検証待ち）
+### §23 comp layer (precomp) Phase 1（スキーマ不変, 実機検証中）
 Project パネルの timeline/HTML comp を draggable 化（DnD 必須）。`store.addCompLayer(compId)` + BFS 循環参照検出。DomRenderer に `setTimelineComps`/`renderNestedComp`（depth≤4, non-collapse 相当）。`resolve()` が `comp` type に `_inPoint` を注入 → childFrame = clamp(parentFrame - inPoint + trimStart, 0, duration-1) で Freeze 挙動。spec §23 追記。
+- **2026-06-18 (Cursor)**: comp レイヤーの split/左端トリムで `trimStart` 連動（§21.3 相当・AE 準拠）。タイムラインにトリム済み源のゴースト表示（comp/html/video/audio）。
+- **2026-06-18 (Cursor)**: 自動検証追加 — `test/precomp.test.ts`（14 件）+ `src/runtime/compLayer.ts` 純関数抽出。✅ Freeze 時間マッピング / ✅ 循環参照 BFS 拒否（store 統合含む）/ ✅ depth≤4 ガード / ✅ resolve `_inPoint` 注入。comp-in-comp **描画**はユーザー確認済み。
 
 ### インフラ / デプロイ（2026-06-17）
 - `vite.config.ts` に `server.host = true`（LAN 公開）。
@@ -81,8 +83,22 @@ Project パネルの timeline/HTML comp を draggable 化（DnD 必須）。`sto
 
 ## 進行中・未完了タスク
 
-### ⚠ §23 precomp Phase 1 の実機検証（最優先）
-実装済みだが Playwright 実機検証が未了。comp-in-comp の描画 / Freeze 挙動 / 循環参照エラー画面 / depth 制限を確認すること。
+### §23 precomp Phase 1 — 残（手動のみ）
+- [x] **Freeze** 時間マッピング — `test/precomp.test.ts` + `compChildFrame()` で自動検証済み
+- [x] **循環参照拒否** — BFS + `store.addCompLayer` 統合テストで自動検証済み
+- [x] **depth 制限（≤4）** — `isCompNestDepthAllowed()` 単体テストで自動検証済み
+- [x] comp-in-comp **描画** — ユーザー確認済み
+- [ ] **Playwright 実機 E2E**（DnD 配置・ネスト描画のブラウザ回帰）— 未セットアップ。ロジック面は上記でカバー済み
+
+### §24 Flow 風イージングプリセットパネル（spec v0.8・Phase 1 スキーマ不変・**実装済み 2026-06-18**）
+仕様は spec §24 に確定。[EasePanel.tsx](src/editor/panels/EasePanel.tsx) + 共有モジュール群。
+- [x] **パネル登録** — 右カラム tabs `[inspector, ease]`（§19.3 localStorage 永続・project.json 非汚染）
+- [x] **EasePanel** — カーブプレビュー/エディタ + 数値入力 + プリセットグリッド + default/user セット + ★保存 + in/out/both + APPLY
+- [x] **組み込みプリセット** — [builtinEasingPresets.ts](src/editor/builtinEasingPresets.ts) §24.4 全件
+- [x] **適用ロジック** — [easingApply.ts](src/editor/easingApply.ts) + `test/easingApply.test.ts`（7 件）。KF 選択は store `selectedKfKeys` でタイムラインと共有
+- [x] **★保存** — [easingPresetFs.ts](src/editor/easingPresetFs.ts) → `presets/easing/<id>.json`
+- [x] **回帰（自動）** — typecheck / **107 tests PASS** / build ✅
+- [ ] **回帰（手動）** — §21 F9 メニュー・§22 グラフエディタとの SSoT 共有をブラウザで確認
 
 ### Timeline AE化バックログ（spec §5 スキーマ拡張 + INV 影響評価を伴い別リビジョンで導入）
 **→ 実用性優先度リストは [doc/timeline-panel-wip.md](doc/timeline-panel-wip.md)。**
@@ -101,14 +117,14 @@ Project パネルの timeline/HTML comp を draggable 化（DnD 必須）。`sto
 
 - `npm install` 時に transitive deps の脆弱性警告（moderate×3 / high×1 / critical×1）。dev/build ツールチェーン由来で実行時影響なし。`npm audit` で精査推奨。
 - IndexedDbFs.list は全 key 取得 → prefix フィルタ。アセット増加時は IDBKeyRange 範囲クエリへ最適化（§11.1 注記）。
-- 2026-06-17 の Timeline フィードバック修正（user-select / スライド KF 追従 / box-sizing 原点ズレ）は安全判定障害で typecheck/test/build 未実行のまま HMR 反映。次回まとめて緑確認すること。
+- 2026-06-17 の Timeline フィードバック修正 + レイヤー DnD ref 修正 + comp trimStart/ゴースト表示は typecheck/test/build 緑（2026-06-18 再確認: **100 tests PASS**）。
 
 ---
 
 ## Next steps（次のセッションでやること）
 
-1. **§23 precomp Phase 1 の Playwright 実機検証**（最優先・上記参照）。
-2. **未検証分の typecheck/test/build 一括確認**（既知の課題 3 項目目）。
+1. **§24 Ease パネル手動回帰** — F9 メニュー・グラフエディタとの SSoT 共有確認（実装済み・自動テスト 107 PASS）。
+2. ~~**§23 precomp Playwright E2E**~~ → ロジックは `test/precomp.test.ts` で自動化済み。Playwright E2E は任意。
 3. **M5 Web Bundle Export（§11.7）** — `@mafter/runtime` ベース player + Single-file/Folder bundle + `exportStrategy:'bake'` レイヤの部分 MP4/WebP 化。境界は M1 で先取り済み。
 4. **Timeline バックログ Tier B〜D / グラフエディタ Phase 2**（要 spec 追記・INV 評価）。
 
@@ -132,3 +148,6 @@ Project パネルの timeline/HTML comp を draggable 化（DnD 必須）。`sto
 | 2026-06-17 | spec v0.7 §22 グラフエディタ Phase 1（実機検証済）。Timeline コピー/カット/ペースト AE 準拠化（実機検証済） |
 | 2026-06-17 | デプロイ基盤: vite LAN 公開 / `deploy:ssh`（.env・パスワード認証・Caddy 自動構成） |
 | 2026-06-17 | §23 comp layer (precomp) Phase 1 実装（スキーマ不変・循環参照 BFS 検出・Freeze 挙動）。実機検証待ち |
+| 2026-06-18 | §23 precomp 自動検証: `compLayer.ts` + `test/precomp.test.ts`（14 件）。typecheck/test/build 一括確認（100 tests PASS） |
+| 2026-06-18 | §24 Flow 風 Ease パネル Phase 1 実装（EasePanel / easingApply / builtin presets / FS 保存 / store KF 選択共有）。107 tests PASS |
+| 2026-06-18 | spec v0.8 §24 Flow 風イージングプリセットパネル仕様確定（独立常設パネル / in-out-both 3 モード / カーブ編集+★保存 / cubic-bezier プリセットのみ・bounce/elastic は Phase 2）。実装は progress バックログに記載・未着手 |

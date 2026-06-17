@@ -3,6 +3,7 @@ import type { HtmlCompPlayer } from "./htmlComp";
 import { globalPluginRegistry } from "./pluginRegistry";
 import type { Renderer } from "./renderer";
 import type { ResolvedComponent, ResolvedObject, ResolvedScene } from "./resolved";
+import { compChildFrame, isCompNestDepthAllowed } from "./compLayer";
 import { resolve } from "./resolve";
 
 // §8 DomRenderer — フラット matrix3d レンダラ。
@@ -164,9 +165,7 @@ export class DomRenderer implements Renderer {
         if (childComp) {
           const inPoint = (c.props["_inPoint"] as number) ?? 0;
           const trimStart = (c.props["trimStart"] as number) ?? 0;
-          const rawChildFrame = frame - inPoint + trimStart;
-          // Freeze: clamp to [0, duration-1]
-          const childFrame = Math.max(0, Math.min(Math.round(rawChildFrame), childComp.duration - 1));
+          const childFrame = compChildFrame(frame, inPoint, trimStart, childComp.duration);
           this.renderNestedComp(el, childComp, childFrame, 1);
         }
       }
@@ -221,7 +220,7 @@ export class DomRenderer implements Renderer {
   // html/plugin component を含む子オブジェクトは描画されない（Phase 2 以降で対応）。
   // depth で無限ループを防ぐ（循環参照が挿入時に阻止されるが念のため）。
   private renderNestedComp(container: HTMLElement, childComp: TimelineComposition, childFrame: Frame, depth: number): void {
-    if (depth > 4) return; // safety guard: 最大ネスト深度
+    if (!isCompNestDepthAllowed(depth)) return;
     const childScene = resolve(childComp, childFrame);
     container.style.cssText = `position:absolute;top:0;left:0;width:${childComp.width}px;height:${childComp.height}px;overflow:hidden;transform-style:preserve-3d`;
     if (childComp.background) container.style.background = rgbaCss(childComp.background);
@@ -241,8 +240,7 @@ export class DomRenderer implements Renderer {
             const innerEl = document.createElement("div");
             const inPoint = (c.props["_inPoint"] as number) ?? 0;
             const trimStart = (c.props["trimStart"] as number) ?? 0;
-            const rawFrame = childFrame - inPoint + trimStart;
-            const nestedFrame = Math.max(0, Math.min(Math.round(rawFrame), nestedComp.duration - 1));
+            const nestedFrame = compChildFrame(childFrame, inPoint, trimStart, nestedComp.duration);
             this.renderNestedComp(innerEl, nestedComp, nestedFrame, depth + 1);
             div.appendChild(innerEl);
           }

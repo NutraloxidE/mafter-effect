@@ -927,7 +927,7 @@ INV-1〜6 を保持。Phase 1 は resolve・スキーマ・直列化に影響し
 
 ---
 
-*v0.7 / MVP scope = M0–M4（Web Bundle Export は M5）。§20–§22 は MVP 後の UX 拡張（UI 層）。§22 Phase 1 はスキーマ不変、Phase 2/3 は additive 拡張として将来。このファイルが「エンジンを作るための SSoT」。`claude.md` が「エンジンを使うための SSoT」。*
+*v0.8 / MVP scope = M0–M4（Web Bundle Export は M5）。§20–§24 は MVP 後の UX 拡張（UI 層）。§22/§24 Phase 1 はスキーマ不変、Phase 2/3 は additive 拡張として将来。このファイルが「エンジンを作るための SSoT」。`claude.md` が「エンジンを使うための SSoT」。*
 
 ---
 
@@ -992,3 +992,69 @@ childFrame = clamp(parentFrame - layer.inPoint + trimStart, 0, childComp.duratio
 | precomp opacity | レイヤー全体で適用 | 同じ（CSS opacity 継承） |
 | 循環参照 | UI 拒否 | 追加時に BFS 検出・拒否 |
 | nested html/plugin comp | 専用レンダラ | Phase 3 以降 |
+
+---
+
+## §24 Flow 風イージングプリセットパネル（Ease Panel）— UI 層・MVP 後の UX 拡張
+
+AE プラグイン **Flow** 相当の、イージングプリセットのグリッド選択 + カーブプレビュー + 選択 KF への一括適用パネル。**Phase 1 はスキーマ不変**（§5.3 `Easing` / §10 preset 形式をそのまま使う）。データモデルは §10、適用先の区間モデルは §22.1 を正とする。本セクションは UI 層と適用セマンティクスのみを定義する。
+
+### §24.0 スコープ（確定）
+
+- **Phase 1（本リビジョン・スキーマ不変）**: 独立した常設パネル（§19 パネルレジストリに登録）。組み込みプリセットグリッド + カーブプレビュー/編集 + ★ユーザープリセット保存 + in/out/both 適用。プリセットは**単一 cubic-bezier で表現可能なもののみ**（後述 §24.4）。適用は選択 KF の `easing` を `{type:"bezier"}` に**ベイク**して上書き（preset への live link は張らない）。
+- **Phase 2（将来・additive）**: bounce / elastic 等の多段イージング。`Easing` に名前付き関数型（例 `{type:"func"; id:string}`）を追加する additive スキーマ拡張 + `resolve()` 補間拡張を伴うため、**INV-1/INV-2 の再検証が必要**。Phase 1 とは分離する。
+
+### §24.1 パネル UI（Phase 1）
+
+- **登録**: `LayoutNode` レジストリに `ease` パネルとして追加（§19）。レイアウト状態は project.json を汚さない（§19.3, localStorage）。
+- 構成（Flow 準拠）:
+  - **カーブプレビュー/エディタ**: 現在選択中の bezier を 0..1 グリッド上に描画。制御点（out=`(x1,y1)` / in=`(x2,y2)`）はドラッグ編集可能。x は `[0,1]` クランプ、y はクランプなし（オーバーシュート可、§22.1 と同一規約）。
+  - **数値表示**: `x1, y1, x2, y2` を表示・直接入力可（例 `0.41, 0.02, 0.88, 0.21`）。
+  - **プリセットグリッド**: 組み込み + ユーザープリセットをサムネイル（ミニカーブ）で並べる。クリックでカーブプレビューに読み込み（＝選択状態）。
+  - **プリセットセット切替**: 名前付きセットのドロップダウン（既定 `default`）。MVP は `default`（組み込み）+ `user`（★保存先）の 2 セット。
+  - **★保存**: 現在のカーブを `presets/easing/<id>.json`（§10 形式）に新規保存。`id` は ULID（INV-6）、`label` はユーザー入力（既定は連番）。
+  - **方向トグル**: `in` / `out` / `both`（§24.2）。
+  - **APPLY ボタン**: 選択 KF 群へ現在のカーブを適用（方向トグルに従う）。1 操作 = 1 command（undo 可、§17）。
+
+### §24.2 適用セマンティクス（in / out / both）
+
+区間 easing は `k_i.easing` が区間 `[k_i, k_{i+1}]` の形を決める（§22.1）。プリセットの bezier を `B = [x1,y1,x2,y2]` とする。選択された各 KF `k` について:
+
+| モード | 操作 |
+|--------|------|
+| **out** | `k.easing` ← `{type:"bezier", bezier:B}`（`k` から次 KF への区間）。`k` が最終 KF なら no-op。 |
+| **in** | `k` の**直前** KF `k_{i-1}` の `easing` を bezier 化し、その `(x2,y2)` を `B` の `(x2,y2)` で置換。`k` が先頭 KF なら no-op。 |
+| **both** | out + in を両方適用（AE の Easy Ease と同じ「入り＋出し」両ハンドル整形）。 |
+
+- `in` モードで直前 KF の easing が `linear`/`hold` の場合は `[0,0,1,1]` に変換してから `(x2,y2)` を上書き（§22.1 規約）。
+- `both` は「`k` の入りハンドル（前区間の `x2,y2`）」と「`k` の出しハンドル（自区間の `x1,y1`）」を整える操作であり、`B` の前半 `(x1,y1)` を out 区間の入口に、後半 `(x2,y2)` を in 区間の出口に割り当てる。
+- 複数 KF 選択・複数プロパティ横断（§21.5）に対応。Vec3 は共有 easing を編集（Phase 1 の制約、§22.0）。
+- **1 適用 = 1 undo**。`updateObjects` / `setPropByPath`（§21.5 / §22.2 既存）で複数オブジェクト 1 command にまとめる。
+
+### §24.3 既存 UI との関係
+
+- §21 P0 の KF 右クリックイージングメニュー（F9=Easy Ease 等）は**ショートカット系**として残す。本パネルは**ビジュアル選択系**として併存（AE の F9 と Flow パネルの関係と同じ）。
+- §22 グラフエディタはカーブの**直接編集**、本パネルは**プリセット適用**。両者は同じ `easing` データを編集対象とし、相互に結果が反映される（同一 SSoT）。
+
+### §24.4 組み込みプリセット（Phase 1・cubic-bezier のみ）
+
+単一 cubic-bezier で表現可能なもののみ。`linear` は特例（`{type:"linear"}`）、`hold` はメニュー側に残しパネルでは扱わない。
+
+| id | bezier (x1,y1,x2,y2) |
+|----|----------------------|
+| linear | 特例 `{type:"linear"}` |
+| sineIn / sineOut / sine | `0.12,0,0.39,0` / `0.61,1,0.88,1` / `0.37,0,0.63,1` |
+| quadIn / quadOut / quad | `0.11,0,0.5,0` / `0.5,1,0.89,1` / `0.45,0,0.55,1` |
+| cubicIn / cubicOut / cubic | `0.32,0,0.67,0` / `0.33,1,0.68,1` / `0.65,0,0.35,1` |
+| quartIn / quartOut / quart | `0.5,0,0.75,0` / `0.25,1,0.5,1` / `0.76,0,0.24,1` |
+| quintIn / quintOut / quint | `0.64,0,0.78,0` / `0.22,1,0.36,1` / `0.83,0,0.17,1` |
+| expoIn / expoOut / expo | `0.7,0,0.84,0` / `0.16,1,0.3,1` / `0.87,0,0.13,1` |
+| circIn / circOut / circ | `0.55,0,1,0.45` / `0,0.55,0.45,1` / `0.85,0,0.15,1` |
+| backIn / backOut / back | `0.36,0,0.66,-0.56` / `0.34,1.56,0.64,1` / `0.68,-0.6,0.32,1.6` |
+| easeIn / easeOut / ease | `0.42,0,1,1` / `0,0,0.58,1` / `0.25,0.1,0.25,1` |
+
+> 値は CSS easing 標準（Penner 近似）に準拠。`back` 系は y∉[0,1] のオーバーシュートを使う（easing.ts は y をクランプしない）。`bounce`/`elastic` は単一 cubic-bezier で表現不可のため **Phase 2**（§24.0）に分離。
+
+### §24.5 不変条件
+
+INV-1〜6 を保持。Phase 1 は resolve・スキーマ・直列化に影響しない（既存 `easing` をそのまま使う）。KF の frame は整数を維持（INV-5）。ユーザープリセット保存は `presets/easing/<id>.json`（§10）への FS 書き込みのみで project.json には触れない。

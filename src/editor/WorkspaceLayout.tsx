@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useRef, useState } from "react";
 import type { LayoutNode, PanelId } from "./layout";
+import { EasePanel } from "./panels/EasePanel";
 import { InspectorPanel } from "./panels/InspectorPanel";
 import { PreviewPanel } from "./panels/PreviewPanel";
 import { ProjectPanel } from "./panels/ProjectPanel";
@@ -8,20 +9,23 @@ import { TimelinePanel } from "./panels/TimelinePanel";
 interface WorkspaceLayoutProps {
   node: LayoutNode;
   onSizesChange?: (path: number[], sizes: number[]) => void;
+  onTabsChange?: (path: number[], active: number) => void;
 }
 
-export function WorkspaceLayout({ node, onSizesChange }: WorkspaceLayoutProps) {
-  return <NodeRenderer node={node} path={[]} onSizesChange={onSizesChange} />;
+export function WorkspaceLayout({ node, onSizesChange, onTabsChange }: WorkspaceLayoutProps) {
+  return <NodeRenderer node={node} path={[]} onSizesChange={onSizesChange} onTabsChange={onTabsChange} />;
 }
 
 function NodeRenderer({
   node,
   path,
   onSizesChange,
+  onTabsChange,
 }: {
   node: LayoutNode;
   path: number[];
   onSizesChange?: (path: number[], sizes: number[]) => void;
+  onTabsChange?: (path: number[], active: number) => void;
 }) {
   if (node.type === "panel") return <PanelHost id={node.panel} />;
 
@@ -38,16 +42,21 @@ function NodeRenderer({
             node={child}
             path={[...path, i]}
             onSizesChange={onSizesChange}
+            onTabsChange={onTabsChange}
           />
         ))}
       </SplitPane>
     );
   }
 
-  // tabs: MVP は active panel のみ表示
   if (node.type === "tabs") {
-    const active = node.panels[node.active];
-    return active ? <PanelHost id={active} /> : null;
+    return (
+      <TabHost
+        panels={node.panels}
+        active={node.active}
+        onSelect={(active) => onTabsChange?.(path, active)}
+      />
+    );
   }
 
   return null;
@@ -144,6 +153,53 @@ function SplitPane({
   );
 }
 
+// ---- Tab host ----
+
+const PANEL_TAB_LABELS: Partial<Record<PanelId, string>> = {
+  inspector: "Inspector",
+  ease: "Ease",
+};
+
+function TabHost({
+  panels,
+  active,
+  onSelect,
+}: {
+  panels: PanelId[];
+  active: number;
+  onSelect?: (active: number) => void;
+}) {
+  const current = panels[active] ?? panels[0];
+  return (
+    <div style={{ display: "flex", flexDirection: "column", width: "100%", height: "100%", overflow: "hidden" }}>
+      <div style={{ display: "flex", flexShrink: 0, background: "#1a1a1a", borderBottom: "1px solid #333" }}>
+        {panels.map((id, i) => (
+          <button
+            key={id}
+            type="button"
+            onClick={() => onSelect?.(i)}
+            style={{
+              flex: 1,
+              padding: "5px 8px",
+              fontSize: 11,
+              border: "none",
+              borderBottom: i === active ? "2px solid #7fb8f0" : "2px solid transparent",
+              background: i === active ? "#222" : "transparent",
+              color: i === active ? "#ddd" : "#888",
+              cursor: "pointer",
+            }}
+          >
+            {PANEL_TAB_LABELS[id] ?? id}
+          </button>
+        ))}
+      </div>
+      <div style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
+        {current ? <PanelHost id={current} /> : null}
+      </div>
+    </div>
+  );
+}
+
 // ---- Panel host ----
 
 function PanelHost({ id }: { id: PanelId }) {
@@ -177,6 +233,12 @@ function PanelHost({ id }: { id: PanelId }) {
       return (
         <div style={style}>
           <InspectorPanel />
+        </div>
+      );
+    case "ease":
+      return (
+        <div style={style}>
+          <EasePanel />
         </div>
       );
     case "log":

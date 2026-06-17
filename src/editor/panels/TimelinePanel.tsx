@@ -1,5 +1,18 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  applyKfEasing,
+  buildKfPatches,
+  deleteKfFrames,
+  getPropByPath,
+  groupSelectedKfs,
+  isAnimatedProp,
+  kfKey,
+  moveKfFrames,
+  parseKfKey,
+  type PropPath,
+} from "../keyframeEdit";
 import { currentTimelineComp, setKeyframe, useEditorStore } from "../store";
+import { getLayerSourceExtent, shiftFootageSourceOffset, type LayerSourceExtent } from "../layerSourceOffset";
 import { DRAG_MIME } from "./ProjectPanel";
 import { ScrubNumber } from "../ScrubNumber";
 import type {
@@ -70,120 +83,6 @@ function showInMode(mode: ExpandMode, animated: boolean, modified: boolean): boo
   return mode === "uu" && modified;
 }
 
-// §21.5 KF 複数選択。選択は (objectId, propertyPath, frame) の集合。
-// P1-7: component prop パスは "comp_<idx>_<key>" 形式で拡張。
-type PropPath = string;
-
-const KF_SEP = "|";
-
-const kfKey = (objId: string, path: PropPath, frame: number): string =>
-  `${objId}${KF_SEP}${path}${KF_SEP}${frame}`;
-
-function parseKfKey(key: string): { objId: string; path: PropPath; frame: number } {
-  const i = key.indexOf(KF_SEP);
-  const j = key.lastIndexOf(KF_SEP);
-  return {
-    objId: key.slice(0, i),
-    path: key.slice(i + 1, j) as PropPath,
-    frame: Number(key.slice(j + 1)),
-  };
-}
-
-function getPropByPath(obj: SceneObject, path: PropPath): AnimatedProp<unknown> {
-  if (path === "opacity") return obj.opacity;
-  if (path.startsWith("transform.")) {
-    const key = path.slice("transform.".length) as TransformVecKey;
-    return obj.transform[key];
-  }
-  // P1-7: "comp_<idx>_<key>" 形式
-  if (path.startsWith("comp_")) {
-    const rest = path.slice(5);
-    const sep = rest.indexOf("_");
-    const idx = Number(rest.slice(0, sep));
-    const key = rest.slice(sep + 1);
-    const val = obj.components[idx]?.props[key];
-    if (isAnimatedProp(val)) return val;
-  }
-  return { value: 0, keyframes: [] };
-}
-
-function moveKfFrames<T>(prop: AnimatedProp<T>, frames: Set<number>, delta: number): AnimatedProp<T> {
-  if (delta === 0) return prop;
-  const targets = new Set<number>();
-  frames.forEach((f) => targets.add(f + delta));
-  const kept = prop.keyframes.filter((k) => !frames.has(k.frame) && !targets.has(k.frame));
-  const moved = prop.keyframes
-    .filter((k) => frames.has(k.frame))
-    .map((k) => ({ ...k, frame: k.frame + delta }));
-  return { ...prop, keyframes: [...kept, ...moved].sort((a, b) => a.frame - b.frame) };
-}
-
-function deleteKfFrames<T>(prop: AnimatedProp<T>, frames: Set<number>): AnimatedProp<T> {
-  return { ...prop, keyframes: prop.keyframes.filter((k) => !frames.has(k.frame)) };
-}
-
-// P0-3: 選択 KF のイージングを変更する。
-function applyKfEasing<T>(prop: AnimatedProp<T>, frames: Set<number>, easing: Easing): AnimatedProp<T> {
-  return { ...prop, keyframes: prop.keyframes.map((k) => frames.has(k.frame) ? { ...k, easing } : k) };
-}
-
-function groupSelectedKfs(keys: Iterable<string>): Map<string, Map<PropPath, Set<number>>> {
-  const m = new Map<string, Map<PropPath, Set<number>>>();
-  for (const key of keys) {
-    const { objId, path, frame } = parseKfKey(key);
-    let pm = m.get(objId);
-    if (!pm) { pm = new Map(); m.set(objId, pm); }
-    let fs = pm.get(path);
-    if (!fs) { fs = new Set(); pm.set(path, fs); }
-    fs.add(frame);
-  }
-  return m;
-}
-
-function buildKfPatches(
-  objects: SceneObject[],
-  group: Map<string, Map<PropPath, Set<number>>>,
-  fn: (prop: AnimatedProp<unknown>, frames: Set<number>) => AnimatedProp<unknown>,
-): { id: string; patch: Partial<SceneObject> }[] {
-  const patches: { id: string; patch: Partial<SceneObject> }[] = [];
-  for (const [objId, pm] of group) {
-    const obj = objects.find((o) => o.id === objId);
-    if (!obj) continue;
-    const patch: Partial<SceneObject> = {};
-    let transform: Transform = obj.transform;
-    let touchedTransform = false;
-    // P1-7: component パス用 Map<compIdx, Map<key, new prop>>
-    const compMods = new Map<number, Map<string, AnimatedProp<unknown>>>();
-    for (const [path, frames] of pm) {
-      const next = fn(getPropByPath(obj, path), frames);
-      if (path === "opacity") {
-        patch.opacity = next as AnimatedProp<number>;
-      } else if (path.startsWith("transform.")) {
-        const k = path.slice("transform.".length) as TransformVecKey;
-        transform = { ...transform, [k]: next as AnimatedProp<Vec3> };
-        touchedTransform = true;
-      } else if (path.startsWith("comp_")) {
-        const rest = path.slice(5);
-        const sep = rest.indexOf("_");
-        const idx = Number(rest.slice(0, sep));
-        const key = rest.slice(sep + 1);
-        if (!compMods.has(idx)) compMods.set(idx, new Map());
-        compMods.get(idx)!.set(key, next);
-      }
-    }
-    if (touchedTransform) patch.transform = transform;
-    if (compMods.size > 0) {
-      patch.components = obj.components.map((c, i) => {
-        const kv = compMods.get(i);
-        if (!kv) return c;
-        return { ...c, props: { ...c.props, ...Object.fromEntries(kv) } };
-      });
-    }
-    patches.push({ id: objId, patch });
-  }
-  return patches;
-}
-
 interface SelectBox { x0: number; y0: number; x1: number; y1: number }
 interface KfDragState { keys: Set<string>; delta: number }
 interface KfContextMenu { x: number; y: number }
@@ -230,7 +129,10 @@ export function TimelinePanel() {
   const menuRef = useRef<HTMLDivElement>(null);
 
   const [dropActive, setDropActive] = useState(false);
-  const [selectedKfs, setSelectedKfs] = useState<Set<string>>(new Set());
+  const selectedKfKeys = useEditorStore((s) => s.selectedKfKeys);
+  const setSelectedKfKeys = useEditorStore((s) => s.setSelectedKfKeys);
+  const selectedKfs = useMemo(() => new Set(selectedKfKeys), [selectedKfKeys]);
+
   const [kfDrag, setKfDrag] = useState<KfDragState | null>(null);
   const [box, setBox] = useState<SelectBox | null>(null);
   const [kfContextMenu, setKfContextMenu] = useState<KfContextMenu | null>(null);
@@ -266,7 +168,7 @@ export function TimelinePanel() {
 
   // comp 切替でビュー・選択・展開をリセット
   useEffect(() => {
-    setSelectedKfs(new Set());
+    setSelectedKfKeys([]);
     setExpandMode(new Map());
     setViewRange({ start: 0, end: duration });
     setKfContextMenu(null);
@@ -386,7 +288,7 @@ export function TimelinePanel() {
       const { objId, path, frame: kff } = parseKfKey(k);
       next.add(kfKey(objId, path, kff + delta));
     });
-    setSelectedKfs(next);
+    setSelectedKfKeys([...next]);
   };
 
   const applyMultiKfDelete = (keys: Set<string>) => {
@@ -394,7 +296,7 @@ export function TimelinePanel() {
     const group = groupSelectedKfs(keys);
     const patches = buildKfPatches(objects, group, (prop, frames) => deleteKfFrames(prop, frames));
     updateObjects(patches, "Delete keyframes");
-    setSelectedKfs(new Set());
+    setSelectedKfKeys([]);
   };
 
   // P1-9: 選択 KF をクリップボードへ。コピー数を返す。
@@ -475,9 +377,9 @@ export function TimelinePanel() {
     }
     if (patches.length > 0) {
       updateObjects(patches, "Paste keyframes");
-      setSelectedKfs(new Set(copied.map(({ objId, path, kf }) =>
-        kfKey(objId, path, Math.max(0, Math.min(duration, kf.frame + offset)))
-      )));
+      setSelectedKfKeys(copied.map(({ objId, path, kf }) =>
+        kfKey(objId, path, Math.max(0, Math.min(duration, kf.frame + offset))),
+      ));
       flashStatus(`📋 ${copied.length} キーフレームを F${frame} に貼り付け`);
     }
   };
@@ -524,10 +426,11 @@ export function TimelinePanel() {
     e.preventDefault();
     const key = kfKey(objId, path, kfFrame);
     if (e.shiftKey) {
-      setSelectedKfs((prev) => {
+      setSelectedKfKeys((prev) => {
         const n = new Set(prev);
-        if (n.has(key)) n.delete(key); else n.add(key);
-        return n;
+        if (n.has(key)) n.delete(key);
+        else n.add(key);
+        return [...n];
       });
       return;
     }
@@ -536,7 +439,7 @@ export function TimelinePanel() {
       dragKeys = new Set(selectedKfs);
     } else {
       dragKeys = new Set([key]);
-      setSelectedKfs(dragKeys);
+      setSelectedKfKeys([...dragKeys]);
     }
     const frames = [...dragKeys].map((k) => parseKfKey(k).frame);
     const minF = Math.min(...frames);
@@ -666,7 +569,7 @@ export function TimelinePanel() {
       const nout = mode === "in" ? o.outPoint : o.outPoint + delta;
       const patch: Partial<SceneObject> = { inPoint: nin, outPoint: nout };
       if (mode === "in") {
-        const next = shiftSourceOffset(o.components, delta);
+        const next = shiftFootageSourceOffset(o.components, delta);
         if (next) patch.components = next;
       } else if (mode === "move") {
         Object.assign(patch, shiftObjectKeyframes(o, delta));
@@ -698,7 +601,7 @@ export function TimelinePanel() {
 
   // P0-3: KF 右クリックでコンテキストメニュー。
   const handleKfRightClick = (key: string, x: number, y: number) => {
-    if (!selectedKfs.has(key)) setSelectedKfs(new Set([key]));
+    if (!selectedKfs.has(key)) setSelectedKfKeys([key]);
     setKfContextMenu({ x, y });
   };
 
@@ -712,13 +615,13 @@ export function TimelinePanel() {
     const base = e.shiftKey ? new Set(selectedKfs) : new Set<string>();
     const x0 = e.clientX;
     const y0 = e.clientY;
-    setSelectedKfs(base);
+    setSelectedKfKeys([...base]);
     setBox({ x0, y0, x1: x0, y1: y0 });
     const move = (ev: MouseEvent) => {
       dragMovedRef.current = true;
       const b: SelectBox = { x0, y0, x1: ev.clientX, y1: ev.clientY };
       setBox(b);
-      setSelectedKfs(hitTestBox(b, base));
+      setSelectedKfKeys([...hitTestBox(b, base)]);
     };
     const up = () => {
       window.removeEventListener("mousemove", move);
@@ -1038,6 +941,7 @@ export function TimelinePanel() {
             onRemove={() => removeObject(obj.id)}
             onUpdate={updateObject}
             frameToPercent={frameToPercent}
+            sourceExtent={project ? getLayerSourceExtent(obj, project, fps) : null}
             onLayerDragStart={() => {
               layerDragIdRef.current = obj.id;
               layerDragRef.current = { dragIdx: i, dropIdx: i };
@@ -1368,6 +1272,7 @@ interface LayerRowProps {
   onRemove: () => void;
   onUpdate: (id: string, patch: Partial<SceneObject>, label?: string) => void;
   frameToPercent: (f: number) => number;
+  sourceExtent: LayerSourceExtent | null;
   onLayerDragStart: () => void;
   onLayerDragOver: () => void;
   onLayerDrop: () => void;
@@ -1375,12 +1280,15 @@ interface LayerRowProps {
 }
 
 function LayerRow(props: LayerRowProps) {
-  const { obj, index, frame, selected, expandMode, selectedKfs, kfDrag, isDropTarget, barDrag, graphMode, viewRange, onSetProp, beginKfDrag, beginLayerBarDrag, onKfRightClick, onToggleExpand, onSelectLayer, onRemove, onUpdate, frameToPercent, onLayerDragStart, onLayerDragOver, onLayerDrop, onLayerDragEnd } = props;
+  const { obj, index, frame, selected, expandMode, selectedKfs, kfDrag, isDropTarget, barDrag, graphMode, viewRange, sourceExtent, onSetProp, beginKfDrag, beginLayerBarDrag, onKfRightClick, onToggleExpand, onSelectLayer, onRemove, onUpdate, frameToPercent, onLayerDragStart, onLayerDragOver, onLayerDrop, onLayerDragEnd } = props;
   // P1-6: バードラッグのプレビューはパネル管理の barDrag から導出（複数選択を一括移動するため）。
   const dDelta = barDrag ? barDrag.delta : 0;
   const inPoint = barDrag && barDrag.mode !== "out" ? obj.inPoint + dDelta : obj.inPoint;
   const outPoint = barDrag && barDrag.mode !== "in" ? obj.outPoint + dDelta : obj.outPoint;
   const kfPreviewShift = barDrag && barDrag.mode === "move" ? dDelta : 0;
+  const trimStart = sourceExtent
+    ? (barDrag && barDrag.mode === "in" ? Math.max(0, sourceExtent.trimStart + dDelta) : sourceExtent.trimStart)
+    : 0;
 
   const rowBg = selected ? "#2a3a4a" : "transparent";
 
@@ -1437,6 +1345,16 @@ function LayerRow(props: LayerRowProps) {
         </div>
         {/* graph column: layer bar */}
         <div style={{ position: "relative", flex: 1, minHeight: 22, overflow: "hidden" }} onClick={onSelectLayer}>
+          {sourceExtent && (
+            <SourceGhostBars
+              inPoint={inPoint}
+              outPoint={outPoint}
+              trimStart={trimStart}
+              sourceDuration={sourceExtent.sourceDuration}
+              frameToPercent={frameToPercent}
+              tint={selected ? "#5a8fd0" : "#b89b6a"}
+            />
+          )}
           <LayerBar
             inPoint={inPoint}
             outPoint={outPoint}
@@ -1498,6 +1416,46 @@ function LayerRow(props: LayerRowProps) {
   );
 }
 
+function SourceGhostBars({
+  inPoint, outPoint, trimStart, sourceDuration, frameToPercent, tint,
+}: {
+  inPoint: number; outPoint: number; trimStart: number; sourceDuration: number;
+  frameToPercent: (f: number) => number;
+  tint: string;
+}) {
+  const sourceStart = inPoint - trimStart;
+  const sourceEnd = sourceStart + sourceDuration;
+  const segments: { start: number; end: number }[] = [];
+  if (trimStart > 0 && inPoint > sourceStart) {
+    segments.push({ start: sourceStart, end: inPoint });
+  }
+  if (sourceEnd > outPoint) {
+    segments.push({ start: outPoint, end: sourceEnd });
+  }
+  if (segments.length === 0) return null;
+  return (
+    <>
+      {segments.map((seg, i) => (
+        <div
+          key={i}
+          style={{
+            position: "absolute",
+            left: `${frameToPercent(seg.start)}%`,
+            width: `${frameToPercent(seg.end) - frameToPercent(seg.start)}%`,
+            top: 5,
+            height: 12,
+            background: tint,
+            opacity: 0.28,
+            borderRadius: 2,
+            pointerEvents: "none",
+            zIndex: 0,
+          }}
+        />
+      ))}
+    </>
+  );
+}
+
 function LayerBar({
   inPoint, outPoint, selected, frameToPercent, onIn, onOut, onMove,
 }: {
@@ -1520,6 +1478,7 @@ function LayerBar({
         cursor: "grab",
         display: "flex",
         alignItems: "stretch",
+        zIndex: 1,
       }}
       onMouseDown={onMove}
       title="ドラッグで移動 / 端をドラッグでトリム"
@@ -1951,28 +1910,7 @@ function NumberField({ value, onCommit }: { value: number; onCommit: (v: number)
   );
 }
 
-// §21.3 footage 系コンポーネントの源時刻オフセットを Δ frame ずらす（左端トリム連動）。
-function shiftSourceOffset(components: Component[], deltaFrames: number): Component[] | null {
-  if (deltaFrames === 0) return null;
-  let changed = false;
-  const next = components.map((c) => {
-    if (changed) return c;
-    if (c.type === "video" || c.type === "audio") {
-      const cur = typeof c.props.trimStart === "number" ? c.props.trimStart : 0;
-      changed = true;
-      return { ...c, props: { ...c.props, trimStart: Math.max(0, cur + deltaFrames) } };
-    }
-    if (c.type === "html") {
-      const cur = typeof c.props.inPoint === "number" ? c.props.inPoint : 0;
-      changed = true;
-      return { ...c, props: { ...c.props, inPoint: Math.max(0, cur + deltaFrames) } };
-    }
-    return c;
-  });
-  return changed ? next : null;
-}
-
-// P1-9: SceneObject をストア参照から切り離して deep clone（クリップボード用）。SceneObject は JSON 直列化可能。
+// ---- プロパティ行 ----
 function cloneObject(o: SceneObject): SceneObject {
   return JSON.parse(JSON.stringify(o)) as SceneObject;
 }
@@ -1980,10 +1918,6 @@ function cloneObject(o: SceneObject): SceneObject {
 function shiftKfProp<T>(prop: AnimatedProp<T>, delta: number): AnimatedProp<T> {
   if (prop.keyframes.length === 0) return prop;
   return { ...prop, keyframes: prop.keyframes.map((k) => ({ ...k, frame: k.frame + delta })) };
-}
-
-function isAnimatedProp(v: unknown): v is AnimatedProp<unknown> {
-  return typeof v === "object" && v !== null && Array.isArray((v as { keyframes?: unknown }).keyframes);
 }
 
 function shiftObjectKeyframes(obj: SceneObject, delta: number): Partial<SceneObject> {

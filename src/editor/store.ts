@@ -17,6 +17,7 @@ import type {
 } from "../core/schema";
 import { IndexedDbFs } from "../fs/IndexedDbFs";
 import { compositionDir, DIR_ASSETS, pluginEntryPath, pluginManifestPath, scriptPath } from "../core/paths";
+import { compWouldCreateCycle } from "../runtime/compLayer";
 import { sampleVec3 } from "../runtime/interpolate";
 import { ModuleLoader } from "../runtime/moduleLoader";
 import type { PluginContext, PluginManifest } from "../runtime/plugin";
@@ -80,6 +81,10 @@ export interface EditorStore {
 
   // §12 Plugin 管理
   pluginsVersion: number; // loadPlugins() 完了のたびにインクリメント。PreviewPanel が subscribe して再描画する。
+
+  // §21.5 KF 複数選択（タイムライン ↔ Ease パネル共有）
+  selectedKfKeys: string[];
+  setSelectedKfKeys: (keys: string[] | ((prev: string[]) => string[])) => void;
 
   // Undo/Redo スタック（セッション内のみ, §17）
   undoStack: UndoRedoStack;
@@ -156,6 +161,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   currentCompId: "",
   currentFrame: 0,
   selectedObjectIds: [],
+  selectedKfKeys: [],
   isPlaying: false,
   pluginsVersion: 0,
   undoStack: emptyStack(),
@@ -167,6 +173,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       currentCompId: p.rootComposition,
       currentFrame: 0,
       selectedObjectIds: [],
+      selectedKfKeys: [],
       isPlaying: false,
       undoStack: emptyStack(),
     });
@@ -180,6 +187,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         currentCompId: p.rootComposition,
         currentFrame: 0,
         selectedObjectIds: [],
+        selectedKfKeys: [],
         undoStack: emptyStack(),
       });
       await get().loadPlugins();
@@ -225,6 +233,11 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   // §20.3 アクティブ comp 切替時は frame を 0・選択をクリア
   setCurrentComp: (id) => set({ currentCompId: id, currentFrame: 0, selectedObjectIds: [] }),
   selectObjects: (ids) => set({ selectedObjectIds: ids }),
+
+  setSelectedKfKeys: (keys) =>
+    set((s) => ({
+      selectedKfKeys: typeof keys === "function" ? keys(s.selectedKfKeys) : keys,
+    })),
 
   // §20.2 コンポジション管理 ————————————————————————————————
 
@@ -672,33 +685,6 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 function nextZOrder(comp: TimelineComposition | undefined): number {
   if (!comp || comp.objects.length === 0) return 1;
   return Math.max(...comp.objects.map((o) => o.zOrder)) + 1;
-}
-
-/**
- * §23 循環参照検出: parentCompId に childCompId を追加したとき循環が生じるか確認する。
- * childCompId から BFS し、parentCompId に到達できれば true。
- */
-function compWouldCreateCycle(p: import("../core/schema").Project, parentCompId: string, childCompId: string): boolean {
-  const visited = new Set<string>();
-  const stack = [childCompId];
-  while (stack.length > 0) {
-    const curr = stack.pop()!;
-    if (visited.has(curr)) continue;
-    visited.add(curr);
-    const comp = p.compositions.find((c) => c.id === curr && c.kind === "timeline") as TimelineComposition | undefined;
-    if (!comp) continue;
-    for (const obj of comp.objects) {
-      for (const component of obj.components) {
-        if (component.type === "comp") {
-          const nestedId = component.props["compId"] as string | undefined;
-          if (!nestedId) continue;
-          if (nestedId === parentCompId) return true;
-          stack.push(nestedId);
-        }
-      }
-    }
-  }
-  return false;
 }
 
 /** 指定オブジェクトの AnimatedProp<number> に現 frame のキーフレームを追加/更新する。 */

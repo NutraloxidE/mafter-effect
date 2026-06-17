@@ -1,5 +1,6 @@
 import { newObjectId } from "../core/ids";
 import type { Frame, Project, SceneObject, TimelineComposition } from "../core/schema";
+import { shiftFootageSourceOffset } from "./layerSourceOffset";
 import type { EditorStore } from "./store";
 
 // §17 Undo/Redo — command + 逆 patch。
@@ -178,7 +179,7 @@ export function cmdSplitObjects(
       // footage 系コンポーネントの源時刻オフセットを分割位置で再計算
       // delta = 分割位置 - 元 inPoint（新レイヤーの footage 起点ずれ）
       const delta = frame - o.inPoint;
-      const shifted = shiftComponentOffset(o.components, delta);
+      const shifted = shiftFootageSourceOffset(o.components, delta);
       const newId = newObjectId();
       newIds.push(newId);
       additions.push({
@@ -202,30 +203,6 @@ export function cmdSplitObjects(
   });
   store.applyCommand({ label: "Split layer", before, after });
   return newIds;
-}
-
-// footage 系コンポーネントの源時刻オフセットを Δframe 加算する（split 時の新レイヤー用）。
-// video/audio は trimStart、html は内部 inPoint。clamp >= 0。
-function shiftComponentOffset(
-  components: SceneObject["components"],
-  delta: number,
-): SceneObject["components"] | null {
-  if (delta === 0) return null;
-  let changed = false;
-  const next = components.map((c) => {
-    if (c.type === "video" || c.type === "audio") {
-      const cur = typeof c.props.trimStart === "number" ? c.props.trimStart : 0;
-      changed = true;
-      return { ...c, props: { ...c.props, trimStart: Math.max(0, cur + delta) } };
-    }
-    if (c.type === "html") {
-      const cur = typeof c.props.inPoint === "number" ? c.props.inPoint : 0;
-      changed = true;
-      return { ...c, props: { ...c.props, inPoint: Math.max(0, cur + delta) } };
-    }
-    return c;
-  });
-  return changed ? next : null;
 }
 
 // ---- ヘルパー ----
