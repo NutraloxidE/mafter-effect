@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { currentTimelineComp, setKeyframe, useEditorStore } from "../store";
 import { DRAG_MIME } from "./ProjectPanel";
+import { ScrubNumber } from "../ScrubNumber";
 import type {
   AnimatedProp,
   Component,
@@ -1493,8 +1494,7 @@ function PropRowVec3({
     }
   };
 
-  const editAxis = (axis: "x" | "y" | "z", raw: string) => {
-    const num = Number(raw);
+  const editAxis = (axis: "x" | "y" | "z", num: number) => {
     if (!Number.isFinite(num)) return;
     const nextVal: Vec3 = { ...v, [axis]: num };
     if (animated) writeProp(setKeyframe<Vec3>(prop, frame, nextVal, { type: "linear" } as Easing), `Edit ${k}`);
@@ -1503,9 +1503,9 @@ function PropRowVec3({
 
   return (
     <PropRowShell label={label} animated={animated} onStopwatch={toggleStopwatch} prop={prop} frame={frame} kfShift={kfShift} objId={obj.id} propPath={propPath} selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onKfRightClick={onKfRightClick} frameToPercent={frameToPercent} graphMode={graphMode} viewRange={viewRange} onSetProp={onSetProp}>
-      <NumberField value={v.x} onCommit={(r) => editAxis("x", r)} />
-      <NumberField value={v.y} onCommit={(r) => editAxis("y", r)} />
-      <NumberField value={v.z} onCommit={(r) => editAxis("z", r)} />
+      <NumberField value={v.x} onCommit={(n) => editAxis("x", n)} />
+      <NumberField value={v.y} onCommit={(n) => editAxis("y", n)} />
+      <NumberField value={v.z} onCommit={(n) => editAxis("z", n)} />
     </PropRowShell>
   );
 }
@@ -1533,8 +1533,7 @@ function PropRowOpacity({
     else writeProp(setKeyframe<number>(prop, frame, v, { type: "linear" } as Easing), "Enable opacity keyframes");
   };
 
-  const edit = (raw: string) => {
-    const num = Number(raw);
+  const edit = (num: number) => {
     if (!Number.isFinite(num)) return;
     const clamped = Math.min(1, Math.max(0, num));
     if (animated) writeProp(setKeyframe<number>(prop, frame, clamped, { type: "linear" } as Easing), "Edit opacity");
@@ -1586,8 +1585,7 @@ function PropRowComponent({
   return (
     <PropRowShell label={label} animated={animated} onStopwatch={toggleStopwatch} prop={prop} frame={frame} kfShift={kfShift} objId={obj.id} propPath={propPath} selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onKfRightClick={onKfRightClick} frameToPercent={frameToPercent} graphMode={graphMode} viewRange={viewRange} onSetProp={onSetProp}>
       {kind === "scalar" && typeof sampled === "number" ? (
-        <NumberField value={sampled} onCommit={(raw) => {
-          const num = Number(raw);
+        <NumberField value={sampled} onCommit={(num) => {
           if (!Number.isFinite(num)) return;
           if (animated) writeProp(setKeyframe(prop as AnimatedProp<unknown>, frame, num, { type: "linear" } as Easing), `Edit ${propKey}`);
           else writeProp({ ...prop, value: num }, `Edit ${propKey}`);
@@ -1862,22 +1860,16 @@ function PropRowShell({
   );
 }
 
-function NumberField({ value, onCommit }: { value: number; onCommit: (raw: string) => void }) {
-  const [text, setText] = useState(value.toFixed(1));
-  const [editing, setEditing] = useState(false);
-  useEffect(() => {
-    if (!editing) setText(value.toFixed(1));
-  }, [value, editing]);
+function NumberField({ value, onCommit }: { value: number; onCommit: (v: number) => void }) {
   return (
-    <input
+    <ScrubNumber
+      value={value}
+      onCommit={(v) => onCommit(v)}
+      speed={1}
       className="tl-num"
-      value={text}
-      onFocus={() => setEditing(true)}
-      onChange={(e) => setText(e.target.value)}
-      onBlur={() => { setEditing(false); onCommit(text); }}
-      onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
       style={{
         width: 44,
+        height: 18,
         background: "#111",
         border: "1px solid #333",
         color: "#7fb8f0",
@@ -1885,7 +1877,6 @@ function NumberField({ value, onCommit }: { value: number; onCommit: (raw: strin
         padding: "1px 3px",
         fontSize: 11,
         fontVariantNumeric: "tabular-nums",
-        userSelect: "text",
       }}
     />
   );
