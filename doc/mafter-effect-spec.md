@@ -300,7 +300,7 @@ interface PluginRef { id: string; version: string; enabled: boolean; }
 
 ### §6.1 時間
 - 正準時間 = 整数 frame（INV-5）。`fps` は CompositionMeta が保持。秒は `frame/fps` で導出。
-- オブジェクトは `inPoint <= frame <= outPoint` かつ `enabled` のときのみ描画。
+- オブジェクトは `inPoint <= frame < outPoint` かつ `enabled` のときのみ描画。
 - **キーフレームの frame は comp 絶対 frame**（inPoint 相対ではない）。
 
 ### §6.2 座標系・単位（確定）

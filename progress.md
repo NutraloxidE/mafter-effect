@@ -151,3 +151,4 @@ Project パネルの timeline/HTML comp を draggable 化（DnD 必須）。`sto
 | 2026-06-18 | §23 precomp 自動検証: `compLayer.ts` + `test/precomp.test.ts`（14 件）。typecheck/test/build 一括確認（100 tests PASS） |
 | 2026-06-18 | §24 Flow 風 Ease パネル Phase 1 実装（EasePanel / easingApply / builtin presets / FS 保存 / store KF 選択共有）。107 tests PASS |
 | 2026-06-18 | spec v0.8 §24 Flow 風イージングプリセットパネル仕様確定（独立常設パネル / in-out-both 3 モード / カーブ編集+★保存 / cubic-bezier プリセットのみ・bounce/elastic は Phase 2）。実装は progress バックログに記載・未着手 |
+| 2026-06-18 | (Cursor) レイヤー可視性: `resolve()` の `outPoint` を排他的終端に修正（`frame < outPoint`）。タイムライン右端＝最終表示フレームの次。108 tests PASS |
