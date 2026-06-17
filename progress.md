@@ -100,6 +100,17 @@ Project パネルの timeline/HTML comp を draggable 化（DnD 必須）。`sto
 - [x] **回帰（自動）** — typecheck / **107 tests PASS** / build ✅
 - [ ] **回帰（手動）** — §21 F9 メニュー・§22 グラフエディタとの SSoT 共有をブラウザで確認
 
+### §25 Preview ビューア編集（spec v0.9・スキーマ不変・**仕様確定 / 実装未着手** 2026-06-18）
+spec §25 に確定。現状 Preview は「見るだけ」（タブ・再生・scale-to-fit 自動のみ）。AE コンポビューア相当の編集機能へ引き上げる。ユーザー確認済み方針: **直接操作まで全部入れる / T・R・S＋アンカードラッグ / animated 当たりは現フレームに KF 打つ・更新 / 設定は localStorage（project.json 非汚染）**。
+- [ ] **§25.1 ビューア制御** — viewZoom/viewPan、Ctrl+ホイール（カーソルアンカー）、スペース/中ボタン パン、Fit/Fit≤100%/100%/%ドロップダウン
+- [ ] **§25.2 オーバーレイ** — 透明チェッカー / セーフマージン / グリッド・中心十字・定規 / 解像度プロキシ（全て表示専用・INV-2 不変）
+- [ ] **§25.3 直接操作** — 選択 bbox＋8 ハンドル scale＋回転＋移動＋アンカー点（先頭 1 レイヤー、複数一括は将来）
+- [ ] **§25.4 座標逆算** — screen→comp→local（`invert`/`transformPoint` 既存利用、2.5D、エディタ層のみ・resolve 不変）。往復で見た目保持を test 化
+- [ ] **§25.5 KF 書き戻し** — §21.2 と同一規約（animated→現 frame KF / static→value）
+- [ ] **§25.6 再生コントロール** — 1フレーム前後 / 末尾へ / ループ / タイムコード直接入力
+- [ ] **§25.7 永続化** — localStorage（comp ごと可）、project.json 非汚染
+- **将来**: ガイド線ドラッグ / マスク・シェイプ オンキャンバス編集 / モーションパス / チャンネル・スナップショット / ROI
+
 ### Timeline AE化バックログ（spec §5 スキーマ拡張 + INV 影響評価を伴い別リビジョンで導入）
 **→ 実用性優先度リストは [doc/timeline-panel-wip.md](doc/timeline-panel-wip.md)。**
 - **Tier B（additive スキーマ）**: ラベル色 / solo / lock / shy / parent リンク UI。`SceneObject` にフラグ追加。
