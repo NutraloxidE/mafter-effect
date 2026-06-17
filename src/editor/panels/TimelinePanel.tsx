@@ -239,8 +239,9 @@ export function TimelinePanel() {
   const lastUPressRef = useRef<number>(0);
   // P1-6: 複数レイヤー選択用
   const lastSelectedIdRef = useRef<string | null>(null);
-  // P1-5: レイヤードラッグ並べ替え
+  // P1-5: レイヤードラッグ並べ替え（ref が正本。dragOver は dragStart より先に来ることがあり state だけだと null になる）
   const [layerDrag, setLayerDrag] = useState<LayerDragState | null>(null);
+  const layerDragRef = useRef<LayerDragState | null>(null);
   const layerDragIdRef = useRef<string | null>(null);
   // P1-8: スナップ
   const [snapEnabled, setSnapEnabled] = useState(false);
@@ -269,6 +270,7 @@ export function TimelinePanel() {
     setExpandMode(new Map());
     setViewRange({ start: 0, end: duration });
     setKfContextMenu(null);
+    layerDragRef.current = null;
     setLayerDrag(null);
     setBarDrag(null);
     lastSelectedIdRef.current = null;
@@ -324,7 +326,7 @@ export function TimelinePanel() {
     // レイヤー並べ替え DnD が ruler/空エリア上でドロップされた場合
     // (LayerRow.onDrop は stopPropagation するのでここには ruler 上またはレイヤー行がない空エリアのみ来る)
     if (e.dataTransfer.types.includes("text/x-layer-drag")) {
-      handleLayerDrop(layerDrag?.dropIdx ?? 0);
+      handleLayerDrop(layerDragRef.current?.dropIdx ?? 0);
       return;
     }
 
@@ -589,11 +591,22 @@ export function TimelinePanel() {
   // P1-5: レイヤードラッグ並べ替え。objects は zOrder 降順表示なので、
   // 並べ替え後に「最上段=最大 zOrder」となるよう zOrder を再採番する。
   const handleLayerDrop = (dropIdx: number) => {
-    if (layerDrag === null || layerDrag.dragIdx === dropIdx) { setLayerDrag(null); return; }
+    const drag = layerDragRef.current;
+    if (drag === null || drag.dragIdx === dropIdx) {
+      layerDragRef.current = null;
+      layerDragIdRef.current = null;
+      setLayerDrag(null);
+      return;
+    }
     const reordered = [...objects];
-    const dragged = reordered.splice(layerDrag.dragIdx, 1)[0];
-    if (!dragged) { setLayerDrag(null); return; }
-    const actualDrop = layerDrag.dragIdx < dropIdx ? dropIdx - 1 : dropIdx;
+    const dragged = reordered.splice(drag.dragIdx, 1)[0];
+    if (!dragged) {
+      layerDragRef.current = null;
+      layerDragIdRef.current = null;
+      setLayerDrag(null);
+      return;
+    }
+    const actualDrop = drag.dragIdx < dropIdx ? dropIdx - 1 : dropIdx;
     reordered.splice(actualDrop, 0, dragged);
     // 表示は降順なので index 0(最上段) に最大 zOrder を割り当てる。
     const n = reordered.length;
@@ -602,6 +615,8 @@ export function TimelinePanel() {
       .filter(({ newZ, origZ }) => newZ !== origZ)
       .map(({ id, newZ }) => ({ id, patch: { zOrder: newZ } as Partial<SceneObject> }));
     if (patches.length > 0) updateObjects(patches, "Reorder layers");
+    layerDragRef.current = null;
+    layerDragIdRef.current = null;
     setLayerDrag(null);
   };
 
@@ -967,7 +982,15 @@ export function TimelinePanel() {
       <div
         ref={rowsRef}
         onMouseDown={onRowsMouseDown}
-        onDragOver={(e) => { const t = [...e.dataTransfer.types]; if (t.includes("text/x-layer-drag")) { e.preventDefault(); return; } if (t.includes(DRAG_MIME) || t.includes("Files")) { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; setDropActive(true); } }}
+        onDragOver={(e) => {
+          const t = [...e.dataTransfer.types];
+          if (t.includes("text/x-layer-drag")) {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "move";
+            return;
+          }
+          if (t.includes(DRAG_MIME) || t.includes("Files")) { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; setDropActive(true); }
+        }}
         onDragLeave={(e) => { const rt = e.relatedTarget as Node | null; if (!rt || !rowsRef.current?.contains(rt)) setDropActive(false); }}
         onDrop={onTimelineDrop}
         style={{ flex: 1, overflowY: "auto", overflowX: "hidden", position: "relative", outline: dropActive ? "2px solid #5a8fd0" : "none", outlineOffset: -2 }}
@@ -1017,14 +1040,20 @@ export function TimelinePanel() {
             frameToPercent={frameToPercent}
             onLayerDragStart={() => {
               layerDragIdRef.current = obj.id;
-              setLayerDrag({ dragIdx: i, dropIdx: i });
+              layerDragRef.current = { dragIdx: i, dropIdx: i };
+              setLayerDrag(layerDragRef.current);
             }}
             onLayerDragOver={() => {
-              if (layerDragIdRef.current === null) return;
-              setLayerDrag((prev) => prev ? { ...prev, dropIdx: i } : null);
+              if (layerDragRef.current === null) return;
+              layerDragRef.current = { ...layerDragRef.current, dropIdx: i };
+              setLayerDrag(layerDragRef.current);
             }}
             onLayerDrop={() => handleLayerDrop(i)}
-            onLayerDragEnd={() => { layerDragIdRef.current = null; setLayerDrag(null); }}
+            onLayerDragEnd={() => {
+              layerDragIdRef.current = null;
+              layerDragRef.current = null;
+              setLayerDrag(null);
+            }}
           />
         ))}
         {/* §21.5 ラバーバンド選択の矩形 */}
@@ -1360,7 +1389,7 @@ function LayerRow(props: LayerRowProps) {
       style={{ borderBottom: "1px solid #222", borderTop: isDropTarget ? "2px solid #5a8fd0" : "none" }}
       onDragOver={(e) => {
         const t = [...e.dataTransfer.types];
-        if (t.includes("text/x-layer-drag")) { e.preventDefault(); onLayerDragOver(); return; }
+        if (t.includes("text/x-layer-drag")) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; onLayerDragOver(); return; }
         // DRAG_MIME / OS ファイルドロップは親 rowsRef にバブルさせつつここでも accept
         if (t.includes(DRAG_MIME) || t.includes("Files")) { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; }
       }}
@@ -1379,7 +1408,12 @@ function LayerRow(props: LayerRowProps) {
           {/* P1-5: ドラッグハンドル */}
           <span
             draggable
-            onDragStart={(e) => { e.dataTransfer.setData("text/x-layer-drag", obj.id); e.dataTransfer.effectAllowed = "move"; onLayerDragStart(); }}
+            onDragStart={(e) => {
+              e.dataTransfer.setData("text/x-layer-drag", obj.id);
+              e.dataTransfer.setData("text/plain", obj.id);
+              e.dataTransfer.effectAllowed = "move";
+              onLayerDragStart();
+            }}
             onDragEnd={onLayerDragEnd}
             onClick={(e) => e.stopPropagation()}
             style={{ color: "#555", cursor: "grab", fontSize: 10, flexShrink: 0, lineHeight: 1 }}
