@@ -94,6 +94,20 @@ export function cmdRemoveObject(
   store.applyCommand({ label: "Remove object", before, after });
 }
 
+// P1-6: 複数レイヤーをまとめて削除（1 undo）。
+export function cmdRemoveObjects(
+  store: EditorStore,
+  objectIds: string[],
+): void {
+  const before = store.project;
+  if (!before || objectIds.length === 0) return;
+  const idSet = new Set(objectIds);
+  const after = withCompObjects(before, store.currentCompId, (objs) =>
+    objs.filter((o) => !idSet.has(o.id)),
+  );
+  store.applyCommand({ label: `Remove ${objectIds.length} object(s)`, before, after });
+}
+
 export function cmdUpdateObject(
   store: EditorStore,
   objectId: string,
