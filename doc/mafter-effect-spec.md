@@ -672,7 +672,9 @@ SSoT 違反を避けるため、scope と正準性を分離する:
 | Particle / Advanced Effects / 分散レンダリング / AI 編集支援 | 将来 |
 | comp/plugin JS のハードサンドボックス / CSP | 将来（セキュリティ硬化） |
 | keyframed gain / audio mixing / 波形表示 / video 内蔵音声同期 | 将来 |
-| OPFS アセット格納 / time remap / per-axis easing・expression / 速度グラフ | 将来 |
+| OPFS アセット格納 / time remap / per-axis easing・expression | 将来 |
+| グラフエディタ Phase 2（per-axis 値カーブ, §22.0） | 将来（additive スキーマ） |
+| グラフエディタ Phase 3（空間モーションパス / 速度グラフ, §22.0） | 将来（additive スキーマ + resolve 拡張） |
 
 ---
 
@@ -893,4 +895,36 @@ AE 同様、KF 行をまたいで複数キーフレームを選択し、まと�
 
 ---
 
-*v0.6 / MVP scope = M0–M4（Web Bundle Export は M5）。§20–§21 は MVP 後の UX 拡張（UI 層、スキーマ不変）。このファイルが「エンジンを作るための SSoT」。`claude.md` が「エンジンを使うための SSoT」。*
+## §22. グラフエディタ（値カーブ編集）— UI 層・MVP 後の UX 拡張
+
+モーショングラフィックスの「詰め」に必須の、キーフレーム間カーブの視覚編集。**Phase 1 はスキーマ不変（Tier A）**で、Phase 2/3 は **additive スキーマ**（既存 project.json を破壊せずフォールバックで後方互換）として段階導入する。「先に全部」ではなく、データモデルを前方互換に保ちつつ UI を段階リリースする方針（再設計コスト最小）。
+
+### §22.0 スコープ（段階導入・確定）
+
+- **Phase 1（本リビジョン・スキーマ不変）**: 区間ごとの cubic-bezier ハンドルをドラッグ編集。値カーブ表示。対象は数値プロパティ（opacity / component scalar param）と Vec3（anchor/position/scale/rotation、**全成分が時間カーブを共有**＝§5.3 の現行モデル）。y∉[0,1] のオーバーシュート対応（[easing.ts](../src/runtime/easing.ts) は y をクランプしない）。
+- **Phase 2（将来・additive）**: per-axis 値カーブ。`Keyframe<Vec3>` に**任意の per-axis easing override**（例 `easingX?/easingY?/easingZ?`）を追加し、無ければ §5.3 の共有 `easing` にフォールバック → 既存データはそのまま読める。
+- **Phase 3（将来・additive + resolve 拡張）**: 空間モーションパス（position の Keyframe に任意の spatial tangent in/out Vec3 を追加、無ければ直線補間にフォールバック）と速度（speed）グラフ。`resolve()` の補間モデル拡張を伴うため INV-1/INV-2 の再検証が必要。
+
+### §22.1 データモデル（Phase 1・スキーマ不変）
+
+- 既存 `Keyframe.easing`（§5.3 `{type:"bezier", bezier:[x1,y1,x2,y2]}`）をそのまま編集対象とする。新フィールドを足さない。
+- 区間 `[k_i, k_{i+1}]` の形は **`k_i.easing`** が決める（[interpolate.ts](../src/runtime/interpolate.ts) `segmentT`）。bezier の `(x1,y1)` は `k_i` の「出ハンドル」、`(x2,y2)` は `k_{i+1}` の「入ハンドル」に相当。
+- x（時間軸）は `[0,1]` 単調・端は 0/1 固定。y は制限なし（オーバーシュート/アンティシペーション可）。
+- `linear`/`hold` はハンドル編集開始時に bezier へ変換（linear→`[0,0,1,1]`）。
+
+### §22.2 表示・操作（Phase 1）
+
+- **トグル**: タイムラインツールバーの「📈 グラフ」ボタンで グラフモード ON/OFF（エディタ一時状態・project.json 非保存）。
+- グラフモード中、展開中の数値プロパティ行のグラフ列を**背の高い値カーブレーン**に切替。Vec3 は x/y/z を色分けした 3 カーブで表示。
+- 縦軸は表示中プロパティの値域に自動フィット（パディング付き）。横軸は既存 `viewRange`（§21 ズーム）に追従。
+- **KF 点ドラッグ**: 時間（frame・整数=INV-5）と値の両方を移動（Vec3 は掴んだ軸の値）。
+- **ハンドルドラッグ**: cubic-bezier 制御点を編集。out=`k_i.bezier(x1,y1)` / in=`k_{i+1}.bezier(x2,y2)`。x は当該区間内にクランプ、y はクランプなし。Vec3 は共有 easing を編集（Phase 1 の制約）。
+- 1 操作 = 1 command（undo 可、§17）。
+
+### §22.3 不変条件
+
+INV-1〜6 を保持。Phase 1 は resolve・スキーマ・直列化に影響しない（既存 easing をそのまま使う）。KF の frame は整数を維持（INV-5）。
+
+---
+
+*v0.7 / MVP scope = M0–M4（Web Bundle Export は M5）。§20–§22 は MVP 後の UX 拡張（UI 層）。§22 Phase 1 はスキーマ不変、Phase 2/3 は additive 拡張として将来。このファイルが「エンジンを作るための SSoT」。`claude.md` が「エンジンを使うための SSoT」。*

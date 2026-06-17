@@ -241,6 +241,8 @@ export function TimelinePanel() {
   const layerDragIdRef = useRef<string | null>(null);
   // P1-8: スナップ
   const [snapEnabled, setSnapEnabled] = useState(false);
+  // §22 グラフエディタモード（エディタ一時状態, project 非保存）
+  const [graphMode, setGraphMode] = useState(false);
   // P1-9: クリップボード（AE 同様、KF 選択中は KF を / それ以外はレイヤーを対象）。
   const clipboardRef = useRef<
     | { kind: "kf"; data: CopiedKf[] }
@@ -631,6 +633,26 @@ export function TimelinePanel() {
     updateObjects(patches, mode === "move" ? "Slide layer(s)" : "Trim layer(s)");
   };
 
+  // §22 グラフエディタ: propPath が指すプロパティを丸ごと差し替える（1 command）。
+  const setPropByPath = (objId: string, propPath: PropPath, next: AnimatedProp<unknown>, label: string) => {
+    const obj = objects.find((o) => o.id === objId);
+    if (!obj) return;
+    const patch: Partial<SceneObject> = {};
+    if (propPath === "opacity") {
+      patch.opacity = next as AnimatedProp<number>;
+    } else if (propPath.startsWith("transform.")) {
+      const k = propPath.slice("transform.".length) as TransformVecKey;
+      patch.transform = { ...obj.transform, [k]: next as AnimatedProp<Vec3> };
+    } else if (propPath.startsWith("comp_")) {
+      const rest = propPath.slice(5);
+      const sep = rest.indexOf("_");
+      const idx = Number(rest.slice(0, sep));
+      const key = rest.slice(sep + 1);
+      patch.components = obj.components.map((c, i) => i === idx ? { ...c, props: { ...c.props, [key]: next } } : c);
+    } else return;
+    updateObject(objId, patch, label);
+  };
+
   // P0-3: KF 右クリックでコンテキストメニュー。
   const handleKfRightClick = (key: string, x: number, y: number) => {
     if (!selectedKfs.has(key)) setSelectedKfs(new Set([key]));
@@ -746,15 +768,18 @@ export function TimelinePanel() {
       if (e.key === "ArrowRight") { e.preventDefault(); setFrame(Math.min(duration, frame + (e.shiftKey ? 10 : 1))); return; }
       if (e.key === "Home") { e.preventDefault(); setFrame(0); return; }
       if (e.key === "End")  { e.preventDefault(); setFrame(duration); return; }
-      // J/K: 前後 KF ジャンプ（AE 準拠）
-      if (e.key === "j" || e.key === "J") {
+      // J/K: 前後 KF ジャンプ（AE 準拠）。
+      // e.code（物理キー）でも判定 → IME 入力中（e.key="Process"）やレイアウト差でも効く。
+      // Ctrl/Cmd/Alt 併用時はコピペ等と衝突しないよう無視。
+      const bareLetter = !e.ctrlKey && !e.metaKey && !e.altKey;
+      if (bareLetter && (e.code === "KeyJ" || e.key === "j" || e.key === "J")) {
         e.preventDefault();
         const frames = getKfFrames();
         const prev = [...frames].filter((f) => f < frame).pop();
         if (prev !== undefined) setFrame(prev);
         return;
       }
-      if (e.key === "k" || e.key === "K") {
+      if (bareLetter && (e.code === "KeyK" || e.key === "k" || e.key === "K")) {
         e.preventDefault();
         const frames = getKfFrames();
         const next = frames.find((f) => f > frame);
@@ -831,8 +856,8 @@ export function TimelinePanel() {
         if (selectedIds.length > 0) { e.preventDefault(); removeObjects(selectedIds); return; }
       }
 
-      // §21.6 U / UU キー
-      if (e.key === "u" || e.key === "U") {
+      // §21.6 U / UU キー（e.code でも判定 = IME/レイアウト耐性）
+      if (bareLetter && (e.code === "KeyU" || e.key === "u" || e.key === "U")) {
         if (selectedIds.length === 0) return;
         e.preventDefault();
         const now = Date.now();
@@ -893,6 +918,12 @@ export function TimelinePanel() {
           style={{ ...btnStyle, fontSize: 10, padding: "1px 5px", background: snapEnabled ? "#3a5a3a" : "#333", color: snapEnabled ? "#8d8" : "#ccc" }}
           title={`スナップ ${snapEnabled ? "ON" : "OFF"} — 秒単位に吸着`}
         >⊡</button>
+        {/* §22 グラフエディタトグル */}
+        <button
+          onClick={() => setGraphMode((v) => !v)}
+          style={{ ...btnStyle, fontSize: 10, padding: "1px 5px", background: graphMode ? "#3a4a5a" : "#333", color: graphMode ? "#8cf" : "#ccc" }}
+          title={`グラフエディタ ${graphMode ? "ON" : "OFF"} — 値カーブを編集（展開中のプロパティ）`}
+        >📈</button>
         {/* P0-1: ズームリセット */}
         <button
           onClick={() => setViewRange({ start: 0, end: duration })}
@@ -945,6 +976,9 @@ export function TimelinePanel() {
             kfDrag={kfDrag}
             isDropTarget={layerDrag !== null && layerDrag.dropIdx === i}
             barDrag={barDrag && barDrag.ids.has(obj.id) ? { mode: barDrag.mode, delta: barDrag.delta } : null}
+            graphMode={graphMode}
+            viewRange={viewRange}
+            onSetProp={setPropByPath}
             beginKfDrag={beginKfDrag}
             beginLayerBarDrag={beginLayerBarDrag}
             onKfRightClick={handleKfRightClick}
@@ -1266,6 +1300,9 @@ interface LayerRowProps {
   kfDrag: KfDragState | null;
   isDropTarget: boolean;
   barDrag: { mode: "in" | "out" | "move"; delta: number } | null;
+  graphMode: boolean;
+  viewRange: { start: number; end: number };
+  onSetProp: (objId: string, path: PropPath, next: AnimatedProp<unknown>, label: string) => void;
   beginKfDrag: (objId: string, path: PropPath, frame: number, e: React.MouseEvent) => void;
   beginLayerBarDrag: (objId: string, mode: "in" | "out" | "move", e: React.MouseEvent) => void;
   onKfRightClick: (key: string, x: number, y: number) => void;
@@ -1281,7 +1318,7 @@ interface LayerRowProps {
 }
 
 function LayerRow(props: LayerRowProps) {
-  const { obj, index, frame, selected, expandMode, selectedKfs, kfDrag, isDropTarget, barDrag, beginKfDrag, beginLayerBarDrag, onKfRightClick, onToggleExpand, onSelectLayer, onRemove, onUpdate, frameToPercent, onLayerDragStart, onLayerDragOver, onLayerDrop, onLayerDragEnd } = props;
+  const { obj, index, frame, selected, expandMode, selectedKfs, kfDrag, isDropTarget, barDrag, graphMode, viewRange, onSetProp, beginKfDrag, beginLayerBarDrag, onKfRightClick, onToggleExpand, onSelectLayer, onRemove, onUpdate, frameToPercent, onLayerDragStart, onLayerDragOver, onLayerDrop, onLayerDragEnd } = props;
   // P1-6: バードラッグのプレビューはパネル管理の barDrag から導出（複数選択を一括移動するため）。
   const dDelta = barDrag ? barDrag.delta : 0;
   const inPoint = barDrag && barDrag.mode !== "out" ? obj.inPoint + dDelta : obj.inPoint;
@@ -1346,11 +1383,11 @@ function LayerRow(props: LayerRowProps) {
       {/* property tree */}
       {expandMode && (
         <div style={{ background: "#191919" }}>
-          {showInMode(expandMode, obj.transform.anchor.keyframes.length > 0,   vec3Modified(obj.transform.anchor,   VEC3_DEFAULTS.anchor))   && <PropRowVec3 obj={obj} k="anchor"   label="アンカーポイント" frame={frame} kfShift={kfPreviewShift} selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onKfRightClick={onKfRightClick} onUpdate={onUpdate} frameToPercent={frameToPercent} />}
-          {showInMode(expandMode, obj.transform.position.keyframes.length > 0, vec3Modified(obj.transform.position, VEC3_DEFAULTS.position)) && <PropRowVec3 obj={obj} k="position" label="位置"           frame={frame} kfShift={kfPreviewShift} selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onKfRightClick={onKfRightClick} onUpdate={onUpdate} frameToPercent={frameToPercent} />}
-          {showInMode(expandMode, obj.transform.scale.keyframes.length > 0,    vec3Modified(obj.transform.scale,    VEC3_DEFAULTS.scale))    && <PropRowVec3 obj={obj} k="scale"    label="スケール"         frame={frame} kfShift={kfPreviewShift} selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onKfRightClick={onKfRightClick} onUpdate={onUpdate} frameToPercent={frameToPercent} />}
-          {showInMode(expandMode, obj.transform.rotation.keyframes.length > 0, vec3Modified(obj.transform.rotation, VEC3_DEFAULTS.rotation)) && <PropRowVec3 obj={obj} k="rotation" label="回転"           frame={frame} kfShift={kfPreviewShift} selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onKfRightClick={onKfRightClick} onUpdate={onUpdate} frameToPercent={frameToPercent} />}
-          {showInMode(expandMode, obj.opacity.keyframes.length > 0,            scalarModified(obj.opacity, 1))                                && <PropRowOpacity obj={obj} frame={frame} kfShift={kfPreviewShift} selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onKfRightClick={onKfRightClick} onUpdate={onUpdate} frameToPercent={frameToPercent} />}
+          {showInMode(expandMode, obj.transform.anchor.keyframes.length > 0,   vec3Modified(obj.transform.anchor,   VEC3_DEFAULTS.anchor))   && <PropRowVec3 obj={obj} k="anchor"   label="アンカーポイント" frame={frame} kfShift={kfPreviewShift} selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onKfRightClick={onKfRightClick} onUpdate={onUpdate} frameToPercent={frameToPercent} graphMode={graphMode} viewRange={viewRange} onSetProp={onSetProp} />}
+          {showInMode(expandMode, obj.transform.position.keyframes.length > 0, vec3Modified(obj.transform.position, VEC3_DEFAULTS.position)) && <PropRowVec3 obj={obj} k="position" label="位置"           frame={frame} kfShift={kfPreviewShift} selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onKfRightClick={onKfRightClick} onUpdate={onUpdate} frameToPercent={frameToPercent} graphMode={graphMode} viewRange={viewRange} onSetProp={onSetProp} />}
+          {showInMode(expandMode, obj.transform.scale.keyframes.length > 0,    vec3Modified(obj.transform.scale,    VEC3_DEFAULTS.scale))    && <PropRowVec3 obj={obj} k="scale"    label="スケール"         frame={frame} kfShift={kfPreviewShift} selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onKfRightClick={onKfRightClick} onUpdate={onUpdate} frameToPercent={frameToPercent} graphMode={graphMode} viewRange={viewRange} onSetProp={onSetProp} />}
+          {showInMode(expandMode, obj.transform.rotation.keyframes.length > 0, vec3Modified(obj.transform.rotation, VEC3_DEFAULTS.rotation)) && <PropRowVec3 obj={obj} k="rotation" label="回転"           frame={frame} kfShift={kfPreviewShift} selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onKfRightClick={onKfRightClick} onUpdate={onUpdate} frameToPercent={frameToPercent} graphMode={graphMode} viewRange={viewRange} onSetProp={onSetProp} />}
+          {showInMode(expandMode, obj.opacity.keyframes.length > 0,            scalarModified(obj.opacity, 1))                                && <PropRowOpacity obj={obj} frame={frame} kfShift={kfPreviewShift} selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onKfRightClick={onKfRightClick} onUpdate={onUpdate} frameToPercent={frameToPercent} graphMode={graphMode} viewRange={viewRange} onSetProp={onSetProp} />}
           {/* P1-7: component props の animatable KF 行 */}
           {obj.components.map((comp, compIdx) => {
             const def = globalPluginRegistry.getComponentDef(comp.type);
@@ -1378,6 +1415,9 @@ function LayerRow(props: LayerRowProps) {
                   onKfRightClick={onKfRightClick}
                   onUpdate={onUpdate}
                   frameToPercent={frameToPercent}
+                  graphMode={graphMode}
+                  viewRange={viewRange}
+                  onSetProp={onSetProp}
                 />
               );
             });
@@ -1424,7 +1464,7 @@ function LayerBar({
 // ---- プロパティ行 ----
 
 function PropRowVec3({
-  obj, k, label, frame, kfShift, selectedKfs, kfDrag, beginKfDrag, onKfRightClick, onUpdate, frameToPercent,
+  obj, k, label, frame, kfShift, selectedKfs, kfDrag, beginKfDrag, onKfRightClick, onUpdate, frameToPercent, graphMode, viewRange, onSetProp,
 }: {
   obj: SceneObject; k: TransformVecKey; label: string; frame: Frame; kfShift: number;
   selectedKfs: Set<string>; kfDrag: KfDragState | null;
@@ -1432,6 +1472,8 @@ function PropRowVec3({
   onKfRightClick: (key: string, x: number, y: number) => void;
   onUpdate: (id: string, patch: Partial<SceneObject>, label?: string) => void;
   frameToPercent: (f: number) => number;
+  graphMode: boolean; viewRange: { start: number; end: number };
+  onSetProp: (objId: string, path: PropPath, next: AnimatedProp<unknown>, label: string) => void;
 }) {
   const prop = obj.transform[k];
   const v = sampleVec3(prop, frame);
@@ -1460,7 +1502,7 @@ function PropRowVec3({
   };
 
   return (
-    <PropRowShell label={label} animated={animated} onStopwatch={toggleStopwatch} prop={prop} frame={frame} kfShift={kfShift} objId={obj.id} propPath={propPath}selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onKfRightClick={onKfRightClick} frameToPercent={frameToPercent}>
+    <PropRowShell label={label} animated={animated} onStopwatch={toggleStopwatch} prop={prop} frame={frame} kfShift={kfShift} objId={obj.id} propPath={propPath} selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onKfRightClick={onKfRightClick} frameToPercent={frameToPercent} graphMode={graphMode} viewRange={viewRange} onSetProp={onSetProp}>
       <NumberField value={v.x} onCommit={(r) => editAxis("x", r)} />
       <NumberField value={v.y} onCommit={(r) => editAxis("y", r)} />
       <NumberField value={v.z} onCommit={(r) => editAxis("z", r)} />
@@ -1469,7 +1511,7 @@ function PropRowVec3({
 }
 
 function PropRowOpacity({
-  obj, frame, kfShift, selectedKfs, kfDrag, beginKfDrag, onKfRightClick, onUpdate, frameToPercent,
+  obj, frame, kfShift, selectedKfs, kfDrag, beginKfDrag, onKfRightClick, onUpdate, frameToPercent, graphMode, viewRange, onSetProp,
 }: {
   obj: SceneObject; frame: Frame; kfShift: number;
   selectedKfs: Set<string>; kfDrag: KfDragState | null;
@@ -1477,6 +1519,8 @@ function PropRowOpacity({
   onKfRightClick: (key: string, x: number, y: number) => void;
   onUpdate: (id: string, patch: Partial<SceneObject>, label?: string) => void;
   frameToPercent: (f: number) => number;
+  graphMode: boolean; viewRange: { start: number; end: number };
+  onSetProp: (objId: string, path: PropPath, next: AnimatedProp<unknown>, label: string) => void;
 }) {
   const prop = obj.opacity;
   const v = sampleScalar(prop, frame);
@@ -1498,7 +1542,7 @@ function PropRowOpacity({
   };
 
   return (
-    <PropRowShell label="不透明度" animated={animated} onStopwatch={toggleStopwatch} prop={prop} frame={frame} kfShift={kfShift} objId={obj.id} propPath="opacity" selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onKfRightClick={onKfRightClick} frameToPercent={frameToPercent}>
+    <PropRowShell label="不透明度" animated={animated} onStopwatch={toggleStopwatch} prop={prop} frame={frame} kfShift={kfShift} objId={obj.id} propPath="opacity" selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onKfRightClick={onKfRightClick} frameToPercent={frameToPercent} graphMode={graphMode} viewRange={viewRange} onSetProp={onSetProp}>
       <NumberField value={v} onCommit={edit} />
     </PropRowShell>
   );
@@ -1506,7 +1550,7 @@ function PropRowOpacity({
 
 // P1-7: component の animatable prop 行
 function PropRowComponent({
-  obj, compIdx, propKey, label, kind, frame, kfShift, selectedKfs, kfDrag, beginKfDrag, onKfRightClick, onUpdate, frameToPercent,
+  obj, compIdx, propKey, label, kind, frame, kfShift, selectedKfs, kfDrag, beginKfDrag, onKfRightClick, onUpdate, frameToPercent, graphMode, viewRange, onSetProp,
 }: {
   obj: SceneObject; compIdx: number; propKey: string; label: string; kind: ParamKind;
   frame: Frame; kfShift: number;
@@ -1515,6 +1559,8 @@ function PropRowComponent({
   onKfRightClick: (key: string, x: number, y: number) => void;
   onUpdate: (id: string, patch: Partial<SceneObject>, label?: string) => void;
   frameToPercent: (f: number) => number;
+  graphMode: boolean; viewRange: { start: number; end: number };
+  onSetProp: (objId: string, path: PropPath, next: AnimatedProp<unknown>, label: string) => void;
 }) {
   const comp = obj.components[compIdx];
   if (!comp) return null;
@@ -1538,7 +1584,7 @@ function PropRowComponent({
   };
 
   return (
-    <PropRowShell label={label} animated={animated} onStopwatch={toggleStopwatch} prop={prop} frame={frame} kfShift={kfShift} objId={obj.id} propPath={propPath} selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onKfRightClick={onKfRightClick} frameToPercent={frameToPercent}>
+    <PropRowShell label={label} animated={animated} onStopwatch={toggleStopwatch} prop={prop} frame={frame} kfShift={kfShift} objId={obj.id} propPath={propPath} selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onKfRightClick={onKfRightClick} frameToPercent={frameToPercent} graphMode={graphMode} viewRange={viewRange} onSetProp={onSetProp}>
       {kind === "scalar" && typeof sampled === "number" ? (
         <NumberField value={sampled} onCommit={(raw) => {
           const num = Number(raw);
@@ -1553,8 +1599,199 @@ function PropRowComponent({
   );
 }
 
+// §22 グラフエディタ: 数値/Vec3 プロパティの値カーブを描画・編集するレーン。
+const GRAPH_H = 76;
+function GraphLane({
+  prop, objId, propPath, frame, viewRange, frameToPercent, onSetProp,
+}: {
+  prop: AnimatedProp<unknown>;
+  objId: string; propPath: PropPath; frame: Frame;
+  viewRange: { start: number; end: number };
+  frameToPercent: (f: number) => number;
+  onSetProp: (objId: string, path: PropPath, next: AnimatedProp<unknown>, label: string) => void;
+}) {
+  const laneRef = useRef<HTMLDivElement>(null);
+  const [preview, setPreview] = useState<AnimatedProp<unknown> | null>(null);
+  const cur = preview ?? prop;
+  const span = Math.max(1, viewRange.end - viewRange.start);
+
+  const isVec = typeof prop.value === "object" && prop.value !== null && "x" in (prop.value as object);
+  const axes: (null | "x" | "y" | "z")[] = isVec ? ["x", "y", "z"] : [null];
+  const axisColor: Record<string, string> = { x: "#e76a6a", y: "#6ad46a", z: "#6a9cf0", _: "#7fb8f0" };
+  const getN = (val: unknown, ax: null | "x" | "y" | "z"): number =>
+    ax ? (val as Vec3)[ax] : (val as number);
+  const setN = (val: unknown, ax: null | "x" | "y" | "z", n: number): unknown =>
+    ax ? { ...(val as Vec3), [ax]: n } : n;
+  const sampleAxis = (f: number, ax: null | "x" | "y" | "z"): number =>
+    isVec ? (sampleVec3(cur as AnimatedProp<Vec3>, f))[ax!] : sampleScalar(cur as AnimatedProp<number>, f);
+
+  // 値域（全軸・全 KF + base）を padding 付きで算出。
+  const vals: number[] = [];
+  for (const kf of cur.keyframes) for (const ax of axes) vals.push(getN(kf.value, ax));
+  for (const ax of axes) vals.push(getN(cur.value, ax));
+  let vmin = Math.min(...vals);
+  let vmax = Math.max(...vals);
+  if (!isFinite(vmin) || !isFinite(vmax)) { vmin = 0; vmax = 1; }
+  const vspan = vmax - vmin || 1;
+  const vlo = vmin - vspan * 0.18;
+  const vhi = vmax + vspan * 0.18;
+  const valueToY = (v: number): number => GRAPH_H * (1 - (v - vlo) / (vhi - vlo));
+
+  // マウス → (frame, value)
+  const mouseToFV = (clientX: number, clientY: number) => {
+    const r = laneRef.current!.getBoundingClientRect();
+    const rx = Math.min(1, Math.max(0, (clientX - r.left) / r.width));
+    const ry = Math.min(1, Math.max(0, (clientY - r.top) / r.height));
+    return { frame: viewRange.start + rx * span, value: vhi - ry * (vhi - vlo) };
+  };
+
+  const commit = (next: AnimatedProp<unknown>, label: string) => onSetProp(objId, propPath, next, label);
+
+  // KF 点ドラッグ（frame + 値）
+  const startKfDrag = (kfIdx: number, ax: null | "x" | "y" | "z") => (e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const kfs = prop.keyframes;
+    const prevF = kfIdx > 0 ? kfs[kfIdx - 1]!.frame + 1 : 0;
+    const nextF = kfIdx < kfs.length - 1 ? kfs[kfIdx + 1]!.frame - 1 : Math.round(viewRange.end);
+    let last = prop;
+    const move = (ev: MouseEvent) => {
+      const { frame: fm, value: vm } = mouseToFV(ev.clientX, ev.clientY);
+      const nf = Math.max(prevF, Math.min(nextF, Math.round(fm)));
+      const nextKfs = kfs.map((k, i) => i === kfIdx ? { ...k, frame: nf, value: setN(k.value, ax, vm) } : k)
+        .sort((a, b) => a.frame - b.frame);
+      last = { ...prop, keyframes: nextKfs };
+      setPreview(last);
+    };
+    const up = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      setPreview(null);
+      if (last !== prop) commit(last, "Graph: move keyframe");
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  };
+
+  // ベジェハンドルドラッグ（区間 i の easing.bezier を編集）
+  const startHandleDrag = (segIdx: number, which: "out" | "in", refAx: null | "x" | "y" | "z") => (e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const kfs = prop.keyframes;
+    const k0 = kfs[segIdx]!;
+    const k1 = kfs[segIdx + 1]!;
+    const dt = k1.frame - k0.frame || 1;
+    const v0 = getN(k0.value, refAx);
+    const v1 = getN(k1.value, refAx);
+    const cur0 = k0.easing.type === "bezier" ? k0.easing.bezier : [0, 0, 1, 1] as [number, number, number, number];
+    let last = prop;
+    const move = (ev: MouseEvent) => {
+      const { frame: fm, value: vm } = mouseToFV(ev.clientX, ev.clientY);
+      const x = Math.min(1, Math.max(0, (fm - k0.frame) / dt));
+      const y = v1 !== v0 ? (vm - v0) / (v1 - v0) : (which === "out" ? cur0[1] : cur0[3]);
+      const b: [number, number, number, number] = which === "out"
+        ? [x, y, cur0[2], cur0[3]]
+        : [cur0[0], cur0[1], x, y];
+      const nextKfs = kfs.map((k, i) => i === segIdx ? { ...k, easing: { type: "bezier", bezier: b } as Easing } : k);
+      last = { ...prop, keyframes: nextKfs };
+      setPreview(last);
+    };
+    const up = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      setPreview(null);
+      if (last !== prop) commit(last, "Graph: edit easing");
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  };
+
+  // 値カーブ（実サンプラで描画。hold/overshoot もそのまま反映）
+  const N = 72;
+  const curvePaths = axes.map((ax) => {
+    let d = "";
+    for (let i = 0; i <= N; i++) {
+      const f = viewRange.start + (i / N) * span;
+      const x = frameToPercent(f);
+      const y = valueToY(sampleAxis(f, ax));
+      d += `${i === 0 ? "M" : "L"}${x.toFixed(2)},${y.toFixed(2)} `;
+    }
+    return { ax, d, color: ax ? axisColor[ax]! : axisColor._! };
+  });
+
+  return (
+    <div ref={laneRef} style={{ position: "relative", flex: 1, height: GRAPH_H, overflow: "hidden", background: "#141414" }}>
+      <PlayheadTick frame={frame} frameToPercent={frameToPercent} />
+      <svg width="100%" height={GRAPH_H} viewBox={`0 0 100 ${GRAPH_H}`} preserveAspectRatio="none" style={{ position: "absolute", inset: 0, overflow: "visible" }}>
+        {/* 値カーブ */}
+        {curvePaths.map((c, i) => (
+          <path key={i} d={c.d} fill="none" stroke={c.color} strokeWidth={1} vectorEffect="non-scaling-stroke" opacity={0.9} />
+        ))}
+        {/* ベジェハンドル（区間ごと、参照軸 = |Δ| 最大） */}
+        {cur.keyframes.slice(0, -1).map((k0, i) => {
+          const k1 = cur.keyframes[i + 1]!;
+          if (k0.easing.type === "hold") return null;
+          const b = k0.easing.type === "bezier" ? k0.easing.bezier : [0, 0, 1, 1] as [number, number, number, number];
+          // 参照軸
+          let refAx: null | "x" | "y" | "z" = axes[0]!;
+          let maxD = -1;
+          for (const ax of axes) { const d = Math.abs(getN(k1.value, ax) - getN(k0.value, ax)); if (d > maxD) { maxD = d; refAx = ax; } }
+          const dt = k1.frame - k0.frame || 1;
+          const v0 = getN(k0.value, refAx);
+          const v1 = getN(k1.value, refAx);
+          const p0x = frameToPercent(k0.frame), p0y = valueToY(v0);
+          const p1x = frameToPercent(k1.frame), p1y = valueToY(v1);
+          const ohx = frameToPercent(k0.frame + b[0] * dt), ohy = valueToY(v0 + b[1] * (v1 - v0));
+          const ihx = frameToPercent(k0.frame + b[2] * dt), ihy = valueToY(v0 + b[3] * (v1 - v0));
+          return (
+            <g key={i}>
+              <line x1={p0x} y1={p0y} x2={ohx} y2={ohy} stroke="#888" strokeWidth={0.5} vectorEffect="non-scaling-stroke" />
+              <line x1={p1x} y1={p1y} x2={ihx} y2={ihy} stroke="#888" strokeWidth={0.5} vectorEffect="non-scaling-stroke" />
+            </g>
+          );
+        })}
+      </svg>
+      {/* ハンドル四角・KF 点は HTML overlay（ヒット領域確保） */}
+      {cur.keyframes.slice(0, -1).map((k0, i) => {
+        const k1 = cur.keyframes[i + 1]!;
+        if (k0.easing.type === "hold") return null;
+        const b = k0.easing.type === "bezier" ? k0.easing.bezier : [0, 0, 1, 1] as [number, number, number, number];
+        let refAx: null | "x" | "y" | "z" = axes[0]!; let maxD = -1;
+        for (const ax of axes) { const d = Math.abs(getN(k1.value, ax) - getN(k0.value, ax)); if (d > maxD) { maxD = d; refAx = ax; } }
+        const dt = k1.frame - k0.frame || 1;
+        const v0 = getN(k0.value, refAx); const v1 = getN(k1.value, refAx);
+        const oh = { x: frameToPercent(k0.frame + b[0] * dt), y: valueToY(v0 + b[1] * (v1 - v0)) };
+        const ih = { x: frameToPercent(k0.frame + b[2] * dt), y: valueToY(v0 + b[3] * (v1 - v0)) };
+        return (
+          <div key={i}>
+            <div onMouseDown={startHandleDrag(i, "out", refAx)} title="出ハンドル（イージング）" style={handleDot(oh.x, oh.y, "#bbb")} />
+            <div onMouseDown={startHandleDrag(i, "in", refAx)} title="入ハンドル（イージング）" style={handleDot(ih.x, ih.y, "#bbb")} />
+          </div>
+        );
+      })}
+      {axes.map((ax) => cur.keyframes.map((kf, i) => {
+        const x = frameToPercent(kf.frame);
+        const y = valueToY(getN(kf.value, ax));
+        const color = ax ? axisColor[ax]! : axisColor._!;
+        return (
+          <div
+            key={`${ax ?? "s"}-${i}`}
+            onMouseDown={startKfDrag(i, ax)}
+            title={`KF F${kf.frame} = ${getN(kf.value, ax).toFixed(2)}${ax ? ` (${ax})` : ""}（ドラッグで時間・値を編集）`}
+            style={{ position: "absolute", left: `${x}%`, top: y, width: 8, height: 8, marginLeft: -4, marginTop: -4, background: color, border: "1px solid #111", borderRadius: "50%", cursor: "move", zIndex: 2 }}
+          />
+        );
+      }))}
+    </div>
+  );
+}
+
+function handleDot(xPct: number, yPx: number, color: string): React.CSSProperties {
+  return { position: "absolute", left: `${xPct}%`, top: yPx, width: 7, height: 7, marginLeft: -3.5, marginTop: -3.5, background: color, border: "1px solid #111", cursor: "move", zIndex: 3 };
+}
+
 function PropRowShell({
-  label, animated, onStopwatch, prop, frame, kfShift, objId, propPath, selectedKfs, kfDrag, beginKfDrag, onKfRightClick, frameToPercent, children,
+  label, animated, onStopwatch, prop, frame, kfShift, objId, propPath, selectedKfs, kfDrag, beginKfDrag, onKfRightClick, frameToPercent, graphMode, viewRange, onSetProp, children,
 }: {
   label: string; animated: boolean; onStopwatch: () => void;
   prop: AnimatedProp<unknown>; frame: Frame; kfShift: number;
@@ -1562,8 +1799,13 @@ function PropRowShell({
   beginKfDrag: (objId: string, path: PropPath, frame: number, e: React.MouseEvent) => void;
   onKfRightClick: (key: string, x: number, y: number) => void;
   frameToPercent: (f: number) => number;
+  graphMode: boolean; viewRange: { start: number; end: number };
+  onSetProp: (objId: string, path: PropPath, next: AnimatedProp<unknown>, label: string) => void;
   children: React.ReactNode;
 }) {
+  // §22: グラフモードかつ animated（数値/Vec3）のときは値カーブレーンを表示。
+  const numeric = typeof prop.value === "number" || (typeof prop.value === "object" && prop.value !== null && "x" in (prop.value as object));
+  const showGraph = graphMode && animated && numeric;
   return (
     <div style={{ display: "flex", alignItems: "stretch", borderTop: "1px solid #202020" }}>
       <div style={{ width: LABEL_W, boxSizing: "border-box", flexShrink: 0, display: "flex", alignItems: "center", gap: 6, padding: "2px 6px 2px 30px", borderRight: "1px solid #2a2a2a" }}>
@@ -1577,7 +1819,10 @@ function PropRowShell({
         <span style={{ width: 78, color: "#999", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
         <div style={{ display: "flex", gap: 3, flex: 1 }}>{children}</div>
       </div>
-      {/* keyframe row in graph column */}
+      {showGraph ? (
+        <GraphLane prop={prop} objId={objId} propPath={propPath} frame={frame} viewRange={viewRange} frameToPercent={frameToPercent} onSetProp={onSetProp} />
+      ) : (
+      /* keyframe row in graph column */
       <div style={{ position: "relative", flex: 1, minHeight: 20, overflow: "hidden" }}>
         <PlayheadTick frame={frame} frameToPercent={frameToPercent} />
         {prop.keyframes.map((kf) => {
@@ -1612,6 +1857,7 @@ function PropRowShell({
           );
         })}
       </div>
+      )}
     </div>
   );
 }
