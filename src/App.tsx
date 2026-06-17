@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { WorkspaceLayout } from "./editor/WorkspaceLayout";
-import { defaultWorkspace, type LayoutNode, type WorkspaceState } from "./editor/layout";
+import { defaultWorkspace, ensureEasePanelVisible, type LayoutNode, type WorkspaceState } from "./editor/layout";
 import { useEditorStore } from "./editor/store";
 
 const WORKSPACE_KEY = "mafter-workspace-v1";
@@ -8,7 +8,16 @@ const WORKSPACE_KEY = "mafter-workspace-v1";
 function loadWorkspace(): WorkspaceState {
   try {
     const raw = localStorage.getItem(WORKSPACE_KEY);
-    if (raw) return JSON.parse(raw) as WorkspaceState;
+    if (raw) {
+      const ws = JSON.parse(raw) as WorkspaceState;
+      const layout = ensureEasePanelVisible(ws.layout);
+      if (layout !== ws.layout) {
+        const migrated = { ...ws, layout };
+        saveWorkspace(migrated);
+        return migrated;
+      }
+      return ws;
+    }
   } catch {
     /* ignore */
   }

@@ -44,6 +44,13 @@ export async function listUserEasingPresets(fs: FileSystem): Promise<EasingPrese
   }
 }
 
+export async function deleteUserEasingPreset(fs: FileSystem, id: string): Promise<boolean> {
+  const path = easingPresetPath(id);
+  if (!(await fs.exists(path))) return false;
+  await fs.delete(path);
+  return true;
+}
+
 export async function saveUserEasingPreset(
   fs: FileSystem,
   label: string,
