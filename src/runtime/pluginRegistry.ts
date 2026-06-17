@@ -53,6 +53,11 @@ export class PluginRegistry {
     return this.components.get(type);
   }
 
+  /** builtin / 直接登録用。 */
+  registerComponent(def: ComponentDef): void {
+    this.components.set(def.type, def);
+  }
+
   getComponentDefs(): ComponentDef[] {
     return [...this.components.values()];
   }

@@ -17,7 +17,7 @@
 
 **MVP = M0–M4 全マイルストーン実装・実機検証完了。** その後 §20 Project パネル / §21 Timeline AE化 / §22 グラフエディタ / §23 precomp を MVP 後 UX として拡張中。
 
-現行テスト: **119 件全通過** / typecheck ✅ / build ✅（2026-06-18）。
+現行テスト: **128 件全通過** / typecheck ✅ / build ✅（2026-06-18）。
 
 ---
 
@@ -113,18 +113,19 @@ spec §25 に確定。AE コンポビューア相当の編集機能を Preview �
 - [ ] **回帰（手動）** — ブラウザで直接操作・ズーム・オーバーレイ・animated KF 書き戻し確認
 - **将来**: ガイド線ドラッグ / マスク・シェイプ オンキャンバス編集 / モーションパス / チャンネル・スナップショット / ROI
 
-### §26 テキストレイヤー本実装（spec v0.10・**仕様確定 2026-06-18 / 実装未着手**）
-**→ Cursor へ一括実装させる前提で spec §26 に確定。** 現状 `text` は描画 5 属性のみ・編集 UI 皆無・builtin ComponentDef 未登録（Timeline で scalar フォールバック不具合）。ユーザ確認で採否を明文化済み:
-- [ ] **§26.1 スキーマ** — text props 確定: 既存5 + `tracking`/`leading`/`weight`/`italic`/`strokeColor`/`strokeWidth`。単位 px、tracking/leading は px、leading=0→normal。
-- [ ] **§26.2 builtin ComponentDef 登録**（バグ修正）— `text` を ParamDescriptor 付きで register → Timeline の kind/label フォールバック不具合解消。汎用 PropRow を string/enum/color/bool kind に対応拡張。
-- [ ] **§26.3 Inspector "Text" セクション** — textarea/font/size/align(3btn)/tracking/leading/weight(select)/italic(toggle) + **新規カラースウォッチ**（Fill/Stroke）。animatable はストップウォッチ◇で KF 化。編集中フォーカス時は軽量へ自動降格。
-- [ ] **§26.4 プレビュー品質モード** — Preview に**グローバル1ボタン**で軽量(DOM)⇄厳密(SVGアウトライン)切替。ビューア設定で永続化（project.json 非汚染）。**今回スコープは SVG アウトライン描画まで**。キャッシュは `FrameRenderCache` IF を no-op で確保（§26.4.2・将来）。
-- [ ] **§26.4.1 SVG アウトライン** — フォントパーサ（推奨 opentype.js）で assets フォントのグリフ path 化。system フォントは SVG `<text>` フォールバック。決定論（INV-1）維持・レンダラ層で生成。
-- [ ] **§26.5 グリフ分解（GG 分解）** — 「1文字=1 SceneObject」破壊的コマンド。編集時に measureText でレイアウト→静的 Transform 焼き込み（resolve は不変）。元レイヤーはコンテナ化し各グリフを parent 継承。1 undo。
-- [ ] **§26.6 補間** — Source Text は hold のみ。color/stroke は成分補間。font/align/weight/italic 非アニメ。
-- [ ] **§26.7 Export** — 厳密モードが基準。export ダイアログで「厳密(アウトライン)のみ / 可能な限り軽量(DOM)」を選択可。INV-2 は scene 解決値一致で担保、ピクセル基準は厳密。
-- [ ] **回帰** — typecheck / test / build + ブラウザ実機（作成→編集→KF→グリフ分解→品質切替→export）。
-- **将来（§16）**: 段落ボックステキスト / 文字単位混在スタイル / パステキスト / 範囲セレクター式アニメーター / tracking の 1/1000em 方式 / フォントセレクト UI / レイヤー個別品質フラグ / レンダーキャッシュ実体。
+### §26 テキストレイヤー本実装（spec v0.10・**実装済み 2026-06-18**）
+spec §26 に確定。`text` builtin ComponentDef 登録 + Inspector Text セクション + Draft/Best 品質切替 + SVG アウトライン + グリフ分解 + export 方式選択。
+- [x] **§26.1 スキーマ** — `addText` 既定値（tracking/leading/weight/italic/stroke）。静的 props は raw 値、animatable は AnimatedProp。
+- [x] **§26.2 builtin ComponentDef** — [builtinComponents.ts](src/runtime/builtinComponents.ts) + Timeline PropRow kind 拡張（string/color/enum/bool）。
+- [x] **§26.3 Inspector Text** — [InspectorPanel.tsx](src/editor/panels/InspectorPanel.tsx) + [ColorSwatch.tsx](src/editor/ColorSwatch.tsx)。編集中 draft 自動降格。
+- [x] **§26.4 品質モード** — Preview Draft/Best トグル + [previewViewerStorage.ts](src/editor/previewViewerStorage.ts) 永続化。[textRender.ts](src/runtime/textRender.ts) draft DOM / precise SVG。[fontOutlineCache.ts](src/runtime/fontOutlineCache.ts) + opentype.js。
+- [x] **§26.4.2 キャッシュ IF** — [frameRenderCache.ts](src/runtime/frameRenderCache.ts) no-op。
+- [x] **§26.5 グリフ分解** — [glyphDecompose.ts](src/editor/glyphDecompose.ts) + store `decomposeGlyphs` + Inspector ボタン。
+- [x] **§26.6 補間** — `sampleRgba` + string hold（[interpolate.ts](src/runtime/interpolate.ts)）。
+- [x] **§26.7 Export** — ExportDialog テキスト描画方式 + DomRenderer `textRenderMode`。
+- [x] **回帰（自動）** — typecheck / **128 tests PASS** / build ✅
+- [ ] **回帰（手動）** — ブラウザ: 作成→編集→KF→グリフ分解→品質切替→export
+- **将来（§16）**: 段落ボックステキスト / 文字単位混在スタイル / パステキスト / 範囲セレクター式アニメーター / tracking 1/1000em / フォントセレクト UI / レイヤー個別品質 / レンダーキャッシュ実体
 
 ### Timeline AE化バックログ（spec §5 スキーマ拡張 + INV 影響評価を伴い別リビジョンで導入）
 **→ 実用性優先度リストは [doc/timeline-panel-wip.md](doc/timeline-panel-wip.md)。**
@@ -153,7 +154,7 @@ spec §25 に確定。AE コンポビューア相当の編集機能を Preview �
 2. **§24 Ease パネル手動回帰** — F9 メニュー・グラフエディタとの SSoT 共有確認（実装済み・自動テスト 119 PASS）。
 3. ~~**§23 precomp Playwright E2E**~~ → ロジックは `test/precomp.test.ts` で自動化済み。Playwright E2E は任意。
 4. **M5 Web Bundle Export（§11.7）** — `@mafter/runtime` ベース player + Single-file/Folder bundle + `exportStrategy:'bake'` レイヤの部分 MP4/WebP 化。境界は M1 で先取り済み。
-5. **§26 テキストレイヤー本実装**（spec v0.10 確定済み・Cursor へ一括実装）— builtin ComponentDef 登録（バグ修正）→ Inspector Text セクション + カラースウォッチ → 軽量/厳密プレビュー切替（SVG アウトライン）→ グリフ分解コマンド → export 方式選択。
+5. ~~**§26 テキストレイヤー本実装**~~ — 実装済み（128 tests PASS）。手動回帰のみ残。
 6. **Timeline バックログ Tier B〜D / グラフエディタ Phase 2**（要 spec 追記・INV 評価）。
 
 ### 参考: 先取り済みの境界（spec v0.3 新規）
@@ -179,4 +180,4 @@ spec §25 に確定。AE コンポビューア相当の編集機能を Preview �
 | 2026-06-18 | §23 precomp 自動検証: `compLayer.ts` + `test/precomp.test.ts`（14 件）。typecheck/test/build 一括確認（100 tests PASS） |
 | 2026-06-18 | §24 Flow 風 Ease パネル Phase 1 実装（EasePanel / easingApply / builtin presets / FS 保存 / store KF 選択共有）。107 tests PASS |
 | 2026-06-18 | spec v0.8 §24 Flow 風イージングプリセットパネル仕様確定（独立常設パネル / in-out-both 3 モード / カーブ編集+★保存 / cubic-bezier プリセットのみ・bounce/elastic は Phase 2）。実装は progress バックログに記載・未着手 |
-| 2026-06-18 | (Cursor) §25 Preview ビューア編集 Phase 1 実装（previewViewer / PreviewViewerOverlay / PreviewPanel 拡張 / localStorage 永続化）。119 tests PASS |
+| 2026-06-18 | (Cursor) §26 テキストレイヤー本実装（builtin text ComponentDef / Inspector Text + ColorSwatch / Draft-Best 品質 / SVG アウトライン + opentype.js / グリフ分解 / export textRenderMode）。128 tests PASS |

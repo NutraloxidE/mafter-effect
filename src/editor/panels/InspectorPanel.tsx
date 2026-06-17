@@ -1,12 +1,14 @@
-import { sampleScalar, sampleVec3 } from "../../runtime/interpolate";
-import type { Easing, SceneObject, Transform, Vec3 } from "../../core/schema";
+import { sampleAny, sampleScalar, sampleVec3 } from "../../runtime/interpolate";
+import type { AnimatedProp, Component, Easing, RGBA, SceneObject, Transform, Vec3 } from "../../core/schema";
 import {
   currentTimelineComp,
   propVec3ToDisplay,
   setKeyframe,
   useEditorStore,
 } from "../store";
+import { ColorSwatch, isRgba } from "../ColorSwatch";
 import { ScrubNumber } from "../ScrubNumber";
+import { globalPluginRegistry } from "../../runtime/pluginRegistry";
 
 const EASING_PRESETS: { label: string; easing: Easing }[] = [
   { label: "Linear", easing: { type: "linear" } },
@@ -25,6 +27,8 @@ export function InspectorPanel() {
   const updateObject = useEditorStore((s) => s.updateObject);
   const updateObjects = useEditorStore((s) => s.updateObjects);
   const addWiggleExpression = useEditorStore((s) => s.addWiggleExpression);
+  const setPreviewQualityEditing = useEditorStore((s) => s.setPreviewQualityEditing);
+  const decomposeGlyphs = useEditorStore((s) => s.decomposeGlyphs);
 
   const comp = currentTimelineComp(project, compId);
   const obj = comp?.objects.find((o) => o.id === selectedIds[0]);
@@ -168,6 +172,15 @@ export function InspectorPanel() {
         </Row>
       </Section>
 
+      <TextSection
+        obj={obj}
+        frame={frame}
+        updateObject={updateObject}
+        onEditFocus={() => setPreviewQualityEditing(true)}
+        onEditBlur={() => setPreviewQualityEditing(false)}
+        onDecompose={() => decomposeGlyphs(obj.id)}
+      />
+
       <Section label="Expression">
         <button
           style={{ ...btnStyle, fontSize: 10, color: posExprOn ? "#f0c040" : "#bbb", borderColor: posExprOn ? "#aa7" : "#444" }}
@@ -233,6 +246,282 @@ export function InspectorPanel() {
         </Row>
       </Section>
     </div>
+  );
+}
+
+function TextSection({
+  obj,
+  frame,
+  updateObject,
+  onEditFocus,
+  onEditBlur,
+  onDecompose,
+}: {
+  obj: SceneObject;
+  frame: number;
+  updateObject: (id: string, patch: Partial<SceneObject>, label?: string) => void;
+  onEditFocus: () => void;
+  onEditBlur: () => void;
+  onDecompose: () => void;
+}) {
+  const compIdx = obj.components.findIndex((c) => c.type === "text");
+  if (compIdx < 0) return null;
+  const comp = obj.components[compIdx]!;
+  const def = globalPluginRegistry.getComponentDef("text");
+  const props = comp.props;
+
+  const writeComponents = (nextProps: Component["props"], label: string) => {
+    const nextComponents = obj.components.map((c, i) =>
+      i === compIdx ? { ...c, props: nextProps } : c,
+    );
+    updateObject(obj.id, { components: nextComponents }, label);
+  };
+
+  const writeAnim = <T,>(key: string, next: AnimatedProp<T>, label: string) => {
+    writeComponents({ ...props, [key]: next }, label);
+  };
+
+  const writeStatic = (key: string, value: unknown, label: string) => {
+    writeComponents({ ...props, [key]: value }, label);
+  };
+
+  const toggleKf = (key: string, prop: AnimatedProp<unknown>) => {
+    if (prop.keyframes.length > 0) writeAnim(key, { value: prop.value, keyframes: [] }, `Disable ${key} keyframes`);
+    else writeAnim(key, setKeyframe(prop, frame, prop.value, { type: "hold" }), `Enable ${key} keyframes`);
+  };
+
+  const textProp = props["text"];
+  const sizeProp = props["size"];
+  const colorProp = props["color"];
+  const trackingProp = props["tracking"];
+  const leadingProp = props["leading"];
+  const strokeColorProp = props["strokeColor"];
+  const strokeWidthProp = props["strokeWidth"];
+
+  const textVal = isAnimated(textProp) ? String(sampleAny(textProp, frame)) : "";
+  const sizeVal = isAnimated(sizeProp) && typeof sampleAny(sizeProp, frame) === "number"
+    ? (sampleAny(sizeProp, frame) as number) : 48;
+  const colorVal = isAnimated(colorProp) && isRgba(sampleAny(colorProp, frame))
+    ? (sampleAny(colorProp, frame) as RGBA) : { r: 1, g: 1, b: 1, a: 1 };
+  const trackingVal = isAnimated(trackingProp) && typeof sampleAny(trackingProp, frame) === "number"
+    ? (sampleAny(trackingProp, frame) as number) : 0;
+  const leadingVal = isAnimated(leadingProp) && typeof sampleAny(leadingProp, frame) === "number"
+    ? (sampleAny(leadingProp, frame) as number) : 0;
+  const strokeColorVal = isAnimated(strokeColorProp) && isRgba(sampleAny(strokeColorProp, frame))
+    ? (sampleAny(strokeColorProp, frame) as RGBA) : { r: 0, g: 0, b: 0, a: 1 };
+  const strokeWidthVal = isAnimated(strokeWidthProp) && typeof sampleAny(strokeWidthProp, frame) === "number"
+    ? (sampleAny(strokeWidthProp, frame) as number) : 0;
+
+  const font = typeof props["font"] === "string" ? props["font"] : "sans-serif";
+  const align = props["align"] === "center" || props["align"] === "right" ? props["align"] : "left";
+  const weight = typeof props["weight"] === "number" ? props["weight"] : 400;
+  const italic = props["italic"] === true;
+
+  return (
+    <Section label="Text">
+      {isAnimated(textProp) && (
+        <Row label="Source">
+          <Stopwatch active={textProp.keyframes.length > 0} onClick={() => toggleKf("text", textProp)} />
+          <textarea
+            value={textVal}
+            rows={3}
+            onFocus={onEditFocus}
+            onBlur={onEditBlur}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (textProp.keyframes.length > 0) {
+                writeAnim("text", setKeyframe(textProp, frame, v, { type: "hold" }), "Edit Source Text");
+              } else {
+                writeAnim("text", { ...textProp, value: v }, "Edit Source Text");
+              }
+            }}
+            style={{ ...textAreaStyle, flex: 1 }}
+          />
+        </Row>
+      )}
+      <Row label="Font">
+        <input
+          value={font}
+          onChange={(e) => writeStatic("font", e.target.value, "Edit font")}
+          onFocus={onEditFocus}
+          onBlur={onEditBlur}
+          style={{ ...textInputStyle, flex: 1 }}
+        />
+      </Row>
+      {isAnimated(sizeProp) && (
+        <AnimScalarRow
+          label="Size"
+          prop={sizeProp as AnimatedProp<number>}
+          value={sizeVal}
+          frame={frame}
+          onToggle={() => toggleKf("size", sizeProp)}
+          onCommit={(v) => {
+            if (sizeProp.keyframes.length > 0) writeAnim("size", setKeyframe(sizeProp as AnimatedProp<number>, frame, v), "Edit size");
+            else writeAnim("size", { ...sizeProp, value: v }, "Edit size");
+          }}
+          onFocus={onEditFocus}
+          onBlur={onEditBlur}
+          min={1}
+        />
+      )}
+      {isAnimated(colorProp) && (
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 4 }}>
+          <Stopwatch active={colorProp.keyframes.length > 0} onClick={() => toggleKf("color", colorProp)} />
+          <div style={{ flex: 1 }}>
+            <ColorSwatch
+              label="Fill"
+              value={colorVal}
+              onChange={(v) => {
+                if (colorProp.keyframes.length > 0) writeAnim("color", setKeyframe(colorProp as AnimatedProp<RGBA>, frame, v), "Edit fill");
+                else writeAnim("color", { ...colorProp, value: v }, "Edit fill");
+              }}
+              onFocus={onEditFocus}
+              onBlur={onEditBlur}
+            />
+          </div>
+        </div>
+      )}
+      {isAnimated(strokeColorProp) && (
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 4 }}>
+          <Stopwatch active={strokeColorProp.keyframes.length > 0} onClick={() => toggleKf("strokeColor", strokeColorProp)} />
+          <div style={{ flex: 1 }}>
+            <ColorSwatch
+              label="Stroke"
+              value={strokeColorVal}
+              onChange={(v) => {
+                if (strokeColorProp.keyframes.length > 0) writeAnim("strokeColor", setKeyframe(strokeColorProp as AnimatedProp<RGBA>, frame, v), "Edit stroke");
+                else writeAnim("strokeColor", { ...strokeColorProp, value: v }, "Edit stroke");
+              }}
+              onFocus={onEditFocus}
+              onBlur={onEditBlur}
+            />
+          </div>
+        </div>
+      )}
+      <Row label="Align">
+        {(["left", "center", "right"] as const).map((a) => (
+          <button
+            key={a}
+            onClick={() => writeStatic("align", a, "Edit align")}
+            style={{ ...btnStyle, background: align === a ? "#3a4a5a" : "#2a2a2a", fontSize: 10, minWidth: 28 }}
+          >
+            {a === "left" ? "L" : a === "center" ? "C" : "R"}
+          </button>
+        ))}
+      </Row>
+      {isAnimated(trackingProp) && (
+        <AnimScalarRow
+          label="Tracking"
+          prop={trackingProp as AnimatedProp<number>}
+          value={trackingVal}
+          frame={frame}
+          onToggle={() => toggleKf("tracking", trackingProp)}
+          onCommit={(v) => {
+            if (trackingProp.keyframes.length > 0) writeAnim("tracking", setKeyframe(trackingProp as AnimatedProp<number>, frame, v), "Edit tracking");
+            else writeAnim("tracking", { ...trackingProp, value: v }, "Edit tracking");
+          }}
+          onFocus={onEditFocus}
+          onBlur={onEditBlur}
+        />
+      )}
+      {isAnimated(leadingProp) && (
+        <AnimScalarRow
+          label="Leading"
+          prop={leadingProp as AnimatedProp<number>}
+          value={leadingVal}
+          frame={frame}
+          onToggle={() => toggleKf("leading", leadingProp)}
+          onCommit={(v) => {
+            if (leadingProp.keyframes.length > 0) writeAnim("leading", setKeyframe(leadingProp as AnimatedProp<number>, frame, v), "Edit leading");
+            else writeAnim("leading", { ...leadingProp, value: v }, "Edit leading");
+          }}
+          onFocus={onEditFocus}
+          onBlur={onEditBlur}
+          min={0}
+        />
+      )}
+      {isAnimated(strokeWidthProp) && (
+        <AnimScalarRow
+          label="Stroke W"
+          prop={strokeWidthProp as AnimatedProp<number>}
+          value={strokeWidthVal}
+          frame={frame}
+          onToggle={() => toggleKf("strokeWidth", strokeWidthProp)}
+          onCommit={(v) => {
+            if (strokeWidthProp.keyframes.length > 0) writeAnim("strokeWidth", setKeyframe(strokeWidthProp as AnimatedProp<number>, frame, v), "Edit stroke width");
+            else writeAnim("strokeWidth", { ...strokeWidthProp, value: v }, "Edit stroke width");
+          }}
+          onFocus={onEditFocus}
+          onBlur={onEditBlur}
+          min={0}
+        />
+      )}
+      <Row label="Weight">
+        <select
+          value={String(weight)}
+          onChange={(e) => writeStatic("weight", Number(e.target.value), "Edit weight")}
+          style={selectStyle}
+        >
+          {(def?.params.find((p) => p.key === "weight")?.options ?? ["400"]).map((w) => (
+            <option key={w} value={w}>{w}</option>
+          ))}
+        </select>
+      </Row>
+      <Row label="Italic">
+        <button
+          onClick={() => writeStatic("italic", !italic, "Toggle italic")}
+          style={{ ...btnStyle, color: italic ? "#f0c040" : "#bbb" }}
+        >
+          {italic ? "On" : "Off"}
+        </button>
+      </Row>
+      <button onClick={onDecompose} style={{ ...btnStyle, marginTop: 4, fontSize: 10 }} title="§26.5 1文字=1レイヤーに分解">
+        Decompose Glyphs
+      </button>
+    </Section>
+  );
+}
+
+function isAnimated(v: unknown): v is AnimatedProp<unknown> {
+  return typeof v === "object" && v !== null && "value" in v && "keyframes" in v;
+}
+
+function Stopwatch({ active, onClick }: { active: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{ background: "none", border: "none", color: active ? "#f0c040" : "#555", cursor: "pointer", fontSize: 10, padding: 0, width: 14 }}
+      title="Toggle keyframes"
+    >
+      ⬦
+    </button>
+  );
+}
+
+function AnimScalarRow({
+  label, prop, value, onToggle, onCommit, min,
+}: {
+  label: string;
+  prop: AnimatedProp<number>;
+  value: number;
+  frame: number;
+  onToggle: () => void;
+  onCommit: (v: number) => void;
+  onFocus?: () => void;
+  onBlur?: () => void;
+  min?: number;
+}) {
+  return (
+    <Row label={label}>
+      <Stopwatch active={prop.keyframes.length > 0} onClick={onToggle} />
+      <ScrubNumber
+        value={value}
+        onCommit={(v) => onCommit(v)}
+        speed={1}
+        min={min}
+        style={numInputStyle}
+      />
+    </Row>
   );
 }
 
@@ -312,4 +601,24 @@ const btnStyle: React.CSSProperties = {
   borderRadius: 3,
   padding: "2px 5px",
   cursor: "pointer",
+};
+
+const textInputStyle: React.CSSProperties = {
+  background: "#2a2a2a",
+  border: "1px solid #444",
+  color: "#ddd",
+  borderRadius: 3,
+  padding: "2px 4px",
+  fontSize: 11,
+};
+
+const textAreaStyle: React.CSSProperties = {
+  ...textInputStyle,
+  resize: "vertical",
+  fontFamily: "inherit",
+};
+
+const selectStyle: React.CSSProperties = {
+  ...textInputStyle,
+  flex: 1,
 };

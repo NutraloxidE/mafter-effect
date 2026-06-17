@@ -1,4 +1,4 @@
-import type { AnimatedProp, Frame, Keyframe, Vec3 } from "../core/schema";
+import type { AnimatedProp, Frame, Keyframe, RGBA, Vec3 } from "../core/schema";
 import { easingFn } from "./easing";
 
 // §6.4 補間。
@@ -56,6 +56,34 @@ export function sampleVec3(prop: AnimatedProp<Vec3>, frame: Frame): Vec3 {
   return lerpVec3(seg.before.value, seg.after.value, seg.t);
 }
 
+function lerpRgba(a: RGBA, b: RGBA, t: number): RGBA {
+  return {
+    r: lerp(a.r, b.r, t),
+    g: lerp(a.g, b.g, t),
+    b: lerp(a.b, b.b, t),
+    a: lerp(a.a, b.a, t),
+  };
+}
+
+function isRgba(v: unknown): v is RGBA {
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    typeof (v as RGBA).r === "number" &&
+    typeof (v as RGBA).g === "number" &&
+    typeof (v as RGBA).b === "number" &&
+    typeof (v as RGBA).a === "number"
+  );
+}
+
+export function sampleRgba(prop: AnimatedProp<RGBA>, frame: Frame): RGBA {
+  const kfs = prop.keyframes;
+  if (kfs.length === 0) return prop.value;
+  const seg = findSegment(kfs, frame);
+  if ("hold" in seg) return seg.hold;
+  return lerpRgba(seg.before.value, seg.after.value, seg.t);
+}
+
 function isVec3(v: unknown): v is Vec3 {
   return (
     typeof v === "object" &&
@@ -93,6 +121,9 @@ export function sampleAny(value: unknown, frame: Frame): unknown {
   }
   if (isVec3(prop.value)) {
     return sampleVec3(prop as AnimatedProp<Vec3>, frame);
+  }
+  if (isRgba(prop.value)) {
+    return sampleRgba(prop as AnimatedProp<RGBA>, frame);
   }
   // 補間不能な型はステップ補間（hold）。
   const seg = findSegment(prop.keyframes, frame);

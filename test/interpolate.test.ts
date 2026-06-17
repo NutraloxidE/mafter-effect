@@ -85,5 +85,6 @@ describe("sampleAny", () => {
     };
     expect(sampleAny(p, 5)).toBe("a");
     expect(sampleAny(p, 10)).toBe("b");
+    expect(sampleAny(p, 15)).toBe("b");
   });
 });

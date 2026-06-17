@@ -24,6 +24,7 @@ export function ExportDialog({ project, compId, onClose }: Props) {
   const [fps, setFps] = useState(tl?.fps ?? 30);
   const [scale, setScale] = useState(1);
   const [alpha, setAlpha] = useState(false);
+  const [textRenderMode, setTextRenderMode] = useState<"precise" | "draft">("precise");
 
   const [progress, setProgress] = useState<ExportProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -42,6 +43,7 @@ export function ExportDialog({ project, compId, onClose }: Props) {
       scale,
       format,
       alpha,
+      textRenderMode,
     };
 
     try {
@@ -59,7 +61,7 @@ export function ExportDialog({ project, compId, onClose }: Props) {
     } finally {
       abortRef.current = null;
     }
-  }, [project, compId, tl, startFrame, endFrame, fps, scale, format, alpha]);
+  }, [project, compId, tl, startFrame, endFrame, fps, scale, format, alpha, textRenderMode]);
 
   const onCancel = () => {
     abortRef.current?.abort();
@@ -114,11 +116,22 @@ export function ExportDialog({ project, compId, onClose }: Props) {
               <span style={{ color: "#888", fontSize: 10, marginLeft: 4 }}>transparent bg</span>
             </Row>
           )}
+          <Row label="Text">
+            <select
+              value={textRenderMode}
+              onChange={(e) => setTextRenderMode(e.target.value as "precise" | "draft")}
+              style={selectStyle}
+            >
+              <option value="precise">厳密 (SVG アウトライン)</option>
+              <option value="draft">軽量 (DOM テキスト)</option>
+            </select>
+          </Row>
         </div>
 
         {/* Warnings */}
         <div style={{ fontSize: 10, color: "#666", marginBottom: 10, lineHeight: 1.5 }}>
           ⚠ best-effort: CSS 3D preserve-3d / cross-origin images may differ from preview.<br />
+          §26: 厳密モードは asset フォント取り込みで最も正確。system フォントは SVG text 近似。<br />
           Video requires Chrome 94+ (WebCodecs). Older browsers fall back to PNG sequence.
         </div>
 

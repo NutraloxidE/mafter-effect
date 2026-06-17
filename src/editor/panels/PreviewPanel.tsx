@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { resolve, type ExpressionEvaluator } from "../../runtime/resolve";
 import { DomRenderer } from "../../runtime/DomRenderer";
+import { FontOutlineCache } from "../../runtime/fontOutlineCache";
 import { ExpressionEngine } from "../../runtime/expressionEngine";
 import { HtmlCompPlayer } from "../../runtime/htmlComp";
 import { ModuleLoader } from "../../runtime/moduleLoader";
@@ -61,6 +62,8 @@ export function PreviewPanel() {
   const pluginsVersion = useEditorStore((s) => s.pluginsVersion);
   const selectedIds = useEditorStore((s) => s.selectedObjectIds);
   const updateObject = useEditorStore((s) => s.updateObject);
+  const previewQualityEditing = useEditorStore((s) => s.previewQualityEditing);
+  const setPreviewQuality = useEditorStore((s) => s.setPreviewQuality);
 
   const timelineComps = (project?.compositions ?? []).filter((c) => c.kind === "timeline");
 
@@ -73,6 +76,7 @@ export function PreviewPanel() {
   const stageRef = useRef<HTMLDivElement>(null);
   const fitRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<DomRenderer | null>(null);
+  const fontCacheRef = useRef(new FontOutlineCache());
   const [renderTick, setRenderTick] = useState(0);
   const rafRef = useRef<number | null>(null);
   const lastTimeRef = useRef<number | null>(null);
@@ -99,19 +103,22 @@ export function PreviewPanel() {
 
   // §25.7 comp 切替時に設定を読み込む
   useEffect(() => {
-    setViewerSettings(loadViewerSettings(compId));
+    const loaded = loadViewerSettings(compId);
+    setViewerSettings(loaded);
+    setPreviewQuality(loaded.previewQuality);
     setDraftTransform(null);
-  }, [compId]);
+  }, [compId, setPreviewQuality]);
 
   const patchSettings = useCallback(
     (patch: Partial<PreviewViewerSettings>) => {
       setViewerSettings((prev) => {
         const next = { ...prev, ...patch };
         saveViewerSettings(compId, next);
+        if (patch.previewQuality) setPreviewQuality(patch.previewQuality);
         return next;
       });
     },
-    [compId],
+    [compId, setPreviewQuality],
   );
 
   const effectiveZoom = useMemo(() => {
@@ -141,6 +148,7 @@ export function PreviewPanel() {
     if (!el || !comp) return;
     const r = new DomRenderer();
     r.setHtmlPlayer(_htmlPlayer);
+    r.setFontCache(fontCacheRef.current);
     r.mount(el, comp);
     rendererRef.current = r;
     return () => {
@@ -170,6 +178,20 @@ export function PreviewPanel() {
   useEffect(() => {
     setRenderTick((t) => t + 1);
   }, [pluginsVersion]);
+
+  // §26.4 asset フォントを preload
+  useEffect(() => {
+    if (!project) return;
+    void fontCacheRef.current.loadFromProject(project, _previewFs).then(() => setRenderTick((t) => t + 1));
+  }, [project]);
+
+  const effectiveTextQuality =
+    previewQualityEditing ? "draft" : viewerSettings.previewQuality;
+
+  useEffect(() => {
+    rendererRef.current?.setTextQuality(effectiveTextQuality);
+    setRenderTick((t) => t + 1);
+  }, [effectiveTextQuality]);
 
   // render on frame / project / draft transform
   useEffect(() => {
@@ -430,6 +452,21 @@ export function PreviewPanel() {
         <span style={{ fontSize: 10, color: "#666" }}>F{frame}</span>
 
         <span style={{ color: "#444" }}>|</span>
+
+        <button
+          onClick={() => {
+            const next = viewerSettings.previewQuality === "draft" ? "precise" : "draft";
+            patchSettings({ previewQuality: next });
+          }}
+          style={{
+            ...btnStyle,
+            background: viewerSettings.previewQuality === "precise" ? "#2a3a4a" : "#333",
+            fontSize: 10,
+          }}
+          title="§26.4 テキスト品質: 軽量(DOM) / 厳密(SVGアウトライン)"
+        >
+          {viewerSettings.previewQuality === "precise" ? "Best" : "Draft"}
+        </button>
 
         <select
           value={viewerSettings.zoomMode === "manual" ? `manual:${viewerSettings.viewZoom}` : viewerSettings.zoomMode}

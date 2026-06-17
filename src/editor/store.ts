@@ -18,7 +18,8 @@ import type {
 import { IndexedDbFs } from "../fs/IndexedDbFs";
 import { compositionDir, DIR_ASSETS, pluginEntryPath, pluginManifestPath, scriptPath } from "../core/paths";
 import { compWouldCreateCycle } from "../runtime/compLayer";
-import { sampleVec3 } from "../runtime/interpolate";
+import { registerBuiltinComponents } from "../runtime/builtinComponents";
+import { sampleScalar, sampleVec3 } from "../runtime/interpolate";
 import { ModuleLoader } from "../runtime/moduleLoader";
 import type { PluginContext, PluginManifest } from "../runtime/plugin";
 import { globalPluginRegistry } from "../runtime/pluginRegistry";
@@ -37,6 +38,9 @@ import {
   type Command,
   type UndoRedoStack,
 } from "./commands";
+import { buildGlyphDecomposeObjects, createCanvasMeasureContext } from "./glyphDecompose";
+
+registerBuiltinComponents();
 
 // §17: プロジェクトデータの正は FS（IndexedDbFs）。ストアはその投影。
 
@@ -85,6 +89,13 @@ export interface EditorStore {
   // §21.5 KF 複数選択（タイムライン ↔ Ease パネル共有）
   selectedKfKeys: string[];
   setSelectedKfKeys: (keys: string[] | ((prev: string[]) => string[])) => void;
+
+  // §26.4 プレビュー品質（グローバル。永続化は previewViewerStorage）
+  previewQuality: "draft" | "precise";
+  previewQualityEditing: boolean;
+  setPreviewQuality: (mode: "draft" | "precise") => void;
+  setPreviewQualityEditing: (editing: boolean) => void;
+  decomposeGlyphs: (objectId: string) => void;
 
   // Undo/Redo スタック（セッション内のみ, §17）
   undoStack: UndoRedoStack;
@@ -163,6 +174,8 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   selectedObjectIds: [],
   selectedKfKeys: [],
   isPlaying: false,
+  previewQuality: "draft",
+  previewQualityEditing: false,
   pluginsVersion: 0,
   undoStack: emptyStack(),
 
@@ -238,6 +251,43 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     set((s) => ({
       selectedKfKeys: typeof keys === "function" ? keys(s.selectedKfKeys) : keys,
     })),
+
+  setPreviewQuality: (mode) => set({ previewQuality: mode }),
+  setPreviewQualityEditing: (editing) => set({ previewQualityEditing: editing }),
+
+  decomposeGlyphs: (objectId) => {
+    const before = get().project;
+    if (!before) return;
+    const comp = currentTimelineComp(before, get().currentCompId);
+    if (!comp) return;
+    const obj = comp.objects.find((o) => o.id === objectId);
+    if (!obj) return;
+    const textComp = obj.components.find((c) => c.type === "text");
+    if (!textComp) return;
+    const props = textComp.props;
+    const font = typeof props["font"] === "string" ? props["font"] : "sans-serif";
+    const weight = typeof props["weight"] === "number" ? props["weight"] : 400;
+    const italic = props["italic"] === true;
+    const sizeRaw = props["size"];
+    const frame = get().currentFrame;
+    const size = typeof sizeRaw === "object" && sizeRaw !== null && "value" in sizeRaw
+      ? sampleScalar(sizeRaw as AnimatedProp<number>, frame)
+      : 48;
+    const measureCtx = createCanvasMeasureContext(font, size, weight, italic);
+    const nextObjects = buildGlyphDecomposeObjects(obj, comp, frame, measureCtx);
+    if (!nextObjects) return;
+    const afterObjects = comp.objects
+      .filter((o) => o.id !== objectId)
+      .concat(nextObjects)
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    const after: Project = {
+      ...before,
+      compositions: before.compositions.map((c) =>
+        c.id === comp.id && c.kind === "timeline" ? { ...c, objects: afterObjects } : c,
+      ),
+    };
+    get().applyCommand({ label: "Decompose Glyphs", before, after });
+  },
 
   // §20.2 コンポジション管理 ————————————————————————————————
 
@@ -497,11 +547,17 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         {
           type: "text",
           props: {
-            text: staticProp("Hello"),
-            font: staticProp("sans-serif"),
+            text: staticProp("Text"),
             size: staticProp(48),
-            color: { value: { r: 1, g: 1, b: 1, a: 1 }, keyframes: [] },
-            align: staticProp("left"),
+            color: staticProp({ r: 1, g: 1, b: 1, a: 1 }),
+            tracking: staticProp(0),
+            leading: staticProp(0),
+            strokeColor: staticProp({ r: 0, g: 0, b: 0, a: 1 }),
+            strokeWidth: staticProp(0),
+            font: "sans-serif",
+            align: "left",
+            weight: 400,
+            italic: false,
           },
         },
       ],
@@ -560,6 +616,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
     globalPluginRegistry.clear();
     pluginLoader.clear();
+    registerBuiltinComponents();
 
     const activeRefs = p.pluginRefs.filter((r) => r.enabled);
     for (const ref of activeRefs) {

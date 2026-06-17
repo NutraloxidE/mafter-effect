@@ -21,6 +21,7 @@ import type {
   Easing,
   Frame,
   ParamKind,
+  RGBA,
   SceneObject,
   Transform,
   Vec3,
@@ -1618,6 +1619,24 @@ function PropRowComponent({
           if (animated) writeProp(setKeyframe(prop as AnimatedProp<unknown>, frame, num, { type: "linear" } as Easing), `Edit ${propKey}`);
           else writeProp({ ...prop, value: num }, `Edit ${propKey}`);
         }} />
+      ) : kind === "string" && typeof sampled === "string" ? (
+        <input
+          value={sampled}
+          onChange={(e) => {
+            const v = e.target.value;
+            if (animated) writeProp(setKeyframe(prop as AnimatedProp<unknown>, frame, v, { type: "hold" } as Easing), `Edit ${propKey}`);
+            else writeProp({ ...prop, value: v }, `Edit ${propKey}`);
+          }}
+          style={{ width: 100, fontSize: 10, background: "#222", border: "1px solid #444", color: "#ccc", padding: "1px 3px" }}
+        />
+      ) : kind === "color" && typeof sampled === "object" && sampled !== null && "r" in sampled ? (
+        <span style={{ fontSize: 10, color: "#aaa" }}>
+          {Math.round((sampled as RGBA).r * 255)},{Math.round((sampled as RGBA).g * 255)},{Math.round((sampled as RGBA).b * 255)}
+        </span>
+      ) : kind === "bool" && typeof sampled === "boolean" ? (
+        <span style={{ fontSize: 10, color: sampled ? "#8cf" : "#666" }}>{sampled ? "true" : "false"}</span>
+      ) : kind === "enum" ? (
+        <span style={{ fontSize: 10, color: "#aaa" }}>{String(sampled)}</span>
       ) : (
         <span style={{ color: "#777", fontSize: 10 }}>{kind}</span>
       )}

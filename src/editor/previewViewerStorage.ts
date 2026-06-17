@@ -13,6 +13,8 @@ export interface PreviewViewerSettings {
   rulers: boolean;
   resolutionProxy: ResolutionProxy;
   loop: boolean;
+  /** §26.4 draft | precise */
+  previewQuality: "draft" | "precise";
 }
 
 export const DEFAULT_VIEWER_SETTINGS: PreviewViewerSettings = {
@@ -26,6 +28,7 @@ export const DEFAULT_VIEWER_SETTINGS: PreviewViewerSettings = {
   rulers: false,
   resolutionProxy: "full",
   loop: false,
+  previewQuality: "draft",
 };
 
 type SettingsByComp = Record<string, Partial<PreviewViewerSettings>>;

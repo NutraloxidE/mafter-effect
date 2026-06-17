@@ -1,10 +1,12 @@
 import type { CompositionMeta, Frame, HtmlComposition, RGBA, TimelineComposition } from "../core/schema";
+import type { FontOutlineCache } from "./fontOutlineCache";
 import type { HtmlCompPlayer } from "./htmlComp";
 import { globalPluginRegistry } from "./pluginRegistry";
 import type { Renderer } from "./renderer";
 import type { ResolvedComponent, ResolvedObject, ResolvedScene } from "./resolved";
 import { compChildFrame, isCompNestDepthAllowed } from "./compLayer";
 import { resolve } from "./resolve";
+import { applyTextEl, rgbaCss } from "./textRender";
 
 // §8 DomRenderer — フラット matrix3d レンダラ。
 // 各 ResolvedObject を root の兄弟 div として並べる。ネストしない。
@@ -36,6 +38,18 @@ export class DomRenderer implements Renderer {
   // §7 HTML comp サポート: HtmlCompPlayer を注入（optional）。
   // mount 後に setHtmlPlayer() で差し替え可。
   private htmlPlayer: HtmlCompPlayer | null = null;
+
+  // §26.4 テキスト品質モード
+  private textQuality: "draft" | "precise" = "precise";
+  private fontCache: FontOutlineCache | null = null;
+
+  setTextQuality(mode: "draft" | "precise"): void {
+    this.textQuality = mode;
+  }
+
+  setFontCache(cache: FontOutlineCache | null): void {
+    this.fontCache = cache;
+  }
 
   setHtmlPlayer(player: HtmlCompPlayer | null): void {
     this.htmlPlayer = player;
@@ -142,7 +156,7 @@ export class DomRenderer implements Renderer {
     // props を in-place で更新（<img> src は変化時のみ → 再読込しない）
     obj.components.forEach((c, i) => {
       const el = entry.children[i];
-      if (el) updateComponentEl(el, c.type, c.props);
+      if (el) updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache);
 
       // Plugin component: registry から ComponentDef.render を呼ぶ（組み込み型は未登録でスキップ）
       if (el) {
@@ -247,7 +261,7 @@ export class DomRenderer implements Renderer {
           continue;
         }
         const el = createComponentEl(c.type);
-        updateComponentEl(el, c.type, c.props);
+        updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache);
         div.appendChild(el);
       }
       container.appendChild(div);
@@ -255,29 +269,12 @@ export class DomRenderer implements Renderer {
   }
 }
 
-function rgbaCss(c: RGBA): string {
-  return `rgba(${c.r * 255},${c.g * 255},${c.b * 255},${c.a})`;
-}
-
-function mat4ToCss(m: readonly number[]): string {
-  return `matrix3d(${m.join(",")})`;
-}
-
-function createComponentEl(type: string): HTMLElement {
-  if (type === "image") {
-    const img = document.createElement("img");
-    img.style.cssText = "position:absolute;top:0;left:0;pointer-events:none";
-    return img;
-  }
-  const el = document.createElement("div");
-  el.style.cssText = "position:absolute;top:0;left:0;pointer-events:none";
-  return el;
-}
-
 function updateComponentEl(
   el: HTMLElement,
   type: string,
   props: ResolvedComponent["props"],
+  textQuality: "draft" | "precise" = "draft",
+  fontCache: FontOutlineCache | null = null,
 ): void {
   switch (type) {
     case "solid": {
@@ -300,17 +297,9 @@ function updateComponentEl(
       break;
     }
     case "text": {
-      const color = props["color"] as RGBA | undefined;
-      const font = props["font"] as string | undefined;
-      const fontSize = props["size"] as number | undefined;
-      const align = props["align"] as string | undefined;
-      el.style.whiteSpace = "pre-wrap";
-      if (color) el.style.color = rgbaCss(color);
-      if (font) el.style.fontFamily = font;
-      if (fontSize) el.style.fontSize = `${fontSize}px`;
-      if (align) el.style.textAlign = align as CanvasTextAlign;
-      const text = (props["text"] as string | undefined) ?? "";
-      if (el.textContent !== text) el.textContent = text;
+      const fontFamily = typeof props["font"] === "string" ? props["font"] : "sans-serif";
+      const font = fontCache?.getFont(fontFamily) ?? null;
+      applyTextEl(el, props, textQuality, font);
       break;
     }
     case "image": {
@@ -323,4 +312,19 @@ function updateComponentEl(
       break;
     }
   }
+}
+
+function mat4ToCss(m: readonly number[]): string {
+  return `matrix3d(${m.join(",")})`;
+}
+
+function createComponentEl(type: string): HTMLElement {
+  if (type === "image") {
+    const img = document.createElement("img");
+    img.style.cssText = "position:absolute;top:0;left:0;pointer-events:none";
+    return img;
+  }
+  const el = document.createElement("div");
+  el.style.cssText = "position:absolute;top:0;left:0;pointer-events:none";
+  return el;
 }

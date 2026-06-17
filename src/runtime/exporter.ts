@@ -9,6 +9,7 @@ import { compositionDir } from "../core/paths";
 import type { ExportConfig, HtmlComposition, Project, TimelineComposition } from "../core/schema";
 import type { FileSystem } from "../fs/FileSystem";
 import { DomRenderer } from "./DomRenderer";
+import { FontOutlineCache } from "./fontOutlineCache";
 import { ExpressionEngine } from "./expressionEngine";
 import { HtmlCompPlayer } from "./htmlComp";
 import { ModuleLoader } from "./moduleLoader";
@@ -67,6 +68,10 @@ export async function exportComposition(
     const player = new HtmlCompPlayer(htmlLoader);
     const renderer = new DomRenderer();
     renderer.setHtmlPlayer(player);
+    const fontCache = new FontOutlineCache();
+    await fontCache.loadFromProject(project, fs);
+    renderer.setFontCache(fontCache);
+    renderer.setTextQuality(config.textRenderMode ?? "precise");
     renderer.mount(container, tlComp);
     renderer.setHtmlComps(new Map(htmlComps.map((c) => [c.id, c])));
 

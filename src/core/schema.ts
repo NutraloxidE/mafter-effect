@@ -161,4 +161,6 @@ export interface ExportConfig {
   scale: number;
   format: "mp4" | "webm" | "png-seq";
   alpha: boolean;
+  /** §26.7 テキスト描画方式。未指定時 precise。 */
+  textRenderMode?: "precise" | "draft";
 }
