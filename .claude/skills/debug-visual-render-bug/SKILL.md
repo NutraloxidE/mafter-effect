@@ -19,9 +19,12 @@ localize the cause.** This is a measure-don't-theorize loop.
 
 ## The loop
 
-1. **Reproduce in the real renderer, not in your head.** Drive the actual app and capture what it
-   renders. Do not conclude from reading layout code or replicating font/CSS math analytically —
-   the browser's real behavior is the ground truth.
+**The fix loop must use Playwright + Chromium as the canonical harness.** Do not declare a fix from
+manual browser checks or code reading alone.
+
+1. **Reproduce in the real renderer with Playwright, not in your head.** Start `npm run dev`, drive
+   Chromium via Playwright, and capture what it renders. Do not conclude from reading layout code or
+   replicating font/CSS math analytically — the browser's real behavior is the ground truth.
 
 2. **Turn "looks wrong" into numbers.** Don't eyeball-diff. Measure concrete geometry of the
    feature: ink bounding box (top/bottom/left/right), element `getBoundingClientRect`, centroids,
@@ -82,10 +85,12 @@ Two bugs hid behind one symptom ("Draft and Best don't match"):
    `textBaselineY` (no DOM needed).
 
 ## Project harness notes (Mafter Effect)
-- See memory `runtime-verify-harness` for the canonical setup: Playwright + Chromium, `npm run dev`
-  (port 5173→5175+), reset state via `indexedDB.deleteDatabase("mafter-effect-fs")` + reload,
-  `localStorage.clear()` for viewer settings, reach the live store with
-  `(await import("/src/editor/store.ts")).useEditorStore.getState()`.
+
+Canonical setup is documented in [mafter-effect-agent.mdc](mdc:.cursor/rules/mafter-effect-agent.mdc)
+(「修正ループの Playwright 実機検証」). Visual-bug extras:
+
+- Reset state via `indexedDB.deleteDatabase("mafter-effect-fs")` + reload, `localStorage.clear()` for viewer settings
+- Reach the live store with `(await import("/src/editor/store.ts")).useEditorStore.getState()`
 - **Restart the dev server if measurements go flaky.** Accumulated HMR after many edits can null the
   store mid-run or serve a stale module graph. A fresh `vite` on a clean port removes the noise.
 - Measure ink bounds inside the comp stage rect; **deselect layers** first so selection handles

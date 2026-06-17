@@ -371,7 +371,7 @@ function TextSection({
             <ColorSwatch
               label="Fill"
               value={colorVal}
-              onChange={(v) => {
+              onCommit={(v) => {
                 if (colorProp.keyframes.length > 0) writeAnim("color", setKeyframe(colorProp as AnimatedProp<RGBA>, frame, v), "Edit fill");
                 else writeAnim("color", { ...colorProp, value: v }, "Edit fill");
               }}
@@ -388,7 +388,7 @@ function TextSection({
             <ColorSwatch
               label="Stroke"
               value={strokeColorVal}
-              onChange={(v) => {
+              onCommit={(v) => {
                 if (strokeColorProp.keyframes.length > 0) writeAnim("strokeColor", setKeyframe(strokeColorProp as AnimatedProp<RGBA>, frame, v), "Edit stroke");
                 else writeAnim("strokeColor", { ...strokeColorProp, value: v }, "Edit stroke");
               }}

@@ -99,6 +99,8 @@ export interface EditorStore {
 
   // Undo/Redo スタック（セッション内のみ, §17）
   undoStack: UndoRedoStack;
+  /** project スナップショットが変わるたびに増える。Preview 等が確実に再描画するための tick。 */
+  projectRevision: number;
 
   // FS 操作
   newProject: () => void;
@@ -178,6 +180,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   previewQualityEditing: false,
   pluginsVersion: 0,
   undoStack: emptyStack(),
+  projectRevision: 0,
 
   newProject: () => {
     const p = createProject({ name: "Untitled" });
@@ -189,6 +192,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       selectedKfKeys: [],
       isPlaying: false,
       undoStack: emptyStack(),
+      projectRevision: 0,
     });
   },
 
@@ -202,6 +206,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         selectedObjectIds: [],
         selectedKfKeys: [],
         undoStack: emptyStack(),
+        projectRevision: get().projectRevision + 1,
       });
       await get().loadPlugins();
     } catch {
@@ -220,6 +225,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     set((s) => ({
       project: cmd.after,
       undoStack: pushCommand(s.undoStack, cmd),
+      projectRevision: s.projectRevision + 1,
     }));
     // バックグラウンドで自動保存
     void saveProject(fs, cmd.after);
@@ -228,14 +234,22 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   undo: () => {
     const result = undo(get().undoStack);
     if (!result) return;
-    set({ project: result.project, undoStack: result.stack });
+    set((s) => ({
+      project: result.project,
+      undoStack: result.stack,
+      projectRevision: s.projectRevision + 1,
+    }));
     void saveProject(fs, result.project);
   },
 
   redo: () => {
     const result = redo(get().undoStack);
     if (!result) return;
-    set({ project: result.project, undoStack: result.stack });
+    set((s) => ({
+      project: result.project,
+      undoStack: result.stack,
+      projectRevision: s.projectRevision + 1,
+    }));
     void saveProject(fs, result.project);
   },
 

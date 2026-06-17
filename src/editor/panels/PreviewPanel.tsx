@@ -64,6 +64,7 @@ export function PreviewPanel() {
   const updateObject = useEditorStore((s) => s.updateObject);
   const previewQualityEditing = useEditorStore((s) => s.previewQualityEditing);
   const setPreviewQuality = useEditorStore((s) => s.setPreviewQuality);
+  const projectRevision = useEditorStore((s) => s.projectRevision);
 
   const timelineComps = (project?.compositions ?? []).filter((c) => c.kind === "timeline");
 
@@ -196,6 +197,12 @@ export function PreviewPanel() {
     setRenderTick((t) => t + 1);
   }, [effectiveTextQuality]);
 
+  // undo/redo 等で project が差し替わったら draft を捨てて DomRenderer を必ず再描画
+  useEffect(() => {
+    setDraftTransform(null);
+    setRenderTick((t) => t + 1);
+  }, [projectRevision]);
+
   // render on frame / project / draft transform
   useEffect(() => {
     if (!comp || !rendererRef.current) return;
@@ -207,7 +214,7 @@ export function PreviewPanel() {
       resolve(renderComp, frame, { expressions: evaluatorRef.current }),
       frame,
     );
-  }, [comp, frame, renderTick, draftTransform, primaryObject?.id]);
+  }, [comp, frame, renderTick, draftTransform, primaryObject?.id, projectRevision]);
 
   // §25.2 解像度プロキシ: DomRenderer のラスタ解像度のみ変更（INV-2 scene 値不変）
   useEffect(() => {

@@ -67,12 +67,26 @@ export function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
-      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      const inputType = t?.tagName === "INPUT" ? (t as HTMLInputElement).type : null;
       const mod = e.metaKey || e.ctrlKey;
+      // §17 Undo/Redo — color/range 入力中もアプリ undo を効かせる（Fill/Stroke 等）
+      const blockAppUndo =
+        t &&
+        (t.tagName === "TEXTAREA" ||
+          t.isContentEditable ||
+          (t.tagName === "INPUT" && inputType !== "color" && inputType !== "range"));
+      if (mod) {
+        if (e.key === "z" && !e.shiftKey) {
+          if (!blockAppUndo) { e.preventDefault(); undo(); }
+          return;
+        }
+        if (e.key === "Z" || (e.key === "z" && e.shiftKey)) {
+          if (!blockAppUndo) { e.preventDefault(); redo(); }
+          return;
+        }
+      }
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
       if (!mod) return;
-      // §17 Undo/Redo
-      if (e.key === "z" && !e.shiftKey) { e.preventDefault(); undo(); }
-      if (e.key === "Z" || (e.key === "z" && e.shiftKey)) { e.preventDefault(); redo(); }
       // §21.7 Duplicate / Split Layer
       if (e.key === "d" && !e.shiftKey) { e.preventDefault(); duplicateSelected(); }
       if (e.key === "D" || (e.key === "d" && e.shiftKey)) { e.preventDefault(); splitSelected(); }

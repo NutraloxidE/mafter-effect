@@ -17,8 +17,11 @@ alwaysApply: false
 - `npm test` / `npm run typecheck` が緑でも見た目が直っていない。**緑 ≠ 視覚的に正しい。**
 
 ## ループ
-1. **頭でなく実機で再現する。** 実アプリを動かし描画結果を取る。CSS/フォント数式の机上再現で
-   結論しない（ブラウザ実挙動が ground truth）。
+
+**修正ループ全体も Playwright + Chromium が正準。** 手動ブラウザやコードリーディングだけで「直った」と判断しない。
+
+1. **頭でなく Playwright で実機再現する。** `npm run dev` を起動し Playwright で Chromium を駆動して
+   描画結果を取る。CSS/フォント数式の机上再現で結論しない（ブラウザ実挙動が ground truth）。
 2. **「おかしい」を数値化する。** 目視 diff でなく具体ジオメトリを測る: インク bbox(上下左右)、
    `getBoundingClientRect`、2 状態の **delta**。特徴を pixel スキャンで拾う（黒地の白文字なら
    閾値超えの最初/最後の行・列）。
@@ -48,9 +51,12 @@ alwaysApply: false
 - デバッグ `console.log` や一回限りの Playwright スクリプトをコミットに残す。
 
 ## このリポジトリのハーネス
-- memory `runtime-verify-harness` が正準: Playwright + Chromium、`npm run dev`(5173→5175+)、
-  `indexedDB.deleteDatabase("mafter-effect-fs")`+reload で初期化、viewer 設定は
-  `localStorage.clear()`、live store は `(await import("/src/editor/store.ts")).useEditorStore.getState()`。
+
+正準手順は常時ルール [mafter-effect-agent.mdc](mdc:.cursor/rules/mafter-effect-agent.mdc) の
+「修正ループの Playwright 実機検証」を参照。視覚バグ向けの追加要点:
+
+- `indexedDB.deleteDatabase("mafter-effect-fs")` + reload で初期化、viewer 設定は `localStorage.clear()`
+- live store: `(await import("/src/editor/store.ts")).useEditorStore.getState()`
 - **測定が不安定なら dev サーバを再起動する。** 多数編集後の HMR 蓄積で store が途中で null 化／
   古いモジュールグラフを配ることがある。新しい port のクリーン `vite` でノイズ除去。
 - インク測定は comp ステージ矩形内で行い、**先にレイヤー選択解除**（選択ハンドルの白点が混入する）。
