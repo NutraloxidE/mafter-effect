@@ -103,7 +103,7 @@ export function App() {
   const canRedo = undoStack.future.length > 0;
 
   return (
-    <div style={{ width: "100vw", height: "100vh", display: "flex", flexDirection: "column", background: "#111", color: "#ccc", overflow: "hidden", fontFamily: "system-ui, sans-serif" }}>
+    <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column", background: "#111", color: "#ccc", overflow: "hidden", fontFamily: "system-ui, sans-serif" }}>
       {/* menu bar */}
       <div style={{ flexShrink: 0, display: "flex", alignItems: "center", gap: 4, padding: "4px 12px", background: "#1a1a1a", borderBottom: "1px solid #333", fontSize: 12 }}>
         <span style={{ fontWeight: "bold", color: "#7fb8f0", marginRight: 8 }}>Mafter Effect</span>
