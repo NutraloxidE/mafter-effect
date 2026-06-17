@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { BUILTIN_EASING_PRESETS, type BuiltinEasePreset } from "../builtinEasingPresets";
 import { EasingCurveEditor, miniEaseCurvePath, miniLinearCurvePath } from "../components/EasingCurveEditor";
 import { easeModeTitle, EaseModeIcon } from "../components/EaseModeIcon";
@@ -14,6 +14,10 @@ import { currentTimelineComp, useEditorStore } from "../store";
 
 type PresetSet = "default" | "user";
 
+/** 左カラム固定幅（カーブ・入力・ボタンを揃える）。 */
+const LEFT_COL_W = 168;
+const CURVE_SIZE = 160;
+
 const panelHeader: React.CSSProperties = {
   padding: "6px 10px",
   background: "#1e1e1e",
@@ -25,7 +29,7 @@ const panelHeader: React.CSSProperties = {
 };
 
 const btnStyle = (active = false): React.CSSProperties => ({
-  flex: 1,
+  flex: "0 0 auto",
   padding: "4px 0",
   fontSize: 11,
   border: "1px solid #444",
@@ -37,6 +41,11 @@ const btnStyle = (active = false): React.CSSProperties => ({
 
 function isLinearPreset(p: BuiltinEasePreset | EasingPresetFile): p is BuiltinEasePreset & { kind: "linear" } {
   return "kind" in p && p.kind === "linear";
+}
+
+/** 表示用: 小数第 2 位まで（例 1.23 / -0.56）。 */
+function formatBezierCoord(n: number): string {
+  return n.toFixed(2);
 }
 
 export function EasePanel() {
@@ -160,37 +169,71 @@ export function EasePanel() {
 
       {/* Flow 風 2 カラム: 左=カーブ/値/モード/APPLY, 右=プリセットセット+グリッド */}
       <div style={{ flex: 1, display: "flex", gap: 10, padding: 10, overflow: "hidden", minHeight: 0 }}>
-        {/* 左カラム */}
-        <div style={{ flex: "0 0 180px", display: "flex", flexDirection: "column", gap: 8, minHeight: 0 }}>
-          <div>
+        {/* 左カラム: 上余白 + カーブ + 下余白で縦伸びを吸収、下部コントロールは固定高 */}
+        <div
+          style={{
+            width: LEFT_COL_W,
+            flexShrink: 0,
+            display: "flex",
+            flexDirection: "column",
+            minHeight: 0,
+            height: "100%",
+          }}
+        >
+          <div
+            style={{
+              flex: 1,
+              minHeight: 0,
+              display: "flex",
+              flexDirection: "column",
+              justifyContent: "center",
+              alignItems: "center",
+              width: LEFT_COL_W,
+            }}
+          >
             {isLinear ? (
-              <svg width={180} height={180} viewBox="0 0 160 160" style={{ background: "#1a1a1a", border: "1px solid #333", borderRadius: 4 }}>
-                <path d={miniLinearCurvePath()} fill="none" stroke="#7fb8f0" strokeWidth={2} transform="scale(1.6)" />
+              <svg
+                width={CURVE_SIZE}
+                height={CURVE_SIZE}
+                viewBox="0 0 100 100"
+                style={{ display: "block", background: "#1a1a1a", border: "1px solid #333", borderRadius: 4, flexShrink: 0 }}
+              >
+                <path d={miniLinearCurvePath()} fill="none" stroke="#7fb8f0" strokeWidth={2.5} />
               </svg>
             ) : (
-              <EasingCurveEditor bezier={bezier} onChange={setBezier} />
+              <EasingCurveEditor bezier={bezier} onChange={setBezier} size={CURVE_SIZE} />
             )}
           </div>
 
-          {/* bezier 数値（1 行・Flow の下部表示相当） */}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 4 }}>
-            {(["x1", "y1", "x2", "y2"] as const).map((label, i) => (
-              <Fragment key={label}>
+          <div style={{ width: LEFT_COL_W, flexShrink: 0, display: "flex", flexDirection: "column", gap: 8, paddingTop: 8 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 4, width: "100%" }}>
+              {(["x1", "y1", "x2", "y2"] as const).map((label, i) => (
                 <input
-                  type="number"
-                  step={0.01}
+                  key={label}
+                  type="text"
+                  inputMode="decimal"
                   title={label}
-                  value={isLinear ? (i < 2 ? 0 : 1) : bezier[i]}
+                  value={isLinear ? formatBezierCoord(i < 2 ? 0 : 1) : formatBezierCoord(bezier[i] ?? 0)}
                   disabled={isLinear}
                   onChange={(e) => setCoord(i as 0 | 1 | 2 | 3, e.target.value)}
-                  style={{ width: "100%", background: "#222", border: "1px solid #444", color: "#ddd", padding: "2px 4px", borderRadius: 2 }}
+                  style={{
+                    width: "100%",
+                    minWidth: 0,
+                    boxSizing: "border-box",
+                    background: "#222",
+                    border: "1px solid #444",
+                    color: "#ddd",
+                    padding: "3px 2px",
+                    borderRadius: 2,
+                    fontSize: 10,
+                    fontFamily: "ui-monospace, monospace",
+                    textAlign: "center",
+                  }}
                 />
-              </Fragment>
-            ))}
-          </div>
+              ))}
+            </div>
 
-          {/* in / both / out モード（Flow 下部のトグル） */}
-          <div style={{ display: "flex", gap: 4 }}>
+            <div style={{ display: "flex", gap: 4, width: "100%" }}>
             {(["in", "both", "out"] as const).map((m) => (
               <button
                 key={m}
@@ -229,12 +272,24 @@ export function EasePanel() {
             ))}
           </div>
 
-          <button type="button" onClick={apply} style={{ ...btnStyle(true), padding: "8px 0", fontWeight: 700, letterSpacing: 1 }}>
+          <button
+            type="button"
+            onClick={apply}
+            style={{
+              ...btnStyle(true),
+              width: "100%",
+              flexShrink: 0,
+              padding: "7px 0",
+              fontWeight: 700,
+              letterSpacing: 1,
+            }}
+          >
             APPLY
           </button>
 
-          <div style={{ color: "#666", fontSize: 10, minHeight: 14 }}>
+          <div style={{ color: "#666", fontSize: 10, minHeight: 14, flexShrink: 0 }}>
             {status || (selectedKfKeys.length > 0 ? `${selectedKfKeys.length} KF selected` : "タイムラインで KF を選択")}
+          </div>
           </div>
         </div>
 
