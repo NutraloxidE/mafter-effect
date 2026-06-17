@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"; // useState kept for renderTick
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { resolve, type ExpressionEvaluator } from "../../runtime/resolve";
 import { DomRenderer } from "../../runtime/DomRenderer";
 import { ExpressionEngine } from "../../runtime/expressionEngine";
@@ -6,15 +6,51 @@ import { HtmlCompPlayer } from "../../runtime/htmlComp";
 import { ModuleLoader } from "../../runtime/moduleLoader";
 import { IndexedDbFs } from "../../fs/IndexedDbFs";
 import { compositionDir } from "../../core/paths";
-import { currentTimelineComp, useEditorStore } from "../store";
-import type { HtmlComposition, TimelineComposition } from "../../core/schema";
+import {
+  compWithTransformOverride,
+  computeFitPan,
+  computeFitZoom,
+  resolutionProxyScale,
+  screenToComp,
+  zoomAtCursor,
+  type ZoomMode,
+} from "../previewViewer";
+import {
+  loadViewerSettings,
+  saveViewerSettings,
+  type PreviewViewerSettings,
+} from "../previewViewerStorage";
+import { currentTimelineComp, selectedObjects, useEditorStore } from "../store";
+import type { HtmlComposition, TimelineComposition, Transform } from "../../core/schema";
+import { PreviewViewerOverlay } from "./PreviewViewerOverlay";
 
-// M2: expression engine + HTML comp player は preview インスタンスに 1 つ。
 const _previewFs = new IndexedDbFs("mafter-effect-fs");
 const _previewLoader = new ModuleLoader(_previewFs);
 const _exprEngine = new ExpressionEngine(_previewLoader);
 const _htmlLoader = new ModuleLoader(_previewFs);
 const _htmlPlayer = new HtmlCompPlayer(_htmlLoader);
+
+// §21.1 SMPTE タイムコード（non-drop）
+function framesToTimecode(frame: number, fps: number): string {
+  const f = Math.max(1, Math.round(fps));
+  const ff = ((frame % f) + f) % f;
+  const totalSec = Math.floor(frame / f);
+  const ss = ((totalSec % 60) + 60) % 60;
+  const mm = (Math.floor(totalSec / 60) % 60 + 60) % 60;
+  const hh = Math.floor(totalSec / 3600);
+  const p2 = (n: number) => String(Math.abs(n)).padStart(2, "0");
+  return `${p2(hh)}:${p2(mm)}:${p2(ss)}:${p2(ff)}`;
+}
+
+const ZOOM_PRESETS: { label: string; mode: ZoomMode; zoom?: number }[] = [
+  { label: "Fit", mode: "fit" },
+  { label: "Fit ≤100%", mode: "fit100" },
+  { label: "100%", mode: "manual", zoom: 1 },
+  { label: "50%", mode: "manual", zoom: 0.5 },
+  { label: "25%", mode: "manual", zoom: 0.25 },
+  { label: "200%", mode: "manual", zoom: 2 },
+  { label: "400%", mode: "manual", zoom: 4 },
+];
 
 export function PreviewPanel() {
   const project = useEditorStore((s) => s.project);
@@ -23,8 +59,9 @@ export function PreviewPanel() {
   const setFrame = useEditorStore((s) => s.setFrame);
   const setCurrentComp = useEditorStore((s) => s.setCurrentComp);
   const pluginsVersion = useEditorStore((s) => s.pluginsVersion);
+  const selectedIds = useEditorStore((s) => s.selectedObjectIds);
+  const updateObject = useEditorStore((s) => s.updateObject);
 
-  // §20.3 コンポタブ: 編集対象となる timeline comp のみ並べる（html comp は素材なのでタブに出さない）
   const timelineComps = (project?.compositions ?? []).filter((c) => c.kind === "timeline");
 
   const isPlaying = useEditorStore((s) => s.isPlaying);
@@ -32,20 +69,71 @@ export function PreviewPanel() {
   const togglePlay = useEditorStore((s) => s.togglePlay);
 
   const containerRef = useRef<HTMLDivElement>(null);
+  const stageHostRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const fitRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<DomRenderer | null>(null);
-  // prepare() 完了などで再描画を促すための tick（ref の更新は再レンダーを起こさないため）。
   const [renderTick, setRenderTick] = useState(0);
   const rafRef = useRef<number | null>(null);
   const lastTimeRef = useRef<number | null>(null);
   const frameRef = useRef(frame);
-
-  // M2: expression evaluator ref（prepare() が非同期なので ref で保持）
   const evaluatorRef = useRef<ExpressionEvaluator | undefined>(undefined);
+
+  const [viewerSettings, setViewerSettings] = useState<PreviewViewerSettings>(() =>
+    loadViewerSettings(compId),
+  );
+  const [viewportSize, setViewportSize] = useState({ w: 0, h: 0 });
+  const [draftTransform, setDraftTransform] = useState<Transform | null>(null);
+  const [spaceHeld, setSpaceHeld] = useState(false);
+  const [editingFrame, setEditingFrame] = useState(false);
+  const [frameInput, setFrameInput] = useState("");
 
   const comp = currentTimelineComp(project, compId);
   frameRef.current = frame;
+
+  const selected = useMemo(
+    () => (comp && project ? selectedObjects(project, compId, selectedIds) : []),
+    [comp, project, compId, selectedIds],
+  );
+  const primaryObject = selected[0] ?? null;
+
+  // §25.7 comp 切替時に設定を読み込む
+  useEffect(() => {
+    setViewerSettings(loadViewerSettings(compId));
+    setDraftTransform(null);
+  }, [compId]);
+
+  const patchSettings = useCallback(
+    (patch: Partial<PreviewViewerSettings>) => {
+      setViewerSettings((prev) => {
+        const next = { ...prev, ...patch };
+        saveViewerSettings(compId, next);
+        return next;
+      });
+    },
+    [compId],
+  );
+
+  const effectiveZoom = useMemo(() => {
+    if (!comp || viewportSize.w === 0) return 1;
+    if (viewerSettings.zoomMode === "fit") {
+      return computeFitZoom(viewportSize.w, viewportSize.h, comp.width, comp.height);
+    }
+    if (viewerSettings.zoomMode === "fit100") {
+      return computeFitZoom(viewportSize.w, viewportSize.h, comp.width, comp.height, true);
+    }
+    return viewerSettings.viewZoom;
+  }, [comp, viewportSize, viewerSettings.zoomMode, viewerSettings.viewZoom]);
+
+  const effectivePan = useMemo(() => {
+    if (!comp || viewportSize.w === 0) return { x: 0, y: 0 };
+    if (viewerSettings.zoomMode === "fit" || viewerSettings.zoomMode === "fit100") {
+      return computeFitPan(viewportSize.w, viewportSize.h, comp.width, comp.height, effectiveZoom);
+    }
+    return viewerSettings.viewPan;
+  }, [comp, effectiveZoom, viewportSize, viewerSettings.zoomMode, viewerSettings.viewPan]);
+
+  const proxyScale = resolutionProxyScale(viewerSettings.resolutionProxy);
 
   // mount/remount renderer when comp changes
   useEffect(() => {
@@ -61,22 +149,16 @@ export function PreviewPanel() {
     };
   }, [comp?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // HTML comp メタを毎 project 変更で DomRenderer に注入し、§9 expression と §7 html module を preload。
-  // prepare() は非async なので、完了したら renderTick を進めて再描画する。
   useEffect(() => {
     if (!comp) return;
     const htmlComps = (project?.compositions ?? []).filter(
       (c): c is HtmlComposition => c.kind === "html",
     );
     rendererRef.current?.setHtmlComps(new Map(htmlComps.map((c) => [c.id, c])));
-    // §23 comp layer: 現コンプ以外の timeline comp を DomRenderer に注入する（ネスト描画用）。
     const timelineCompsForNesting = (project?.compositions ?? []).filter(
       (c): c is TimelineComposition => c.kind === "timeline" && c.id !== comp?.id,
     );
     rendererRef.current?.setTimelineComps(new Map(timelineCompsForNesting.map((c) => [c.id, c])));
-    // evaluatorRef はリセットしない。古い evaluator をそのまま使い続け、
-    // prepare 完了後に新しい evaluator に差し替える（リセットするとその間の
-    // フレームで expression が fallback 値にスナップしてチラつく）。
     void Promise.all([
       _exprEngine.prepare(comp).then(() => {
         evaluatorRef.current = _exprEngine.makeEvaluator(comp);
@@ -85,45 +167,65 @@ export function PreviewPanel() {
     ]).then(() => setRenderTick((t) => t + 1));
   }, [comp?.id, project]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // plugin がロードされたら再描画をトリガー（DomRenderer / ExpressionEngine は globalPluginRegistry を lazy 参照）
   useEffect(() => {
     setRenderTick((t) => t + 1);
   }, [pluginsVersion]);
 
-  // render on frame / project / prepare 完了（background は DomRenderer が mount で comp から取得済み）
+  // render on frame / project / draft transform
   useEffect(() => {
     if (!comp || !rendererRef.current) return;
+    const renderComp =
+      draftTransform && primaryObject
+        ? compWithTransformOverride(comp, primaryObject.id, draftTransform)
+        : comp;
     rendererRef.current.renderFrame(
-      resolve(comp, frame, { expressions: evaluatorRef.current }),
+      resolve(renderComp, frame, { expressions: evaluatorRef.current }),
       frame,
     );
-  }, [comp, frame, renderTick]);
+  }, [comp, frame, renderTick, draftTransform, primaryObject?.id]);
 
-  // scale-to-fit: 固定 px の comp ステージを利用可能領域に収まるよう transform: scale する。
+  // §25.2 解像度プロキシ: DomRenderer のラスタ解像度のみ変更（INV-2 scene 値不変）
   useEffect(() => {
-    if (!comp) return;
+    if (!comp || !rendererRef.current) return;
+    const pw = Math.max(1, Math.round(comp.width * proxyScale));
+    const ph = Math.max(1, Math.round(comp.height * proxyScale));
+    rendererRef.current.resize(pw, ph);
+    if (containerRef.current) {
+      containerRef.current.style.width = `${pw}px`;
+      containerRef.current.style.height = `${ph}px`;
+      containerRef.current.style.transform = proxyScale < 1 ? `scale(${1 / proxyScale})` : "none";
+      containerRef.current.style.transformOrigin = "0 0";
+    }
+  }, [comp?.width, comp?.height, proxyScale]);
+
+  // viewport / host rect observer
+  useEffect(() => {
     const fit = fitRef.current;
-    const stage = stageRef.current;
-    if (!fit || !stage) return;
+    const host = stageHostRef.current;
+    if (!fit) return;
     const apply = () => {
-      const aw = fit.clientWidth;
-      const ah = fit.clientHeight;
-      if (aw === 0 || ah === 0) return;
-      const scale = Math.min(aw / comp.width, ah / comp.height);
-      stage.style.transform = `scale(${scale})`;
+      setViewportSize({ w: fit.clientWidth, h: fit.clientHeight });
+      const r = host?.getBoundingClientRect();
+      if (r) setHostRect({ left: r.left, top: r.top });
     };
     apply();
     const ro = new ResizeObserver(apply);
     ro.observe(fit);
-    return () => ro.disconnect();
-  }, [comp?.id, comp?.width, comp?.height]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (host) ro.observe(host);
+    window.addEventListener("scroll", apply, true);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("scroll", apply, true);
+    };
+  }, []);
 
-  // playback clock — 決定論 frame ステップ（§11.2 スタイル、rAF ではなく frame 刻み）
+  // §25.6 ループ再生
   useEffect(() => {
     if (!isPlaying || !comp) return;
     const fps = comp.fps;
     const duration = comp.duration;
     const msPerFrame = 1000 / fps;
+    const loop = viewerSettings.loop;
 
     const tick = (now: number) => {
       if (lastTimeRef.current === null) {
@@ -137,8 +239,12 @@ export function PreviewPanel() {
         lastTimeRef.current = now - (elapsed % msPerFrame);
         const next = frameRef.current + framesToAdvance;
         if (next >= duration) {
-          setPlaying(false);
-          setFrame(0);
+          if (loop) {
+            setFrame(next % duration);
+          } else {
+            setPlaying(false);
+            setFrame(0);
+          }
         } else {
           setFrame(next);
         }
@@ -152,10 +258,105 @@ export function PreviewPanel() {
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
       lastTimeRef.current = null;
     };
-  }, [isPlaying, comp, setFrame, setPlaying]);
+  }, [isPlaying, comp, setFrame, setPlaying, viewerSettings.loop]);
+
+  // §25.1 Ctrl+ホイールズーム / スペース+パン
+  useEffect(() => {
+    const fit = fitRef.current;
+    if (!fit || !comp) return;
+
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+      const host = stageHostRef.current?.getBoundingClientRect();
+      if (!host) return;
+      const cursor = screenToComp(e.clientX, e.clientY, host, effectiveZoom, effectivePan);
+      const factor = Math.pow(1.1, -e.deltaY / 100);
+      const z = zoomAtCursor(effectiveZoom, effectivePan, cursor, factor);
+      patchSettings({ zoomMode: "manual", viewZoom: z.viewZoom, viewPan: z.viewPan });
+    };
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code === "Space" && !e.repeat) {
+        const t = e.target as HTMLElement | null;
+        if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
+        e.preventDefault();
+        setSpaceHeld(true);
+      }
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code === "Space") setSpaceHeld(false);
+    };
+
+    fit.addEventListener("wheel", onWheel, { passive: false });
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    return () => {
+      fit.removeEventListener("wheel", onWheel);
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+    };
+  }, [comp, effectiveZoom, effectivePan, patchSettings]);
+
+  // §25.6 フレームステップ（←→）
+  useEffect(() => {
+    if (!comp) return;
+    const duration = comp.duration;
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        setFrame(Math.max(0, frame - (e.shiftKey ? 10 : 1)));
+      }
+      if (e.key === "ArrowRight") {
+        e.preventDefault();
+        setFrame(Math.min(duration - 1, frame + (e.shiftKey ? 10 : 1)));
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [comp, frame, setFrame]);
+
+  const [hostRect, setHostRect] = useState({ left: 0, top: 0 });
+
+  const handlePan = useCallback(
+    (pan: { x: number; y: number }) => {
+      patchSettings({ zoomMode: "manual", viewPan: pan });
+    },
+    [patchSettings],
+  );
+
+  const handleCommitTransform = useCallback(
+    (transform: Transform, label: string) => {
+      if (!primaryObject) return;
+      updateObject(primaryObject.id, { transform }, label);
+      setDraftTransform(null);
+    },
+    [primaryObject, updateObject],
+  );
 
   const fps = comp?.fps ?? 30;
-  const timeSec = (frame / fps).toFixed(2);
+  const timecode = framesToTimecode(frame, fps);
+  const zoomPercent = Math.round(effectiveZoom * 100);
+
+  const beginSpacePan = (e: React.MouseEvent) => {
+    if (!spaceHeld || e.button !== 0) return;
+    e.preventDefault();
+    const start = { x: e.clientX, y: e.clientY };
+    const startPan = { ...effectivePan };
+    const move = (ev: MouseEvent) => {
+      const dx = (ev.clientX - start.x) / effectiveZoom;
+      const dy = (ev.clientY - start.y) / effectiveZoom;
+      patchSettings({ zoomMode: "manual", viewPan: { x: startPan.x + dx, y: startPan.y + dy } });
+    };
+    const up = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "#1a1a1a" }}>
@@ -185,13 +386,90 @@ export function PreviewPanel() {
           );
         })}
       </div>
-      {/* toolbar */}
-      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 8px", background: "#222", borderBottom: "1px solid #333", flexShrink: 0 }}>
-        <button onClick={togglePlay} style={{ ...btnStyle, width: 30, height: 22, padding: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", lineHeight: 1, boxSizing: "border-box" }}>{isPlaying ? "⏸" : "▶"}</button>
-        <button onClick={() => setFrame(0)} style={btnStyle}>⏮</button>
-        <span style={{ fontSize: 11, color: "#aaa", fontVariantNumeric: "tabular-nums" }}>
-          F{frame} / {timeSec}s
-        </span>
+
+      {/* §25.1 / §25.6 toolbar */}
+      <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 8px", background: "#222", borderBottom: "1px solid #333", flexShrink: 0, flexWrap: "wrap" }}>
+        <button onClick={togglePlay} style={btnStyle} title="再生/停止">{isPlaying ? "⏸" : "▶"}</button>
+        <button onClick={() => setFrame(0)} style={btnStyle} title="先頭へ">⏮</button>
+        <button onClick={() => setFrame(Math.max(0, frame - 1))} style={btnStyle} title="1フレーム前">◀</button>
+        <button onClick={() => setFrame(Math.min((comp?.duration ?? 1) - 1, frame + 1))} style={btnStyle} title="1フレーム後">▶|</button>
+        <button onClick={() => comp && setFrame(comp.duration - 1)} style={btnStyle} title="末尾へ">⏭</button>
+        <button
+          onClick={() => patchSettings({ loop: !viewerSettings.loop })}
+          style={{ ...btnStyle, background: viewerSettings.loop ? "#2a4a2a" : "#333" }}
+          title="ループ"
+        >
+          🔁
+        </button>
+
+        {editingFrame ? (
+          <input
+            autoFocus
+            value={frameInput}
+            onChange={(e) => setFrameInput(e.target.value)}
+            onBlur={() => {
+              const n = parseInt(frameInput, 10);
+              if (Number.isFinite(n) && comp) setFrame(Math.max(0, Math.min(comp.duration - 1, n)));
+              setEditingFrame(false);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+              if (e.key === "Escape") setEditingFrame(false);
+            }}
+            style={{ width: 56, fontSize: 11, background: "#111", border: "1px solid #555", color: "#ccc", padding: "1px 4px" }}
+          />
+        ) : (
+          <span
+            onClick={() => { setFrameInput(String(frame)); setEditingFrame(true); }}
+            style={{ fontSize: 11, color: "#7fb8f0", fontVariantNumeric: "tabular-nums", cursor: "text" }}
+            title="クリックで frame 入力"
+          >
+            {timecode}
+          </span>
+        )}
+        <span style={{ fontSize: 10, color: "#666" }}>F{frame}</span>
+
+        <span style={{ color: "#444" }}>|</span>
+
+        <select
+          value={viewerSettings.zoomMode === "manual" ? `manual:${viewerSettings.viewZoom}` : viewerSettings.zoomMode}
+          onChange={(e) => {
+            const v = e.target.value;
+            if (v === "fit" || v === "fit100") patchSettings({ zoomMode: v });
+            else {
+              const zoom = Number(v.split(":")[1]);
+              patchSettings({ zoomMode: "manual", viewZoom: zoom });
+            }
+          }}
+          style={{ fontSize: 10, background: "#333", color: "#ccc", border: "1px solid #555", borderRadius: 3 }}
+          title="表示倍率"
+        >
+          {ZOOM_PRESETS.map((p) => (
+            <option
+              key={p.label}
+              value={p.mode === "manual" ? `manual:${p.zoom}` : p.mode}
+            >
+              {p.label}
+            </option>
+          ))}
+          <option value={`manual:${effectiveZoom}`}>{zoomPercent}%</option>
+        </select>
+
+        <select
+          value="full"
+          onChange={(e) => {
+            if (e.target.value === "full") patchSettings({ resolutionProxy: "full" });
+          }}
+          style={{ fontSize: 10, background: "#333", color: "#ccc", border: "1px solid #555", borderRadius: 3 }}
+          title="解像度プロキシ — Full のみ有効（Half/Quarter は将来実装予定）"
+        >
+          <option value="full">Full</option>
+          <option value="half" disabled style={{ color: "#666" }}>Half (将来)</option>
+          <option value="quarter" disabled style={{ color: "#666" }}>Quarter (将来)</option>
+        </select>
+
+        <OverlayToggles settings={viewerSettings} onChange={patchSettings} />
+
         {comp && (
           <span style={{ fontSize: 10, color: "#666", marginLeft: "auto" }}>
             <span style={{ color: "#9bd", marginRight: 6 }}>{comp.name}</span>
@@ -199,29 +477,107 @@ export function PreviewPanel() {
           </span>
         )}
       </div>
-      {/* canvas area — fit box が利用領域、stage を scale-to-fit して中央寄せ */}
-      <div ref={fitRef} style={{ flex: 1, position: "relative", overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center" }}>
+
+      {/* §25.1 canvas area */}
+      <div
+        ref={fitRef}
+        style={{
+          flex: 1,
+          position: "relative",
+          overflow: "hidden",
+          background: "#111",
+          cursor: spaceHeld ? "grab" : "default",
+        }}
+        onMouseDown={beginSpacePan}
+      >
         {comp ? (
           <div
-            ref={stageRef}
+            ref={stageHostRef}
             style={{
-              position: "relative",
-              width: comp.width,
-              height: comp.height,
-              flexShrink: 0,
-              background: "#000",
-              boxShadow: "0 0 0 1px #444",
-              transformOrigin: "center center",
+              position: "absolute",
+              left: 0,
+              top: 0,
+              width: viewportSize.w || "100%",
+              height: viewportSize.h || "100%",
               overflow: "hidden",
             }}
           >
-            <div ref={containerRef} style={{ width: comp.width, height: comp.height }} />
+            <div
+              ref={stageRef}
+              style={{
+                position: "absolute",
+                left: 0,
+                top: 0,
+                width: comp.width,
+                height: comp.height,
+                flexShrink: 0,
+                background: comp.background ? undefined : "#000",
+                boxShadow: "0 0 0 1px #444",
+                transform: `scale(${effectiveZoom}) translate(${effectivePan.x}px, ${effectivePan.y}px)`,
+                transformOrigin: "0 0",
+                overflow: "hidden",
+              }}
+            >
+              <div ref={containerRef} style={{ position: "absolute", top: 0, left: 0 }} />
+              {project && (
+                <PreviewViewerOverlay
+                  comp={comp}
+                  project={project}
+                  frame={frame}
+                  settings={viewerSettings}
+                  viewZoom={effectiveZoom}
+                  viewPan={effectivePan}
+                  hostRect={hostRect}
+                  selectedObject={primaryObject}
+                  draftTransform={draftTransform}
+                  onDraftChange={setDraftTransform}
+                  onCommit={handleCommitTransform}
+                  resolveCtx={{ expressions: evaluatorRef.current }}
+                  onPan={handlePan}
+                />
+              )}
+            </div>
           </div>
         ) : (
-          <div style={{ color: "#555", fontSize: 13 }}>No composition — create a project first</div>
+          <div style={{ color: "#555", fontSize: 13, padding: 20 }}>No composition — create a project first</div>
         )}
       </div>
     </div>
+  );
+}
+
+function OverlayToggles({
+  settings,
+  onChange,
+}: {
+  settings: PreviewViewerSettings;
+  onChange: (p: Partial<PreviewViewerSettings>) => void;
+}) {
+  const items: { key: keyof PreviewViewerSettings; label: string }[] = [
+    { key: "checkerboard", label: "⬚" },
+    { key: "safeMargins", label: "Safe" },
+    { key: "grid", label: "Grid" },
+    { key: "centerCross", label: "＋" },
+    { key: "rulers", label: "Ruler" },
+  ];
+  return (
+    <span style={{ display: "inline-flex", gap: 2 }}>
+      {items.map((it) => (
+        <button
+          key={it.key}
+          onClick={() => onChange({ [it.key]: !settings[it.key] })}
+          style={{
+            ...btnStyle,
+            padding: "1px 5px",
+            fontSize: 10,
+            background: settings[it.key] ? "#2a3a4a" : "#333",
+          }}
+          title={String(it.key)}
+        >
+          {it.label}
+        </button>
+      ))}
+    </span>
   );
 }
 

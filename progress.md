@@ -17,7 +17,7 @@
 
 **MVP = M0–M4 全マイルストーン実装・実機検証完了。** その後 §20 Project パネル / §21 Timeline AE化 / §22 グラフエディタ / §23 precomp を MVP 後 UX として拡張中。
 
-現行テスト: **107 件全通過** / typecheck ✅ / build ✅（2026-06-18）。
+現行テスト: **119 件全通過** / typecheck ✅ / build ✅（2026-06-18）。
 
 ---
 
@@ -100,15 +100,17 @@ Project パネルの timeline/HTML comp を draggable 化（DnD 必須）。`sto
 - [x] **回帰（自動）** — typecheck / **107 tests PASS** / build ✅
 - [ ] **回帰（手動）** — §21 F9 メニュー・§22 グラフエディタとの SSoT 共有をブラウザで確認
 
-### §25 Preview ビューア編集（spec v0.9・スキーマ不変・**仕様確定 / 実装未着手** 2026-06-18）
-spec §25 に確定。現状 Preview は「見るだけ」（タブ・再生・scale-to-fit 自動のみ）。AE コンポビューア相当の編集機能へ引き上げる。ユーザー確認済み方針: **直接操作まで全部入れる / T・R・S＋アンカードラッグ / animated 当たりは現フレームに KF 打つ・更新 / 設定は localStorage（project.json 非汚染）**。
-- [ ] **§25.1 ビューア制御** — viewZoom/viewPan、Ctrl+ホイール（カーソルアンカー）、スペース/中ボタン パン、Fit/Fit≤100%/100%/%ドロップダウン
-- [ ] **§25.2 オーバーレイ** — 透明チェッカー / セーフマージン / グリッド・中心十字・定規 / 解像度プロキシ（全て表示専用・INV-2 不変）
-- [ ] **§25.3 直接操作** — 選択 bbox＋8 ハンドル scale＋回転＋移動＋アンカー点（先頭 1 レイヤー、複数一括は将来）
-- [ ] **§25.4 座標逆算** — screen→comp→local（`invert`/`transformPoint` 既存利用、2.5D、エディタ層のみ・resolve 不変）。往復で見た目保持を test 化
-- [ ] **§25.5 KF 書き戻し** — §21.2 と同一規約（animated→現 frame KF / static→value）
-- [ ] **§25.6 再生コントロール** — 1フレーム前後 / 末尾へ / ループ / タイムコード直接入力
-- [ ] **§25.7 永続化** — localStorage（comp ごと可）、project.json 非汚染
+### §25 Preview ビューア編集（spec v0.9・スキーマ不変・**実装済み 2026-06-18**）
+spec §25 に確定。AE コンポビューア相当の編集機能を Preview に実装。
+- [x] **§25.1 ビューア制御** — viewZoom/viewPan、Ctrl+ホイール（カーソルアンカー）、スペース/中ボタン パン、Fit/Fit≤100%/100%/%ドロップダウン
+- [x] **§25.2 オーバーレイ** — 透明チェッカー / セーフマージン / グリッド・中心十字・定規 / 解像度プロキシ（表示専用・INV-2 不変）
+- [x] **§25.3 直接操作** — 選択 bbox＋8 ハンドル scale＋回転＋移動＋アンカー点（先頭 1 レイヤー）
+- [x] **§25.4 座標逆算** — [previewViewer.ts](src/editor/previewViewer.ts) 純関数 + `test/previewViewer.test.ts`（11 件）
+- [x] **§25.5 KF 書き戻し** — animated→現 frame KF / static→value（§21.2 同一規約）
+- [x] **§25.6 再生コントロール** — 1フレーム前後 / 末尾へ / ループ / タイムコード直接入力
+- [x] **§25.7 永続化** — [previewViewerStorage.ts](src/editor/previewViewerStorage.ts) localStorage（comp ごと可）、project.json 非汚染
+- [x] **回帰（自動）** — typecheck / **119 tests PASS** / build ✅
+- [ ] **回帰（手動）** — ブラウザで直接操作・ズーム・オーバーレイ・animated KF 書き戻し確認
 - **将来**: ガイド線ドラッグ / マスク・シェイプ オンキャンバス編集 / モーションパス / チャンネル・スナップショット / ROI
 
 ### Timeline AE化バックログ（spec §5 スキーマ拡張 + INV 影響評価を伴い別リビジョンで導入）
@@ -134,10 +136,11 @@ spec §25 に確定。現状 Preview は「見るだけ」（タブ・再生・s
 
 ## Next steps（次のセッションでやること）
 
-1. **§24 Ease パネル手動回帰** — F9 メニュー・グラフエディタとの SSoT 共有確認（実装済み・自動テスト 107 PASS）。
-2. ~~**§23 precomp Playwright E2E**~~ → ロジックは `test/precomp.test.ts` で自動化済み。Playwright E2E は任意。
-3. **M5 Web Bundle Export（§11.7）** — `@mafter/runtime` ベース player + Single-file/Folder bundle + `exportStrategy:'bake'` レイヤの部分 MP4/WebP 化。境界は M1 で先取り済み。
-4. **Timeline バックログ Tier B〜D / グラフエディタ Phase 2**（要 spec 追記・INV 評価）。
+1. **§25 Preview ビューア編集 手動回帰** — 直接操作・ズーム・オーバーレイ・animated KF 書き戻し（実装済み・自動テスト 119 PASS）。
+2. **§24 Ease パネル手動回帰** — F9 メニュー・グラフエディタとの SSoT 共有確認（実装済み・自動テスト 119 PASS）。
+3. ~~**§23 precomp Playwright E2E**~~ → ロジックは `test/precomp.test.ts` で自動化済み。Playwright E2E は任意。
+4. **M5 Web Bundle Export（§11.7）** — `@mafter/runtime` ベース player + Single-file/Folder bundle + `exportStrategy:'bake'` レイヤの部分 MP4/WebP 化。境界は M1 で先取り済み。
+5. **Timeline バックログ Tier B〜D / グラフエディタ Phase 2**（要 spec 追記・INV 評価）。
 
 ### 参考: 先取り済みの境界（spec v0.3 新規）
 - **INV-7 `@mafter/runtime` 単一核**: resolve / Renderer / module loader(§11.3) / expression engine(§9) / 再生クロック をエディタ非依存ライブラリに括出し。preview / video exporter / web bundle player が共有。
@@ -162,4 +165,4 @@ spec §25 に確定。現状 Preview は「見るだけ」（タブ・再生・s
 | 2026-06-18 | §23 precomp 自動検証: `compLayer.ts` + `test/precomp.test.ts`（14 件）。typecheck/test/build 一括確認（100 tests PASS） |
 | 2026-06-18 | §24 Flow 風 Ease パネル Phase 1 実装（EasePanel / easingApply / builtin presets / FS 保存 / store KF 選択共有）。107 tests PASS |
 | 2026-06-18 | spec v0.8 §24 Flow 風イージングプリセットパネル仕様確定（独立常設パネル / in-out-both 3 モード / カーブ編集+★保存 / cubic-bezier プリセットのみ・bounce/elastic は Phase 2）。実装は progress バックログに記載・未着手 |
-| 2026-06-18 | (Cursor) レイヤー可視性: `resolve()` の `outPoint` を排他的終端に修正（`frame < outPoint`）。タイムライン右端＝最終表示フレームの次。108 tests PASS |
+| 2026-06-18 | (Cursor) §25 Preview ビューア編集 Phase 1 実装（previewViewer / PreviewViewerOverlay / PreviewPanel 拡張 / localStorage 永続化）。119 tests PASS |
