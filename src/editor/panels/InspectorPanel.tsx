@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { sampleAny, sampleScalar, sampleVec3 } from "../../runtime/interpolate";
 import type { AnimatedProp, Component, Easing, RGBA, SceneObject, Transform, Vec3 } from "../../core/schema";
 import {
@@ -32,6 +32,8 @@ export function InspectorPanel() {
   const setPreviewOverride = useEditorStore((s) => s.setPreviewOverride);
   const clearPreviewOverride = useEditorStore((s) => s.clearPreviewOverride);
   const decomposeGlyphs = useEditorStore((s) => s.decomposeGlyphs);
+
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   const comp = currentTimelineComp(project, compId);
   const obj = comp?.objects.find((o) => o.id === selectedIds[0]);
@@ -144,11 +146,18 @@ export function InspectorPanel() {
     }
   };
 
-  return (
-    <div style={{ fontSize: 12, color: "#ccc", padding: 8, overflow: "auto", height: "100%", background: "#1c1c1c" }}>
-      <div style={{ marginBottom: 8, fontWeight: "bold", color: "#eee" }}>{obj.name}</div>
+  const foldoutKey = (section: string) => `${obj.id}:${section}`;
+  const isExpanded = (section: string) => expanded[foldoutKey(section)] ?? true;
+  const toggleExpanded = (section: string) => {
+    const key = foldoutKey(section);
+    setExpanded((prev) => ({ ...prev, [key]: !(prev[key] ?? true) }));
+  };
 
-      <Section label="Transform">
+  return (
+    <div style={{ fontSize: 12, color: "#ccc", padding: 4, overflow: "auto", height: "100%", background: "#1c1c1c" }}>
+      <div style={{ padding: "6px 8px 8px", fontWeight: "bold", color: "#eee", fontSize: 13 }}>{obj.name}</div>
+
+      <InspectorFoldout label="Transform" expanded={isExpanded("transform")} onToggle={() => toggleExpanded("transform")}>
         <Vec3Row label="Position" vals={pos}
           onChange={(v, dp) => setVec3Kf("position", v, dp)}
           onLiveChange={(v) => previewPatch({ transform: buildTransformPreview("position", v) })}
@@ -195,29 +204,44 @@ export function InspectorPanel() {
             style={numInputStyle}
           />
         </Row>
-      </Section>
+      </InspectorFoldout>
 
-      <TextSection
-        obj={obj}
-        frame={frame}
-        updateObject={updateObject}
-        previewPatch={previewPatch}
-        onEditFocus={() => setPreviewQualityEditing(true)}
-        onEditBlur={() => setPreviewQualityEditing(false)}
-        onClearPreview={() => clearPreviewOverride()}
-        onDecompose={() => decomposeGlyphs(obj.id)}
-      />
+      {obj.components.map((comp, compIdx) => {
+        if (comp.type !== "text") return null;
+        const label = globalPluginRegistry.getComponentDef(comp.type)?.label ?? comp.type;
+        const sectionKey = `component:${compIdx}:${comp.type}`;
+        return (
+          <InspectorFoldout
+            key={sectionKey}
+            label={label}
+            expanded={isExpanded(sectionKey)}
+            onToggle={() => toggleExpanded(sectionKey)}
+          >
+            <TextComponentFields
+              obj={obj}
+              compIdx={compIdx}
+              frame={frame}
+              updateObject={updateObject}
+              previewPatch={previewPatch}
+              onEditFocus={() => setPreviewQualityEditing(true)}
+              onEditBlur={() => setPreviewQualityEditing(false)}
+              onClearPreview={() => clearPreviewOverride()}
+              onDecompose={() => decomposeGlyphs(obj.id)}
+            />
+          </InspectorFoldout>
+        );
+      })}
 
-      <Section label="Expression">
+      <InspectorFoldout label="Expression" expanded={isExpanded("expression")} onToggle={() => toggleExpanded("expression")}>
         <button
           style={{ ...btnStyle, fontSize: 10, color: posExprOn ? "#f0c040" : "#bbb", borderColor: posExprOn ? "#aa7" : "#444" }}
           onClick={toggleWiggle}
         >
           {posExprOn ? "● Wiggle Position (on)" : "○ Wiggle Position"}
         </button>
-      </Section>
+      </InspectorFoldout>
 
-      <Section label="Keyframes">
+      <InspectorFoldout label="Keyframes" expanded={isExpanded("keyframes")} onToggle={() => toggleExpanded("keyframes")}>
         <div style={{ color: "#888", marginBottom: 4 }}>
           Position: {obj.transform.position.keyframes.length} kf
         </div>
@@ -248,9 +272,9 @@ export function InspectorPanel() {
             ))}
           </div>
         )}
-      </Section>
+      </InspectorFoldout>
 
-      <Section label="In / Out">
+      <InspectorFoldout label="In / Out" expanded={isExpanded("inOut")} onToggle={() => toggleExpanded("inOut")}>
         <Row label="In">
           <ScrubNumber
             value={obj.inPoint}
@@ -271,13 +295,14 @@ export function InspectorPanel() {
             style={numInputStyle}
           />
         </Row>
-      </Section>
+      </InspectorFoldout>
     </div>
   );
 }
 
-function TextSection({
+function TextComponentFields({
   obj,
+  compIdx,
   frame,
   updateObject,
   previewPatch,
@@ -287,6 +312,7 @@ function TextSection({
   onDecompose,
 }: {
   obj: SceneObject;
+  compIdx: number;
   frame: number;
   updateObject: (id: string, patch: Partial<SceneObject>, label?: string) => void;
   previewPatch: (patch: Partial<SceneObject>) => void;
@@ -295,9 +321,8 @@ function TextSection({
   onClearPreview: () => void;
   onDecompose: () => void;
 }) {
-  const compIdx = obj.components.findIndex((c) => c.type === "text");
-  if (compIdx < 0) return null;
-  const comp = obj.components[compIdx]!;
+  const comp = obj.components[compIdx];
+  if (!comp || comp.type !== "text") return null;
   const def = globalPluginRegistry.getComponentDef("text");
   const props = comp.props;
 
@@ -361,7 +386,7 @@ function TextSection({
   const italic = props["italic"] === true;
 
   return (
-    <Section label="Text">
+    <>
       {isAnimated(textProp) && (
         <Row label="Source">
           <Stopwatch active={textProp.keyframes.length > 0} onClick={() => toggleKf("text", textProp)} />
@@ -546,7 +571,7 @@ function TextSection({
       <button onClick={onDecompose} style={{ ...btnStyle, marginTop: 4, fontSize: 10 }} title="§26.5 1文字=1レイヤーに分解（原文は (source) レイヤーとして残る）">
         Decompose Glyphs
       </button>
-    </Section>
+    </>
   );
 }
 
@@ -667,11 +692,45 @@ function AnimScalarRow({
   );
 }
 
-function Section({ label, children }: { label: string; children: React.ReactNode }) {
+function InspectorFoldout({
+  label,
+  expanded,
+  onToggle,
+  children,
+}: {
+  label: string;
+  expanded: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+}) {
   return (
-    <div style={{ marginBottom: 12 }}>
-      <div style={{ color: "#888", marginBottom: 4, textTransform: "uppercase", fontSize: 10, letterSpacing: 1 }}>{label}</div>
-      {children}
+    <div style={{ marginBottom: 4, border: "1px solid #333", borderRadius: 3, overflow: "hidden", background: "#252525" }}>
+      <button
+        type="button"
+        onClick={onToggle}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 4,
+          width: "100%",
+          padding: "4px 6px",
+          border: "none",
+          background: "#383838",
+          color: "#ddd",
+          fontSize: 11,
+          fontWeight: 600,
+          cursor: "pointer",
+          textAlign: "left",
+        }}
+      >
+        <span style={{ width: 10, flexShrink: 0, color: "#aaa", fontSize: 10 }}>{expanded ? "▼" : "▶"}</span>
+        <span>{label}</span>
+      </button>
+      {expanded && (
+        <div style={{ padding: "6px 8px 8px", background: "#1e1e1e" }}>
+          {children}
+        </div>
+      )}
     </div>
   );
 }
