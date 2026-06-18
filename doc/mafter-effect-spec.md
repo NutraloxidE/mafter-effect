@@ -1,4 +1,4 @@
-# Mafter Effect — MVP 仕様書 v0.9
+# Mafter Effect — MVP 仕様書 v0.11
 
 > **Mafter Effect = After Effects, but with Markup language.**
 > Git で管理できる / HTML・CSS・JS をネイティブに扱う / AI フレンドリーな映像制作エンジン。
@@ -226,6 +226,35 @@ plugin はここに新しい type を追加できる（§12）。
 
 > **`exportStrategy` の既定（確定）**: web bundle export 時、各 component type が既定を宣言する。**自動判定はしない**（任意の author JS が実用速度で web 実行できるかは静的に分からないため）。既定: `solid`/`text`/`shape`/`image`/`html`/`audio` → `live`、将来の WebGL/particle/3D → `bake`。**plugin（第三者）は既定 `bake`**（§12、配信時に第三者コードをエンドユーザに流さない安全側）。author は per-component で上書き可。`bake` 指定レイヤは export 時に headless 機構（§11.4 / M3.5）で部分 MP4/WebP 化してアセットに差し替える。
 
+### §5.5b Effect（レイヤー後処理） — additive スキーマ（確定）
+
+> **設計の正は §27**。本節は §5（データスキーマ・§0 優先度 1）に属する **型定義**のみを確定する。
+
+```ts
+// §27 エフェクト。components（描画内容）とは独立した「レイヤー描画結果への後処理」。
+// 適用順 = 配列順（components 同様、意味順なので並べ替えない・§5.6 正準化）。
+interface EffectInstance {
+  id: string;                          // ULID. stable ref (INV-6)。name 参照しない
+  type: string;                        // "blur" | "tint" | plugin 定義
+  enabled: boolean;                    // AE の fx 有効トグル
+  props: Record<string, AnimatedProp<unknown> | unknown>;  // ParamDescriptor[] と同契約（§5.5）
+}
+```
+
+`SceneObject` を additive 拡張する（**どちらも optional**。値があるときだけ直列化＝既存 project.json は byte 等価のまま・INV-4）:
+
+```ts
+interface SceneObject {
+  // ...既存フィールド...
+  effects?: EffectInstance[];   // 省略/[] = エフェクトなし。配列順 = 適用順（先頭が先に適用）
+  isAdjustment?: boolean;       // true = 調整レイヤー（content components を描画せず effects を背面に適用・§27.4）
+}
+```
+
+- `EffectInstance.props` は `Component.props` と完全に同じ規約（`AnimatedProp<T>` か素の値）。これにより Inspector foldout / Timeline KF 行 / 補間 / expression seam を**そのまま再利用**できる。
+- `effects[]` は **意味順配列**。`components` と同じく正準化で並べ替えない（§5.6 / L283）。`AnimatedProp.keyframes` は従来どおり frame 昇順。
+- builtin effect type（`blur`/`tint`）も plugin effect 同様 `EffectDef` を `globalPluginRegistry.registerEffect` に登録する（§27.2 / §12）。
+
 ### §5.6 Composition / Project
 
 ```ts
@@ -280,7 +309,8 @@ interface PluginRef { id: string; version: string; enabled: boolean; }
 
 **(a) データ正規化（順序・直列化前）**
 - **集合配列は id 昇順にソート**: `objects` / `assets` / `compositions` / `pluginRefs`。配列順に意味を持たせない（描画順は `zOrder` が持つ、§5.4-note）。
-- **意味順を持つ配列は並べ替えない**: `components`（エフェクト等の重なり順が意味）、各 `AnimatedProp.keyframes`（`frame` 昇順を維持）。
+- **意味順を持つ配列は並べ替えない**: `components`（重なり順が意味）、`effects`（適用順が意味・§5.5b/§27）、各 `AnimatedProp.keyframes`（`frame` 昇順を維持）。
+  - `SceneObject.effects` / `SceneObject.isAdjustment` は **optional**。`effects` は空（無し）なら**キーごと省略**、`isAdjustment` は `false` なら省略する（(b) の optional 規則）。これによりエフェクト未使用の既存 project.json は **byte 等価のまま**（INV-4・回帰なし）。`EffectInstance.id` は ULID（INV-6）、`props` は component props と同じく正準化対象。
 - 文字列は **Unicode NFC** へ正規化。
 
 **(b) バイト直列化（RFC 8785 / JSON Canonicalization Scheme を基礎）**
@@ -1327,3 +1357,209 @@ INV-1〜8 を保持する。
 - 品質トグルはビューア設定で project.json を汚さない（INV-3, §19.3）。
 - 焼き込み座標・新規オブジェクトは整数 frame / ULID（INV-5/6）。
 - レンダーキャッシュ（§26.4.2）は将来 IF のみ。導入時もキャッシュは高速化専用で出力の正に影響しない。
+
+---
+
+## §27 エフェクト & 調整レイヤー（Effects / Adjustment Layer）
+
+> **状態**: 仕様確定（本リビジョン v0.11）。実装は **エフェクト基盤 + builtin 2 種（Blur / Tint）+ 調整レイヤー最小実装**。役割分担に従い**設計=Claude Code / 実装=Cursor**（§27.10 に作業分解）。
+> **スキーマ**: §5.5b（additive・既存 project.json byte 等価）。**AE 100% 一致は非目標**。下記の範囲のみ正式サポート。
+> Timeline Tier D（§21.0 / L825）の「調整レイヤー（将来）」マーカーは、**基盤については本節が supersede** する（モーションブラー/フレームブレンド/3D レイヤーは引き続き将来）。
+
+### §27.0 モデル：エフェクト ≠ コンポーネント（確定）
+
+- **`components[]`** はレイヤーの**描画内容**（solid/text/image/html…）を与える（§5.5）。
+- **`effects[]`** はそのレイヤーの**描画結果に対する後処理**（AE のエフェクト相当）。任意のオブジェクトに 0..n 個追加でき、`effects[]` の**配列順**に適用する（先頭→末尾。AE のエフェクトリスト上→下と一致）。
+- エフェクトは独立画面を持たず、**Inspector で管理**する（§27.6・現行 Unity 風 foldout に統合）。各エフェクトの animatable param は **キーフレーム可能**（§27.5・既存の component prop KF 機構を再利用）。
+- 将来の buffer→buffer WASM エフェクト（§14）と I/O 契約を揃える（§27.2 の `EffectDef`）。
+
+### §27.1 適用パイプライン（DOM レンダラ・確定）
+
+DomRenderer は各 `ResolvedObject` を root の兄弟 div（host div）として描画する（§8）。エフェクトはその **host div への CSS `filter` 連結**で適用する。
+
+```
+content components → host div の子要素として描画（既存）
+effects[]          → host div.style.filter = (順序付きフィルタトークン列)
+```
+
+- 各 effect は `EffectDef.apply(resolvedProps, ctx)` で **フィルタ片**を返す（§27.2）。`enabled === false` のエフェクトは無視。
+- フィルタ片は 2 種:
+  - `{ kind: "css", fn }` … CSS `<filter-function>` トークン（例 `"blur(4px)"`）。
+  - `{ kind: "svg", primitives }` … SVG filter primitive 群。DomRenderer が `<svg><filter id="fx-{objId}-{i}">…</filter></svg>` を host に紐づけ、`url(#fx-{objId}-{i})` トークンを生成。
+- DomRenderer は effect 配列順にトークンを連結して **1 本の `filter` 文字列**にする（CSS `filter` は関数と `url()` を**混在・左→右順適用**できる）。例: `filter: blur(2px) url(#fx-abc-1)`。
+- **reconcile**: host div の filter 文字列と svg `<filter>` defs は、effect の型/順序/有効状態が変わったときだけ作り直す（既存 `childSig` と同様の `fxSig`）。毎フレームは解決済み値で filter 文字列を更新するのみ。
+
+> **なぜ CSS filter か**: HTML comp が主役の DOM レンダラ（§8）と最も整合し、preview と foreignObject export（§11.4・テキスト export が既に使用）で**同一経路でラスタライズ**される＝ INV-2 を素直に満たす。`url(#)` SVG filter も foreignObject に内包できる。
+
+### §27.2 EffectDef（§12 `registerEffect` の具体化・確定）
+
+§12 で予約済みの `registerEffect(def: EffectDef)` を以下で確定する。**component の `ParamDescriptor[]` 契約を共有**する（Inspector / Timeline / KF / 補間 / expression を再利用するため）。
+
+```ts
+type EffectFilter =
+  | { kind: "css"; fn: string }          // 例: "blur(4px)"
+  | { kind: "svg"; primitives: string }; // <filter> の中身（feColorMatrix 等）。SourceGraphic を入力に取る
+
+interface EffectRenderCtx {
+  width: number;    // comp 解像度（tint blend / 単位換算用）
+  height: number;
+}
+
+interface EffectDef {
+  type: string;                       // "blur" | "tint" | plugin
+  label: string;
+  params: ParamDescriptor[];          // §5.5 と同契約（animatable param は AnimatedProp で props に入る）
+  bundleExportDefault?: "live" | "bake"; // 既定: builtin=live / plugin=bake（§12 安全側）
+  // 純関数。resolve 済み props（具体値）→ フィルタ片。null = 何もしない（恒等）。
+  // DOM/乱数/Date 禁止（INV-1 相当。値は resolve() で焼き済み）。
+  apply(props: Record<string, unknown>, ctx: EffectRenderCtx): EffectFilter | null;
+}
+```
+
+- `pluginRegistry` に `registerEffect` / `getEffectDef(type)` / `listEffects()` を追加。DomRenderer と Inspector/Timeline は registry を lazy 参照（component と同じパターン）。
+- builtin（`blur`/`tint`）も **エディタ初期化時に登録**する（§26.2 の builtin ComponentDef 登録と同じ場所・[store.ts](../src/editor/store.ts)）。
+- **EffectDef I/O 契約**は §10/§14 の将来 WASM effect（buffer→buffer）と整合させる方針を維持（現状は DOM フィルタ片を返すが、`apply` は純関数で副作用なし）。
+
+### §27.3 builtin エフェクト 2 種（確定）
+
+#### `blur` — Gaussian Blur
+
+| param key | label | kind | default | range | animatable |
+|---|---|---|---|---|---|
+| `blurriness` | Blurriness | scalar | `0` | min 0, max 500, step 0.1 | ✅ |
+
+- `apply` → `{ kind: "css", fn: "blur(" + max(0, blurriness) + "px)" }`。`blurriness === 0` は `null`（恒等）。
+- MVP は等方ブラーのみ（AE の Dimensions=Horizontal/Vertical は将来）。
+
+#### `tint` — Tint（白黒 → 2 色マップ）
+
+| param key | label | kind | default | range | animatable |
+|---|---|---|---|---|---|
+| `mapBlack` | Map Black To | color | `{r:0,g:0,b:0,a:1}` | — | ✅ |
+| `mapWhite` | Map White To | color | `{r:1,g:1,b:1,a:1}` | — | ✅ |
+| `amount` | Amount to Tint | scalar | `1` | 0..1, step 0.01 | ✅ |
+
+- `apply` → `{ kind: "svg", primitives }`。SVG filter レシピ（SourceGraphic 入力）:
+  1. `feColorMatrix type="saturate" values="0"` → 輝度グレースケール `L`。
+  2. `feComponentTransfer` の `feFuncR/G/B type="linear" slope=(white.c - black.c) intercept=black.c"`（各チャンネル `c∈{r,g,b}`、0..1 を 0..1 で）→ `tinted = black + L·(white - black)`。アルファは SourceGraphic を保持（`feFuncA` は素通し or `feFuncA type="linear" slope=1`）。
+  3. `amount` ブレンド: tinted を `feComponentTransfer feFuncA slope=amount` で不透明度 `amount` にし、`feMerge`（in=SourceGraphic, in=tinted-with-alpha）で原画の上に重ねる。`amount=1` で完全 tint、`0` で原画。
+- 色値は 0..1（RGBA, §5.1）。slope/intercept は 0..1 空間でそのまま使える。
+
+> **`amount` ブレンドの厳密性**は MVP では上記 feMerge 近似で可（AE の正確な線形補間と微差を許容・**AE 100% 一致は非目標**）。厳密合成（`feComposite arithmetic` で `out = src·(1-amount) + tint·amount`）が必要なら Phase 2。
+
+### §27.4 調整レイヤー（Adjustment Layer・最小実装）
+
+**意味（AE 準拠）**: 調整レイヤーは自身の content を描画せず、`effects[]` を**その下（背面・低 zOrder）に重なる全レイヤーの合成結果**に適用する。
+
+**DOM 実装（確定・最小）**:
+- `SceneObject.isAdjustment === true` のオブジェクトは host div の **content components を描画しない**（透明）。
+- effects は `filter` ではなく **`backdrop-filter`** として host div に適用する。`backdrop-filter` は描画順で**背面に既に描かれた内容**に作用する＝ DomRenderer の z-index(=zOrder) 順描画と一致し、低 zOrder のレイヤーだけが対象になる（AE「下のレイヤーに効く」と一致）。
+- **作用範囲 = host div の矩形**（transform 適用後）。既定サイズ = comp 全体（width×height）。transform で縮小/移動すれば AE 同様に作用領域を限定できる（マスク相当は将来）。
+- store に `addAdjustmentLayer()`（isAdjustment=true・content component なし・既定 full-comp サイズ・zOrder 最前）と `toggleAdjustment(objId)` を追加。Inspector/Timeline に調整レイヤーバッジ（§27.6/§27.7）。
+
+**`backdrop-filter` トークン**: §27.1 と同じ順序付きフィルタ文字列を `backdrop-filter` に入れる。
+
+> **INV-2（preview = export）に関する注記（重要・確定）**:
+> - **通常レイヤーの effects（`filter`）は export でも一致**する（foreignObject ラスタ経路がテキスト export で実証済み・§11.4）。Blur / Tint はここで保証対象。
+> - **調整レイヤーの `backdrop-filter` は foreignObject ラスタ化で再現性が browser/経路依存**（背面合成結果への作用は SVG foreignObject→canvas で欠落しうる）。よって調整レイヤーは **preview ベストエフォート**とし、export 一致は実装時に Playwright ピクセル差分で**検証必須**。再現できない場合は §26 の Draft/Best 残差と同格の「**許容済み既知差（preview 専用）**」として progress に明記し、ブロッカーにしない。将来の厳密対応（背面を一旦 raster してから filter する合成パス）は Phase 2。
+
+### §27.5 解決（resolve）と ResolvedScene（確定・INV-1/3）
+
+`resolve()` でエフェクト param を**焼き込み**、レンダラには具体値のみ渡す（INV-3）。`ResolvedObject` を additive 拡張:
+
+```ts
+interface ResolvedEffect {
+  type: string;
+  enabled: boolean;
+  props: Record<string, unknown>;   // frame 解決済み（AnimatedProp → 値）。component props と同経路
+}
+interface ResolvedObject {
+  // ...既存...
+  effects?: ResolvedEffect[];       // 省略 = なし。配列順 = 適用順
+  isAdjustment?: boolean;
+}
+```
+
+- 各 effect の props は `resolveComponent` と**同一のサンプリング経路**（[resolve.ts](../src/runtime/resolve.ts) の `sampleAny` + `applyExpr`）で解決する。`enabled` はそのまま透過（レンダラ側で無効を skip）。
+- `disabled` エフェクトも軽量に resolve してよい（props 焼きは安価）。最適化として skip も可（出力不変）。
+- **expression on effect props**: 同じ評価 seam を通せる（additive）。MVP の付与 UI は将来、**KF アニメ可**が今回のスコープ（§27.6）。
+- INV-1: `apply` も resolve も純関数。DOM/乱数/時刻を持ち込まない。
+
+### §27.6 Inspector UI（確定・現行 foldout に統合）
+
+[InspectorPanel.tsx](../src/editor/panels/InspectorPanel.tsx) に **"Effects" foldout グループ**を追加（Transform / Components / Expression … と並ぶ §26.3 / 2026-06-19 の foldout 体系に統合）。
+
+- 各 `EffectInstance` を**サブ foldout**として表示: ヘッダに `enabled` トグル（◉/◯）・エフェクト名（label）・並べ替え（▲▼, 配列順が適用順）・削除（×）。
+- 本体に param 行を `ParamDescriptor.kind` 別 PropRow で描画（既存 ScrubNumber / ColorSwatch / enum / bool を流用）。animatable param は**ストップウォッチ ◇ で KF 化**（書き込みは command 経由・undo 可・§17）。
+- ヘッダの **「+ エフェクトを追加」**メニュー: `globalPluginRegistry.listEffects()`（builtin Blur/Tint + plugin）から選択 → `addEffect(objId, type)`。
+- **調整レイヤー**: Inspector に `isAdjustment` トグル（または専用作成）。ON のとき content components セクションは「調整レイヤー（描画なし）」と注記。
+
+### §27.7 Timeline UI（確定・Inspector と SSoT 共有）
+
+[TimelinePanel.tsx](../src/editor/panels/TimelinePanel.tsx) のレイヤーツリーに **Effects グループ**を追加（component props の animatable KF 行 §21 P1 と同じ機構）。
+
+```
+Layer
+ ▸ Transform
+ ▸ Effects
+    ▸ Blur
+        ◇ Blurriness
+    ▸ Tint
+        ◇ Map Black To / ◇ Map White To / ◇ Amount
+```
+
+- PropPath を `effects.<effectId>.<key>` で addressable に拡張（現状 string PropPath を拡張・§21 P1 で component props も同様に拡張済み）。KF ダイヤ・グラフエディタ（§22）・Ease パネル（§24）と**同じ KF 機構を共有**。
+- 調整レイヤーはレイヤーバーにバッジ表示（AE のアイコン相当・任意）。
+
+### §27.8 ストア / コマンド / Undo（確定）
+
+すべて既存の command 経路（before/after スナップショット・immutable 編集・§17）を通す。新規 store アクション（各 1 undo）:
+
+- `addEffect(objId, type)` / `removeEffect(objId, effectId)` / `reorderEffect(objId, effectId, dir)` / `toggleEffect(objId, effectId)`。
+- effect param の値/KF 書き込みは既存 `setPropByPath` / `setKeyframe` を **PropPath 拡張**（`effects.<id>.<key>`）で流用。スクラブ中の即時反映は §（2026-06-18）`previewOverride` 経路を流用。
+- `addAdjustmentLayer()` / `toggleAdjustment(objId)`。
+- 新規 `EffectInstance.id` は ULID（INV-6）。既定 props は `EffectDef.params[].default` から生成。
+
+### §27.9 不変条件（INV 影響評価・確定）
+
+INV-1〜8 を保持。新規 INV は不要。
+
+- **INV-1**: `resolve()` / `EffectDef.apply` は純関数。effect param は resolve で焼く。
+- **INV-2**: 通常レイヤー effects は preview/export 一致（§27.4 注記）。調整レイヤーは preview ベストエフォート（export 検証必須・再現不可なら許容済み既知差）。
+- **INV-3**: レンダラは `ResolvedScene`（焼き済み）のみ受け取る。`effects`/`isAdjustment` は ResolvedObject に載る。
+- **INV-4**: optional 省略で既存 project.json byte 等価（§5.6-canon）。
+- **INV-5/6**: 整数 frame / ULID（`EffectInstance.id`）。
+- **INV-7**: effect 解決・registry・apply は `@mafter/runtime` 側。Inspector/Timeline UI はエディタ側。
+
+### §27.10 影響ファイル / 作業分解（実装の入口・Cursor 委任用）
+
+**スキーマ/登録**
+- [src/core/schema.ts](../src/core/schema.ts): `EffectInstance` 追加、`SceneObject.effects?` / `isAdjustment?` 追加（§5.5b）。
+- [src/runtime/plugin.ts](../src/runtime/plugin.ts): `EffectDef` / `EffectFilter` / `EffectRenderCtx` 確定（§27.2）。
+- [src/runtime/pluginRegistry.ts](../src/runtime/pluginRegistry.ts): `registerEffect` / `getEffectDef` / `listEffects`。
+- builtin 登録（[src/editor/store.ts](../src/editor/store.ts) 初期化）: `blur` / `tint` の `EffectDef`（§27.3）。新規 [src/runtime/builtinEffects.ts](../src/runtime/builtinEffects.ts) に `apply` 実体。
+
+**解決/描画**
+- [src/runtime/resolved.ts](../src/runtime/resolved.ts): `ResolvedEffect` + `ResolvedObject.effects?` / `isAdjustment?`（§27.5）。
+- [src/runtime/resolve.ts](../src/runtime/resolve.ts): effect props 解決（`resolveComponent` と同経路）+ `isAdjustment` 透過。
+- [src/runtime/DomRenderer.ts](../src/runtime/DomRenderer.ts): filter 文字列組み立て + svg `<filter>` defs 管理 + `fxSig` reconcile + 調整レイヤー（content skip + `backdrop-filter`）（§27.1/§27.4）。
+
+**UI/ストア**
+- [src/editor/panels/InspectorPanel.tsx](../src/editor/panels/InspectorPanel.tsx): Effects foldout（§27.6）。
+- [src/editor/panels/TimelinePanel.tsx](../src/editor/panels/TimelinePanel.tsx): Effects グループ + PropPath 拡張（§27.7）。
+- [src/editor/store.ts](../src/editor/store.ts) / [src/editor/commands.ts](../src/editor/commands.ts): §27.8 のアクション。
+
+**テスト（INV 優先）**
+- resolve: effect KF 補間・expression seam・`isAdjustment` 透過（純関数・INV-1）。
+- 正準化 roundtrip: effects 付き project.json の byte 等価 + effects 未使用の既存 byte 等価（INV-4）。
+- builtin `apply`: blur/tint のフィルタ片生成（境界 0/amount）。
+- **実機（Playwright・必須）**: Blur/Tint の preview 反映、KF アニメ、export 一致（INV-2）、調整レイヤーの背面作用（preview）+ export 再現性検証。
+
+### §27.11 受け入れ条件
+
+1. 任意のオブジェクトに Inspector から Blur / Tint を追加・削除・並べ替え・有効/無効でき、preview に反映される。
+2. effect param が KF 可能で、Inspector と Timeline の両方で編集でき、グラフ/Ease パネルと KF 機構を共有する。
+3. effects 付きプロジェクトが save→load→zip→reimport で byte 等価。effects 未使用の既存プロジェクトは byte 等価のまま（回帰なし）。
+4. 通常レイヤー effects が export（mp4/webm/png-seq）で preview と一致（INV-2）。
+5. 調整レイヤーが preview で背面（低 zOrder）レイヤーにのみ作用する。export 再現性は検証し、結果（一致 or 許容済み既知差）を progress に記録。
+6. typecheck / 既存テスト / build が緑。新規 INV テスト追加。
