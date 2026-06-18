@@ -26,6 +26,35 @@ export interface ExportProgress {
 
 export type ProgressCallback = (p: ExportProgress) => void;
 
+/** 実際に生成された出力形式（動画 encode 失敗で PNG-seq に落ちた場合 format が変わる）。 */
+export interface ExportResult {
+  blob: Blob;
+  format: ExportConfig["format"];
+  /** 要求した format と異なる結果になった場合の理由（PNG-seq フォールバック時のみ）。 */
+  fallbackReason?: string;
+}
+
+/**
+ * WebCodecs(`VideoEncoder`) が使えない理由を判定する。使える場合は null。
+ * secure context（https または localhost）でない場合や非対応ブラウザでは undefined になり、
+ * mp4/webm は必ず PNG-seq へフォールバックする。原因をユーザーに提示できるようにする。
+ */
+export function diagnoseVideoSupport(): string | null {
+  if (typeof VideoEncoder !== "undefined") return null;
+  const secure = typeof isSecureContext === "undefined" ? true : isSecureContext;
+  if (!secure) {
+    return "このページが secure context ではないため WebCodecs を利用できません。"
+      + "http://localhost / 127.0.0.1 または https:// で開いてください（LAN の IP アドレス経由では無効）。";
+  }
+  return "このブラウザは WebCodecs (VideoEncoder) に対応していません。Chrome / Edge 94 以降で開いてください。";
+}
+
+interface VideoEncodeStats {
+  chunkCount: number;
+  hasDecoderConfig: boolean;
+  error: Error | null;
+}
+
 // ─── Public entry point ───────────────────────────────────────────────────────
 
 /**
@@ -39,7 +68,7 @@ export async function exportComposition(
   config: ExportConfig,
   onProgress: ProgressCallback,
   signal?: AbortSignal,
-): Promise<Blob> {
+): Promise<ExportResult> {
   const comp = project.compositions.find((c) => c.id === compId);
   if (!comp || comp.kind !== "timeline") {
     throw new Error("Timeline composition not found: " + compId);
@@ -48,13 +77,18 @@ export async function exportComposition(
   const htmlComps = project.compositions.filter(
     (c): c is HtmlComposition => c.kind === "html",
   );
+  const timelineComps = project.compositions.filter(
+    (c): c is TimelineComposition => c.kind === "timeline" && c.id !== compId,
+  );
 
   const [startFrame, endFrame] = config.range;
   const totalFrames = Math.max(1, endFrame - startFrame);
   const nw = tlComp.width;
   const nh = tlComp.height;
-  const w = Math.round(nw * config.scale);
-  const h = Math.round(nh * config.scale);
+  // H.264 / VP9 は偶数解像度が必須。Math.round 後の奇数 width/height で encode が silently fail し
+  // 再生不能なコンテナだけが出力されることがある。
+  const w = evenDim(nw * config.scale);
+  const h = evenDim(nh * config.scale);
 
   // オフスクリーンコンテナを画面外に配置（レイアウト影響なし）
   const container = document.createElement("div");
@@ -74,6 +108,7 @@ export async function exportComposition(
     renderer.setTextQuality(config.textRenderMode ?? "precise");
     renderer.mount(container, tlComp);
     renderer.setHtmlComps(new Map(htmlComps.map((c) => [c.id, c])));
+    renderer.setTimelineComps(new Map(timelineComps.map((c) => [c.id, c])));
 
     onProgress({ phase: "prepare", frame: 0, totalFrames, message: "Loading expressions & HTML comps…" });
 
@@ -86,17 +121,36 @@ export async function exportComposition(
     checkAbort(signal);
 
     if (config.format === "png-seq") {
-      return await runPngSeq(
+      const blob = await runPngSeq(
         tlComp, renderer, evaluator, config,
         startFrame, totalFrames, nw, nh, w, h, onProgress, signal,
       );
+      return { blob, format: "png-seq" };
     } else {
       // Audio assets を先に収集・デコード（OfflineAudioContext が必要なため）
       const audioMix = await buildAudioMix(project, tlComp, startFrame, endFrame, config.fps, fs);
-      return await runVideo(
-        tlComp, renderer, evaluator, config,
-        startFrame, totalFrames, nw, nh, w, h, audioMix, onProgress, signal,
-      );
+      try {
+        const blob = await runVideo(
+          tlComp, renderer, evaluator, config,
+          startFrame, totalFrames, nw, nh, w, h, audioMix, onProgress, signal,
+        );
+        return { blob, format: config.format };
+      } catch (e) {
+        checkAbort(signal);
+        // VideoEncoder 自体が無い場合は環境要因を具体的に説明する。それ以外は実エラーを伝える。
+        const reason = diagnoseVideoSupport() ?? (e instanceof Error ? e.message : String(e));
+        onProgress({
+          phase: "render",
+          frame: 0,
+          totalFrames,
+          message: `Video encode failed (${reason}), falling back to PNG sequence`,
+        });
+        const blob = await runPngSeq(
+          tlComp, renderer, evaluator, { ...config, format: "png-seq" },
+          startFrame, totalFrames, nw, nh, w, h, onProgress, signal,
+        );
+        return { blob, format: "png-seq", fallbackReason: reason };
+      }
     }
   } finally {
     container.remove();
@@ -249,9 +303,7 @@ async function runVideo(
   signal?: AbortSignal,
 ): Promise<Blob> {
   if (typeof VideoEncoder === "undefined") {
-    // WebCodecs 非対応ブラウザ: PNG seq にフォールバック
-    onProgress({ phase: "render", frame: 0, totalFrames, message: "WebCodecs unavailable, falling back to PNG sequence" });
-    return runPngSeq(comp, renderer, evaluator, { ...config, format: "png-seq" }, startFrame, totalFrames, nw, nh, w, h, onProgress, signal);
+    throw new Error("WebCodecs unavailable");
   }
 
   const fps = config.fps;
@@ -304,30 +356,41 @@ async function runMp4(
     firstTimestampBehavior: "offset",
   });
 
-  const videoEncoder = new VideoEncoder({
-    output: (chunk, meta) => muxer.addVideoChunk(chunk, meta ?? undefined),
-    error: (e) => { throw e; },
+  const videoEncoder = createVideoEncoder((chunk, meta) => {
+    muxer.addVideoChunk(chunk, meta);
   });
-  await configureVideoEncoder(videoEncoder, {
-    // AVC level は解像度に合わせて選ぶ。固定 3.1 だと 1080p で coded-area 超過エラーになる。
-    codec: avcCodecString(w, h, fps),
-    width: w,
-    height: h,
-    bitrate: 8_000_000,
-    framerate: fps,
-  });
+  try {
+    await configureVideoEncoder(videoEncoder.encoder, {
+      // AVC level は解像度に合わせて選ぶ。固定 3.1 だと 1080p で coded-area 超過エラーになる。
+      codec: avcCodecString(w, h, fps),
+      width: w,
+      height: h,
+      bitrate: 8_000_000,
+      framerate: fps,
+    });
 
-  await encodeVideoFrames(comp, renderer, evaluator, startFrame, totalFrames, nw, nh, w, h, fps, bg, videoEncoder, onProgress, signal);
-  await videoEncoder.flush();
+    await encodeVideoFrames(
+      comp, renderer, evaluator, startFrame, totalFrames, nw, nh, w, h, fps, bg,
+      videoEncoder, onProgress, signal,
+    );
+    await videoEncoder.encoder.flush();
+    if (videoEncoder.stats.error) throw videoEncoder.stats.error;
 
-  if (hasAudio && audioMix) {
-    onProgress({ phase: "audio", frame: totalFrames, totalFrames, message: "Encoding audio…" });
-    await encodeAudioToMuxer(audioMix, (chunk, meta) => muxer.addAudioChunk(chunk, meta ?? undefined), "mp4a.40.2", signal);
+    if (hasAudio && audioMix) {
+      onProgress({ phase: "audio", frame: totalFrames, totalFrames, message: "Encoding audio…" });
+      try {
+        await encodeAudioToMuxer(audioMix, (chunk, meta) => muxer.addAudioChunk(chunk, meta ?? undefined), "mp4a.40.2", signal);
+      } catch {
+        // 音声 encode 失敗時も映像だけは書き出す（PNG-seq フォールバックは避ける）
+      }
+    }
+
+    muxer.finalize();
+    onProgress({ phase: "done", frame: totalFrames, totalFrames, message: "Done" });
+    return new Blob([target.buffer], { type: "video/mp4" });
+  } finally {
+    safeCloseEncoder(videoEncoder.encoder);
   }
-
-  muxer.finalize();
-  onProgress({ phase: "done", frame: totalFrames, totalFrames, message: "Done" });
-  return new Blob([target.buffer], { type: "video/mp4" });
 }
 
 async function runWebm(
@@ -355,30 +418,41 @@ async function runWebm(
     } : {}),
   });
 
-  const videoEncoder = new VideoEncoder({
-    output: (chunk, meta) => muxer.addVideoChunk(chunk, meta ?? undefined),
-    error: (e) => { throw e; },
+  const videoEncoder = createVideoEncoder((chunk, meta) => {
+    muxer.addVideoChunk(chunk, meta);
   });
-  await configureVideoEncoder(videoEncoder, {
-    codec: "vp09.00.10.08",
-    width: w,
-    height: h,
-    bitrate: 8_000_000,
-    framerate: fps,
-    alpha: config.alpha ? "keep" : "discard",
-  });
+  try {
+    await configureVideoEncoder(videoEncoder.encoder, {
+      codec: "vp09.00.10.08",
+      width: w,
+      height: h,
+      bitrate: 8_000_000,
+      framerate: fps,
+      alpha: config.alpha ? "keep" : "discard",
+    });
 
-  await encodeVideoFrames(comp, renderer, evaluator, startFrame, totalFrames, nw, nh, w, h, fps, bg, videoEncoder, onProgress, signal);
-  await videoEncoder.flush();
+    await encodeVideoFrames(
+      comp, renderer, evaluator, startFrame, totalFrames, nw, nh, w, h, fps, bg,
+      videoEncoder, onProgress, signal,
+    );
+    await videoEncoder.encoder.flush();
+    if (videoEncoder.stats.error) throw videoEncoder.stats.error;
 
-  if (hasAudio && audioMix) {
-    onProgress({ phase: "audio", frame: totalFrames, totalFrames, message: "Encoding audio…" });
-    await encodeAudioToMuxer(audioMix, (chunk, meta) => muxer.addAudioChunk(chunk, meta ?? undefined), "opus", signal);
+    if (hasAudio && audioMix) {
+      onProgress({ phase: "audio", frame: totalFrames, totalFrames, message: "Encoding audio…" });
+      try {
+        await encodeAudioToMuxer(audioMix, (chunk, meta) => muxer.addAudioChunk(chunk, meta ?? undefined), "opus", signal);
+      } catch {
+        // 音声 encode 失敗時も映像だけは書き出す
+      }
+    }
+
+    muxer.finalize();
+    onProgress({ phase: "done", frame: totalFrames, totalFrames, message: "Done" });
+    return new Blob([target.buffer], { type: "video/webm" });
+  } finally {
+    safeCloseEncoder(videoEncoder.encoder);
   }
-
-  muxer.finalize();
-  onProgress({ phase: "done", frame: totalFrames, totalFrames, message: "Done" });
-  return new Blob([target.buffer], { type: "video/webm" });
 }
 
 /** 全フレームを VideoEncoder に渡す共通ループ。 */
@@ -391,14 +465,20 @@ async function encodeVideoFrames(
   nw: number, nh: number, w: number, h: number,
   fps: number,
   bg: string,
-  encoder: VideoEncoder,
+  videoEncoder: { encoder: VideoEncoder; stats: VideoEncodeStats },
   onProgress: ProgressCallback,
   signal?: AbortSignal,
 ) {
+  const { encoder, stats } = videoEncoder;
   const usDuration = Math.round(1_000_000 / fps);
 
   for (let fi = 0; fi < totalFrames; fi++) {
     checkAbort(signal);
+    if (stats.error) throw stats.error;
+    if (encoder.state === "closed") {
+      throw new Error("VideoEncoder closed unexpectedly");
+    }
+
     const frame = startFrame + fi;
     renderer.renderFrame(resolve(comp, frame, { expressions: evaluator }), frame);
     onProgress({ phase: "render", frame: fi, totalFrames, message: `Rendering frame ${fi + 1}/${totalFrames}` });
@@ -416,10 +496,7 @@ async function encodeVideoFrames(
     vf.close();
     bitmap.close();
 
-    // エンコードキューが溜まりすぎないよう間引き待機
-    if (encoder.encodeQueueSize > 5) {
-      await new Promise((r) => setTimeout(r, 16));
-    }
+    await backpressureEncoderQueue(encoder);
   }
 }
 
@@ -631,4 +708,44 @@ async function configureVideoEncoder(
     }
   }
   throw new Error(`No supported VideoEncoder config for codec ${base.codec} at ${base.width}x${base.height}`);
+}
+
+function evenDim(n: number): number {
+  const rounded = Math.max(2, Math.round(n));
+  return rounded & ~1;
+}
+
+function createVideoEncoder(
+  onChunk: (chunk: EncodedVideoChunk, meta: EncodedVideoChunkMetadata | undefined) => void,
+): { encoder: VideoEncoder; stats: VideoEncodeStats } {
+  const stats: VideoEncodeStats = { chunkCount: 0, hasDecoderConfig: false, error: null };
+  const encoder = new VideoEncoder({
+    output: (chunk, meta) => {
+      stats.chunkCount++;
+      if (meta?.decoderConfig) stats.hasDecoderConfig = true;
+      onChunk(chunk, meta ?? undefined);
+    },
+    error: (e) => {
+      stats.error = e instanceof Error ? e : new Error(String(e));
+    },
+  });
+  return { encoder, stats };
+}
+
+/**
+ * キューが溢れすぎないよう間引く。毎フレーム queue===0 を待つと HW エンコーダ環境で
+ * タイムアウト→ PNG-seq フォールバックになるため、閾値超過時のみ短い待機を行う。
+ */
+async function backpressureEncoderQueue(encoder: VideoEncoder, maxQueue = 6): Promise<void> {
+  while (encoder.encodeQueueSize > maxQueue) {
+    await new Promise((r) => setTimeout(r, 16));
+  }
+}
+
+function safeCloseEncoder(encoder: VideoEncoder): void {
+  try {
+    if (encoder.state !== "closed") encoder.close();
+  } catch {
+    /* ignore */
+  }
 }

@@ -3,7 +3,7 @@
 import { useCallback, useRef, useState } from "react";
 import type { ExportConfig } from "../core/schema";
 import { IndexedDbFs } from "../fs/IndexedDbFs";
-import { exportComposition, type ExportProgress } from "../runtime/exporter";
+import { diagnoseVideoSupport, exportComposition, type ExportProgress } from "../runtime/exporter";
 import type { Project } from "../core/schema";
 
 interface Props {
@@ -28,13 +28,21 @@ export function ExportDialog({ project, compId, onClose }: Props) {
 
   const [progress, setProgress] = useState<ExportProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [fallbackNote, setFallbackNote] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+
+  // mp4/webm を選んでいるのに WebCodecs が使えない環境では、書き出すと必ず PNG-seq に
+  // 落ちる。事前に理由を提示して「常に zip がダウンロードされる」混乱を防ぐ。
+  const videoUnsupported = (format === "mp4" || format === "webm")
+    ? diagnoseVideoSupport()
+    : null;
 
   const isExporting = progress !== null && progress.phase !== "done" && progress.phase !== "error";
 
   const onExport = useCallback(async () => {
     if (!tl) return;
     setError(null);
+    setFallbackNote(null);
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     const cfg: ExportConfig = {
@@ -47,10 +55,22 @@ export function ExportDialog({ project, compId, onClose }: Props) {
     };
 
     try {
-      const blob = await exportComposition(project, compId, fs, cfg, setProgress, ctrl.signal);
-      const ext = format === "png-seq" ? "zip" : format;
+      const result = await exportComposition(project, compId, fs, cfg, setProgress, ctrl.signal);
+      const ext = result.format === "png-seq" ? "zip" : result.format;
       const name = `${tl.name.replace(/\s+/g, "_")}.${ext}`;
-      triggerDownload(blob, name);
+      triggerDownload(result.blob, name);
+      if (result.format !== format) {
+        setProgress({
+          phase: "done",
+          frame: endFrame - startFrame,
+          totalFrames: endFrame - startFrame,
+          message: `Saved as ${ext} (requested ${format})`,
+        });
+        setFallbackNote(
+          `${format.toUpperCase()} で書き出せず PNG 連番 (${ext}) になりました。`
+          + (result.fallbackReason ? `\n理由: ${result.fallbackReason}` : ""),
+        );
+      }
     } catch (e) {
       if (e instanceof DOMException && e.name === "AbortError") {
         setProgress(null);
@@ -128,6 +148,14 @@ export function ExportDialog({ project, compId, onClose }: Props) {
           </Row>
         </div>
 
+        {/* WebCodecs 非対応の事前警告（mp4/webm 選択時のみ） */}
+        {videoUnsupported && (
+          <div style={{ fontSize: 11, color: "#fc8", marginBottom: 10, background: "#2a2415", padding: "6px 8px", borderRadius: 3, lineHeight: 1.5 }}>
+            ⚠ {format.toUpperCase()} はこの環境で書き出せません（PNG 連番 ZIP になります）。<br />
+            {videoUnsupported}
+          </div>
+        )}
+
         {/* Warnings */}
         <div style={{ fontSize: 10, color: "#666", marginBottom: 10, lineHeight: 1.5 }}>
           ⚠ best-effort: CSS 3D preserve-3d / cross-origin images may differ from preview.<br />
@@ -150,6 +178,12 @@ export function ExportDialog({ project, compId, onClose }: Props) {
         {error && (
           <div style={{ fontSize: 11, color: "#f66", marginBottom: 8, background: "#2a1a1a", padding: "4px 6px", borderRadius: 3 }}>
             Error: {error}
+          </div>
+        )}
+
+        {fallbackNote && !error && (
+          <div style={{ fontSize: 11, color: "#fc8", marginBottom: 8, background: "#2a2415", padding: "6px 8px", borderRadius: 3, whiteSpace: "pre-wrap", lineHeight: 1.5 }}>
+            ⚠ {fallbackNote}
           </div>
         )}
 
