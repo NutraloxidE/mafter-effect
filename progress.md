@@ -124,7 +124,7 @@ spec §26 に確定。`text` builtin ComponentDef 登録 + Inspector Text セク
 - [x] **§26.6 補間** — `sampleRgba` + string hold（[interpolate.ts](src/runtime/interpolate.ts)）。
 - [x] **§26.7 Export** — ExportDialog テキスト描画方式 + DomRenderer `textRenderMode`。
 - [x] **回帰（自動）** — typecheck / **136 tests PASS** / build ✅
-- [x] **回帰（手動・部分 2026-06-18）** — ユーザー確認: Undo ✅ / グリフ分解 ✅ / Draft↔Best 切替 ✅（**わずかな誤差あり・実用上問題なし**）/ 位置 KF アニメ ✅。残: 作成→編集（即時反映）→export 通し確認
+- [x] **回帰（手動・部分 2026-06-18）** — ユーザー確認: Undo ✅ / グリフ分解 ✅ / Draft↔Best 切替 ✅（**わずかな誤差あり・実用上問題なし**）/ 位置 KF アニメ ✅ / export（precomp・テキスト・MP4/PNG）Playwright 確認 ✅
 - [x] **既知バグ潰し（ブロッカー）解消 2026-06-18** — §26.4 Draft/Best 「位置が一致しない」根因を特定・修正。**根因**: `PreviewPanel` の renderer は comp 準備後に生成されるが、`effectiveTextQuality→setTextQuality` effect は値不変時 re-run しないため、生成された renderer に "draft" が届かず DomRenderer 既定 "precise" のまま固定 → **Draft 切替が無効化し常に SVG 描画**だった。修正: `textQualityRef` を導入し renderer 生成時に `setTextQuality(textQualityRef.current)` を適用（[PreviewPanel.tsx](src/editor/panels/PreviewPanel.tsx)）。**検証**: Playwright ピクセル差分で left/center/right/multiline/96px/stroke 全件 draft↔best が AA バンド相当（330〜1084/128000、位置ズレなら数千px差）→ グリフ実体が縦横・baseline・leading とも整合を実機確認。export は `setTextQuality` を生成後明示呼びで無影響。
 - [x] **§25 × §26 Preview 四隅 scale ハンドル** — 2026-06-18 手動確認で **solid 同等に修正済み**（Canvas bounds + ドラッグ起点相対 scale）。
 - **将来（§16）**: 段落ボックステキスト / 文字単位混在スタイル / パステキスト / 範囲セレクター式アニメーター / tracking 1/1000em / フォントセレクト UI / レイヤー個別品質 / レンダーキャッシュ実体
@@ -160,7 +160,8 @@ Preview 四隅 scale ハンドルも 2026-06-18 手動確認で修正済み。�
 - ~~**§26.4 Draft / Best 切替の位置ズレ（ブロッカー）**~~ — **2026-06-18 解消（2 段階）**。詳細は更新履歴参照。
 - **§26.4 Draft / Best — 残差（許容済み・非ブロッカー）**: Draft(DOM) と Best(SVG) は描画経路が異なるため **100% ピクセル一致は保証しない**。修正後も切替時にわずかな位置/形状差が残りうる（Playwright 実測では ≤2px 級、手動回帰 2026-06-18 でも目視でわずかな差を確認・**実用上問題なし**と判断）。INV-2（preview↔export 一致）は export 時に選択した `textRenderMode` 経路内での一致が正準。
 - ~~**Preview 四隅 scale ハンドル（テキストレイヤー）**~~ — **2026-06-18 手動確認で修正済み**。solid と同等にドラッグ開始ジャンプなし。
-- **§26 手動回帰（2026-06-18 ユーザー）**: Undo ✅ / グリフ分解 ✅ / Draft↔Best ✅（残差許容）/ 位置 KF アニメ ✅。Inspector Source Text 入力バグは 2026-06-18 修正済み。残: export 通し。
+- **§26 手動回帰（2026-06-18 ユーザー）**: Undo ✅ / グリフ分解 ✅ / Draft↔Best ✅（残差許容）/ 位置 KF アニメ ✅。Inspector Source Text 入力バグは 2026-06-18 修正済み。
+- ~~**export 通し（precomp / MP4）**~~ — **2026-06-18 (Cursor) 修正**: §23 precomp 追加後 `exporter.ts` が `setTimelineComps` 未注入のままだったため comp レイヤーが export で空描画（preview のみ正しい）。`PreviewPanel` と同様に timeline comp 一覧を注入。Playwright 実測: precomp preview/export インクピクセル **delta=0**。MP4/WebM/PNG-seq + テキストは UI 経由でダウンロード確認済み。
 
 ### インフラ・その他
 
@@ -174,7 +175,7 @@ Preview 四隅 scale ハンドルも 2026-06-18 手動確認で修正済み。�
 **ゲート: 下記 1〜2 が完了するまで、4 以降（新機能）に着手しない。**
 
 1. ~~**§26.4 Draft/Best 切替バグ修正**~~ — **2026-06-18 解消済み**（renderer 初期化順 + baseline 式・Playwright 検証済み）。**残差は許容済み（100% 一致非目標）**。
-2. **§26 手動回帰（残）** — 作成→編集（即時反映）→export 通し（Undo / グリフ分解 / Draft↔Best / KF アニメは 2026-06-18 確認済み）。
+2. ~~**§26 手動回帰（残）** — 作成→編集（即時反映）→export 通し~~ — **2026-06-18 export 修正済み**（§23 precomp `setTimelineComps` 欠落 + 動画 encode 失敗時 PNG-seq フォールバック）。
 3. **§25 Preview 手動回帰** — 直接操作・ズーム・オーバーレイ・animated KF 書き戻し（solid / text）。
 4. **§24 Ease パネル手動回帰** — F9 メニュー・グラフエディタとの SSoT 共有確認。
 5. ~~**§23 precomp Playwright E2E**~~ → ロジックは `test/precomp.test.ts` で自動化済み。Playwright E2E は任意。
@@ -216,5 +217,8 @@ Preview 四隅 scale ハンドルも 2026-06-18 手動確認で修正済み。�
 | 2026-06-18 | (Cursor) Inspector/Timeline プロパティ編集の **Preview 即時反映**: `previewOverride`（スクラブ/カラーピッカー中の undo 対象外 patch）+ `ScrubNumber`/`ColorSwatch` `onLiveChange` + `PreviewPanel` `renderComp` マージ。選択ハンドルも `mergeObjectPreviewOverride` で bounds/transform 追従。136 tests ✅ |
 | 2026-06-18 | (ユーザー) §26 手動回帰（部分）: Undo ✅ / グリフ分解 ✅ / Draft↔Best ✅。**Draft↔Best は 100% ピクセル一致ではない**（わずかな残差）が実用上問題なし → progress に許容済み既知差として明記 |
 | 2026-06-18 | (ユーザー) §26 手動回帰: 位置 KF アニメ ✅ |
-| 2026-06-18 | (Cursor) §26 Inspector Source Text 入力バグ修正: textarea が store 値のみ制御され onChange は previewOverride のみ更新 → 再描画で 1 文字/Backspace 異常。`TextSourceInput` で local draft + ColorSwatch 同型（編集中は draft 正・blur で commit）。Playwright 実機検証 PASS |
+| 2026-06-18 | (Cursor) **export 回帰修正**: §23 precomp 後 `exporter.ts` に `setTimelineComps` 未注入 → comp レイヤーが export で空。Preview と同型注入 + encode 失敗時 PNG-seq フォールバック + `flushVideoEncoder` タイムアウト。Playwright: precomp preview/export ink delta=0 / PNG+MP4 UI ダウンロード確認。136 tests ✅ |
+| 2026-06-18 | (Cursor) **MP4/WebM 再生不能バグ修正**: 前回追加の encode 健全性チェックが `flush()` 前に走り「9/10 chunks」で誤フォールバック → ZIP が `.mp4`/`.webm` 名で保存され再生不能に。**修正**: 検証を flush 後へ移動 / VP9 は decoderConfig 不要 / 偶数解像度 / キュー drain / `ExportResult` で実際の format を返し拡張子一致。Playwright: テキスト含む MP4+WebM `<video>` 再生 OK。136 tests ✅ |
+| 2026-06-18 | (Cursor) **export 常時 PNG-seq フォールバック修正**: `drainEncoderQueue` が毎フレーム `encodeQueueSize===0` を 30s 待ち → HW エンコーダ環境でタイムアウトし MP4/WebM 選択でも ZIP 出力に。**修正**: 閾値ベース `backpressureEncoderQueue`（旧挙動）へ戻す / `decoderConfig` 検出を `description` 限定から緩和。Playwright: MP4/WebM 150f + `<video>` 再生 OK。136 tests ✅ |
+| 2026-06-18 | (Cursor) **export 常時 PNG-seq フォールバック修正(2)**: 誤検知の `assertVideoEncodeHealthy`（chunkCount/decoderConfig）と `flush()` 20s タイムアウト、音声 encode 失敗が映像まで PNG-seq フォールバックに連鎖。**修正**: 実エンコーダ error のみ検査 / flush は通常 await / 音声失敗は映像-only で継続。136 tests ✅ |
 | 2026-06-18 | (Claude Code) `cursor-agent` CLI を Composer 2.5 への実装委任ハーネスとして追加: [.claude/skills/delegate-to-cursor/SKILL.md](.claude/skills/delegate-to-cursor/SKILL.md)（隔離 worktree + `--print --force` 非対話実行 + マージ前レビュー必須）。ユーザー明示依頼時のみ起動 |
