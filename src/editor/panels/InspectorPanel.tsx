@@ -39,6 +39,15 @@ export function InspectorPanel() {
 
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [addEffectOpen, setAddEffectOpen] = useState(false);
+  const [highlightEffectId, setHighlightEffectId] = useState<string | null>(null);
+  const effectRowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const panelScrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!highlightEffectId) return;
+    const t = window.setTimeout(() => setHighlightEffectId(null), 1800);
+    return () => window.clearTimeout(t);
+  }, [highlightEffectId]);
 
   const comp = currentTimelineComp(project, compId);
   const obj = comp?.objects.find((o) => o.id === selectedIds[0]);
@@ -158,8 +167,23 @@ export function InspectorPanel() {
     setExpanded((prev) => ({ ...prev, [key]: !(prev[key] ?? true) }));
   };
 
+  const handleAddEffect = (type: string) => {
+    const effectId = addEffect(obj.id, type);
+    setAddEffectOpen(false);
+    if (!effectId) return;
+    setExpanded((prev) => ({
+      ...prev,
+      [foldoutKey("effects")]: true,
+      [foldoutKey(`effect:${effectId}`)]: true,
+    }));
+    setHighlightEffectId(effectId);
+    requestAnimationFrame(() => {
+      effectRowRefs.current.get(effectId)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    });
+  };
+
   return (
-    <div style={{ fontSize: 12, color: "#ccc", padding: 4, overflow: "auto", height: "100%", background: "#1c1c1c" }}>
+    <div ref={panelScrollRef} style={{ fontSize: 12, color: "#ccc", padding: 4, overflow: "auto", height: "100%", background: "#1c1c1c" }}>
       <div style={{ padding: "6px 8px 8px", fontWeight: "bold", color: "#eee", fontSize: 13 }}>
         {obj.name}
         {obj.isAdjustment && (
@@ -249,64 +273,122 @@ export function InspectorPanel() {
       )}
 
       <InspectorFoldout label="Effects" expanded={isExpanded("effects")} onToggle={() => toggleExpanded("effects")}>
+        <button
+          type="button"
+          onClick={() => setAddEffectOpen((v) => !v)}
+          style={{
+            ...btnStyle,
+            fontSize: 10,
+            width: "100%",
+            marginBottom: addEffectOpen ? 6 : 8,
+            background: addEffectOpen ? "#3a4a5a" : "#333",
+            color: addEffectOpen ? "#8cf" : "#ccc",
+          }}
+        >
+          {addEffectOpen ? "▾ エフェクトを選択" : "+ エフェクトを追加"}
+        </button>
+        {addEffectOpen && (
+          <div
+            style={{
+              marginBottom: 10,
+              padding: "6px 4px",
+              background: "#2a3340",
+              border: "1px solid #5a8fd0",
+              borderRadius: 4,
+            }}
+          >
+            <div style={{ fontSize: 10, color: "#9bc", padding: "0 6px 4px", fontWeight: 600 }}>
+              追加するエフェクト
+            </div>
+            {globalPluginRegistry.listEffects().length === 0 ? (
+              <div style={{ fontSize: 10, color: "#f88", padding: "4px 8px" }}>
+                利用可能なエフェクトがありません（プラグイン再読込を試してください）
+              </div>
+            ) : globalPluginRegistry.listEffects().map((e) => (
+              <button
+                key={e.type}
+                type="button"
+                onClick={() => handleAddEffect(e.type)}
+                style={{
+                  display: "block",
+                  width: "100%",
+                  background: "transparent",
+                  border: "none",
+                  color: "#ddd",
+                  padding: "6px 8px",
+                  textAlign: "left",
+                  cursor: "pointer",
+                  fontSize: 11,
+                  borderRadius: 3,
+                }}
+                onMouseEnter={(ev) => { ev.currentTarget.style.background = "#3a5068"; }}
+                onMouseLeave={(ev) => { ev.currentTarget.style.background = "transparent"; }}
+              >
+                {e.label}
+              </button>
+            ))}
+          </div>
+        )}
+        {(obj.effects ?? []).length === 0 && !addEffectOpen && (
+          <div style={{ color: "#666", fontSize: 10, marginBottom: 6, padding: "0 2px" }}>
+            エフェクトなし — 上のボタンから追加
+          </div>
+        )}
         {(obj.effects ?? []).map((effect, idx, arr) => {
           const def = globalPluginRegistry.getEffectDef(effect.type);
           const label = def?.label ?? effect.type;
           const sectionKey = `effect:${effect.id}`;
+          const highlighted = highlightEffectId === effect.id;
           return (
-            <InspectorFoldout
+            <div
               key={effect.id}
-              label={`${effect.enabled ? "●" : "○"} ${label}`}
-              expanded={isExpanded(sectionKey)}
-              onToggle={() => toggleExpanded(sectionKey)}
+              ref={(el) => {
+                if (el) effectRowRefs.current.set(effect.id, el);
+                else effectRowRefs.current.delete(effect.id);
+              }}
+              style={{
+                marginBottom: 4,
+                borderRadius: 4,
+                outline: highlighted ? "1px solid #5a8fd0" : "none",
+                background: highlighted ? "rgba(90, 143, 208, 0.12)" : "transparent",
+                transition: "background 0.3s, outline 0.2s",
+              }}
             >
-              <div style={{ display: "flex", gap: 4, marginBottom: 6 }}>
-                <button onClick={() => toggleEffect(obj.id, effect.id)} style={{ ...btnStyle, fontSize: 10 }}>
-                  {effect.enabled ? "Disable" : "Enable"}
-                </button>
-                <button
-                  disabled={idx === 0}
-                  onClick={() => reorderEffect(obj.id, effect.id, "up")}
-                  style={{ ...btnStyle, fontSize: 10 }}
-                  title="上へ（先に適用）"
-                >▲</button>
-                <button
-                  disabled={idx === arr.length - 1}
-                  onClick={() => reorderEffect(obj.id, effect.id, "down")}
-                  style={{ ...btnStyle, fontSize: 10 }}
-                  title="下へ（後に適用）"
-                >▼</button>
-                <button onClick={() => removeEffect(obj.id, effect.id)} style={{ ...btnStyle, fontSize: 10, color: "#f66" }}>×</button>
-              </div>
-              <EffectFields
-                obj={obj}
-                effect={effect}
-                params={def?.params ?? []}
-                frame={frame}
-                updateObject={updateObject}
-                previewPatch={previewPatch}
-              />
-            </InspectorFoldout>
+              <InspectorFoldout
+                label={`${effect.enabled ? "●" : "○"} ${label}`}
+                expanded={isExpanded(sectionKey)}
+                onToggle={() => toggleExpanded(sectionKey)}
+              >
+                <div style={{ display: "flex", gap: 4, marginBottom: 6 }}>
+                  <button onClick={() => toggleEffect(obj.id, effect.id)} style={{ ...btnStyle, fontSize: 10 }}>
+                    {effect.enabled ? "Disable" : "Enable"}
+                  </button>
+                  <button
+                    disabled={idx === 0}
+                    onClick={() => reorderEffect(obj.id, effect.id, "up")}
+                    style={{ ...btnStyle, fontSize: 10 }}
+                    title="上へ（先に適用）"
+                  >▲</button>
+                  <button
+                    disabled={idx === arr.length - 1}
+                    onClick={() => reorderEffect(obj.id, effect.id, "down")}
+                    style={{ ...btnStyle, fontSize: 10 }}
+                    title="下へ（後に適用）"
+                  >▼</button>
+                  <button onClick={() => removeEffect(obj.id, effect.id)} style={{ ...btnStyle, fontSize: 10, color: "#f66" }}>×</button>
+                </div>
+                <EffectFields
+                  obj={obj}
+                  effect={effect}
+                  params={def?.params ?? []}
+                  frame={frame}
+                  updateObject={updateObject}
+                  previewPatch={previewPatch}
+                />
+              </InspectorFoldout>
+            </div>
           );
         })}
-        <div style={{ position: "relative", marginTop: 4 }}>
-          <button onClick={() => setAddEffectOpen((v) => !v)} style={{ ...btnStyle, fontSize: 10, width: "100%" }}>
-            + エフェクトを追加
-          </button>
-          {addEffectOpen && (
-            <div style={{ position: "absolute", left: 0, right: 0, top: "100%", zIndex: 10, background: "#333", border: "1px solid #555", borderRadius: 3, marginTop: 2 }}>
-              {globalPluginRegistry.listEffects().map((e) => (
-                <button
-                  key={e.type}
-                  onClick={() => { addEffect(obj.id, e.type); setAddEffectOpen(false); }}
-                  style={{ display: "block", width: "100%", background: "transparent", border: "none", color: "#ccc", padding: "4px 8px", textAlign: "left", cursor: "pointer", fontSize: 11 }}
-                >
-                  {e.label}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
       </InspectorFoldout>
 
       <InspectorFoldout label="Expression" expanded={isExpanded("expression")} onToggle={() => toggleExpanded("expression")}>

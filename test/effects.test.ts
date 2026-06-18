@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { BLUR_EFFECT_DEF, TINT_EFFECT_DEF } from "../src/runtime/builtinEffects";
+import { BLUR_EFFECT_DEF, TINT_EFFECT_DEF, registerBuiltinEffects } from "../src/runtime/builtinEffects";
+import { globalPluginRegistry } from "../src/runtime/pluginRegistry";
 import { resolve } from "../src/runtime/resolve";
 import { defaultTransform, staticProp, vec3 } from "../src/core/props";
 import type { EffectInstance, SceneObject, TimelineComposition } from "../src/core/schema";
@@ -8,6 +9,14 @@ import { createProject } from "../src/core/createProject";
 
 describe("builtinEffects apply (§27.3)", () => {
   const ctx = { width: 1920, height: 1080 };
+
+  it("re-registers after pluginRegistry.clear() (loadPlugins 経路)", () => {
+    registerBuiltinEffects();
+    expect(globalPluginRegistry.listEffects().map((e) => e.type)).toEqual(["blur", "tint"]);
+    globalPluginRegistry.clear();
+    registerBuiltinEffects();
+    expect(globalPluginRegistry.listEffects().map((e) => e.type)).toEqual(["blur", "tint"]);
+  });
 
   it("blur returns null when blurriness is 0", () => {
     expect(BLUR_EFFECT_DEF.apply({ blurriness: 0 }, ctx)).toBeNull();

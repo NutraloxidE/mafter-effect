@@ -183,7 +183,7 @@ export interface EditorStore {
   addCompLayer: (compId: string, name?: string) => string | null;
 
   // §27 エフェクト & 調整レイヤー
-  addEffect: (objId: string, type: string) => void;
+  addEffect: (objId: string, type: string) => string | null;
   removeEffect: (objId: string, effectId: string) => void;
   reorderEffect: (objId: string, effectId: string, dir: "up" | "down") => void;
   toggleEffect: (objId: string, effectId: string) => void;
@@ -662,7 +662,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     globalPluginRegistry.clear();
     pluginLoader.clear();
     registerBuiltinComponents();
-registerBuiltinEffects();
+    registerBuiltinEffects();
 
     const activeRefs = p.pluginRefs.filter((r) => r.enabled);
     for (const ref of activeRefs) {
@@ -784,10 +784,10 @@ registerBuiltinEffects();
 
   addEffect: (objId, type) => {
     const def = globalPluginRegistry.getEffectDef(type);
-    if (!def) return;
+    if (!def) return null;
     const comp = currentTimelineComp(get().project, get().currentCompId);
     const obj = comp?.objects.find((o) => o.id === objId);
-    if (!obj) return;
+    if (!obj) return null;
     const effect: EffectInstance = {
       id: newObjectId(),
       type,
@@ -795,6 +795,7 @@ registerBuiltinEffects();
       props: defaultEffectProps(def),
     };
     get().updateObject(objId, { effects: [...(obj.effects ?? []), effect] }, `Add ${def.label}`);
+    return effect.id;
   },
 
   removeEffect: (objId, effectId) => {

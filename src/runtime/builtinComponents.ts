@@ -22,10 +22,7 @@ const TEXT_COMPONENT_DEF: ComponentDef = {
   render() { /* DomRenderer */ },
 };
 
-let registered = false;
-
+/** registry.clear() 後も再登録できる（loadPlugins 経路）。 */
 export function registerBuiltinComponents(): void {
-  if (registered) return;
   globalPluginRegistry.registerComponent(TEXT_COMPONENT_DEF);
-  registered = true;
 }

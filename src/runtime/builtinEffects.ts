@@ -71,13 +71,9 @@ const TINT_EFFECT_DEF: EffectDef = {
   },
 };
 
-let registered = false;
-
 export function registerBuiltinEffects(): void {
-  if (registered) return;
   globalPluginRegistry.registerEffect(BLUR_EFFECT_DEF);
   globalPluginRegistry.registerEffect(TINT_EFFECT_DEF);
-  registered = true;
 }
 
 export { BLUR_EFFECT_DEF, TINT_EFFECT_DEF };
