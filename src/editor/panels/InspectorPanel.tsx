@@ -507,6 +507,22 @@ function EffectFields({
     <>
       {params.map((param) => {
         const raw = props[param.key];
+        if (param.kind === "enum" && !param.animatable) {
+          const val = typeof raw === "string" ? raw : String(param.default ?? "");
+          return (
+            <Row key={param.key} label={param.label}>
+              <select
+                value={val}
+                onChange={(e) => writeEffects({ ...props, [param.key]: e.target.value }, `Edit ${param.label}`)}
+                style={selectStyle}
+              >
+                {(param.options ?? []).map((opt) => (
+                  <option key={opt} value={opt}>{opt}</option>
+                ))}
+              </select>
+            </Row>
+          );
+        }
         if (!isAnimated(raw)) return null;
         const val = sampleAny(raw, frame);
         if (param.kind === "scalar" && typeof val === "number") {

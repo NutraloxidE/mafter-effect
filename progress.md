@@ -17,7 +17,7 @@
 
 **MVP = M0–M4 全マイルストーン実装・実機検証完了。** その後 §20 Project パネル / §21 Timeline AE化 / §22 グラフエディタ / §23 precomp を MVP 後 UX として拡張中。
 
-現行テスト: **144 件全通過** / typecheck ✅ / build ✅（2026-06-19）。
+現行テスト: **169 件全通過** / typecheck ✅ / build ✅（2026-06-19）。
 
 ---
 
@@ -137,9 +137,31 @@ spec §26 に確定。`text` builtin ComponentDef 登録 + Inspector Text セク
 - [x] **UI（§27.6/§27.7）**: [InspectorPanel.tsx](src/editor/panels/InspectorPanel.tsx) Effects foldout / [TimelinePanel.tsx](src/editor/panels/TimelinePanel.tsx) effect KF 行 + ADJ バッジ
 - [x] **ストア（§27.8）**: [store.ts](src/editor/store.ts) `addEffect`/`removeEffect`/`reorderEffect`/`toggleEffect`/`addAdjustmentLayer`/`toggleAdjustment`
 - [x] **PropPath**: [keyframeEdit.ts](src/editor/keyframeEdit.ts) `effects.<id>.<key>`
-- [x] **テスト**: [test/effects.test.ts](test/effects.test.ts)（8 件）+ 既存回帰 **144 tests PASS** / typecheck / build ✅
+- [x] **テスト**: [test/effects.test.ts](test/effects.test.ts) + [test/effectSvg.test.ts](test/effectSvg.test.ts) + 既存回帰 **169 tests PASS** / typecheck / build ✅
 - [x] **Playwright 実機**: Blur preview + KF アニメ / Tint url filter / 調整レイヤー backdrop-filter ✅
 - **調整レイヤー export**: preview ベストエフォート（§27.4）。export ピクセル一致は未検証 → **許容済み既知差候補**（foreignObject + backdrop-filter 経路依存）。通常レイヤー effects は既存 export パイプライン（filter 文字列）で preview 一致想定。
+
+#### §27.3 追加エフェクト（**仮実装 2026-06-19・要修正**）
+
+> **ステータス: 仮追加（provisional）**。Inspector から追加・KF・preview 反映までは動くが、見た目・UX・export 一致は未仕上げ。**本番品質とみなさないこと。**
+
+| type | label | カテゴリ | 備考 |
+|---|---|---|---|
+| `wave` | Wave | ディストーション | feTurbulence + displacement。direction は enum（非 KF） |
+| `turbulentDisplace` | Turbulent Displace | ディストーション | AE Turbulent Displace 近似 |
+| `ripple` | Ripple | ディストーション | 放射状近似（精度不足・要チューニング） |
+| `linearWipe` | Linear Wipe | ワイプ | SVG マスク。completion 既定 0 = 非表示 |
+| `angularWipe` | Angular Wipe | ワイプ | 扇形 wedge マスク。AE Angular Wipe 近似 |
+
+**要修正（優先度順・未着手）**:
+- [ ] **見た目チューニング**: Wave/Ripple の param→SVG 換算、ワイプ feather/エッジ品質、Angular の startAngle 基準
+- [ ] **UX**: ワイプ completion 既定値（0=非表示）の扱い、Ripple の視覚的フィードバック
+- [ ] **Timeline**: Wave `direction` enum 行の編集 UI（現状 Inspector `<select>` のみ）
+- [ ] **export 一致（INV-2）**: 新 5 種の preview↔export ピクセル検証（Blur/Tint 同等の保証は未実施）
+- [ ] **調整レイヤー + 新エフェクト**: backdrop-filter 経路での作用確認
+- [ ] **Ripple 実機検証**: Playwright 未カバー（Wave/Turbulent/Linear/Angular のみ確認済み）
+
+**関連ファイル**: [effectSvg.ts](src/runtime/effectSvg.ts) / [builtinEffects.ts](src/runtime/builtinEffects.ts) / spec §27.3
 
 ### Timeline AE化バックログ（spec §5 スキーマ拡張 + INV 影響評価を伴い別リビジョンで導入）
 **→ 実用性優先度リストは [doc/timeline-panel-wip.md](doc/timeline-panel-wip.md)。**
@@ -238,3 +260,4 @@ Preview 四隅 scale ハンドルも 2026-06-18 手動確認で修正済み。�
 | 2026-06-19 | (Claude Code) **spec v0.11 §27 エフェクト & 調整レイヤー 設計確定**: §5.5b additive スキーマ（`EffectInstance` / `SceneObject.effects?` / `isAdjustment?`・byte 等価）+ §27 基盤（`EffectDef`/`registerEffect`/CSS filter 連結）+ builtin Blur/Tint + 調整レイヤー backdrop-filter 最小設計 + Inspector/Timeline 統合 + INV 評価 + 作業分解。**実装は Cursor 委任予定**（weekly limit 残 7%・設計に予算集中） |
 | 2026-06-19 | (Cursor) **Inspector Unity 風 foldout UI**: [InspectorPanel.tsx](src/editor/panels/InspectorPanel.tsx) に `InspectorFoldout`（▶/▼ 三角・コンポーネント毎の仕切り）を導入。Transform / components[]（text）/ Expression / Keyframes / In-Out を個別展開・折りたたみ可（レイヤー毎に状態保持・既定展開）。機能は不変。136 tests ✅ / Playwright 折りたたみ検証 ✅ |
 | 2026-06-19 | (Cursor) **§27 エフェクト & 調整レイヤー実装**: schema §5.5b + EffectDef/blur/tint + resolve/DomRenderer filter/backdrop-filter + Inspector Effects foldout + Timeline effect KF 行 + store アクション。144 tests / typecheck / build ✅。Playwright: Blur KF / Tint / 調整レイヤー backdrop ✅。調整レイヤー export 一致は未検証（§27.4 許容済み既知差候補） |
+| 2026-06-19 | (Cursor) **§27.3 ディストーション & ワイプ 5 種追加（仮実装・要修正）**: spec §27.3 追記 + [effectSvg.ts](src/runtime/effectSvg.ts) + builtin `wave`/`turbulentDisplace`/`ripple`/`linearWipe`/`angularWipe` + Inspector enum（Wave direction）。169 tests / typecheck / build ✅。Playwright: Wave/Turbulent/Linear/Angular preview filter ✅。**Ripple・export 一致・見た目チューニングは未完了 → progress §27.3 要修正リスト参照** |

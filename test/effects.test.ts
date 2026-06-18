@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { BLUR_EFFECT_DEF, TINT_EFFECT_DEF, registerBuiltinEffects } from "../src/runtime/builtinEffects";
+import {
+  ANGULAR_WIPE_EFFECT_DEF,
+  BLUR_EFFECT_DEF,
+  LINEAR_WIPE_EFFECT_DEF,
+  RIPPLE_EFFECT_DEF,
+  TINT_EFFECT_DEF,
+  TURBULENT_DISPLACE_EFFECT_DEF,
+  WAVE_EFFECT_DEF,
+  registerBuiltinEffects,
+} from "../src/runtime/builtinEffects";
 import { globalPluginRegistry } from "../src/runtime/pluginRegistry";
 import { resolve } from "../src/runtime/resolve";
 import { defaultTransform, staticProp, vec3 } from "../src/core/props";
@@ -7,15 +16,19 @@ import type { EffectInstance, SceneObject, TimelineComposition } from "../src/co
 import { serializeProject, deserializeProject } from "../src/core/serialize";
 import { createProject } from "../src/core/createProject";
 
-describe("builtinEffects apply (§27.3)", () => {
-  const ctx = { width: 1920, height: 1080 };
+const ctx = { width: 1920, height: 1080 };
 
+describe("builtinEffects apply (§27.3)", () => {
   it("re-registers after pluginRegistry.clear() (loadPlugins 経路)", () => {
     registerBuiltinEffects();
-    expect(globalPluginRegistry.listEffects().map((e) => e.type)).toEqual(["blur", "tint"]);
+    expect(globalPluginRegistry.listEffects().map((e) => e.type)).toEqual([
+      "blur", "tint", "wave", "turbulentDisplace", "ripple", "linearWipe", "angularWipe",
+    ]);
     globalPluginRegistry.clear();
     registerBuiltinEffects();
-    expect(globalPluginRegistry.listEffects().map((e) => e.type)).toEqual(["blur", "tint"]);
+    expect(globalPluginRegistry.listEffects().map((e) => e.type)).toEqual([
+      "blur", "tint", "wave", "turbulentDisplace", "ripple", "linearWipe", "angularWipe",
+    ]);
   });
 
   it("blur returns null when blurriness is 0", () => {
@@ -39,6 +52,89 @@ describe("builtinEffects apply (§27.3)", () => {
     if (r?.kind === "svg") {
       expect(r.primitives).toContain("feColorMatrix");
       expect(r.primitives).toContain('slope="0.5"');
+    }
+  });
+
+  it("wave returns null when amplitude is 0", () => {
+    expect(WAVE_EFFECT_DEF.apply({ amplitude: 0, wavelength: 50, direction: "horizontal", phase: 0 }, ctx)).toBeNull();
+  });
+
+  it("wave returns svg displacement for horizontal", () => {
+    const r = WAVE_EFFECT_DEF.apply({ amplitude: 20, wavelength: 50, direction: "horizontal", phase: 45 }, ctx);
+    expect(r?.kind).toBe("svg");
+    if (r?.kind === "svg") {
+      expect(r.primitives).toContain("feTurbulence");
+      expect(r.primitives).toContain("feDisplacementMap");
+      expect(r.primitives).toContain('type="fractalNoise"');
+    }
+  });
+
+  it("wave uses vertical baseFrequency when direction is vertical", () => {
+    const r = WAVE_EFFECT_DEF.apply({ amplitude: 10, wavelength: 40, direction: "vertical", phase: 0 }, ctx);
+    expect(r?.kind).toBe("svg");
+    if (r?.kind === "svg") {
+      expect(r.primitives).toMatch(/baseFrequency="0\.002 [\d.]+"/);
+    }
+  });
+
+  it("turbulentDisplace returns null when amount is 0", () => {
+    expect(TURBULENT_DISPLACE_EFFECT_DEF.apply({ amount: 0, size: 50, evolution: 0 }, ctx)).toBeNull();
+  });
+
+  it("turbulentDisplace returns svg turbulence", () => {
+    const r = TURBULENT_DISPLACE_EFFECT_DEF.apply({ amount: 50, size: 50, evolution: 90 }, ctx);
+    expect(r?.kind).toBe("svg");
+    if (r?.kind === "svg") {
+      expect(r.primitives).toContain('type="turbulence"');
+      expect(r.primitives).toContain('scale="50"');
+    }
+  });
+
+  it("ripple returns null when amplitude is 0", () => {
+    expect(RIPPLE_EFFECT_DEF.apply({ amplitude: 0, radius: 100, frequency: 5, centerX: 0.5, centerY: 0.5 }, ctx)).toBeNull();
+  });
+
+  it("ripple returns svg displacement", () => {
+    const r = RIPPLE_EFFECT_DEF.apply({ amplitude: 10, radius: 100, frequency: 5, centerX: 0.5, centerY: 0.5 }, ctx);
+    expect(r?.kind).toBe("svg");
+    if (r?.kind === "svg") {
+      expect(r.primitives).toContain("feDisplacementMap");
+    }
+  });
+
+  it("linearWipe returns null when completion >= 1", () => {
+    expect(LINEAR_WIPE_EFFECT_DEF.apply({ completion: 1, angle: 0, feather: 0 }, ctx)).toBeNull();
+  });
+
+  it("linearWipe returns mask composite when completion in (0,1)", () => {
+    const r = LINEAR_WIPE_EFFECT_DEF.apply({ completion: 0.5, angle: 0, feather: 2 }, ctx);
+    expect(r?.kind).toBe("svg");
+    if (r?.kind === "svg") {
+      expect(r.primitives).toContain("feImage");
+      expect(r.primitives).toContain("feComposite");
+      expect(r.primitives).toContain("linearGradient");
+    }
+  });
+
+  it("linearWipe hides all when completion is 0", () => {
+    const r = LINEAR_WIPE_EFFECT_DEF.apply({ completion: 0, angle: 0, feather: 0 }, ctx);
+    expect(r?.kind).toBe("svg");
+    if (r?.kind === "svg") {
+      expect(r.primitives).toContain("black");
+      expect(r.primitives).toContain('operator="in"');
+    }
+  });
+
+  it("angularWipe returns null when completion >= 1", () => {
+    expect(ANGULAR_WIPE_EFFECT_DEF.apply({ completion: 1, startAngle: 0, centerX: 0.5, centerY: 0.5, feather: 0 }, ctx)).toBeNull();
+  });
+
+  it("angularWipe returns wedge mask when completion in (0,1)", () => {
+    const r = ANGULAR_WIPE_EFFECT_DEF.apply({ completion: 0.25, startAngle: 0, centerX: 0.5, centerY: 0.5, feather: 0 }, ctx);
+    expect(r?.kind).toBe("svg");
+    if (r?.kind === "svg") {
+      expect(r.primitives).toContain("feImage");
+      expect(r.primitives).toContain("path");
     }
   });
 });
@@ -93,6 +189,45 @@ describe("resolve effects (§27.5)", () => {
     expect(scene5.objects[0]?.effects?.[0]?.props["blurriness"]).toBe(10);
   });
 
+  it("resolves linearWipe completion keyframes", () => {
+    const effect: EffectInstance = {
+      id: "E2",
+      type: "linearWipe",
+      enabled: true,
+      props: {
+        completion: {
+          value: 0,
+          keyframes: [
+            { frame: 0, value: 0, easing: { type: "linear" } },
+            { frame: 10, value: 1, easing: { type: "linear" } },
+          ],
+        },
+        angle: staticProp(0),
+        feather: staticProp(0),
+      },
+    };
+    const scene0 = resolve(comp([makeObject({ id: "a", effects: [effect] })]), 0);
+    const scene10 = resolve(comp([makeObject({ id: "a", effects: [effect] })]), 10);
+    expect(scene0.objects[0]?.effects?.[0]?.props["completion"]).toBe(0);
+    expect(scene10.objects[0]?.effects?.[0]?.props["completion"]).toBe(1);
+  });
+
+  it("passes non-animatable enum direction through resolve", () => {
+    const effect: EffectInstance = {
+      id: "E3",
+      type: "wave",
+      enabled: true,
+      props: {
+        amplitude: staticProp(20),
+        wavelength: staticProp(50),
+        direction: "vertical",
+        phase: staticProp(0),
+      },
+    };
+    const scene = resolve(comp([makeObject({ id: "a", effects: [effect] })]), 0);
+    expect(scene.objects[0]?.effects?.[0]?.props["direction"]).toBe("vertical");
+  });
+
   it("passes isAdjustment and skips content components", () => {
     const scene = resolve(comp([
       makeObject({
@@ -132,9 +267,14 @@ describe("effects project roundtrip (INV-4)", () => {
         }],
         effects: [{
           id: "FX1",
-          type: "blur",
+          type: "wave",
           enabled: true,
-          props: { blurriness: staticProp(8) },
+          props: {
+            amplitude: staticProp(20),
+            wavelength: staticProp(50),
+            direction: "horizontal",
+            phase: staticProp(0),
+          },
         }],
       },
     ];

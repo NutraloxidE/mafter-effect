@@ -1,9 +1,21 @@
 import type { RGBA } from "../core/schema";
 import type { EffectDef, EffectRenderCtx } from "./plugin";
 import { globalPluginRegistry } from "./pluginRegistry";
+import {
+  angularWipeMask,
+  linearWipeMask,
+  phaseToSeed,
+  sizeToFrequency,
+  turbulenceDisplace,
+  wavelengthToFrequency,
+} from "./effectSvg";
 
 function num(v: unknown, fallback: number): number {
   return typeof v === "number" && Number.isFinite(v) ? v : fallback;
+}
+
+function str(v: unknown, fallback: string): string {
+  return typeof v === "string" ? v : fallback;
 }
 
 function rgba(v: unknown, fallback: RGBA): RGBA {
@@ -71,9 +83,156 @@ const TINT_EFFECT_DEF: EffectDef = {
   },
 };
 
+const WAVE_EFFECT_DEF: EffectDef = {
+  type: "wave",
+  label: "Wave",
+  params: [
+    { key: "amplitude", label: "Amplitude", kind: "scalar", default: 20, animatable: true, min: 0, max: 500, step: 0.1 },
+    { key: "wavelength", label: "Wavelength", kind: "scalar", default: 50, animatable: true, min: 1, max: 500, step: 0.1 },
+    { key: "direction", label: "Direction", kind: "enum", default: "horizontal", animatable: false, options: ["horizontal", "vertical"] },
+    { key: "phase", label: "Phase", kind: "scalar", default: 0, animatable: true, min: 0, max: 360, step: 1 },
+  ],
+  apply(props, _ctx: EffectRenderCtx) {
+    const amplitude = Math.max(0, num(props["amplitude"], 0));
+    if (amplitude === 0) return null;
+    const wavelength = Math.max(1, num(props["wavelength"], 50));
+    const direction = str(props["direction"], "horizontal");
+    const phase = num(props["phase"], 0);
+    const freq = wavelengthToFrequency(wavelength);
+    const baseFrequencyX = direction === "vertical" ? 0.002 : freq;
+    const baseFrequencyY = direction === "vertical" ? freq : 0.002;
+    const primitives = turbulenceDisplace({
+      scale: amplitude,
+      baseFrequencyX,
+      baseFrequencyY,
+      seed: phaseToSeed(phase),
+      numOctaves: 2,
+      type: "fractalNoise",
+    });
+    return { kind: "svg", primitives };
+  },
+};
+
+const TURBULENT_DISPLACE_EFFECT_DEF: EffectDef = {
+  type: "turbulentDisplace",
+  label: "Turbulent Displace",
+  params: [
+    { key: "amount", label: "Amount", kind: "scalar", default: 50, animatable: true, min: 0, max: 500, step: 0.1 },
+    { key: "size", label: "Size", kind: "scalar", default: 50, animatable: true, min: 1, max: 500, step: 0.1 },
+    { key: "evolution", label: "Evolution", kind: "scalar", default: 0, animatable: true, min: 0, max: 360, step: 1 },
+  ],
+  apply(props, _ctx: EffectRenderCtx) {
+    const amount = Math.max(0, num(props["amount"], 0));
+    if (amount === 0) return null;
+    const size = Math.max(1, num(props["size"], 50));
+    const evolution = num(props["evolution"], 0);
+    const freq = sizeToFrequency(size);
+    const primitives = turbulenceDisplace({
+      scale: amount,
+      baseFrequencyX: freq,
+      baseFrequencyY: freq,
+      seed: phaseToSeed(evolution),
+      numOctaves: 3,
+      type: "turbulence",
+    });
+    return { kind: "svg", primitives };
+  },
+};
+
+const RIPPLE_EFFECT_DEF: EffectDef = {
+  type: "ripple",
+  label: "Ripple",
+  params: [
+    { key: "radius", label: "Radius", kind: "scalar", default: 100, animatable: true, min: 0, max: 1000, step: 0.1 },
+    { key: "amplitude", label: "Amplitude", kind: "scalar", default: 10, animatable: true, min: 0, max: 200, step: 0.1 },
+    { key: "frequency", label: "Frequency", kind: "scalar", default: 5, animatable: true, min: 0.1, max: 50, step: 0.1 },
+    { key: "centerX", label: "Center X", kind: "scalar", default: 0.5, animatable: true, min: 0, max: 1, step: 0.01 },
+    { key: "centerY", label: "Center Y", kind: "scalar", default: 0.5, animatable: true, min: 0, max: 1, step: 0.01 },
+  ],
+  apply(props, ctx: EffectRenderCtx) {
+    const amplitude = Math.max(0, num(props["amplitude"], 0));
+    if (amplitude === 0) return null;
+    const radius = Math.max(1, num(props["radius"], 100));
+    const frequency = Math.max(0.1, num(props["frequency"], 5));
+    const centerX = Math.min(1, Math.max(0, num(props["centerX"], 0.5)));
+    const centerY = Math.min(1, Math.max(0, num(props["centerY"], 0.5)));
+    const extent = Math.max(ctx.width, ctx.height, 1);
+    const freq = Math.max(0.001, (frequency * extent) / (radius * 100));
+    const seed = phaseToSeed(centerX * 360 + centerY * 360);
+    const primitives = turbulenceDisplace({
+      scale: amplitude,
+      baseFrequencyX: freq,
+      baseFrequencyY: freq,
+      seed,
+      numOctaves: 2,
+      type: "fractalNoise",
+    });
+    return { kind: "svg", primitives };
+  },
+};
+
+const LINEAR_WIPE_EFFECT_DEF: EffectDef = {
+  type: "linearWipe",
+  label: "Linear Wipe",
+  params: [
+    { key: "completion", label: "Transition Completion", kind: "scalar", default: 0, animatable: true, min: 0, max: 1, step: 0.01 },
+    { key: "angle", label: "Wipe Angle", kind: "scalar", default: 0, animatable: true, min: 0, max: 360, step: 1 },
+    { key: "feather", label: "Feather", kind: "scalar", default: 0, animatable: true, min: 0, max: 200, step: 0.1 },
+  ],
+  apply(props, ctx: EffectRenderCtx) {
+    const completion = num(props["completion"], 0);
+    if (completion >= 1) return null;
+    const w = Math.max(1, ctx.width);
+    const h = Math.max(1, ctx.height);
+    const angle = num(props["angle"], 0);
+    const feather = Math.max(0, num(props["feather"], 0));
+    const primitives = linearWipeMask(completion, angle, feather, w, h);
+    if (!primitives) return null;
+    return { kind: "svg", primitives };
+  },
+};
+
+const ANGULAR_WIPE_EFFECT_DEF: EffectDef = {
+  type: "angularWipe",
+  label: "Angular Wipe",
+  params: [
+    { key: "completion", label: "Transition Completion", kind: "scalar", default: 0, animatable: true, min: 0, max: 1, step: 0.01 },
+    { key: "startAngle", label: "Start Angle", kind: "scalar", default: 0, animatable: true, min: 0, max: 360, step: 1 },
+    { key: "centerX", label: "Center X", kind: "scalar", default: 0.5, animatable: true, min: 0, max: 1, step: 0.01 },
+    { key: "centerY", label: "Center Y", kind: "scalar", default: 0.5, animatable: true, min: 0, max: 1, step: 0.01 },
+    { key: "feather", label: "Feather", kind: "scalar", default: 0, animatable: true, min: 0, max: 200, step: 0.1 },
+  ],
+  apply(props, ctx: EffectRenderCtx) {
+    const completion = num(props["completion"], 0);
+    if (completion >= 1) return null;
+    const w = Math.max(1, ctx.width);
+    const h = Math.max(1, ctx.height);
+    const startAngle = num(props["startAngle"], 0);
+    const centerX = Math.min(1, Math.max(0, num(props["centerX"], 0.5)));
+    const centerY = Math.min(1, Math.max(0, num(props["centerY"], 0.5)));
+    const feather = Math.max(0, num(props["feather"], 0));
+    const primitives = angularWipeMask(completion, startAngle, centerX, centerY, feather, w, h);
+    if (!primitives) return null;
+    return { kind: "svg", primitives };
+  },
+};
+
 export function registerBuiltinEffects(): void {
   globalPluginRegistry.registerEffect(BLUR_EFFECT_DEF);
   globalPluginRegistry.registerEffect(TINT_EFFECT_DEF);
+  globalPluginRegistry.registerEffect(WAVE_EFFECT_DEF);
+  globalPluginRegistry.registerEffect(TURBULENT_DISPLACE_EFFECT_DEF);
+  globalPluginRegistry.registerEffect(RIPPLE_EFFECT_DEF);
+  globalPluginRegistry.registerEffect(LINEAR_WIPE_EFFECT_DEF);
+  globalPluginRegistry.registerEffect(ANGULAR_WIPE_EFFECT_DEF);
 }
 
-export { BLUR_EFFECT_DEF, TINT_EFFECT_DEF };
+export {
+  BLUR_EFFECT_DEF,
+  TINT_EFFECT_DEF,
+  WAVE_EFFECT_DEF,
+  TURBULENT_DISPLACE_EFFECT_DEF,
+  RIPPLE_EFFECT_DEF,
+  LINEAR_WIPE_EFFECT_DEF,
+  ANGULAR_WIPE_EFFECT_DEF,
+};

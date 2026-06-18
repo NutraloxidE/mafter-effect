@@ -1362,7 +1362,7 @@ INV-1〜8 を保持する。
 
 ## §27 エフェクト & 調整レイヤー（Effects / Adjustment Layer）
 
-> **状態**: 仕様確定（本リビジョン v0.11）。実装は **エフェクト基盤 + builtin 2 種（Blur / Tint）+ 調整レイヤー最小実装**。役割分担に従い**設計=Claude Code / 実装=Cursor**（§27.10 に作業分解）。
+> **状態**: 仕様確定（本リビジョン v0.11）。実装は **エフェクト基盤 + builtin 7 種 + 調整レイヤー最小実装**。役割分担に従い**設計=Claude Code / 実装=Cursor**（§27.10 に作業分解）。
 > **スキーマ**: §5.5b（additive・既存 project.json byte 等価）。**AE 100% 一致は非目標**。下記の範囲のみ正式サポート。
 > Timeline Tier D（§21.0 / L825）の「調整レイヤー（将来）」マーカーは、**基盤については本節が supersede** する（モーションブラー/フレームブレンド/3D レイヤーは引き続き将来）。
 
@@ -1420,7 +1420,7 @@ interface EffectDef {
 - builtin（`blur`/`tint`）も **エディタ初期化時に登録**する（§26.2 の builtin ComponentDef 登録と同じ場所・[store.ts](../src/editor/store.ts)）。
 - **EffectDef I/O 契約**は §10/§14 の将来 WASM effect（buffer→buffer）と整合させる方針を維持（現状は DOM フィルタ片を返すが、`apply` は純関数で副作用なし）。
 
-### §27.3 builtin エフェクト 2 種（確定）
+### §27.3 builtin エフェクト（確定）
 
 #### `blur` — Gaussian Blur
 
@@ -1446,6 +1446,71 @@ interface EffectDef {
 - 色値は 0..1（RGBA, §5.1）。slope/intercept は 0..1 空間でそのまま使える。
 
 > **`amount` ブレンドの厳密性**は MVP では上記 feMerge 近似で可（AE の正確な線形補間と微差を許容・**AE 100% 一致は非目標**）。厳密合成（`feComposite arithmetic` で `out = src·(1-amount) + tint·amount`）が必要なら Phase 2。
+
+#### `wave` — Wave（手続き型ディストーション）
+
+| param key | label | kind | default | range | animatable |
+|---|---|---|---|---|---|
+| `amplitude` | Amplitude | scalar | `20` | min 0, max 500, step 0.1 | ✅ |
+| `wavelength` | Wavelength | scalar | `50` | min 1, max 500, step 0.1 | ✅ |
+| `direction` | Direction | enum | `"horizontal"` | `horizontal` / `vertical` | ❌ |
+| `phase` | Phase | scalar | `0` | 0..360, step 1 | ✅ |
+
+- `apply` → `{ kind: "svg", primitives }`。`feTurbulence type="fractalNoise"` + `feDisplacementMap`。
+- `amplitude === 0` は `null`（恒等）。
+- `wavelength` → `baseFrequency`（comp サイズ正規化）。`direction=horizontal` は X 軸方向の波、`vertical` は Y 軸。
+- `phase` → `seed`（決定論的整数、`Math.floor(phase)` ベース）。乱数禁止（INV-1）。
+
+#### `turbulentDisplace` — Turbulent Displace
+
+| param key | label | kind | default | range | animatable |
+|---|---|---|---|---|---|
+| `amount` | Amount | scalar | `50` | min 0, max 500, step 0.1 | ✅ |
+| `size` | Size | scalar | `50` | min 1, max 500, step 0.1 | ✅ |
+| `evolution` | Evolution | scalar | `0` | 0..360, step 1 | ✅ |
+
+- `apply` → `{ kind: "svg", primitives }`。`feTurbulence type="turbulence"` + `feDisplacementMap`。
+- `amount === 0` は `null`。
+- `size` → `baseFrequency`（大→低周波）。`evolution` → `seed`（決定論的）。
+
+#### `ripple` — Ripple（放射状近似）
+
+| param key | label | kind | default | range | animatable |
+|---|---|---|---|---|---|
+| `radius` | Radius | scalar | `100` | min 0, max 1000, step 0.1 | ✅ |
+| `amplitude` | Amplitude | scalar | `10` | min 0, max 200, step 0.1 | ✅ |
+| `frequency` | Frequency | scalar | `5` | min 0.1, max 50, step 0.1 | ✅ |
+| `centerX` | Center X | scalar | `0.5` | 0..1, step 0.01 | ✅ |
+| `centerY` | Center Y | scalar | `0.5` | 0..1, step 0.01 | ✅ |
+
+- `apply` → `{ kind: "svg", primitives }`。`feTurbulence` + `feDisplacementMap` を comp 正規化座標で調整（AE Ripple 100% 一致は非目標・近似可）。
+- `amplitude === 0` は `null`。
+
+#### `linearWipe` — Linear Wipe
+
+| param key | label | kind | default | range | animatable |
+|---|---|---|---|---|---|
+| `completion` | Transition Completion | scalar | `0` | 0..1, step 0.01 | ✅ |
+| `angle` | Wipe Angle | scalar | `0` | 0..360, step 1 | ✅ |
+| `feather` | Feather | scalar | `0` | min 0, max 200, step 0.1 | ✅ |
+
+- `apply` → `{ kind: "svg", primitives }`。`feImage`（data URI linearGradient マスク）→ optional `feGaussianBlur`（feather）→ `feComposite operator="in"`。
+- `completion >= 1` は `null`（完全表示・恒等）。`completion <= 0` は全透明マスク（レイヤー非表示）。
+
+#### `angularWipe` — Angular Wipe
+
+| param key | label | kind | default | range | animatable |
+|---|---|---|---|---|---|
+| `completion` | Transition Completion | scalar | `0` | 0..1, step 0.01 | ✅ |
+| `startAngle` | Start Angle | scalar | `0` | 0..360, step 1 | ✅ |
+| `centerX` | Center X | scalar | `0.5` | 0..1, step 0.01 | ✅ |
+| `centerY` | Center Y | scalar | `0.5` | 0..1, step 0.01 | ✅ |
+| `feather` | Feather | scalar | `0` | min 0, max 200, step 0.1 | ✅ |
+
+- `apply` → `{ kind: "svg", primitives }`。`feImage`（data URI 扇形 wedge マスク）→ optional `feGaussianBlur` → `feComposite operator="in"`。
+- `completion >= 1` は `null`。`completion <= 0` は全透明。
+
+> **ワイプ共通**: エフェクト配列順を維持するため `clip-path` ではなく SVG filter 内マスク（§27.1）。AE Transition 100% 一致は非目標。
 
 ### §27.4 調整レイヤー（Adjustment Layer・最小実装）
 
