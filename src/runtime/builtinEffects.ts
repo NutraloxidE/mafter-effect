@@ -36,6 +36,7 @@ function rgba(v: unknown, fallback: RGBA): RGBA {
 const BLUR_EFFECT_DEF: EffectDef = {
   type: "blur",
   label: "Blur",
+  category: "ぼかし",
   params: [
     { key: "blurriness", label: "Blurriness", kind: "scalar", default: 0, animatable: true, min: 0, max: 500, step: 0.1 },
   ],
@@ -49,6 +50,7 @@ const BLUR_EFFECT_DEF: EffectDef = {
 const TINT_EFFECT_DEF: EffectDef = {
   type: "tint",
   label: "Tint",
+  category: "カラー補正",
   params: [
     { key: "mapBlack", label: "Map Black To", kind: "color", default: { r: 0, g: 0, b: 0, a: 1 }, animatable: true },
     { key: "mapWhite", label: "Map White To", kind: "color", default: { r: 1, g: 1, b: 1, a: 1 }, animatable: true },
@@ -88,6 +90,7 @@ const TINT_EFFECT_DEF: EffectDef = {
 const WAVE_EFFECT_DEF: EffectDef = {
   type: "wave",
   label: "Wave (WIP)",
+  category: "ディストーション",
   params: [
     { key: "amplitude", label: "Amplitude", kind: "scalar", default: 20, animatable: true, min: 0, max: 500, step: 0.1 },
     { key: "wavelength", label: "Wavelength", kind: "scalar", default: 50, animatable: true, min: 1, max: 500, step: 0.1 },
@@ -110,6 +113,7 @@ const WAVE_EFFECT_DEF: EffectDef = {
 const TURBULENT_DISPLACE_EFFECT_DEF: EffectDef = {
   type: "turbulentDisplace",
   label: "Turbulent Displace (WIP)",
+  category: "ディストーション",
   params: [
     { key: "amount", label: "Amount", kind: "scalar", default: 50, animatable: true, min: 0, max: 500, step: 0.1 },
     { key: "size", label: "Size", kind: "scalar", default: 50, animatable: true, min: 1, max: 500, step: 0.1 },
@@ -136,6 +140,7 @@ const TURBULENT_DISPLACE_EFFECT_DEF: EffectDef = {
 const RIPPLE_EFFECT_DEF: EffectDef = {
   type: "ripple",
   label: "Ripple (WIP)",
+  category: "ディストーション",
   params: [
     { key: "radius", label: "Radius", kind: "scalar", default: 100, animatable: true, min: 0, max: 1000, step: 0.1 },
     { key: "amplitude", label: "Amplitude", kind: "scalar", default: 10, animatable: true, min: 0, max: 200, step: 0.1 },
@@ -160,6 +165,7 @@ const RIPPLE_EFFECT_DEF: EffectDef = {
 const LINEAR_WIPE_EFFECT_DEF: EffectDef = {
   type: "linearWipe",
   label: "Linear Wipe",
+  category: "ワイプ",
   params: [
     { key: "completion", label: "Transition Completion", kind: "scalar", default: 0, animatable: true, min: 0, max: 1, step: 0.01 },
     { key: "angle", label: "Wipe Angle", kind: "scalar", default: 0, animatable: true, step: 1 },
@@ -182,6 +188,7 @@ const LINEAR_WIPE_EFFECT_DEF: EffectDef = {
 const ANGULAR_WIPE_EFFECT_DEF: EffectDef = {
   type: "angularWipe",
   label: "Angular Wipe",
+  category: "ワイプ",
   params: [
     { key: "completion", label: "Transition Completion", kind: "scalar", default: 0, animatable: true, min: 0, max: 1, step: 0.01 },
     { key: "startAngle", label: "Start Angle", kind: "scalar", default: 0, animatable: true, step: 1 },

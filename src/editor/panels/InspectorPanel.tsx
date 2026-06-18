@@ -10,6 +10,7 @@ import {
 import { ColorSwatch, isRgba } from "../ColorSwatch";
 import { ScrubNumber } from "../ScrubNumber";
 import { globalPluginRegistry } from "../../runtime/pluginRegistry";
+import { groupEffectsForPicker } from "../effectCategories";
 
 const EASING_PRESETS: { label: string; easing: Easing }[] = [
   { label: "Linear", easing: { type: "linear" } },
@@ -303,28 +304,43 @@ export function InspectorPanel() {
               <div style={{ fontSize: 10, color: "#f88", padding: "4px 8px" }}>
                 利用可能なエフェクトがありません（プラグイン再読込を試してください）
               </div>
-            ) : globalPluginRegistry.listEffects().map((e) => (
-              <button
-                key={e.type}
-                type="button"
-                onClick={() => handleAddEffect(e.type)}
-                style={{
-                  display: "block",
-                  width: "100%",
-                  background: "transparent",
-                  border: "none",
-                  color: "#ddd",
-                  padding: "6px 8px",
-                  textAlign: "left",
-                  cursor: "pointer",
-                  fontSize: 11,
-                  borderRadius: 3,
-                }}
-                onMouseEnter={(ev) => { ev.currentTarget.style.background = "#3a5068"; }}
-                onMouseLeave={(ev) => { ev.currentTarget.style.background = "transparent"; }}
-              >
-                {e.label}
-              </button>
+            ) : groupEffectsForPicker(globalPluginRegistry.listEffects()).map(({ category, effects }) => (
+              <div key={category} style={{ marginBottom: 4 }}>
+                <div
+                  style={{
+                    fontSize: 9,
+                    color: "#7a9ab8",
+                    padding: "4px 8px 2px",
+                    fontWeight: 600,
+                    letterSpacing: 0.3,
+                  }}
+                >
+                  {category}
+                </div>
+                {effects.map((e) => (
+                  <button
+                    key={e.type}
+                    type="button"
+                    onClick={() => handleAddEffect(e.type)}
+                    style={{
+                      display: "block",
+                      width: "100%",
+                      background: "transparent",
+                      border: "none",
+                      color: "#ddd",
+                      padding: "6px 8px",
+                      textAlign: "left",
+                      cursor: "pointer",
+                      fontSize: 11,
+                      borderRadius: 3,
+                    }}
+                    onMouseEnter={(ev) => { ev.currentTarget.style.background = "#3a5068"; }}
+                    onMouseLeave={(ev) => { ev.currentTarget.style.background = "transparent"; }}
+                  >
+                    {e.label}
+                  </button>
+                ))}
+              </div>
             ))}
           </div>
         )}

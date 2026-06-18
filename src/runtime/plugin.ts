@@ -44,6 +44,8 @@ export interface EffectRenderCtx {
 export interface EffectDef {
   type: string;
   label: string;
+  /** Inspector エフェクト追加ピッカーでのカテゴリ見出し。未指定は「その他」。 */
+  category?: string;
   params: ParamDescriptor[];
   bundleExportDefault?: "live" | "bake";
   apply(props: Record<string, unknown>, ctx: EffectRenderCtx): EffectFilter | null;
