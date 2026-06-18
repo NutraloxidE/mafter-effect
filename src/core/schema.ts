@@ -60,6 +60,14 @@ export interface Component {
   exportStrategy?: "live" | "bake"; // web bundle export 時の扱い（§11.7）。未指定なら type の既定
 }
 
+// §5.5b / §27 エフェクト（レイヤー描画結果への後処理）
+export interface EffectInstance {
+  id: string; // ULID (INV-6)
+  type: string;
+  enabled: boolean;
+  props: Record<string, AnimatedProp<unknown> | unknown>;
+}
+
 export type ParamKind =
   | "scalar"
   | "vec2"
@@ -93,6 +101,8 @@ export interface SceneObject {
   transform: Transform;
   opacity: AnimatedProp<number>; // 0..1, 全 Object 共通
   components: Component[];
+  effects?: EffectInstance[]; // 省略/[] = なし。配列順 = 適用順
+  isAdjustment?: boolean; // true = 調整レイヤー（§27.4）
 }
 
 // §5.6 Composition / Project

@@ -9,12 +9,20 @@ export interface ResolvedComponent {
   exportStrategy?: "live" | "bake";
 }
 
+export interface ResolvedEffect {
+  type: string;
+  enabled: boolean;
+  props: Record<string, unknown>;
+}
+
 export interface ResolvedObject {
   id: ObjectId;
   worldTransform: Mat4; // parent チェーンを畳んだ world 行列（§6.3）。ネストしない
   zOrder: number; // 描画順
   opacity: number; // per-object。親から継承しない
   components: ResolvedComponent[];
+  effects?: ResolvedEffect[];
+  isAdjustment?: boolean;
 }
 
 export interface ResolvedScene {

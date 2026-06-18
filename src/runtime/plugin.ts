@@ -31,11 +31,22 @@ export interface ComponentDef {
   bundleExportDefault?: "live" | "bake";
 }
 
+// §27.2 EffectDef — resolve 済み props → フィルタ片（純関数）
+export type EffectFilter =
+  | { kind: "css"; fn: string }
+  | { kind: "svg"; primitives: string };
+
+export interface EffectRenderCtx {
+  width: number;
+  height: number;
+}
+
 export interface EffectDef {
   type: string;
   label: string;
   params: ParamDescriptor[];
-  apply(input: ImageData): ImageData;
+  bundleExportDefault?: "live" | "bake";
+  apply(props: Record<string, unknown>, ctx: EffectRenderCtx): EffectFilter | null;
 }
 
 export interface EasingPreset {

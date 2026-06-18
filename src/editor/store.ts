@@ -7,6 +7,7 @@ import type {
   AnimatedProp,
   AssetEntry,
   Easing,
+  EffectInstance,
   Frame,
   HtmlComposition,
   Keyframe,
@@ -19,9 +20,10 @@ import { IndexedDbFs } from "../fs/IndexedDbFs";
 import { compositionDir, DIR_ASSETS, pluginEntryPath, pluginManifestPath, scriptPath } from "../core/paths";
 import { compWouldCreateCycle } from "../runtime/compLayer";
 import { registerBuiltinComponents } from "../runtime/builtinComponents";
+import { registerBuiltinEffects } from "../runtime/builtinEffects";
 import { sampleScalar, sampleVec3 } from "../runtime/interpolate";
 import { ModuleLoader } from "../runtime/moduleLoader";
-import type { PluginContext, PluginManifest } from "../runtime/plugin";
+import type { PluginContext, PluginManifest, EffectDef } from "../runtime/plugin";
 import { globalPluginRegistry } from "../runtime/pluginRegistry";
 import {
   cmdAddObject,
@@ -47,6 +49,7 @@ export interface PreviewOverride {
 }
 
 registerBuiltinComponents();
+registerBuiltinEffects();
 
 // §17: プロジェクトデータの正は FS（IndexedDbFs）。ストアはその投影。
 
@@ -178,6 +181,14 @@ export interface EditorStore {
 
   // §23 comp layer: timeline comp をアクティブコンプにレイヤーとして配置する
   addCompLayer: (compId: string, name?: string) => string | null;
+
+  // §27 エフェクト & 調整レイヤー
+  addEffect: (objId: string, type: string) => void;
+  removeEffect: (objId: string, effectId: string) => void;
+  reorderEffect: (objId: string, effectId: string, dir: "up" | "down") => void;
+  toggleEffect: (objId: string, effectId: string) => void;
+  addAdjustmentLayer: (name?: string) => string | null;
+  toggleAdjustment: (objId: string) => void;
 }
 
 export const useEditorStore = create<EditorStore>((set, get) => ({
@@ -651,6 +662,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     globalPluginRegistry.clear();
     pluginLoader.clear();
     registerBuiltinComponents();
+registerBuiltinEffects();
 
     const activeRefs = p.pluginRefs.filter((r) => r.enabled);
     for (const ref of activeRefs) {
@@ -769,6 +781,86 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     cmdAddObject(get(), obj);
     return id;
   },
+
+  addEffect: (objId, type) => {
+    const def = globalPluginRegistry.getEffectDef(type);
+    if (!def) return;
+    const comp = currentTimelineComp(get().project, get().currentCompId);
+    const obj = comp?.objects.find((o) => o.id === objId);
+    if (!obj) return;
+    const effect: EffectInstance = {
+      id: newObjectId(),
+      type,
+      enabled: true,
+      props: defaultEffectProps(def),
+    };
+    get().updateObject(objId, { effects: [...(obj.effects ?? []), effect] }, `Add ${def.label}`);
+  },
+
+  removeEffect: (objId, effectId) => {
+    const comp = currentTimelineComp(get().project, get().currentCompId);
+    const obj = comp?.objects.find((o) => o.id === objId);
+    if (!obj?.effects) return;
+    const next = obj.effects.filter((e) => e.id !== effectId);
+    get().updateObject(objId, { effects: next.length > 0 ? next : undefined }, "Remove effect");
+  },
+
+  reorderEffect: (objId, effectId, dir) => {
+    const comp = currentTimelineComp(get().project, get().currentCompId);
+    const obj = comp?.objects.find((o) => o.id === objId);
+    if (!obj?.effects) return;
+    const idx = obj.effects.findIndex((e) => e.id === effectId);
+    if (idx < 0) return;
+    const swap = dir === "up" ? idx - 1 : idx + 1;
+    if (swap < 0 || swap >= obj.effects.length) return;
+    const next = [...obj.effects];
+    [next[idx], next[swap]] = [next[swap]!, next[idx]!];
+    get().updateObject(objId, { effects: next }, "Reorder effect");
+  },
+
+  toggleEffect: (objId, effectId) => {
+    const comp = currentTimelineComp(get().project, get().currentCompId);
+    const obj = comp?.objects.find((o) => o.id === objId);
+    if (!obj?.effects) return;
+    get().updateObject(objId, {
+      effects: obj.effects.map((e) =>
+        e.id === effectId ? { ...e, enabled: !e.enabled } : e,
+      ),
+    }, "Toggle effect");
+  },
+
+  addAdjustmentLayer: (name) => {
+    const id = newObjectId();
+    const p = get().project;
+    const comp = p?.compositions.find((c) => c.id === get().currentCompId) as TimelineComposition | undefined;
+    const duration = comp?.duration ?? 150;
+    const obj: SceneObject = {
+      id,
+      name: name ?? "Adjustment",
+      parent: null,
+      zOrder: nextZOrder(comp),
+      enabled: true,
+      inPoint: 0,
+      outPoint: duration,
+      transform: defaultTransform(),
+      opacity: staticProp(1),
+      components: [],
+      isAdjustment: true,
+    };
+    cmdAddObject(get(), obj);
+    return id;
+  },
+
+  toggleAdjustment: (objId) => {
+    const comp = currentTimelineComp(get().project, get().currentCompId);
+    const obj = comp?.objects.find((o) => o.id === objId);
+    if (!obj) return;
+    const next = !obj.isAdjustment;
+    get().updateObject(objId, {
+      isAdjustment: next ? true : undefined,
+      components: next ? [] : obj.components,
+    }, next ? "Make adjustment layer" : "Make normal layer");
+  },
 }));
 
 // ---- ユーティリティ ----
@@ -776,6 +868,14 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 function nextZOrder(comp: TimelineComposition | undefined): number {
   if (!comp || comp.objects.length === 0) return 1;
   return Math.max(...comp.objects.map((o) => o.zOrder)) + 1;
+}
+
+function defaultEffectProps(def: EffectDef): Record<string, AnimatedProp<unknown> | unknown> {
+  const props: Record<string, AnimatedProp<unknown> | unknown> = {};
+  for (const p of def.params) {
+    props[p.key] = p.animatable ? staticProp(p.default) : p.default;
+  }
+  return props;
 }
 
 /** 指定オブジェクトの AnimatedProp<number> に現 frame のキーフレームを追加/更新する。 */

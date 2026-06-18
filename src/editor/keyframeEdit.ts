@@ -45,6 +45,16 @@ export function getPropByPath(obj: SceneObject, path: PropPath): AnimatedProp<un
     const val = obj.components[idx]?.props[key];
     if (isAnimatedProp(val)) return val;
   }
+  if (path.startsWith("effects.")) {
+    const rest = path.slice("effects.".length);
+    const dot = rest.indexOf(".");
+    if (dot < 0) return { value: 0, keyframes: [] };
+    const effectId = rest.slice(0, dot);
+    const key = rest.slice(dot + 1);
+    const effect = obj.effects?.find((e) => e.id === effectId);
+    const val = effect?.props[key];
+    if (isAnimatedProp(val)) return val;
+  }
   return { value: 0, keyframes: [] };
 }
 
@@ -99,6 +109,7 @@ export function buildKfPatches(
     let transform: Transform = obj.transform;
     let touchedTransform = false;
     const compMods = new Map<number, Map<string, AnimatedProp<unknown>>>();
+    const effectMods = new Map<string, Map<string, AnimatedProp<unknown>>>();
     for (const [path, frames] of pm) {
       const next = fn(getPropByPath(obj, path), frames);
       if (path === "opacity") {
@@ -114,6 +125,14 @@ export function buildKfPatches(
         const key = rest.slice(sep + 1);
         if (!compMods.has(idx)) compMods.set(idx, new Map());
         compMods.get(idx)!.set(key, next);
+      } else if (path.startsWith("effects.")) {
+        const rest = path.slice("effects.".length);
+        const dot = rest.indexOf(".");
+        if (dot < 0) continue;
+        const effectId = rest.slice(0, dot);
+        const key = rest.slice(dot + 1);
+        if (!effectMods.has(effectId)) effectMods.set(effectId, new Map());
+        effectMods.get(effectId)!.set(key, next);
       }
     }
     if (touchedTransform) patch.transform = transform;
@@ -122,6 +141,13 @@ export function buildKfPatches(
         const kv = compMods.get(i);
         if (!kv) return c;
         return { ...c, props: { ...c.props, ...Object.fromEntries(kv) } };
+      });
+    }
+    if (effectMods.size > 0 && obj.effects) {
+      patch.effects = obj.effects.map((e) => {
+        const kv = effectMods.get(e.id);
+        if (!kv) return e;
+        return { ...e, props: { ...e.props, ...Object.fromEntries(kv) } };
       });
     }
     patches.push({ id: objId, patch });

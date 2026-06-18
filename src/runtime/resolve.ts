@@ -1,6 +1,7 @@
 import type {
   AnimatedProp,
   Component,
+  EffectInstance,
   Frame,
   ObjectId,
   SceneObject,
@@ -10,7 +11,7 @@ import type {
 } from "../core/schema";
 import { sampleAny, sampleScalar, sampleVec3 } from "./interpolate";
 import { identity, invert, localMatrix, multiply, type Mat4 } from "./mat4";
-import type { ResolvedComponent, ResolvedObject, ResolvedScene } from "./resolved";
+import type { ResolvedComponent, ResolvedEffect, ResolvedObject, ResolvedScene } from "./resolved";
 
 // §6.3 / §8 resolve(comp, frame): 純関数 (INV-1)。
 // parent チェーンを畳んで各オブジェクトに world 行列を焼き込み、フラットな ResolvedScene を返す。
@@ -100,7 +101,19 @@ function resolverFor(comp: TimelineComposition, ctx: ResolveContext | undefined)
     return out;
   }
 
-  return { scalarProp, localOf, resolveComponent };
+  function resolveEffect(e: EffectInstance, frame: Frame, objectId: ObjectId): ResolvedEffect {
+    const props: Record<string, unknown> = {};
+    for (const key of Object.keys(e.props)) {
+      const raw = e.props[key];
+      const sampled = sampleAny(raw, frame);
+      props[key] = isAnimatedProp(raw)
+        ? applyExpr(raw, sampled, frame, objectId)
+        : sampled;
+    }
+    return { type: e.type, enabled: e.enabled, props };
+  }
+
+  return { scalarProp, localOf, resolveComponent, resolveEffect };
 }
 
 function isAnimatedProp(v: unknown): v is AnimatedProp<unknown> {
@@ -122,7 +135,7 @@ export function resolve(
   frame: Frame,
   ctx?: ResolveContext,
 ): ResolvedScene {
-  const { scalarProp, localOf, resolveComponent } = resolverFor(comp, ctx);
+  const { scalarProp, localOf, resolveComponent, resolveEffect } = resolverFor(comp, ctx);
 
   const byId = new Map<ObjectId, SceneObject>();
   for (const obj of comp.objects) byId.set(obj.id, obj);
@@ -154,13 +167,20 @@ export function resolve(
   const objects: ResolvedObject[] = [];
   for (const obj of comp.objects) {
     if (!isVisible(obj, frame)) continue;
-    objects.push({
+    const resolved: ResolvedObject = {
       id: obj.id,
       worldTransform: worldOf(obj.id),
       zOrder: obj.zOrder,
       opacity: scalarProp(obj.opacity, frame, obj.id),
-      components: obj.components.map((c) => resolveComponent(c, frame, obj.id, obj.inPoint)),
-    });
+      components: obj.isAdjustment
+        ? []
+        : obj.components.map((c) => resolveComponent(c, frame, obj.id, obj.inPoint)),
+    };
+    if (obj.effects && obj.effects.length > 0) {
+      resolved.effects = obj.effects.map((e) => resolveEffect(e, frame, obj.id));
+    }
+    if (obj.isAdjustment) resolved.isAdjustment = true;
+    objects.push(resolved);
   }
 
   // zOrder 昇順（小→奥）。安定ソートのため tie は id で割る。

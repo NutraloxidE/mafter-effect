@@ -25,7 +25,9 @@ const BASE_Z = 10; // z-index はこの値を起点に zOrder*BASE_Z で割り�
 interface ObjectEntry {
   div: HTMLDivElement;
   childSig: string; // component 型の連結。変化したら子を作り直す
+  fxSig: string; // effect 型/順序/有効状態。変化したら svg defs を作り直す
   children: HTMLElement[];
+  svgRoot: SVGSVGElement | null;
 }
 
 export class DomRenderer implements Renderer {
@@ -97,7 +99,7 @@ export class DomRenderer implements Renderer {
         div.style.transformOrigin = "0 0";
         div.dataset.objectId = obj.id;
         this.root.appendChild(div);
-        entry = { div, childSig: "", children: [] };
+        entry = { div, childSig: "", fxSig: "", children: [], svgRoot: null };
         this.entries.set(obj.id, entry);
       }
       this.applyObject(entry, obj, frame);
@@ -138,14 +140,29 @@ export class DomRenderer implements Renderer {
     entry.div.style.opacity = String(obj.opacity);
     entry.div.style.zIndex = String(Math.round(obj.zOrder * BASE_Z));
 
+    if (obj.isAdjustment) {
+      const w = this.currentComp?.width ?? 0;
+      const h = this.currentComp?.height ?? 0;
+      entry.div.style.width = `${w}px`;
+      entry.div.style.height = `${h}px`;
+      entry.div.style.background = "transparent";
+      entry.div.style.pointerEvents = "none";
+    } else {
+      entry.div.style.width = "";
+      entry.div.style.height = "";
+      entry.div.style.background = "";
+    }
+
     const sig = obj.components.map((c) => c.type).join("|");
     if (sig !== entry.childSig) {
       // html comp が含まれていた場合は player のエントリも解放してから作り直す
       if (entry.childSig.split("|").includes("html")) {
         this.htmlPlayer?.unmountObject(obj.id);
       }
-      // 構造が変わった: 子を作り直す
+      // 構造が変わった: 子を作り直す（svgRoot は残す）
+      const svgRoot = entry.svgRoot;
       entry.div.innerHTML = "";
+      if (svgRoot) entry.div.appendChild(svgRoot);
       entry.children = obj.components.map((c) => {
         const el = createComponentEl(c.type);
         entry.div.appendChild(el);
@@ -153,6 +170,9 @@ export class DomRenderer implements Renderer {
       });
       entry.childSig = sig;
     }
+
+    this.applyEffects(entry, obj);
+
     // props を in-place で更新（<img> src は変化時のみ → 再読込しない）
     obj.components.forEach((c, i) => {
       const el = entry.children[i];
@@ -214,6 +234,77 @@ export class DomRenderer implements Renderer {
         }
       }
     });
+  }
+
+  /** §27.1/§27.4 — effects を filter / backdrop-filter として host div に適用。 */
+  private applyEffects(entry: ObjectEntry, obj: ResolvedObject): void {
+    const effects = obj.effects ?? [];
+    const fxSig = effects.map((e) => `${e.type}:${e.enabled ? 1 : 0}`).join("|");
+    const ctx = {
+      width: this.currentComp?.width ?? 0,
+      height: this.currentComp?.height ?? 0,
+    };
+
+    if (fxSig !== entry.fxSig) {
+      if (entry.svgRoot) {
+        entry.svgRoot.remove();
+        entry.svgRoot = null;
+      }
+      entry.fxSig = fxSig;
+    }
+
+    const tokens: string[] = [];
+    let svgIndex = 0;
+    const svgFilters: { id: string; primitives: string }[] = [];
+
+    for (const effect of effects) {
+      if (!effect.enabled) continue;
+      const def = globalPluginRegistry.getEffectDef(effect.type);
+      if (!def) continue;
+      const piece = def.apply(effect.props, ctx);
+      if (!piece) continue;
+      if (piece.kind === "css") {
+        tokens.push(piece.fn);
+      } else {
+        const id = `fx-${obj.id}-${svgIndex}`;
+        svgFilters.push({ id, primitives: piece.primitives });
+        tokens.push(`url(#${id})`);
+        svgIndex++;
+      }
+    }
+
+    const filterStr = tokens.join(" ");
+    if (obj.isAdjustment) {
+      entry.div.style.filter = "";
+      entry.div.style.backdropFilter = filterStr;
+      (entry.div.style as CSSStyleDeclaration & { webkitBackdropFilter?: string }).webkitBackdropFilter = filterStr;
+    } else {
+      entry.div.style.backdropFilter = "";
+      (entry.div.style as CSSStyleDeclaration & { webkitBackdropFilter?: string }).webkitBackdropFilter = "";
+      entry.div.style.filter = filterStr;
+    }
+
+    if (svgFilters.length > 0) {
+      if (!entry.svgRoot) {
+        const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        svg.setAttribute("aria-hidden", "true");
+        svg.style.cssText = "position:absolute;width:0;height:0;overflow:hidden;pointer-events:none";
+        entry.div.insertBefore(svg, entry.div.firstChild);
+        entry.svgRoot = svg;
+      }
+      const defs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
+      for (const { id, primitives } of svgFilters) {
+        const filter = document.createElementNS("http://www.w3.org/2000/svg", "filter");
+        filter.setAttribute("id", id);
+        filter.innerHTML = primitives;
+        defs.appendChild(filter);
+      }
+      entry.svgRoot.innerHTML = "";
+      entry.svgRoot.appendChild(defs);
+    } else if (entry.svgRoot) {
+      entry.svgRoot.remove();
+      entry.svgRoot = null;
+    }
   }
 
   // html comp のメタ情報を DomRenderer に注入する（ProximityPanel / store から呼ぶ）。

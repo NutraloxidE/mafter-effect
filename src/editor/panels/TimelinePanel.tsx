@@ -101,6 +101,7 @@ export function TimelinePanel() {
   const updateObject = useEditorStore((s) => s.updateObject);
   const addSolid = useEditorStore((s) => s.addSolid);
   const addText = useEditorStore((s) => s.addText);
+  const addAdjustmentLayer = useEditorStore((s) => s.addAdjustmentLayer);
   const removeObject = useEditorStore((s) => s.removeObject);
   const selectObjects = useEditorStore((s) => s.selectObjects);
   const updateObjects = useEditorStore((s) => s.updateObjects);
@@ -346,6 +347,7 @@ export function TimelinePanel() {
       let transform = obj.transform;
       let touchedTransform = false;
       const compMods = new Map<number, Map<string, AnimatedProp<unknown>>>();
+      const effectMods = new Map<string, Map<string, AnimatedProp<unknown>>>();
       for (const [path, newKfs] of pm) {
         const prop = getPropByPath(obj, path);
         const merged = [
@@ -365,6 +367,14 @@ export function TimelinePanel() {
           const key = rest.slice(sep + 1);
           if (!compMods.has(idx)) compMods.set(idx, new Map());
           compMods.get(idx)!.set(key, nextProp);
+        } else if (path.startsWith("effects.")) {
+          const rest = path.slice("effects.".length);
+          const dot = rest.indexOf(".");
+          if (dot < 0) continue;
+          const effectId = rest.slice(0, dot);
+          const key = rest.slice(dot + 1);
+          if (!effectMods.has(effectId)) effectMods.set(effectId, new Map());
+          effectMods.get(effectId)!.set(key, nextProp);
         }
       }
       if (touchedTransform) patch.transform = transform;
@@ -373,6 +383,13 @@ export function TimelinePanel() {
           const kv = compMods.get(i);
           if (!kv) return c;
           return { ...c, props: { ...c.props, ...Object.fromEntries(kv) } };
+        });
+      }
+      if (effectMods.size > 0 && obj.effects) {
+        patch.effects = obj.effects.map((e) => {
+          const kv = effectMods.get(e.id);
+          if (!kv) return e;
+          return { ...e, props: { ...e.props, ...Object.fromEntries(kv) } };
         });
       }
       patches.push({ id: objId, patch });
@@ -597,6 +614,15 @@ export function TimelinePanel() {
       const idx = Number(rest.slice(0, sep));
       const key = rest.slice(sep + 1);
       patch.components = obj.components.map((c, i) => i === idx ? { ...c, props: { ...c.props, [key]: next } } : c);
+    } else if (propPath.startsWith("effects.")) {
+      const rest = propPath.slice("effects.".length);
+      const dot = rest.indexOf(".");
+      if (dot < 0) return;
+      const effectId = rest.slice(0, dot);
+      const key = rest.slice(dot + 1);
+      patch.effects = (obj.effects ?? []).map((e) =>
+        e.id === effectId ? { ...e, props: { ...e.props, [key]: next } } : e,
+      );
     } else return;
     updateObject(objId, patch, label);
   };
@@ -859,6 +885,7 @@ export function TimelinePanel() {
         <div style={{ width: 8 }} />
         <button onClick={() => { const id = addSolid(); if (id) selectObjects([id]); }} disabled={!comp} style={btnStyle}>+ Solid</button>
         <button onClick={() => { const id = addText(); if (id) selectObjects([id]); }} disabled={!comp} style={btnStyle}>+ Text</button>
+        <button onClick={() => { const id = addAdjustmentLayer(); if (id) selectObjects([id]); }} disabled={!comp} style={{ ...btnStyle, color: "#c9a227" }} title="調整レイヤーを追加">+ Adj</button>
         <div style={{ flex: 1 }} />
         {/* P1-8: スナップトグル */}
         <button
@@ -1344,6 +1371,9 @@ function LayerRow(props: LayerRowProps) {
           </button>
           <span style={{ flex: 1, color: selected ? "#7fb8f0" : "#bbb", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {obj.name}
+            {obj.isAdjustment && (
+              <span style={{ marginLeft: 4, fontSize: 9, color: "#c9a227", fontWeight: 600 }}>ADJ</span>
+            )}
           </span>
           <button onClick={(e) => { e.stopPropagation(); onRemove(); }} style={{ ...iconBtn, color: "#f44" }} title="レイヤーを削除">×</button>
         </div>
@@ -1398,6 +1428,40 @@ function LayerRow(props: LayerRowProps) {
                   compIdx={compIdx}
                   propKey={key}
                   label={`${comp.type}: ${label}`}
+                  kind={kind}
+                  frame={frame}
+                  kfShift={kfPreviewShift}
+                  selectedKfs={selectedKfs}
+                  kfDrag={kfDrag}
+                  beginKfDrag={beginKfDrag}
+                  onKfRightClick={onKfRightClick}
+                  onUpdate={onUpdate}
+                  onPreviewPatch={onPreviewPatch}
+                  frameToPercent={frameToPercent}
+                  graphMode={graphMode}
+                  viewRange={viewRange}
+                  onSetProp={onSetProp}
+                />
+              );
+            });
+          })}
+          {(obj.effects ?? []).map((effect) => {
+            const def = globalPluginRegistry.getEffectDef(effect.type);
+            return Object.entries(effect.props).map(([key, val]) => {
+              if (!isAnimatedProp(val)) return null;
+              const param = def?.params.find((p) => p.key === key);
+              if (param && !param.animatable) return null;
+              const label = param?.label ?? key;
+              const kind: ParamKind = param?.kind ?? "scalar";
+              const animated = val.keyframes.length > 0;
+              if (!showInMode(expandMode, animated, animated || val.value !== (param?.default ?? 0))) return null;
+              return (
+                <PropRowEffect
+                  key={`fx_${effect.id}_${key}`}
+                  obj={obj}
+                  effectId={effect.id}
+                  propKey={key}
+                  label={`${def?.label ?? effect.type}: ${label}`}
                   kind={kind}
                   frame={frame}
                   kfShift={kfPreviewShift}
@@ -1596,6 +1660,74 @@ function PropRowOpacity({
   return (
     <PropRowShell label="不透明度" animated={animated} onStopwatch={toggleStopwatch} prop={prop} frame={frame} kfShift={kfShift} objId={obj.id} propPath="opacity" selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onKfRightClick={onKfRightClick} frameToPercent={frameToPercent} graphMode={graphMode} viewRange={viewRange} onSetProp={onSetProp}>
       <NumberField value={v} onCommit={edit} onLiveChange={preview} />
+    </PropRowShell>
+  );
+}
+
+// §27: effect の animatable prop 行
+function PropRowEffect({
+  obj, effectId, propKey, label, kind, frame, kfShift, selectedKfs, kfDrag, beginKfDrag, onKfRightClick, onUpdate, onPreviewPatch, frameToPercent, graphMode, viewRange, onSetProp,
+}: {
+  obj: SceneObject; effectId: string; propKey: string; label: string; kind: ParamKind;
+  frame: Frame; kfShift: number;
+  selectedKfs: Set<string>; kfDrag: KfDragState | null;
+  beginKfDrag: (objId: string, path: PropPath, frame: number, e: React.MouseEvent) => void;
+  onKfRightClick: (key: string, x: number, y: number) => void;
+  onUpdate: (id: string, patch: Partial<SceneObject>, label?: string) => void;
+  onPreviewPatch?: (id: string, patch: Partial<SceneObject>) => void;
+  frameToPercent: (f: number) => number;
+  graphMode: boolean; viewRange: { start: number; end: number };
+  onSetProp: (objId: string, path: PropPath, next: AnimatedProp<unknown>, label: string) => void;
+}) {
+  const effect = obj.effects?.find((e) => e.id === effectId);
+  if (!effect) return null;
+  const rawVal = effect.props[propKey];
+  if (!isAnimatedProp(rawVal)) return null;
+  const prop = rawVal;
+  const animated = prop.keyframes.length > 0;
+  const sampled = sampleAny(prop, frame);
+  const propPath = `effects.${effectId}.${propKey}`;
+
+  const writeProp = (next: AnimatedProp<unknown>, lbl: string) => {
+    const nextEffects = (obj.effects ?? []).map((e) =>
+      e.id === effectId ? { ...e, props: { ...e.props, [propKey]: next } } : e,
+    );
+    onUpdate(obj.id, { effects: nextEffects }, lbl);
+  };
+
+  const previewProp = (next: AnimatedProp<unknown>) => {
+    if (!onPreviewPatch) return;
+    onPreviewPatch(obj.id, {
+      effects: (obj.effects ?? []).map((e) =>
+        e.id === effectId ? { ...e, props: { ...e.props, [propKey]: next } } : e,
+      ),
+    });
+  };
+
+  const toggleStopwatch = () => {
+    if (animated) writeProp({ value: prop.value, keyframes: [] }, `Disable ${propKey} keyframes`);
+    else writeProp(setKeyframe(prop as AnimatedProp<unknown>, frame, prop.value, { type: "linear" } as Easing), `Enable ${propKey} keyframes`);
+  };
+
+  return (
+    <PropRowShell label={label} animated={animated} onStopwatch={toggleStopwatch} prop={prop} frame={frame} kfShift={kfShift} objId={obj.id} propPath={propPath} selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onKfRightClick={onKfRightClick} frameToPercent={frameToPercent} graphMode={graphMode} viewRange={viewRange} onSetProp={onSetProp}>
+      {kind === "scalar" && typeof sampled === "number" ? (
+        <NumberField value={sampled} onCommit={(num) => {
+          if (!Number.isFinite(num)) return;
+          if (animated) writeProp(setKeyframe(prop as AnimatedProp<unknown>, frame, num, { type: "linear" } as Easing), `Edit ${propKey}`);
+          else writeProp({ ...prop, value: num }, `Edit ${propKey}`);
+        }} onLiveChange={(num) => {
+          if (!Number.isFinite(num)) return;
+          if (animated) previewProp(setKeyframe(prop as AnimatedProp<unknown>, frame, num, { type: "linear" } as Easing));
+          else previewProp({ ...prop, value: num });
+        }} />
+      ) : kind === "color" && typeof sampled === "object" && sampled !== null && "r" in sampled ? (
+        <span style={{ fontSize: 10, color: "#aaa" }}>
+          {Math.round((sampled as RGBA).r * 255)},{Math.round((sampled as RGBA).g * 255)},{Math.round((sampled as RGBA).b * 255)}
+        </span>
+      ) : (
+        <span style={{ color: "#777", fontSize: 10 }}>{kind}</span>
+      )}
     </PropRowShell>
   );
 }
@@ -2007,7 +2139,22 @@ function shiftObjectKeyframes(obj: SceneObject, delta: number): Partial<SceneObj
     }
     return touched ? { ...c, props } : c;
   });
-  return { transform, opacity, components };
+  const effects = obj.effects?.map((e) => {
+    let touched = false;
+    const props: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(e.props)) {
+      if (isAnimatedProp(val) && val.keyframes.length > 0) {
+        props[key] = shiftKfProp(val, delta);
+        touched = true;
+      } else {
+        props[key] = val;
+      }
+    }
+    return touched ? { ...e, props } : e;
+  });
+  const out: Partial<SceneObject> = { transform, opacity, components };
+  if (effects && effects.some((e, i) => e !== obj.effects![i])) out.effects = effects;
+  return out;
 }
 
 const btnStyle: React.CSSProperties = {

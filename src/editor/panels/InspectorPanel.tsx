@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { sampleAny, sampleScalar, sampleVec3 } from "../../runtime/interpolate";
-import type { AnimatedProp, Component, Easing, RGBA, SceneObject, Transform, Vec3 } from "../../core/schema";
+import type { AnimatedProp, Component, Easing, EffectInstance, ParamDescriptor, RGBA, SceneObject, Transform, Vec3 } from "../../core/schema";
 import {
   currentTimelineComp,
   propVec3ToDisplay,
@@ -32,8 +32,13 @@ export function InspectorPanel() {
   const setPreviewOverride = useEditorStore((s) => s.setPreviewOverride);
   const clearPreviewOverride = useEditorStore((s) => s.clearPreviewOverride);
   const decomposeGlyphs = useEditorStore((s) => s.decomposeGlyphs);
+  const addEffect = useEditorStore((s) => s.addEffect);
+  const removeEffect = useEditorStore((s) => s.removeEffect);
+  const reorderEffect = useEditorStore((s) => s.reorderEffect);
+  const toggleEffect = useEditorStore((s) => s.toggleEffect);
 
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [addEffectOpen, setAddEffectOpen] = useState(false);
 
   const comp = currentTimelineComp(project, compId);
   const obj = comp?.objects.find((o) => o.id === selectedIds[0]);
@@ -155,7 +160,12 @@ export function InspectorPanel() {
 
   return (
     <div style={{ fontSize: 12, color: "#ccc", padding: 4, overflow: "auto", height: "100%", background: "#1c1c1c" }}>
-      <div style={{ padding: "6px 8px 8px", fontWeight: "bold", color: "#eee", fontSize: 13 }}>{obj.name}</div>
+      <div style={{ padding: "6px 8px 8px", fontWeight: "bold", color: "#eee", fontSize: 13 }}>
+        {obj.name}
+        {obj.isAdjustment && (
+          <span style={{ marginLeft: 6, fontSize: 10, color: "#c9a227", fontWeight: 600 }}>ADJ</span>
+        )}
+      </div>
 
       <InspectorFoldout label="Transform" expanded={isExpanded("transform")} onToggle={() => toggleExpanded("transform")}>
         <Vec3Row label="Position" vals={pos}
@@ -206,31 +216,98 @@ export function InspectorPanel() {
         </Row>
       </InspectorFoldout>
 
-      {obj.components.map((comp, compIdx) => {
-        if (comp.type !== "text") return null;
-        const label = globalPluginRegistry.getComponentDef(comp.type)?.label ?? comp.type;
-        const sectionKey = `component:${compIdx}:${comp.type}`;
-        return (
-          <InspectorFoldout
-            key={sectionKey}
-            label={label}
-            expanded={isExpanded(sectionKey)}
-            onToggle={() => toggleExpanded(sectionKey)}
-          >
-            <TextComponentFields
-              obj={obj}
-              compIdx={compIdx}
-              frame={frame}
-              updateObject={updateObject}
-              previewPatch={previewPatch}
-              onEditFocus={() => setPreviewQualityEditing(true)}
-              onEditBlur={() => setPreviewQualityEditing(false)}
-              onClearPreview={() => clearPreviewOverride()}
-              onDecompose={() => decomposeGlyphs(obj.id)}
-            />
-          </InspectorFoldout>
-        );
-      })}
+      {obj.isAdjustment ? (
+        <InspectorFoldout label="Content" expanded={isExpanded("content")} onToggle={() => toggleExpanded("content")}>
+          <div style={{ color: "#888", fontSize: 11 }}>調整レイヤー（描画なし）</div>
+        </InspectorFoldout>
+      ) : (
+        obj.components.map((comp, compIdx) => {
+          if (comp.type !== "text") return null;
+          const label = globalPluginRegistry.getComponentDef(comp.type)?.label ?? comp.type;
+          const sectionKey = `component:${compIdx}:${comp.type}`;
+          return (
+            <InspectorFoldout
+              key={sectionKey}
+              label={label}
+              expanded={isExpanded(sectionKey)}
+              onToggle={() => toggleExpanded(sectionKey)}
+            >
+              <TextComponentFields
+                obj={obj}
+                compIdx={compIdx}
+                frame={frame}
+                updateObject={updateObject}
+                previewPatch={previewPatch}
+                onEditFocus={() => setPreviewQualityEditing(true)}
+                onEditBlur={() => setPreviewQualityEditing(false)}
+                onClearPreview={() => clearPreviewOverride()}
+                onDecompose={() => decomposeGlyphs(obj.id)}
+              />
+            </InspectorFoldout>
+          );
+        })
+      )}
+
+      <InspectorFoldout label="Effects" expanded={isExpanded("effects")} onToggle={() => toggleExpanded("effects")}>
+        {(obj.effects ?? []).map((effect, idx, arr) => {
+          const def = globalPluginRegistry.getEffectDef(effect.type);
+          const label = def?.label ?? effect.type;
+          const sectionKey = `effect:${effect.id}`;
+          return (
+            <InspectorFoldout
+              key={effect.id}
+              label={`${effect.enabled ? "●" : "○"} ${label}`}
+              expanded={isExpanded(sectionKey)}
+              onToggle={() => toggleExpanded(sectionKey)}
+            >
+              <div style={{ display: "flex", gap: 4, marginBottom: 6 }}>
+                <button onClick={() => toggleEffect(obj.id, effect.id)} style={{ ...btnStyle, fontSize: 10 }}>
+                  {effect.enabled ? "Disable" : "Enable"}
+                </button>
+                <button
+                  disabled={idx === 0}
+                  onClick={() => reorderEffect(obj.id, effect.id, "up")}
+                  style={{ ...btnStyle, fontSize: 10 }}
+                  title="上へ（先に適用）"
+                >▲</button>
+                <button
+                  disabled={idx === arr.length - 1}
+                  onClick={() => reorderEffect(obj.id, effect.id, "down")}
+                  style={{ ...btnStyle, fontSize: 10 }}
+                  title="下へ（後に適用）"
+                >▼</button>
+                <button onClick={() => removeEffect(obj.id, effect.id)} style={{ ...btnStyle, fontSize: 10, color: "#f66" }}>×</button>
+              </div>
+              <EffectFields
+                obj={obj}
+                effect={effect}
+                params={def?.params ?? []}
+                frame={frame}
+                updateObject={updateObject}
+                previewPatch={previewPatch}
+              />
+            </InspectorFoldout>
+          );
+        })}
+        <div style={{ position: "relative", marginTop: 4 }}>
+          <button onClick={() => setAddEffectOpen((v) => !v)} style={{ ...btnStyle, fontSize: 10, width: "100%" }}>
+            + エフェクトを追加
+          </button>
+          {addEffectOpen && (
+            <div style={{ position: "absolute", left: 0, right: 0, top: "100%", zIndex: 10, background: "#333", border: "1px solid #555", borderRadius: 3, marginTop: 2 }}>
+              {globalPluginRegistry.listEffects().map((e) => (
+                <button
+                  key={e.type}
+                  onClick={() => { addEffect(obj.id, e.type); setAddEffectOpen(false); }}
+                  style={{ display: "block", width: "100%", background: "transparent", border: "none", color: "#ccc", padding: "4px 8px", textAlign: "left", cursor: "pointer", fontSize: 11 }}
+                >
+                  {e.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </InspectorFoldout>
 
       <InspectorFoldout label="Expression" expanded={isExpanded("expression")} onToggle={() => toggleExpanded("expression")}>
         <button
@@ -297,6 +374,97 @@ export function InspectorPanel() {
         </Row>
       </InspectorFoldout>
     </div>
+  );
+}
+
+function EffectFields({
+  obj,
+  effect,
+  params,
+  frame,
+  updateObject,
+  previewPatch,
+}: {
+  obj: SceneObject;
+  effect: EffectInstance;
+  params: ParamDescriptor[];
+  frame: number;
+  updateObject: (id: string, patch: Partial<SceneObject>, label?: string) => void;
+  previewPatch: (patch: Partial<SceneObject>) => void;
+}) {
+  const props = effect.props;
+
+  const writeEffects = (nextProps: EffectInstance["props"], label: string) => {
+    const nextEffects = (obj.effects ?? []).map((e) =>
+      e.id === effect.id ? { ...e, props: nextProps } : e,
+    );
+    updateObject(obj.id, { effects: nextEffects }, label);
+  };
+
+  const previewEffects = (nextProps: EffectInstance["props"]) => {
+    previewPatch({
+      effects: (obj.effects ?? []).map((e) =>
+        e.id === effect.id ? { ...e, props: nextProps } : e,
+      ),
+    });
+  };
+
+  const writeAnim = <T,>(key: string, next: AnimatedProp<T>, label: string) => {
+    writeEffects({ ...props, [key]: next }, label);
+  };
+
+  const previewAnim = <T,>(key: string, next: AnimatedProp<T>) => {
+    previewEffects({ ...props, [key]: next });
+  };
+
+  const toggleKf = (key: string, prop: AnimatedProp<unknown>) => {
+    if (prop.keyframes.length > 0) writeAnim(key, { value: prop.value, keyframes: [] }, `Disable ${key} keyframes`);
+    else writeAnim(key, setKeyframe(prop, frame, prop.value, { type: "hold" }), `Enable ${key} keyframes`);
+  };
+
+  return (
+    <>
+      {params.map((param) => {
+        const raw = props[param.key];
+        if (!isAnimated(raw)) return null;
+        const val = sampleAny(raw, frame);
+        if (param.kind === "scalar" && typeof val === "number") {
+          return (
+            <AnimScalarRow
+              key={param.key}
+              label={param.label}
+              prop={raw as AnimatedProp<number>}
+              value={val}
+              frame={frame}
+              onToggle={() => toggleKf(param.key, raw)}
+              onCommit={(v) => {
+                if (raw.keyframes.length > 0) writeAnim(param.key, setKeyframe(raw as AnimatedProp<number>, frame, v), `Edit ${param.label}`);
+                else writeAnim(param.key, { ...raw, value: v }, `Edit ${param.label}`);
+              }}
+              onLiveChange={(v) => previewAnim(param.key, raw.keyframes.length > 0 ? setKeyframe(raw as AnimatedProp<number>, frame, v) : { ...raw, value: v })}
+              min={param.min}
+            />
+          );
+        }
+        if (param.kind === "color" && isRgba(val)) {
+          return (
+            <Row key={param.key} label={param.label}>
+              <Stopwatch active={raw.keyframes.length > 0} onClick={() => toggleKf(param.key, raw)} />
+              <ColorSwatch
+                label={param.label}
+                value={val}
+                onLiveChange={(c) => previewAnim(param.key, raw.keyframes.length > 0 ? setKeyframe(raw as AnimatedProp<RGBA>, frame, c) : { ...raw, value: c })}
+                onCommit={(c) => {
+                  if (raw.keyframes.length > 0) writeAnim(param.key, setKeyframe(raw as AnimatedProp<RGBA>, frame, c), `Edit ${param.label}`);
+                  else writeAnim(param.key, { ...raw, value: c }, `Edit ${param.label}`);
+                }}
+              />
+            </Row>
+          );
+        }
+        return null;
+      })}
+    </>
   );
 }
 

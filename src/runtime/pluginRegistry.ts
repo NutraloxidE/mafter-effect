@@ -62,6 +62,18 @@ export class PluginRegistry {
     return [...this.components.values()];
   }
 
+  registerEffect(def: EffectDef): void {
+    this.effects.set(def.type, def);
+  }
+
+  getEffectDef(type: string): EffectDef | undefined {
+    return this.effects.get(type);
+  }
+
+  listEffects(): EffectDef[] {
+    return [...this.effects.values()];
+  }
+
   getExprHelpers(): Record<string, PureFn> {
     return Object.fromEntries(this.exprHelpers);
   }
