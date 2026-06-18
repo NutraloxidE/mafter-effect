@@ -1494,7 +1494,7 @@ interface EffectDef {
 | param key | label | kind | default | range | animatable |
 |---|---|---|---|---|---|
 | `completion` | Transition Completion | scalar | `0` | 0..1, step 0.01 | ✅ |
-| `angle` | Wipe Angle | scalar | `0` | 0..360, step 1 | ✅ |
+| `angle` | Wipe Angle | scalar | `0` | 無制限（AE 同様・負値・360 超可）, step 1 | ✅ |
 | `feather` | Feather | scalar | `0` | min 0, max 200, step 0.1 | ✅ |
 
 - `apply` → `{ kind: "svg", primitives }`。`feImage`（data URI linearGradient マスク・白=表示/黒=消去）→ **`feColorMatrix type="luminanceToAlpha"`**（luminance を alpha へ変換）→ optional `feGaussianBlur`（feather）→ `feComposite operator="in"`。
@@ -1506,7 +1506,7 @@ interface EffectDef {
 | param key | label | kind | default | range | animatable |
 |---|---|---|---|---|---|
 | `completion` | Transition Completion | scalar | `0` | 0..1, step 0.01 | ✅ |
-| `startAngle` | Start Angle | scalar | `0` | 0..360, step 1 | ✅ |
+| `startAngle` | Start Angle | scalar | `0` | 無制限（AE 同様・負値・360 超可）, step 1 | ✅ |
 | `centerX` | Center X | scalar | `0.5` | 0..1, step 0.01 | ✅ |
 | `centerY` | Center Y | scalar | `0.5` | 0..1, step 0.01 | ✅ |
 | `feather` | Feather | scalar | `0` | min 0, max 200, step 0.1 | ✅ |

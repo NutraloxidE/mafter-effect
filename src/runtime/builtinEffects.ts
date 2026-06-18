@@ -162,7 +162,7 @@ const LINEAR_WIPE_EFFECT_DEF: EffectDef = {
   label: "Linear Wipe",
   params: [
     { key: "completion", label: "Transition Completion", kind: "scalar", default: 0, animatable: true, min: 0, max: 1, step: 0.01 },
-    { key: "angle", label: "Wipe Angle", kind: "scalar", default: 0, animatable: true, min: 0, max: 360, step: 1 },
+    { key: "angle", label: "Wipe Angle", kind: "scalar", default: 0, animatable: true, step: 1 },
     { key: "feather", label: "Feather", kind: "scalar", default: 0, animatable: true, min: 0, max: 200, step: 0.1 },
   ],
   apply(props, ctx: EffectRenderCtx) {
@@ -184,7 +184,7 @@ const ANGULAR_WIPE_EFFECT_DEF: EffectDef = {
   label: "Angular Wipe",
   params: [
     { key: "completion", label: "Transition Completion", kind: "scalar", default: 0, animatable: true, min: 0, max: 1, step: 0.01 },
-    { key: "startAngle", label: "Start Angle", kind: "scalar", default: 0, animatable: true, min: 0, max: 360, step: 1 },
+    { key: "startAngle", label: "Start Angle", kind: "scalar", default: 0, animatable: true, step: 1 },
     { key: "centerX", label: "Center X", kind: "scalar", default: 0.5, animatable: true, min: 0, max: 1, step: 0.01 },
     { key: "centerY", label: "Center Y", kind: "scalar", default: 0.5, animatable: true, min: 0, max: 1, step: 0.01 },
     { key: "feather", label: "Feather", kind: "scalar", default: 0, animatable: true, min: 0, max: 200, step: 0.1 },

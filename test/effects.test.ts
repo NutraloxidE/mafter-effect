@@ -148,6 +148,22 @@ describe("builtinEffects apply (§27.3)", () => {
       expect(r.primitives).toContain("path");
     }
   });
+
+  it("linearWipe accepts angle outside 0..360", () => {
+    const r = LINEAR_WIPE_EFFECT_DEF.apply({ completion: 0.5, angle: -30, feather: 0 }, ctx);
+    expect(r?.kind).toBe("svg");
+    if (r?.kind === "svg") {
+      expect(r.primitives).toContain("rotate(-30");
+    }
+  });
+
+  it("angularWipe accepts startAngle outside 0..360", () => {
+    const r = ANGULAR_WIPE_EFFECT_DEF.apply({ completion: 0.25, startAngle: 720, centerX: 0.5, centerY: 0.5, feather: 0 }, ctx);
+    expect(r?.kind).toBe("svg");
+    if (r?.kind === "svg") {
+      expect(r.primitives).toContain("path");
+    }
+  });
 });
 
 function makeObject(over: Partial<SceneObject> & { id: string }): SceneObject {

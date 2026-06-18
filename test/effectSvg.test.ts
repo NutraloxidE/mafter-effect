@@ -39,6 +39,15 @@ describe("effectSvg helpers", () => {
     expect(s).toContain('operator="in"');
   });
 
+  it("linearWipeMask accepts angles outside 0..360", () => {
+    const neg = linearWipeMask(0.5, -45, 0, 1920, 1080);
+    const over = linearWipeMask(0.5, 405, 0, 1920, 1080);
+    expect(neg).toContain("rotate(-45");
+    expect(over).toContain("rotate(405");
+    expect(neg).toContain("luminanceToAlpha");
+    expect(over).toContain("luminanceToAlpha");
+  });
+
   it("angularWipeMask includes path for partial completion", () => {
     const s = angularWipeMask(0.5, 0, 0.5, 0.5, 0, 1920, 1080);
     expect(s).toContain("path");
@@ -48,5 +57,14 @@ describe("effectSvg helpers", () => {
 
   it("angularWipeMask is inert at completion 0", () => {
     expect(angularWipeMask(0, 0, 0.5, 0.5, 0, 1920, 1080)).toBe("");
+  });
+
+  it("angularWipeMask accepts start angles outside 0..360", () => {
+    const neg = angularWipeMask(0.5, -90, 0.5, 0.5, 0, 1920, 1080);
+    const over = angularWipeMask(0.5, 450, 0.5, 0.5, 0, 1920, 1080);
+    expect(neg).toContain("path");
+    expect(over).toContain("path");
+    expect(neg).toContain("luminanceToAlpha");
+    expect(over).toContain("luminanceToAlpha");
   });
 });
