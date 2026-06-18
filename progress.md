@@ -160,6 +160,8 @@ spec §26 に確定。`text` builtin ComponentDef 登録 + Inspector Text セク
 
 **共通**: DomRenderer の `<filter>` に region `-25%/150%` を付与（displacement/feather のエッジクリップ回避）。feImage は (0,0,w,h) 固定で region 拡張に不感。
 
+**ディストーション 3 種の既知バグ（未解決）**: Wave / Turbulent Displace / Ripple で Amplitude / Amount 増加時に実体が右下へスライドする報告が継続。複数回の修正試行はコミット済み／未コミット混在で紛らわしかったため、**事例・仮説・試行履歴を [doc/distortion-effect-bugs.md](doc/distortion-effect-bugs.md) に集約**（ワイプは対象外）。次回修正時は同ドキュメントを正とする。
+
 **残タスク**:
 - [x] **per-effect 視覚検証** — 2026-06-19 完了（上記）。
 - [ ] **export 一致（INV-2）**: 新 5 種の preview↔export ピクセル検証（feImage href が foreignObject ラスタ経路で再現するか要確認。再現不可なら許容済み既知差として明記）。**レイヤー実寸 ctx は export レンダラ経路でも host div を測れるか要確認**（exporter が別 DomRenderer インスタンスを使う場合、子要素レイアウト確定後に applyEffects が走るか）。
@@ -203,6 +205,11 @@ Preview 四隅 scale ハンドルも 2026-06-18 手動確認で修正済み。�
 - ~~**Preview 四隅 scale ハンドル（テキストレイヤー）**~~ — **2026-06-18 手動確認で修正済み**。solid と同等にドラッグ開始ジャンプなし。
 - **§26 手動回帰（2026-06-18 ユーザー）**: Undo ✅ / グリフ分解 ✅ / Draft↔Best ✅（残差許容）/ 位置 KF アニメ ✅。Inspector Source Text 入力バグは 2026-06-18 修正済み。
 - ~~**export 通し（precomp / MP4）**~~ — **2026-06-18 (Cursor) 修正**: §23 precomp 追加後 `exporter.ts` が `setTimelineComps` 未注入のままだったため comp レイヤーが export で空描画（preview のみ正しい）。`PreviewPanel` と同様に timeline comp 一覧を注入。Playwright 実測: precomp preview/export インクピクセル **delta=0**。MP4/WebM/PNG-seq + テキストは UI 経由でダウンロード確認済み。
+
+### §27.3 ディストーション 3 種（wave / turbulentDisplace / ripple）
+
+- **Amplitude / Amount 増加時の実体スライド（未解決）**: 3 種とも同型。歪みは見えるがレイヤー実体が右下へ動く／左上の見え方が減る。詳細・再現手順・修正試行履歴は **[doc/distortion-effect-bugs.md](doc/distortion-effect-bugs.md)**。
+- **解消済み（参考・同 doc）**: host 0×0 による効果無効化・境界線への歪み漏れはセッション内修正で解消報告あり（現行コミットへの取り込み状況は doc 参照）。
 
 ### インフラ・その他
 
@@ -269,3 +276,4 @@ Preview 四隅 scale ハンドルも 2026-06-18 手動確認で修正済み。�
 | 2026-06-19 | (Cursor) **§27 エフェクト & 調整レイヤー実装**: schema §5.5b + EffectDef/blur/tint + resolve/DomRenderer filter/backdrop-filter + Inspector Effects foldout + Timeline effect KF 行 + store アクション。144 tests / typecheck / build ✅。Playwright: Blur KF / Tint / 調整レイヤー backdrop ✅。調整レイヤー export 一致は未検証（§27.4 許容済み既知差候補） |
 | 2026-06-19 | (Cursor) **§27.3 ディストーション & ワイプ 5 種追加（仮実装・要修正）**: spec §27.3 追記 + [effectSvg.ts](src/runtime/effectSvg.ts) + builtin `wave`/`turbulentDisplace`/`ripple`/`linearWipe`/`angularWipe` + Inspector enum（Wave direction）。169 tests / typecheck / build ✅。Playwright: Wave/Turbulent/Linear/Angular preview filter ✅。**Ripple・export 一致・見た目チューニングは未完了 → progress §27.3 要修正リスト参照** |
 | 2026-06-19 | (Cursor) **ワイプ角度レンジ修正**: `linearWipe.angle` / `angularWipe.startAngle` の ParamDescriptor `min/max`（0..360）を削除し AE 同様に負値・360 超を入力可能に。レンダリングは元から任意角度対応。spec §27.3 更新 + テスト追加。173 tests ✅ |
+| 2026-06-19 | (Cursor) **§27.3 ディストーション 3 種スライドバグを doc 化**: 未解決の Amplitude 比例スライド（wave/turbulentDisplace/ripple）の再現手順・仮説・修正試行を [doc/distortion-effect-bugs.md](doc/distortion-effect-bugs.md) に集約。途中の未コミット pad/margin 試行は作業ツリーから撤回。176 tests ✅ |

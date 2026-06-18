@@ -87,7 +87,7 @@ const TINT_EFFECT_DEF: EffectDef = {
 
 const WAVE_EFFECT_DEF: EffectDef = {
   type: "wave",
-  label: "Wave",
+  label: "Wave (WIP)",
   params: [
     { key: "amplitude", label: "Amplitude", kind: "scalar", default: 20, animatable: true, min: 0, max: 500, step: 0.1 },
     { key: "wavelength", label: "Wavelength", kind: "scalar", default: 50, animatable: true, min: 1, max: 500, step: 0.1 },
@@ -109,7 +109,7 @@ const WAVE_EFFECT_DEF: EffectDef = {
 
 const TURBULENT_DISPLACE_EFFECT_DEF: EffectDef = {
   type: "turbulentDisplace",
-  label: "Turbulent Displace",
+  label: "Turbulent Displace (WIP)",
   params: [
     { key: "amount", label: "Amount", kind: "scalar", default: 50, animatable: true, min: 0, max: 500, step: 0.1 },
     { key: "size", label: "Size", kind: "scalar", default: 50, animatable: true, min: 1, max: 500, step: 0.1 },
@@ -135,7 +135,7 @@ const TURBULENT_DISPLACE_EFFECT_DEF: EffectDef = {
 
 const RIPPLE_EFFECT_DEF: EffectDef = {
   type: "ripple",
-  label: "Ripple",
+  label: "Ripple (WIP)",
   params: [
     { key: "radius", label: "Radius", kind: "scalar", default: 100, animatable: true, min: 0, max: 1000, step: 0.1 },
     { key: "amplitude", label: "Amplitude", kind: "scalar", default: 10, animatable: true, min: 0, max: 200, step: 0.1 },
