@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import { sampleAny, sampleScalar, sampleVec3 } from "../../runtime/interpolate";
 import type { AnimatedProp, Component, Easing, RGBA, SceneObject, Transform, Vec3 } from "../../core/schema";
 import {
@@ -29,6 +30,7 @@ export function InspectorPanel() {
   const addWiggleExpression = useEditorStore((s) => s.addWiggleExpression);
   const setPreviewQualityEditing = useEditorStore((s) => s.setPreviewQualityEditing);
   const setPreviewOverride = useEditorStore((s) => s.setPreviewOverride);
+  const clearPreviewOverride = useEditorStore((s) => s.clearPreviewOverride);
   const decomposeGlyphs = useEditorStore((s) => s.decomposeGlyphs);
 
   const comp = currentTimelineComp(project, compId);
@@ -202,6 +204,7 @@ export function InspectorPanel() {
         previewPatch={previewPatch}
         onEditFocus={() => setPreviewQualityEditing(true)}
         onEditBlur={() => setPreviewQualityEditing(false)}
+        onClearPreview={() => clearPreviewOverride()}
         onDecompose={() => decomposeGlyphs(obj.id)}
       />
 
@@ -280,6 +283,7 @@ function TextSection({
   previewPatch,
   onEditFocus,
   onEditBlur,
+  onClearPreview,
   onDecompose,
 }: {
   obj: SceneObject;
@@ -288,6 +292,7 @@ function TextSection({
   previewPatch: (patch: Partial<SceneObject>) => void;
   onEditFocus: () => void;
   onEditBlur: () => void;
+  onClearPreview: () => void;
   onDecompose: () => void;
 }) {
   const compIdx = obj.components.findIndex((c) => c.type === "text");
@@ -360,28 +365,21 @@ function TextSection({
       {isAnimated(textProp) && (
         <Row label="Source">
           <Stopwatch active={textProp.keyframes.length > 0} onClick={() => toggleKf("text", textProp)} />
-          <textarea
-            value={textVal}
-            rows={3}
-            onFocus={onEditFocus}
-            onChange={(e) => {
-              const v = e.target.value;
-              if (textProp.keyframes.length > 0) {
-                previewAnim("text", setKeyframe(textProp, frame, v, { type: "hold" }));
-              } else {
-                previewAnim("text", { ...textProp, value: v });
-              }
-            }}
-            onBlur={(e) => {
-              onEditBlur();
-              const v = e.target.value;
+          <TextSourceInput
+            textProp={textProp}
+            frame={frame}
+            committed={textVal}
+            onPreview={(next) => previewAnim("text", next)}
+            onCommit={(v) => {
               if (textProp.keyframes.length > 0) {
                 writeAnim("text", setKeyframe(textProp, frame, v, { type: "hold" }), "Edit Source Text");
               } else {
                 writeAnim("text", { ...textProp, value: v }, "Edit Source Text");
               }
             }}
-            style={{ ...textAreaStyle, flex: 1 }}
+            onEditFocus={onEditFocus}
+            onEditBlur={onEditBlur}
+            onClearPreview={onClearPreview}
           />
         </Row>
       )}
@@ -554,6 +552,78 @@ function TextSection({
 
 function isAnimated(v: unknown): v is AnimatedProp<unknown> {
   return typeof v === "object" && v !== null && "value" in v && "keyframes" in v;
+}
+
+/** Source Text — 編集中は local draft を正とし Preview のみ live patch（ColorSwatch 同型）。 */
+function TextSourceInput({
+  textProp,
+  frame,
+  committed,
+  onPreview,
+  onCommit,
+  onEditFocus,
+  onEditBlur,
+  onClearPreview,
+}: {
+  textProp: AnimatedProp<unknown>;
+  frame: number;
+  committed: string;
+  onPreview: (next: AnimatedProp<unknown>) => void;
+  onCommit: (value: string) => void;
+  onEditFocus: () => void;
+  onEditBlur: () => void;
+  onClearPreview: () => void;
+}) {
+  const [draft, setDraft] = useState(committed);
+  const draftRef = useRef(committed);
+  const editingRef = useRef(false);
+  const commitBaseRef = useRef(committed);
+
+  useEffect(() => {
+    draftRef.current = draft;
+  }, [draft]);
+
+  useEffect(() => {
+    if (!editingRef.current) {
+      setDraft(committed);
+      draftRef.current = committed;
+      commitBaseRef.current = committed;
+    }
+  }, [committed]);
+
+  const pushLive = (v: string) => {
+    setDraft(v);
+    draftRef.current = v;
+    if (textProp.keyframes.length > 0) {
+      onPreview(setKeyframe(textProp, frame, v, { type: "hold" }));
+    } else {
+      onPreview({ ...textProp, value: v });
+    }
+  };
+
+  return (
+    <textarea
+      value={draft}
+      rows={3}
+      onFocus={() => {
+        editingRef.current = true;
+        onEditFocus();
+      }}
+      onChange={(e) => pushLive(e.target.value)}
+      onBlur={() => {
+        editingRef.current = false;
+        onEditBlur();
+        const v = draftRef.current;
+        if (v === commitBaseRef.current) {
+          onClearPreview();
+          return;
+        }
+        onCommit(v);
+        commitBaseRef.current = v;
+      }}
+      style={{ ...textAreaStyle, flex: 1 }}
+    />
+  );
 }
 
 function Stopwatch({ active, onClick }: { active: boolean; onClick: () => void }) {
