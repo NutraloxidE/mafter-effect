@@ -1388,6 +1388,7 @@ effects[]          → host div.style.filter = (順序付きフィルタトー�
   - `{ kind: "svg", primitives }` … SVG filter primitive 群。DomRenderer が `<svg><filter id="fx-{objId}-{i}">…</filter></svg>` を host に紐づけ、`url(#fx-{objId}-{i})` トークンを生成。
 - DomRenderer は effect 配列順にトークンを連結して **1 本の `filter` 文字列**にする（CSS `filter` は関数と `url()` を**混在・左→右順適用**できる）。例: `filter: blur(2px) url(#fx-abc-1)`。
 - **reconcile**: host div の filter 文字列と svg `<filter>` defs は、effect の型/順序/有効状態が変わったときだけ作り直す（既存 `childSig` と同様の `fxSig`）。毎フレームは解決済み値で filter 文字列を更新するのみ。
+- **filter region**: 各 `<filter>` には `x/y=-25% width/height=150%` を付与し、displacement / feather がレイヤー端でクリップされないようにする。`feImage` は `(0,0,w,h)` に固定（`x/y/width/height` 明示）するので region を広げても map/mask 画像は歪まない。
 
 > **なぜ CSS filter か**: HTML comp が主役の DOM レンダラ（§8）と最も整合し、preview と foreignObject export（§11.4・テキスト export が既に使用）で**同一経路でラスタライズ**される＝ INV-2 を素直に満たす。`url(#)` SVG filter も foreignObject に内包できる。
 
@@ -1456,10 +1457,11 @@ interface EffectDef {
 | `direction` | Direction | enum | `"horizontal"` | `horizontal` / `vertical` | ❌ |
 | `phase` | Phase | scalar | `0` | 0..360, step 1 | ✅ |
 
-- `apply` → `{ kind: "svg", primitives }`。`feTurbulence type="fractalNoise"` + `feDisplacementMap`。
+- `apply` → `{ kind: "svg", primitives }`。**真の正弦波** displacement map（`feImage`(data URI linearGradient) → `feDisplacementMap`）。AE Wave Warp のクリーンな正弦に合わせ、ノイズ（`feTurbulence`）は使わない。
 - `amplitude === 0` は `null`（恒等）。
-- `wavelength` → `baseFrequency`（comp サイズ正規化）。`direction=horizontal` は X 軸方向の波、`vertical` は Y 軸。
-- `phase` → `seed`（決定論的整数、`Math.floor(phase)` ベース）。乱数禁止（INV-1）。
+- displacement map の各 stop 色 = `0.5 + 0.5·sin(2π·pos/λ + phase)` を片チャンネルに載せる（他チャンネルは中立 128）。`feDisplacementMap scale = 2·amplitude`（変位 = `scale·(channel−0.5)` ゆえ振幅 `amplitude` px）。
+- `direction=horizontal` は X 方向変位を R チャンネルに、`vertical` は Y 方向変位を G チャンネルに載せる。
+- `phase` は data URI 内の正弦位相に直結 → **滑らかにスクロール**（seed 跳躍なし）。純関数の文字列生成のみ、乱数禁止（INV-1）。
 
 #### `turbulentDisplace` — Turbulent Displace
 
@@ -1483,8 +1485,9 @@ interface EffectDef {
 | `centerX` | Center X | scalar | `0.5` | 0..1, step 0.01 | ✅ |
 | `centerY` | Center Y | scalar | `0.5` | 0..1, step 0.01 | ✅ |
 
-- `apply` → `{ kind: "svg", primitives }`。`feTurbulence` + `feDisplacementMap` を comp 正規化座標で調整（AE Ripple 100% 一致は非目標・近似可）。
-- `amplitude === 0` は `null`。
+- `apply` → `{ kind: "svg", primitives }`。**同心円状** displacement map（`feImage`(data URI radialGradient・`userSpaceOnUse` 円形) → `feDisplacementMap`）。半径方向に `sin`/`cos` を R/G に載せ、変位ベクトルを半径に応じて回転させて「水紋」状にする。振幅は `(1−o)` で外側へ減衰し、`radius` 外は中立（無変位）。`center` は radialGradient の `cx/cy` に直結（AE 同様に中心が効く）。`frequency` = `radius` 内のリング数。
+- 単一 displacement map では厳密な放射方向ベクトルを表現できないため**近似**（AE Ripple 100% 一致は非目標）。ノイズより遥かに波紋らしい見た目を優先。
+- `amplitude === 0` は `null`。`feDisplacementMap scale = 2·amplitude`。
 
 #### `linearWipe` — Linear Wipe
 
@@ -1494,8 +1497,9 @@ interface EffectDef {
 | `angle` | Wipe Angle | scalar | `0` | 0..360, step 1 | ✅ |
 | `feather` | Feather | scalar | `0` | min 0, max 200, step 0.1 | ✅ |
 
-- `apply` → `{ kind: "svg", primitives }`。`feImage`（data URI linearGradient マスク）→ optional `feGaussianBlur`（feather）→ `feComposite operator="in"`。
-- `completion >= 1` は `null`（完全表示・恒等）。`completion <= 0` は全透明マスク（レイヤー非表示）。
+- `apply` → `{ kind: "svg", primitives }`。`feImage`（data URI linearGradient マスク・白=表示/黒=消去）→ **`feColorMatrix type="luminanceToAlpha"`**（luminance を alpha へ変換）→ optional `feGaussianBlur`（feather）→ `feComposite operator="in"`。
+  - **重要**: `feComposite operator="in"` は in2 の **alpha** で切り抜くため、白黒 luminance を必ず `luminanceToAlpha` で alpha 化してから合成する（これを欠くとマスクが効かない）。
+- **AE 準拠の極性**: `completion <= 0` は `null`（完全表示・恒等＝エフェクト追加直後は無作用）。`completion >= 1` は全消去（非表示）。表示領域 = `(1 − completion)`。`angle` で wipe の向きを回転。
 
 #### `angularWipe` — Angular Wipe
 
@@ -1507,8 +1511,8 @@ interface EffectDef {
 | `centerY` | Center Y | scalar | `0.5` | 0..1, step 0.01 | ✅ |
 | `feather` | Feather | scalar | `0` | min 0, max 200, step 0.1 | ✅ |
 
-- `apply` → `{ kind: "svg", primitives }`。`feImage`（data URI 扇形 wedge マスク）→ optional `feGaussianBlur` → `feComposite operator="in"`。
-- `completion >= 1` は `null`。`completion <= 0` は全透明。
+- `apply` → `{ kind: "svg", primitives }`。`feImage`（data URI 扇形 wedge マスク・白背景＋黒扇形）→ **`feColorMatrix type="luminanceToAlpha"`** → optional `feGaussianBlur` → `feComposite operator="in"`。
+- **AE 準拠の極性**: `completion <= 0` は `null`（完全表示）。`completion >= 1` は全消去。黒い扇形（= 消える領域）が `startAngle`（0 = 真上）から時計回りに `sweep = completion·360°` で広がる。
 
 > **ワイプ共通**: エフェクト配列順を維持するため `clip-path` ではなく SVG filter 内マスク（§27.1）。AE Transition 100% 一致は非目標。
 

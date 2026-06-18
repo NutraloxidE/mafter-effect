@@ -171,8 +171,6 @@ export class DomRenderer implements Renderer {
       entry.childSig = sig;
     }
 
-    this.applyEffects(entry, obj);
-
     // props を in-place で更新（<img> src は変化時のみ → 再読込しない）
     obj.components.forEach((c, i) => {
       const el = entry.children[i];
@@ -234,16 +232,34 @@ export class DomRenderer implements Renderer {
         }
       }
     });
+
+    // effects は子要素のサイズ確定後に適用する（マスク/displacement map を
+    // レイヤーの実寸に合わせるため offsetWidth/Height を測る・§27.1）。
+    this.applyEffects(entry, obj);
   }
 
   /** §27.1/§27.4 — effects を filter / backdrop-filter として host div に適用。 */
   private applyEffects(entry: ObjectEntry, obj: ResolvedObject): void {
     const effects = obj.effects ?? [];
     const fxSig = effects.map((e) => `${e.type}:${e.enabled ? 1 : 0}`).join("|");
-    const ctx = {
-      width: this.currentComp?.width ?? 0,
-      height: this.currentComp?.height ?? 0,
-    };
+    const compW = this.currentComp?.width ?? 0;
+    const compH = this.currentComp?.height ?? 0;
+    // 調整レイヤーは comp 全体に作用（§27.4）。通常レイヤーは自身のコンテンツ矩形に
+    // フィルタが効くため、その実寸を ctx に渡す（comp 寸ではマスクがズレる）。
+    // host div は position:absolute の子（solid 等）だと auto 幅が 0 に潰れるので、
+    // コンポーネント子要素の border box から実寸を測る（svgRoot は children に含めない）。
+    let layerW = 0;
+    let layerH = 0;
+    for (const child of entry.children) {
+      layerW = Math.max(layerW, child.offsetWidth);
+      layerH = Math.max(layerH, child.offsetHeight);
+    }
+    const ctx = obj.isAdjustment
+      ? { width: compW, height: compH }
+      : {
+          width: layerW || entry.div.offsetWidth || compW,
+          height: layerH || entry.div.offsetHeight || compH,
+        };
 
     if (fxSig !== entry.fxSig) {
       if (entry.svgRoot) {
@@ -296,6 +312,12 @@ export class DomRenderer implements Renderer {
       for (const { id, primitives } of svgFilters) {
         const filter = document.createElementNS("http://www.w3.org/2000/svg", "filter");
         filter.setAttribute("id", id);
+        // §27.3 — displacement / feather がレイヤー端で切れないよう filter region を拡張。
+        // feImage は feImageLayer で (0,0,w,h) に固定済みなので region 拡張で歪まない。
+        filter.setAttribute("x", "-25%");
+        filter.setAttribute("y", "-25%");
+        filter.setAttribute("width", "150%");
+        filter.setAttribute("height", "150%");
         filter.innerHTML = primitives;
         defs.appendChild(filter);
       }

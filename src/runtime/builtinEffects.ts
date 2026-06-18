@@ -3,11 +3,13 @@ import type { EffectDef, EffectRenderCtx } from "./plugin";
 import { globalPluginRegistry } from "./pluginRegistry";
 import {
   angularWipeMask,
+  displaceWithMap,
   linearWipeMask,
   phaseToSeed,
+  rippleDisplaceMapSvg,
   sizeToFrequency,
   turbulenceDisplace,
-  wavelengthToFrequency,
+  waveDisplaceMapSvg,
 } from "./effectSvg";
 
 function num(v: unknown, fallback: number): number {
@@ -92,24 +94,16 @@ const WAVE_EFFECT_DEF: EffectDef = {
     { key: "direction", label: "Direction", kind: "enum", default: "horizontal", animatable: false, options: ["horizontal", "vertical"] },
     { key: "phase", label: "Phase", kind: "scalar", default: 0, animatable: true, min: 0, max: 360, step: 1 },
   ],
-  apply(props, _ctx: EffectRenderCtx) {
+  apply(props, ctx: EffectRenderCtx) {
     const amplitude = Math.max(0, num(props["amplitude"], 0));
     if (amplitude === 0) return null;
     const wavelength = Math.max(1, num(props["wavelength"], 50));
     const direction = str(props["direction"], "horizontal");
     const phase = num(props["phase"], 0);
-    const freq = wavelengthToFrequency(wavelength);
-    const baseFrequencyX = direction === "vertical" ? 0.002 : freq;
-    const baseFrequencyY = direction === "vertical" ? freq : 0.002;
-    const primitives = turbulenceDisplace({
-      scale: amplitude,
-      baseFrequencyX,
-      baseFrequencyY,
-      seed: phaseToSeed(phase),
-      numOctaves: 2,
-      type: "fractalNoise",
-    });
-    return { kind: "svg", primitives };
+    const w = Math.max(1, ctx.width);
+    const h = Math.max(1, ctx.height);
+    const { uri, scale } = waveDisplaceMapSvg(amplitude, wavelength, direction, phase, w, h);
+    return { kind: "svg", primitives: displaceWithMap(uri, scale, w, h) };
   },
 };
 
@@ -156,18 +150,10 @@ const RIPPLE_EFFECT_DEF: EffectDef = {
     const frequency = Math.max(0.1, num(props["frequency"], 5));
     const centerX = Math.min(1, Math.max(0, num(props["centerX"], 0.5)));
     const centerY = Math.min(1, Math.max(0, num(props["centerY"], 0.5)));
-    const extent = Math.max(ctx.width, ctx.height, 1);
-    const freq = Math.max(0.001, (frequency * extent) / (radius * 100));
-    const seed = phaseToSeed(centerX * 360 + centerY * 360);
-    const primitives = turbulenceDisplace({
-      scale: amplitude,
-      baseFrequencyX: freq,
-      baseFrequencyY: freq,
-      seed,
-      numOctaves: 2,
-      type: "fractalNoise",
-    });
-    return { kind: "svg", primitives };
+    const w = Math.max(1, ctx.width);
+    const h = Math.max(1, ctx.height);
+    const { uri, scale } = rippleDisplaceMapSvg(radius, amplitude, frequency, centerX, centerY, w, h);
+    return { kind: "svg", primitives: displaceWithMap(uri, scale, w, h) };
   },
 };
 
@@ -180,8 +166,9 @@ const LINEAR_WIPE_EFFECT_DEF: EffectDef = {
     { key: "feather", label: "Feather", kind: "scalar", default: 0, animatable: true, min: 0, max: 200, step: 0.1 },
   ],
   apply(props, ctx: EffectRenderCtx) {
+    // AE 準拠: completion 0 = 恒等（表示）、1 = 完全 wipe（非表示）。
     const completion = num(props["completion"], 0);
-    if (completion >= 1) return null;
+    if (completion <= 0) return null;
     const w = Math.max(1, ctx.width);
     const h = Math.max(1, ctx.height);
     const angle = num(props["angle"], 0);
@@ -203,8 +190,9 @@ const ANGULAR_WIPE_EFFECT_DEF: EffectDef = {
     { key: "feather", label: "Feather", kind: "scalar", default: 0, animatable: true, min: 0, max: 200, step: 0.1 },
   ],
   apply(props, ctx: EffectRenderCtx) {
+    // AE 準拠: completion 0 = 恒等（表示）、1 = 完全 wipe（非表示）。
     const completion = num(props["completion"], 0);
-    if (completion >= 1) return null;
+    if (completion <= 0) return null;
     const w = Math.max(1, ctx.width);
     const h = Math.max(1, ctx.height);
     const startAngle = num(props["startAngle"], 0);

@@ -4,6 +4,15 @@ export function svgDataUri(svg: string): string {
   return `data:image/svg+xml,${encodeURIComponent(svg)}`;
 }
 
+/**
+ * feImage をレイヤー座標 (0,0,w,h) に固定する。
+ * filter region を広げても map / mask 画像が引き伸ばされないようにするため、
+ * x/y/width/height を明示する（既定は filter region いっぱいに stretch されてしまう）。
+ */
+function feImageLayer(uri: string, w: number, h: number, result: string): string {
+  return `<feImage href="${uri}" x="0" y="0" width="${w}" height="${h}" preserveAspectRatio="none" result="${result}"/>`;
+}
+
 export function turbulenceDisplace(opts: {
   scale: number;
   baseFrequencyX: number;
@@ -29,19 +38,132 @@ export function turbulenceDisplace(opts: {
   ].join("");
 }
 
+/** displacement map (data URI) を使って SourceGraphic を変位させる。 */
+export function displaceWithMap(uri: string, scale: number, w: number, h: number): string {
+  return [
+    feImageLayer(uri, w, h, "dmap"),
+    `<feDisplacementMap in="SourceGraphic" in2="dmap" scale="${scale}" xChannelSelector="R" yChannelSelector="G"/>`,
+  ].join("");
+}
+
 /** phase/evolution (deg) → 決定論的 seed。 */
 export function phaseToSeed(degrees: number): number {
   return Math.floor((((degrees % 360) + 360) % 360) * 11.377);
 }
 
-function maskComposite(maskUri: string, featherPx: number): string {
+function clamp01(v: number): number {
+  return Math.min(1, Math.max(0, v));
+}
+
+/**
+ * §27.3 Wave — 真の正弦波 displacement map（feTurbulence のノイズではない）。
+ *
+ * feDisplacementMap は変位 = scale·(channel − 0.5)。よって振幅 A の正弦波を得るには
+ * channel = 0.5 + 0.5·sin(2π·pos/λ + phase)、scale = 2A とする。
+ * AE Wave Warp は **横波（transverse）**: 波の進行方向に**垂直**に変位する（旗のはためき）。
+ * よって `direction=horizontal`（X 方向に進む波）は Y へ変位（G チャンネルに正弦・R 中立）、
+ * `vertical`（Y 方向に進む波）は X へ変位（R に正弦・G 中立）。これで縦割れ（tearing）が出ない。
+ * phase をアニメートすると波が滑らかにスクロールする（seed 跳躍なし）。
+ */
+export function waveDisplaceMapSvg(
+  amplitude: number,
+  wavelength: number,
+  direction: string,
+  phaseDeg: number,
+  w: number,
+  h: number,
+): { uri: string; scale: number } {
+  const lambda = Math.max(1, wavelength);
+  const phase = (phaseDeg * Math.PI) / 180;
+  const horizontal = direction !== "vertical";
+  const span = Math.max(1, horizontal ? w : h);
+  const cycles = span / lambda;
+  // 1 周期あたり ~8 サンプル。極端な高周波は上限でエイリアスを許容（AE も同様）。
+  const samples = Math.min(512, Math.max(2, Math.round(cycles * 8) + 1));
+  const stops: string[] = [];
+  for (let i = 0; i < samples; i++) {
+    const o = i / (samples - 1);
+    const pos = o * span;
+    const v = 0.5 + 0.5 * Math.sin((2 * Math.PI * pos) / lambda + phase);
+    const c = Math.round(clamp01(v) * 255);
+    // 横波: 進行方向(=gradient 軸)に垂直なチャンネルへ正弦を載せる。
+    // horizontal は X に進み Y(G) へ変位、vertical は Y に進み X(R) へ変位。中立 = 128。
+    const col = horizontal ? `rgb(128,${c},128)` : `rgb(${c},128,128)`;
+    stops.push(`<stop offset="${(o * 100).toFixed(3)}%" stop-color="${col}"/>`);
+  }
+  const gradAttrs = horizontal
+    ? `x1="0" y1="0" x2="1" y2="0"`
+    : `x1="0" y1="0" x2="0" y2="1"`;
+  const svg = [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">`,
+    `<defs><linearGradient id="w" ${gradAttrs}>`,
+    stops.join(""),
+    `</linearGradient></defs>`,
+    `<rect width="100%" height="100%" fill="url(#w)"/>`,
+    `</svg>`,
+  ].join("");
+  return { uri: svgDataUri(svg), scale: 2 * amplitude };
+}
+
+/**
+ * §27.3 Ripple — 同心円状 displacement map（中心から外へ減衰する波紋）。
+ *
+ * radialGradient（userSpaceOnUse・円形）で半径方向に sin/cos を載せ、変位ベクトルを
+ * 半径に応じて回転させることで「水紋」状の見た目にする。完全な放射方向ではない近似だが
+ * （単一 map では半径方向ベクトルを厳密に表現できない）、ノイズより遥かに波紋らしい。
+ * 振幅は (1−o) で外側へ減衰し、radius 外（offset 1 の pad）は中立で無変位。
+ * center は radialGradient の cx/cy に直結（AE 同様に中心が効く）。
+ */
+export function rippleDisplaceMapSvg(
+  radius: number,
+  amplitude: number,
+  frequency: number,
+  centerX: number,
+  centerY: number,
+  w: number,
+  h: number,
+): { uri: string; scale: number } {
+  const cx = clamp01(centerX) * w;
+  const cy = clamp01(centerY) * h;
+  const r = Math.max(1, radius);
+  const cycles = Math.max(0.1, frequency);
+  const samples = Math.min(512, Math.max(16, Math.round(cycles * 16)));
+  const stops: string[] = [];
+  for (let i = 0; i <= samples; i++) {
+    const o = i / samples;
+    const env = 1 - o; // 外側へ減衰
+    const ph = 2 * Math.PI * cycles * o;
+    const rC = Math.round(clamp01(0.5 + 0.5 * env * Math.sin(ph)) * 255);
+    const gC = Math.round(clamp01(0.5 + 0.5 * env * Math.cos(ph)) * 255);
+    stops.push(`<stop offset="${(o * 100).toFixed(2)}%" stop-color="rgb(${rC},${gC},128)"/>`);
+  }
+  const svg = [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">`,
+    `<defs><radialGradient id="r" gradientUnits="userSpaceOnUse" cx="${cx}" cy="${cy}" r="${r}">`,
+    stops.join(""),
+    `</radialGradient></defs>`,
+    `<rect width="100%" height="100%" fill="url(#r)"/>`,
+    `</svg>`,
+  ].join("");
+  return { uri: svgDataUri(svg), scale: 2 * amplitude };
+}
+
+/**
+ * mask 画像（luminance で reveal を表現）を alpha に変換して SourceGraphic を切り抜く。
+ *
+ * feComposite operator="in" は in2 の **alpha** で切り抜くため、白黒 luminance を
+ * `feColorMatrix type="luminanceToAlpha"` で alpha に変換してから合成する。
+ * feather は alpha 化後に feGaussianBlur で適用（二重 feather を避ける）。
+ */
+function maskComposite(maskUri: string, featherPx: number, w: number, h: number): string {
   const blur =
     featherPx > 0
-      ? `<feGaussianBlur in="maskImg" stdDeviation="${featherPx}" result="maskBlur"/>`
+      ? `<feGaussianBlur in="maskA" stdDeviation="${featherPx}" result="maskBlur"/>`
       : "";
-  const maskIn = featherPx > 0 ? "maskBlur" : "maskImg";
+  const maskIn = featherPx > 0 ? "maskBlur" : "maskA";
   return [
-    `<feImage href="${maskUri}" result="maskImg" preserveAspectRatio="none"/>`,
+    feImageLayer(maskUri, w, h, "maskImg"),
+    `<feColorMatrix in="maskImg" type="luminanceToAlpha" result="maskA"/>`,
     blur,
     `<feComposite in="SourceGraphic" in2="${maskIn}" operator="in"/>`,
   ].join("");
@@ -51,7 +173,11 @@ function allBlackMaskSvg(w: number, h: number): string {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}"><rect width="100%" height="100%" fill="black"/></svg>`;
 }
 
-/** Linear wipe mask: completion 0..1, angle in degrees (0 = left→right reveal). */
+/**
+ * §27.3 Linear Wipe（AE 準拠の completion 極性）。
+ * completion 0 = 完全表示（恒等）、1 = 完全 wipe（非表示）。
+ * 表示領域 = (1 − completion)。angle で wipe の向きを回転。
+ */
 export function linearWipeMask(
   completion: number,
   angleDeg: number,
@@ -59,21 +185,19 @@ export function linearWipeMask(
   w: number,
   h: number,
 ): string {
-  if (completion <= 0) {
-    return maskComposite(svgDataUri(allBlackMaskSvg(w, h)), 0);
+  if (completion <= 0) return "";
+  if (completion >= 1) {
+    return maskComposite(svgDataUri(allBlackMaskSvg(w, h)), 0, w, h);
   }
-  if (completion >= 1) return "";
 
-  const t = Math.min(1, Math.max(0, completion));
-  const featherNorm = w > 0 ? Math.min(0.5, featherPx / w) : 0;
-  const edge = t * 100;
-  const softStart = Math.max(0, edge - featherNorm * 100);
+  const t = clamp01(completion);
+  const edge = ((1 - t) * 100).toFixed(3); // 表示境界
   const svg = [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">`,
     `<defs>`,
     `<linearGradient id="g" x1="0" y1="0" x2="1" y2="0" gradientUnits="objectBoundingBox" gradientTransform="rotate(${angleDeg} 0.5 0.5)">`,
     `<stop offset="0%" stop-color="white"/>`,
-    `<stop offset="${softStart}%" stop-color="white"/>`,
+    `<stop offset="${edge}%" stop-color="white"/>`,
     `<stop offset="${edge}%" stop-color="black"/>`,
     `<stop offset="100%" stop-color="black"/>`,
     `</linearGradient>`,
@@ -81,10 +205,14 @@ export function linearWipeMask(
     `<rect width="100%" height="100%" fill="url(#g)"/>`,
     `</svg>`,
   ].join("");
-  return maskComposite(svgDataUri(svg), featherPx);
+  return maskComposite(svgDataUri(svg), featherPx, w, h);
 }
 
-/** Angular wipe: sector from startAngle, sweep = completion * 360°. */
+/**
+ * §27.3 Angular Wipe（AE 準拠の completion 極性）。
+ * completion 0 = 完全表示、1 = 完全 wipe。黒い扇形（= 消える領域）が
+ * startAngle から時計回りに sweep = completion·360° で広がる（startAngle 0 = 真上）。
+ */
 export function angularWipeMask(
   completion: number,
   startAngleDeg: number,
@@ -94,17 +222,17 @@ export function angularWipeMask(
   w: number,
   h: number,
 ): string {
-  if (completion <= 0) {
-    return maskComposite(svgDataUri(allBlackMaskSvg(w, h)), 0);
+  if (completion <= 0) return "";
+  if (completion >= 1) {
+    return maskComposite(svgDataUri(allBlackMaskSvg(w, h)), 0, w, h);
   }
-  if (completion >= 1) return "";
 
-  const t = Math.min(1, Math.max(0, completion));
-  const sweep = t * 360;
-  const cxPx = centerX * w;
-  const cyPx = centerY * h;
+  const t = clamp01(completion);
+  const sweep = t * 360; // 消える扇形の角度
+  const cxPx = clamp01(centerX) * w;
+  const cyPx = clamp01(centerY) * h;
   const r = Math.hypot(w, h) * 1.5;
-  const startRad = ((startAngleDeg - 90) * Math.PI) / 180;
+  const startRad = ((startAngleDeg - 90) * Math.PI) / 180; // 0 = 真上
   const endRad = startRad + (sweep * Math.PI) / 180;
   const x1 = cxPx + r * Math.cos(startRad);
   const y1 = cyPx + r * Math.sin(startRad);
@@ -112,13 +240,14 @@ export function angularWipeMask(
   const y2 = cyPx + r * Math.sin(endRad);
   const largeArc = sweep > 180 ? 1 : 0;
   const path = `M ${cxPx} ${cyPx} L ${x1} ${y1} A ${r} ${r} 0 ${largeArc} 1 ${x2} ${y2} Z`;
+  // 白背景（表示）＋黒扇形（消去）。
   const svg = [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">`,
-    `<rect width="100%" height="100%" fill="black"/>`,
-    `<path d="${path}" fill="white"/>`,
+    `<rect width="100%" height="100%" fill="white"/>`,
+    `<path d="${path}" fill="black"/>`,
     `</svg>`,
   ].join("");
-  return maskComposite(svgDataUri(svg), featherPx);
+  return maskComposite(svgDataUri(svg), featherPx, w, h);
 }
 
 /** Wave / ripple 用 baseFrequency（wavelength px → cycles per user unit）。 */

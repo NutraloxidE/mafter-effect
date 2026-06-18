@@ -29,13 +29,24 @@ describe("effectSvg helpers", () => {
     expect(s).toContain('scale="10"');
   });
 
-  it("linearWipeMask returns empty string at completion 1", () => {
-    expect(linearWipeMask(1, 0, 0, 1920, 1080)).toBe("");
+  it("linearWipeMask returns empty string at completion 0 (AE: inert)", () => {
+    expect(linearWipeMask(0, 0, 0, 1920, 1080)).toBe("");
+  });
+
+  it("linearWipeMask converts luminance to alpha for partial completion", () => {
+    const s = linearWipeMask(0.5, 0, 0, 1920, 1080);
+    expect(s).toContain("luminanceToAlpha");
+    expect(s).toContain('operator="in"');
   });
 
   it("angularWipeMask includes path for partial completion", () => {
     const s = angularWipeMask(0.5, 0, 0.5, 0.5, 0, 1920, 1080);
     expect(s).toContain("path");
     expect(s).toContain("feComposite");
+    expect(s).toContain("luminanceToAlpha");
+  });
+
+  it("angularWipeMask is inert at completion 0", () => {
+    expect(angularWipeMask(0, 0, 0.5, 0.5, 0, 1920, 1080)).toBe("");
   });
 });

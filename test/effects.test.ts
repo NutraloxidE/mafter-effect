@@ -59,22 +59,23 @@ describe("builtinEffects apply (§27.3)", () => {
     expect(WAVE_EFFECT_DEF.apply({ amplitude: 0, wavelength: 50, direction: "horizontal", phase: 0 }, ctx)).toBeNull();
   });
 
-  it("wave returns svg displacement for horizontal", () => {
+  it("wave returns a sine displacement map (not turbulence)", () => {
     const r = WAVE_EFFECT_DEF.apply({ amplitude: 20, wavelength: 50, direction: "horizontal", phase: 45 }, ctx);
     expect(r?.kind).toBe("svg");
     if (r?.kind === "svg") {
-      expect(r.primitives).toContain("feTurbulence");
+      expect(r.primitives).toContain("feImage");
       expect(r.primitives).toContain("feDisplacementMap");
-      expect(r.primitives).toContain('type="fractalNoise"');
+      // 正弦波 displacement map なのでノイズ (feTurbulence) は使わない。
+      expect(r.primitives).not.toContain("feTurbulence");
+      // scale = 2·amplitude。
+      expect(r.primitives).toContain('scale="40"');
     }
   });
 
-  it("wave uses vertical baseFrequency when direction is vertical", () => {
-    const r = WAVE_EFFECT_DEF.apply({ amplitude: 10, wavelength: 40, direction: "vertical", phase: 0 }, ctx);
-    expect(r?.kind).toBe("svg");
-    if (r?.kind === "svg") {
-      expect(r.primitives).toMatch(/baseFrequency="0\.002 [\d.]+"/);
-    }
+  it("wave phase animates the map (smooth scroll, not seed jump)", () => {
+    const a = WAVE_EFFECT_DEF.apply({ amplitude: 20, wavelength: 50, direction: "horizontal", phase: 0 }, ctx);
+    const b = WAVE_EFFECT_DEF.apply({ amplitude: 20, wavelength: 50, direction: "horizontal", phase: 45 }, ctx);
+    expect(a?.kind === "svg" && b?.kind === "svg" && a.primitives !== b.primitives).toBe(true);
   });
 
   it("turbulentDisplace returns null when amount is 0", () => {
@@ -94,16 +95,23 @@ describe("builtinEffects apply (§27.3)", () => {
     expect(RIPPLE_EFFECT_DEF.apply({ amplitude: 0, radius: 100, frequency: 5, centerX: 0.5, centerY: 0.5 }, ctx)).toBeNull();
   });
 
-  it("ripple returns svg displacement", () => {
+  it("ripple returns a radial displacement map driven by center", () => {
     const r = RIPPLE_EFFECT_DEF.apply({ amplitude: 10, radius: 100, frequency: 5, centerX: 0.5, centerY: 0.5 }, ctx);
     expect(r?.kind).toBe("svg");
     if (r?.kind === "svg") {
       expect(r.primitives).toContain("feDisplacementMap");
+      expect(r.primitives).toContain("feImage");
     }
   });
 
-  it("linearWipe returns null when completion >= 1", () => {
-    expect(LINEAR_WIPE_EFFECT_DEF.apply({ completion: 1, angle: 0, feather: 0 }, ctx)).toBeNull();
+  it("ripple center actually moves the rings", () => {
+    const a = RIPPLE_EFFECT_DEF.apply({ amplitude: 10, radius: 100, frequency: 5, centerX: 0.25, centerY: 0.5 }, ctx);
+    const b = RIPPLE_EFFECT_DEF.apply({ amplitude: 10, radius: 100, frequency: 5, centerX: 0.75, centerY: 0.5 }, ctx);
+    expect(a?.kind === "svg" && b?.kind === "svg" && a.primitives !== b.primitives).toBe(true);
+  });
+
+  it("linearWipe returns null when completion <= 0 (AE: inert)", () => {
+    expect(LINEAR_WIPE_EFFECT_DEF.apply({ completion: 0, angle: 0, feather: 0 }, ctx)).toBeNull();
   });
 
   it("linearWipe returns mask composite when completion in (0,1)", () => {
@@ -113,20 +121,23 @@ describe("builtinEffects apply (§27.3)", () => {
       expect(r.primitives).toContain("feImage");
       expect(r.primitives).toContain("feComposite");
       expect(r.primitives).toContain("linearGradient");
+      // luminance を alpha に変換しないと feComposite "in" は切り抜かない。
+      expect(r.primitives).toContain("luminanceToAlpha");
     }
   });
 
-  it("linearWipe hides all when completion is 0", () => {
-    const r = LINEAR_WIPE_EFFECT_DEF.apply({ completion: 0, angle: 0, feather: 0 }, ctx);
+  it("linearWipe hides all when completion is 1 (AE: fully wiped)", () => {
+    const r = LINEAR_WIPE_EFFECT_DEF.apply({ completion: 1, angle: 0, feather: 0 }, ctx);
     expect(r?.kind).toBe("svg");
     if (r?.kind === "svg") {
       expect(r.primitives).toContain("black");
       expect(r.primitives).toContain('operator="in"');
+      expect(r.primitives).toContain("luminanceToAlpha");
     }
   });
 
-  it("angularWipe returns null when completion >= 1", () => {
-    expect(ANGULAR_WIPE_EFFECT_DEF.apply({ completion: 1, startAngle: 0, centerX: 0.5, centerY: 0.5, feather: 0 }, ctx)).toBeNull();
+  it("angularWipe returns null when completion <= 0 (AE: inert)", () => {
+    expect(ANGULAR_WIPE_EFFECT_DEF.apply({ completion: 0, startAngle: 0, centerX: 0.5, centerY: 0.5, feather: 0 }, ctx)).toBeNull();
   });
 
   it("angularWipe returns wedge mask when completion in (0,1)", () => {

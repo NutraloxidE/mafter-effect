@@ -141,27 +141,34 @@ spec §26 に確定。`text` builtin ComponentDef 登録 + Inspector Text セク
 - [x] **Playwright 実機**: Blur preview + KF アニメ / Tint url filter / 調整レイヤー backdrop-filter ✅
 - **調整レイヤー export**: preview ベストエフォート（§27.4）。export ピクセル一致は未検証 → **許容済み既知差候補**（foreignObject + backdrop-filter 経路依存）。通常レイヤー effects は既存 export パイプライン（filter 文字列）で preview 一致想定。
 
-#### §27.3 追加エフェクト（**仮実装 2026-06-19・要修正**）
+#### §27.3 追加エフェクト（**AE 寄せリファイン 2026-06-19・コア修正＋視覚検証 完了**）
 
-> **ステータス: 仮追加（provisional）**。Inspector から追加・KF・preview 反映までは動くが、見た目・UX・export 一致は未仕上げ。**本番品質とみなさないこと。**
+> **2026-06-19 リファイン（Opus）**: 仮実装の **構造的バグと AE 乖離を修正**。spec §27.3/§27.1 を修正済みレシピに更新。typecheck / **172 tests PASS** / build ✅。
+> **Playwright 視覚検証済み（4 象限・別レイヤー分離）**: Wave=クリーンな横波（旗状・tearing なし）/ Ripple=中心起点の同心円ディストーション / Linear Wipe(0.5)=左半分残し＋feather エッジで**実切り抜き** / Angular Wipe(0.3)=真上から CW に 108°扇形除去。コンソールエラーなし。検証スクリプト [verify-effects.mjs](verify-effects.mjs)（空 IDB → アプリ boot → 各エフェクトを別象限に配置 → screenshot）。
+>
+> **検証中に判明・修正した追加バグ（Opus・実機でのみ顕在化）**:
+> 1. **横波化**: Wave は当初 longitudinal（進行方向と同軸の変位）で文字が縦割れ（tearing）→ AE 同様 **transverse**（進行方向に垂直な変位）に修正（[effectSvg.ts](src/runtime/effectSvg.ts)）。
+> 2. **レイヤー実寸サイズの ctx**: SVG エフェクトの filter はレイヤー（host div）座標系で効くのに ctx に **comp 寸**を渡していたため、comp サイズの mask/map が小さいレイヤーの一部しか覆わず**ワイプが全く効かない**（mask 左端の白だけ見える）バグ。`EffectRenderCtx` をレイヤー実寸に変更（[DomRenderer.ts](src/runtime/DomRenderer.ts)）。host div は absolute 子（solid 等）だと offsetWidth=0 に潰れるため、**コンポーネント子要素の border box** から実寸を測る。調整レイヤーのみ comp 全体寸を渡す。
 
-| type | label | カテゴリ | 備考 |
-|---|---|---|---|
-| `wave` | Wave | ディストーション | feTurbulence + displacement。direction は enum（非 KF） |
-| `turbulentDisplace` | Turbulent Displace | ディストーション | AE Turbulent Displace 近似 |
-| `ripple` | Ripple | ディストーション | 放射状近似（精度不足・要チューニング） |
-| `linearWipe` | Linear Wipe | ワイプ | SVG マスク。completion 既定 0 = 非表示 |
-| `angularWipe` | Angular Wipe | ワイプ | 扇形 wedge マスク。AE Angular Wipe 近似 |
+| type | label | 2026-06-19 修正内容 |
+|---|---|---|
+| `wave` | Wave | **noise→真の正弦波 displacement map**（feImage linearGradient + feDisplacementMap、scale=2A）。**phase が seed 跳躍ではなく滑らかにスクロール**。AE Wave Warp 相当に。 |
+| `turbulentDisplace` | Turbulent Displace | 変更なし（AE 同様ノイズが正・既存確認済み）。evolution の連続進化は SVG seed 制約で離散近似のまま。 |
+| `ripple` | Ripple | **noise→同心円 displacement map**（radialGradient userSpaceOnUse、sin/cos で半径方向に変位回転、(1−o) 減衰）。**center が実際にリング中心を動かす**（旧実装は seed 入力のみで無効だった）。 |
+| `linearWipe` | Linear Wipe | **構造バグ修正**: マスクが luminance で、feComposite "in" は alpha 参照のため**実際は切り抜いていなかった** → `feColorMatrix luminanceToAlpha` を挿入。**completion 極性を AE 準拠に反転**（0=表示/恒等・1=全 wipe）。feather 二重適用解消。 |
+| `angularWipe` | Angular Wipe | 同上の luminanceToAlpha 修正 + 極性反転。白背景＋黒扇形（消去領域）が startAngle(=真上) から CW に completion·360° で拡大。 |
 
-**要修正（優先度順・未着手）**:
-- [ ] **見た目チューニング**: Wave/Ripple の param→SVG 換算、ワイプ feather/エッジ品質、Angular の startAngle 基準
-- [ ] **UX**: ワイプ completion 既定値（0=非表示）の扱い、Ripple の視覚的フィードバック
-- [ ] **Timeline**: Wave `direction` enum 行の編集 UI（現状 Inspector `<select>` のみ）
-- [ ] **export 一致（INV-2）**: 新 5 種の preview↔export ピクセル検証（Blur/Tint 同等の保証は未実施）
+**共通**: DomRenderer の `<filter>` に region `-25%/150%` を付与（displacement/feather のエッジクリップ回避）。feImage は (0,0,w,h) 固定で region 拡張に不感。
+
+**残タスク**:
+- [x] **per-effect 視覚検証** — 2026-06-19 完了（上記）。
+- [ ] **export 一致（INV-2）**: 新 5 種の preview↔export ピクセル検証（feImage href が foreignObject ラスタ経路で再現するか要確認。再現不可なら許容済み既知差として明記）。**レイヤー実寸 ctx は export レンダラ経路でも host div を測れるか要確認**（exporter が別 DomRenderer インスタンスを使う場合、子要素レイアウト確定後に applyEffects が走るか）。
 - [ ] **調整レイヤー + 新エフェクト**: backdrop-filter 経路での作用確認
-- [ ] **Ripple 実機検証**: Playwright 未カバー（Wave/Turbulent/Linear/Angular のみ確認済み）
+- [ ] **Timeline**: Wave `direction` enum 行の編集 UI（現状 Inspector `<select>` のみ）
+- [ ] **turbulentDisplace の size→frequency / evolution チューニング**（任意・既存確認済みのため低優先）
+- **KF アニメ実機**: 今回は静的値で検証。completion/phase/amplitude の KF アニメは resolve 経路（test 済み）だが preview スクラブの実機確認は任意で残。
 
-**関連ファイル**: [effectSvg.ts](src/runtime/effectSvg.ts) / [builtinEffects.ts](src/runtime/builtinEffects.ts) / spec §27.3
+**関連ファイル**: [effectSvg.ts](src/runtime/effectSvg.ts) / [builtinEffects.ts](src/runtime/builtinEffects.ts) / [DomRenderer.ts](src/runtime/DomRenderer.ts) / spec §27.3 / 検証スクリプト [verify-effects.mjs](verify-effects.mjs)
 
 ### Timeline AE化バックログ（spec §5 スキーマ拡張 + INV 影響評価を伴い別リビジョンで導入）
 **→ 実用性優先度リストは [doc/timeline-panel-wip.md](doc/timeline-panel-wip.md)。**
