@@ -129,6 +129,19 @@ spec §26 に確定。`text` builtin ComponentDef 登録 + Inspector Text セク
 - [x] **§25 × §26 Preview 四隅 scale ハンドル** — 2026-06-18 手動確認で **solid 同等に修正済み**（Canvas bounds + ドラッグ起点相対 scale）。
 - **将来（§16）**: 段落ボックステキスト / 文字単位混在スタイル / パステキスト / 範囲セレクター式アニメーター / tracking 1/1000em / フォントセレクト UI / レイヤー個別品質 / レンダーキャッシュ実体
 
+### §27 エフェクト & 調整レイヤー（spec v0.11・**設計確定 2026-06-19 / 実装は Cursor 委任予定**）
+
+spec §27 + §5.5b に**実装可能レベルまで設計確定**。Claude Code=設計 / Cursor=実装の分担（weekly limit 残 7% のため設計に予算集中）。
+
+- **スキーマ（additive・§5.5b）**: `EffectInstance{id,type,enabled,props}` 新設。`SceneObject.effects?` / `isAdjustment?` を optional 追加 → 既存 project.json byte 等価（INV-4・回帰なし）。`effects` は意味順配列（並べ替えない）。
+- **基盤（§27.1/§27.2）**: effect は component と別概念（描画内容 ≠ 後処理）。`EffectDef`（`ParamDescriptor[]` 共有・`apply()` が `{kind:"css"|"svg"}` のフィルタ片を返す純関数）を `registerEffect` で登録。DomRenderer が host div の `filter` に順序連結（css 関数 + `url(#)` svg filter 混在可）。
+- **builtin 2 種（§27.3）**: `blur`（CSS `blur(blurriness px)`）/ `tint`（SVG feColorMatrix+feComponentTransfer で黒白→2色マップ + amount ブレンド）。
+- **調整レイヤー（§27.4・最小）**: `isAdjustment=true` は content 非描画 + effects を `backdrop-filter` で背面（低 zOrder）に適用。**INV-2 注記**: 通常レイヤー effects は export 一致保証、調整レイヤーの backdrop-filter は foreignObject export 再現性が browser 依存 → preview ベストエフォート、export は Playwright で検証必須・不可なら許容済み既知差扱い。
+- **解決（§27.5）**: `ResolvedObject.effects?`/`isAdjustment?` 追加。effect props は `resolveComponent` と同経路で焼く（INV-1/3）。
+- **UI（§27.6/§27.7）**: Inspector の Effects foldout（追加/削除/並べ替え/有効化/KF ◇）+ Timeline の Effects グループ（PropPath を `effects.<id>.<key>` に拡張・グラフ/Ease と KF 共有）。
+- **作業分解**: §27.10（影響ファイル一覧）/ 受け入れ条件 §27.11。
+- [ ] **実装（Cursor 委任）** — schema/plugin/registry/builtinEffects/resolve/DomRenderer/Inspector/Timeline/store + INV テスト + Playwright 実機検証。
+
 ### Timeline AE化バックログ（spec §5 スキーマ拡張 + INV 影響評価を伴い別リビジョンで導入）
 **→ 実用性優先度リストは [doc/timeline-panel-wip.md](doc/timeline-panel-wip.md)。**
 - **Tier B（additive スキーマ）**: ラベル色 / solo / lock / shy / parent リンク UI。`SceneObject` にフラグ追加。
@@ -223,4 +236,5 @@ Preview 四隅 scale ハンドルも 2026-06-18 手動確認で修正済み。�
 | 2026-06-18 | (Cursor) **export 常時 PNG-seq フォールバック修正(2)**: 誤検知の `assertVideoEncodeHealthy`（chunkCount/decoderConfig）と `flush()` 20s タイムアウト、音声 encode 失敗が映像まで PNG-seq フォールバックに連鎖。**修正**: 実エンコーダ error のみ検査 / flush は通常 await / 音声失敗は映像-only で継続。136 tests ✅ |
 | 2026-06-18 | (Claude Code) `cursor-agent` CLI を Composer 2.5 への実装委任ハーネスとして追加: [.claude/skills/delegate-to-cursor/SKILL.md](.claude/skills/delegate-to-cursor/SKILL.md)（隔離 worktree + `--print --force` 非対話実行 + マージ前レビュー必須）。ユーザー明示依頼時のみ起動 |
 | 2026-06-18 | (Cursor) **`deploy:ssh` 修正・デプロイ完了**: SFTP 有効化（`openssh-sftp-server` + `kill -HUP`）/ SFTP 優先 + tar fallback（接続分離）/ Windows build spawn / Caddy bash 構文修正 / Docker 不可時 `python3 -m http.server :80` fallback。**`root@ssh.gycp.party:~/mafter-effect` へ配備済み** |
+| 2026-06-19 | (Claude Code) **spec v0.11 §27 エフェクト & 調整レイヤー 設計確定**: §5.5b additive スキーマ（`EffectInstance` / `SceneObject.effects?` / `isAdjustment?`・byte 等価）+ §27 基盤（`EffectDef`/`registerEffect`/CSS filter 連結）+ builtin Blur/Tint + 調整レイヤー backdrop-filter 最小設計 + Inspector/Timeline 統合 + INV 評価 + 作業分解。**実装は Cursor 委任予定**（weekly limit 残 7%・設計に予算集中） |
 | 2026-06-19 | (Cursor) **Inspector Unity 風 foldout UI**: [InspectorPanel.tsx](src/editor/panels/InspectorPanel.tsx) に `InspectorFoldout`（▶/▼ 三角・コンポーネント毎の仕切り）を導入。Transform / components[]（text）/ Expression / Keyframes / In-Out を個別展開・折りたたみ可（レイヤー毎に状態保持・既定展開）。機能は不変。136 tests ✅ / Playwright 折りたたみ検証 ✅ |
