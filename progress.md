@@ -160,7 +160,7 @@ Preview 四隅 scale ハンドルも 2026-06-18 手動確認で修正済み。�
 - ~~**§26.4 Draft / Best 切替の位置ズレ（ブロッカー）**~~ — **2026-06-18 解消（2 段階）**。詳細は更新履歴参照。
 - **§26.4 Draft / Best — 残差（許容済み・非ブロッカー）**: Draft(DOM) と Best(SVG) は描画経路が異なるため **100% ピクセル一致は保証しない**。修正後も切替時にわずかな位置/形状差が残りうる（Playwright 実測では ≤2px 級、手動回帰 2026-06-18 でも目視でわずかな差を確認・**実用上問題なし**と判断）。INV-2（preview↔export 一致）は export 時に選択した `textRenderMode` 経路内での一致が正準。
 - ~~**Preview 四隅 scale ハンドル（テキストレイヤー）**~~ — **2026-06-18 手動確認で修正済み**。solid と同等にドラッグ開始ジャンプなし。
-- **§26 手動回帰（2026-06-18 ユーザー）**: Undo ✅ / グリフ分解 ✅ / Draft↔Best ✅（残差許容）/ 位置 KF アニメ ✅。残: 作成→編集（即時反映）→export 通し。
+- **§26 手動回帰（2026-06-18 ユーザー）**: Undo ✅ / グリフ分解 ✅ / Draft↔Best ✅（残差許容）/ 位置 KF アニメ ✅。Inspector Source Text 入力バグは 2026-06-18 修正済み。残: export 通し。
 
 ### インフラ・その他
 
@@ -216,4 +216,5 @@ Preview 四隅 scale ハンドルも 2026-06-18 手動確認で修正済み。�
 | 2026-06-18 | (Cursor) Inspector/Timeline プロパティ編集の **Preview 即時反映**: `previewOverride`（スクラブ/カラーピッカー中の undo 対象外 patch）+ `ScrubNumber`/`ColorSwatch` `onLiveChange` + `PreviewPanel` `renderComp` マージ。選択ハンドルも `mergeObjectPreviewOverride` で bounds/transform 追従。136 tests ✅ |
 | 2026-06-18 | (ユーザー) §26 手動回帰（部分）: Undo ✅ / グリフ分解 ✅ / Draft↔Best ✅。**Draft↔Best は 100% ピクセル一致ではない**（わずかな残差）が実用上問題なし → progress に許容済み既知差として明記 |
 | 2026-06-18 | (ユーザー) §26 手動回帰: 位置 KF アニメ ✅ |
+| 2026-06-18 | (Cursor) §26 Inspector Source Text 入力バグ修正: textarea が store 値のみ制御され onChange は previewOverride のみ更新 → 再描画で 1 文字/Backspace 異常。`TextSourceInput` で local draft + ColorSwatch 同型（編集中は draft 正・blur で commit）。Playwright 実機検証 PASS |
 | 2026-06-18 | (Claude Code) `cursor-agent` CLI を Composer 2.5 への実装委任ハーネスとして追加: [.claude/skills/delegate-to-cursor/SKILL.md](.claude/skills/delegate-to-cursor/SKILL.md)（隔離 worktree + `--print --force` 非対話実行 + マージ前レビュー必須）。ユーザー明示依頼時のみ起動 |
