@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
-import { access, readFile, readdir, stat } from "node:fs/promises";
+import { access, mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { Client } from "ssh2";
+
+const isWindows = process.platform === "win32";
 
 const HELP_TEXT = `Deploy local build artifacts to a remote host over SSH.
 
@@ -191,6 +194,26 @@ function shellQuote(value) {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+function remoteShellPath(remotePath) {
+  const normalized = normalizeRemotePath(remotePath.trim());
+  if (normalized === "~") {
+    return '"$HOME"';
+  }
+  if (normalized.startsWith("~/")) {
+    return `"$HOME/${normalized.slice(2)}"`;
+  }
+  return shellQuote(normalized);
+}
+
+async function withSsh(options, callback) {
+  const client = await connectSsh(options);
+  try {
+    return await callback(client);
+  } finally {
+    client.end();
+  }
+}
+
 function defaultSiteHost(host) {
   return host.replace(/^\[|\]$/g, "");
 }
@@ -230,9 +253,32 @@ function buildCaddyfile(options) {
   return `:80 {\n${commonBody}\n}\n\n:443 {\n  tls internal\n${commonBody}\n}\n`;
 }
 
+function resolveLocalCommand(command) {
+  if (isWindows && command === "npm") {
+    return "npm.cmd";
+  }
+  return command;
+}
+
 function runLocalCommand(command, args) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    if (isWindows && command === "npm") {
+      const child = spawn("cmd.exe", ["/d", "/s", "/c", "npm", ...args], {
+        stdio: "inherit",
+        shell: false,
+      });
+      child.on("error", (error) => reject(error));
+      child.on("exit", (code) => {
+        if (code === 0) {
+          resolve();
+        } else {
+          reject(new Error(`${command} exited with code ${code ?? "null"}`));
+        }
+      });
+      return;
+    }
+
+    const child = spawn(resolveLocalCommand(command), args, {
       stdio: "inherit",
       shell: false,
     });
@@ -277,11 +323,15 @@ async function collectLocalFiles(rootPath, currentPath = rootPath) {
     }
     files.push({
       localPath: absolutePath,
-      relativePath,
       remotePath: relativePath.split("/").join(path.posix.sep),
     });
   }
   return files;
+}
+
+function isSftpUnavailable(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /subsystem:\s*sftp/i.test(message) || /sftp\s+not\s+available/i.test(message);
 }
 
 async function loadPrivateKey(identityPath) {
@@ -294,19 +344,34 @@ async function loadPrivateKey(identityPath) {
 
 async function connectSsh(options) {
   const privateKey = await loadPrivateKey(options.identity);
-  return await new Promise((resolve, reject) => {
-    const client = new Client();
-    client.on("ready", () => resolve(client));
-    client.on("error", (error) => reject(error));
-    client.connect({
-      host: options.host,
-      port: Number(options.port),
-      username: options.user,
-      password: options.password || undefined,
-      privateKey,
-      readyTimeout: 20000,
-    });
-  });
+  const connectConfig = {
+    host: options.host,
+    port: Number(options.port),
+    username: options.user,
+    password: options.password || undefined,
+    privateKey,
+    readyTimeout: 30000,
+  };
+
+  let lastError;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      return await new Promise((resolve, reject) => {
+        const client = new Client();
+        client.on("ready", () => resolve(client));
+        client.on("error", (error) => reject(error));
+        client.connect(connectConfig);
+      });
+    } catch (error) {
+      lastError = error;
+      if (attempt < 3) {
+        console.log(`[deploy:ssh] Connection attempt ${attempt}/3 failed, retrying...`);
+        await new Promise((resolve) => setTimeout(resolve, 5000 * attempt));
+      }
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
 function execRemote(client, command, captureStdout = false) {
@@ -342,6 +407,53 @@ function execRemote(client, command, captureStdout = false) {
         stderr += text;
         process.stderr.write(text);
       });
+
+      stream.end();
+    });
+  });
+}
+
+function execRemoteWithStdin(client, command, stdin) {
+  return new Promise((resolve, reject) => {
+    client.exec(command, (error, stream) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+
+      let stderr = "";
+
+      stream.on("error", (streamError) => reject(streamError));
+      stream.stderr.on("data", (chunk) => {
+        const text = chunk.toString();
+        stderr += text;
+        process.stderr.write(text);
+      });
+
+      stream.on("close", (code) => {
+        if (code === 0) {
+          resolve();
+        } else {
+          reject(new Error(stderr.trim() || `remote command exited with code ${code ?? "null"}`));
+        }
+      });
+
+      const chunkSize = 32 * 1024;
+      let offset = 0;
+      function writeNext() {
+        if (offset >= stdin.length) {
+          stream.end();
+          return;
+        }
+        const chunk = stdin.subarray(offset, offset + chunkSize);
+        offset += chunk.length;
+        if (!stream.write(chunk)) {
+          stream.once("drain", writeNext);
+        } else {
+          writeNext();
+        }
+      }
+      writeNext();
     });
   });
 }
@@ -379,19 +491,20 @@ function sftpWriteFile(sftp, remotePath, content) {
   });
 }
 
-async function uploadDirectory(client, localRoot, remoteRoot) {
+async function uploadDirectoryViaSftp(client, localRoot, remoteRoot) {
   const files = await collectLocalFiles(localRoot);
   const directories = new Set([remoteRoot]);
   for (const file of files) {
-    const parentDirectory = path.posix.dirname(path.posix.join(remoteRoot, file.remotePath));
-    directories.add(parentDirectory);
+    directories.add(path.posix.dirname(path.posix.join(remoteRoot, file.remotePath)));
   }
 
-  const mkdirCommand = `mkdir -p ${Array.from(directories)
-    .sort()
-    .map((directory) => shellQuote(directory))
-    .join(" ")}`;
-  await execRemote(client, mkdirCommand);
+  await execRemote(
+    client,
+    `mkdir -p ${Array.from(directories)
+      .sort()
+      .map((directory) => shellQuote(directory))
+      .join(" ")}`
+  );
 
   const sftp = await openSftp(client);
   try {
@@ -404,42 +517,97 @@ async function uploadDirectory(client, localRoot, remoteRoot) {
   }
 }
 
-async function configureRemoteServer(client, options, remoteRoot, remoteHome) {
-  const deployRoot = path.posix.join(remoteHome, ".mafter-deploy");
-  const caddyData = path.posix.join(deployRoot, "caddy-data");
-  const caddyConfig = path.posix.join(deployRoot, "caddy-config");
-  const caddyfilePath = path.posix.join(deployRoot, "Caddyfile");
+async function uploadDirectoryViaTar(options, localRoot, remotePath) {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "mafter-deploy-"));
+  const tarPath = path.join(tempDir, "bundle.tar.gz");
+
+  try {
+    console.log("[deploy:ssh] Creating local archive...");
+    await runLocalCommand("tar", ["-czf", tarPath, "-C", localRoot, "."]);
+    const archive = await readFile(tarPath);
+
+    const remoteHome = await withSsh(options, (client) =>
+      execRemote(client, 'printf %s "$HOME"', true)
+    );
+    const remoteRoot = resolveRemotePath(remotePath, remoteHome);
+
+    await withSsh(options, (client) => execRemote(client, `mkdir -p ${shellQuote(remoteRoot)}`));
+
+    console.log(`[deploy:ssh] Uploading ${archive.length} bytes via tar stream to ${remoteRoot}...`);
+    await withSsh(options, (client) =>
+      execRemoteWithStdin(client, `tar xzf - -C ${shellQuote(remoteRoot)}`, archive)
+    );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}
+
+async function uploadDirectory(client, localRoot, remotePath) {
+  const remoteHome = await execRemote(client, 'printf %s "$HOME"', true);
+  const remoteRoot = resolveRemotePath(remotePath, remoteHome);
+  console.log(`[deploy:ssh] Uploading via SFTP to ${remoteRoot}...`);
+  await uploadDirectoryViaSftp(client, localRoot, remoteRoot);
+}
+
+async function writeRemoteFileViaExec(client, remotePath, content) {
+  const encoded = Buffer.from(content, "utf8").toString("base64");
+  await execRemote(
+    client,
+    `mkdir -p $(dirname ${remotePath}) && printf '%s' ${shellQuote(encoded)} | base64 -d > ${remotePath}`
+  );
+}
+
+async function configureRemoteServer(client, options, remoteShellTarget) {
+  const deployRoot = '"$HOME/.mafter-deploy"';
+  const caddyData = '"$HOME/.mafter-deploy/caddy-data"';
+  const caddyConfig = '"$HOME/.mafter-deploy/caddy-config"';
+  const caddyfilePath = '"$HOME/.mafter-deploy/Caddyfile"';
   const caddyfile = buildCaddyfile(options);
 
   await execRemote(
     client,
-    `mkdir -p ${shellQuote(remoteRoot)} ${shellQuote(deployRoot)} ${shellQuote(caddyData)} ${shellQuote(caddyConfig)}`
+    `mkdir -p ${remoteShellTarget} ${deployRoot} ${caddyData} ${caddyConfig}`
+  );
+  await writeRemoteFileViaExec(client, caddyfilePath, caddyfile);
+
+  const dockerReady = await execRemote(
+    client,
+    "command -v docker >/dev/null 2>&1 && timeout 5 docker info >/dev/null 2>&1 && echo yes || echo no",
+    true
   );
 
-  const sftp = await openSftp(client);
-  try {
-    await sftpWriteFile(sftp, caddyfilePath, caddyfile);
-  } finally {
-    sftp.end();
+  if (dockerReady === "yes") {
+    await execRemote(
+      client,
+      "docker rm -f mafter-caddy >/dev/null 2>&1 || true; " +
+        "docker run -d --name mafter-caddy --restart unless-stopped " +
+        "-p 80:80 -p 443:443 " +
+        `-v ${remoteShellTarget}:/srv ` +
+        `-v ${caddyfilePath}:/etc/caddy/Caddyfile ` +
+        `-v ${caddyData}:/data ` +
+        `-v ${caddyConfig}:/config ` +
+        "caddy:2-alpine >/dev/null; " +
+        "echo 'Started Caddy via Docker on :80/:443'"
+    );
+    return;
   }
 
-  const serveCommand = [
-    "set -eu",
-    "if ! command -v docker >/dev/null 2>&1; then",
-    "  echo 'docker command not found on remote host. Install Docker or run with --no-serve.' >&2",
-    "  exit 1",
-    "fi",
-    "docker rm -f mafter-caddy >/dev/null 2>&1 || true",
-    "docker run -d --name mafter-caddy --restart unless-stopped " +
-      "-p 80:80 -p 443:443 " +
-      `-v ${shellQuote(remoteRoot)}:/srv ` +
-      `-v ${shellQuote(caddyfilePath)}:/etc/caddy/Caddyfile ` +
-      `-v ${shellQuote(caddyData)}:/data ` +
-      `-v ${shellQuote(caddyConfig)}:/config ` +
-      "caddy:2-alpine >/dev/null",
-  ].join("; ");
+  const pythonReady = await execRemote(
+    client,
+    "command -v python3 >/dev/null 2>&1 && echo yes || echo no",
+    true
+  );
+  if (pythonReady === "yes") {
+    await execRemote(
+      client,
+      'nohup python3 -m http.server 80 --directory "$HOME/mafter-effect" >/tmp/mafter-http.log 2>&1 & sleep 1; echo "Started python3 http.server on :80 (Docker unavailable)"'
+    );
+    return;
+  }
 
-  await execRemote(client, serveCommand);
+  throw new Error(
+    "Files deployed but neither Docker nor python3 is available for web serving. Re-run with --no-serve or install Docker."
+  );
 }
 
 async function main() {
@@ -477,28 +645,30 @@ async function main() {
   }
   await ensureLocalDirectory(localPath);
 
-  const client = await connectSsh(options);
-  try {
-    const remoteHome = await execRemote(client, 'printf %s "$HOME"', true);
-    const remoteRoot = resolveRemotePath(options.remotePath, remoteHome);
+  const remoteShellTarget = remoteShellPath(options.remotePath);
 
-    if (options.clean) {
-      assertSafeCleanTarget(options.remotePath);
-      await execRemote(
+  if (options.clean) {
+    assertSafeCleanTarget(options.remotePath);
+    await withSsh(options, (client) =>
+      execRemote(
         client,
-        `mkdir -p ${shellQuote(remoteRoot)} && find ${shellQuote(remoteRoot)} -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +`
-      );
-    } else {
-      await execRemote(client, `mkdir -p ${shellQuote(remoteRoot)}`);
-    }
+        `mkdir -p ${remoteShellTarget} && find ${remoteShellTarget} -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +`
+      )
+    );
+  }
 
-    await uploadDirectory(client, localPath, remoteRoot);
-
-    if (options.serve) {
-      await configureRemoteServer(client, options, remoteRoot, remoteHome);
+  try {
+    await withSsh(options, (client) => uploadDirectory(client, localPath, options.remotePath));
+  } catch (error) {
+    if (!isSftpUnavailable(error)) {
+      throw error;
     }
-  } finally {
-    client.end();
+    console.log("[deploy:ssh] SFTP unavailable, falling back to tar stream upload...");
+    await uploadDirectoryViaTar(options, localPath, options.remotePath);
+  }
+
+  if (options.serve) {
+    await withSsh(options, (client) => configureRemoteServer(client, options, remoteShellTarget));
   }
 
   console.log(`Deployment completed: ${localPath} -> ${options.user}@${options.host}:${options.remotePath}`);
