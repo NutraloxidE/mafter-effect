@@ -1659,7 +1659,7 @@ function PropRowOpacity({
 
   return (
     <PropRowShell label="不透明度" animated={animated} onStopwatch={toggleStopwatch} prop={prop} frame={frame} kfShift={kfShift} objId={obj.id} propPath="opacity" selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onKfRightClick={onKfRightClick} frameToPercent={frameToPercent} graphMode={graphMode} viewRange={viewRange} onSetProp={onSetProp}>
-      <NumberField value={v} onCommit={edit} onLiveChange={preview} />
+      <NumberField value={v} onCommit={edit} onLiveChange={preview} min={0} max={1} step={0.01} />
     </PropRowShell>
   );
 }
@@ -1687,6 +1687,7 @@ function PropRowEffect({
   const animated = prop.keyframes.length > 0;
   const sampled = sampleAny(prop, frame);
   const propPath = `effects.${effectId}.${propKey}`;
+  const paramDef = globalPluginRegistry.getEffectDef(effect.type)?.params.find((p) => p.key === propKey);
 
   const writeProp = (next: AnimatedProp<unknown>, lbl: string) => {
     const nextEffects = (obj.effects ?? []).map((e) =>
@@ -1720,7 +1721,7 @@ function PropRowEffect({
           if (!Number.isFinite(num)) return;
           if (animated) previewProp(setKeyframe(prop as AnimatedProp<unknown>, frame, num, { type: "linear" } as Easing));
           else previewProp({ ...prop, value: num });
-        }} />
+        }} min={paramDef?.min} max={paramDef?.max} step={paramDef?.step} />
       ) : kind === "color" && typeof sampled === "object" && sampled !== null && "r" in sampled ? (
         <span style={{ fontSize: 10, color: "#aaa" }}>
           {Math.round((sampled as RGBA).r * 255)},{Math.round((sampled as RGBA).g * 255)},{Math.round((sampled as RGBA).b * 255)}
@@ -1755,6 +1756,7 @@ function PropRowComponent({
   const animated = prop.keyframes.length > 0;
   const sampled = sampleAny(prop, frame);
   const propPath = `comp_${compIdx}_${propKey}`;
+  const paramDef = globalPluginRegistry.getComponentDef(comp.type)?.params.find((p) => p.key === propKey);
 
   const writeProp = (next: AnimatedProp<unknown>, lbl: string) => {
     const nextComponents = obj.components.map((c, i) =>
@@ -1788,7 +1790,7 @@ function PropRowComponent({
           if (!Number.isFinite(num)) return;
           if (animated) previewProp(setKeyframe(prop as AnimatedProp<unknown>, frame, num, { type: "linear" } as Easing));
           else previewProp({ ...prop, value: num });
-        }} />
+        }} min={paramDef?.min} max={paramDef?.max} step={paramDef?.step} />
       ) : kind === "string" && typeof sampled === "string" ? (
         <input
           value={sampled}
@@ -2081,17 +2083,25 @@ function NumberField({
   value,
   onCommit,
   onLiveChange,
+  min,
+  max,
+  step,
 }: {
   value: number;
   onCommit: (v: number) => void;
   onLiveChange?: (v: number) => void;
+  min?: number;
+  max?: number;
+  step?: number;
 }) {
   return (
     <ScrubNumber
       value={value}
       onCommit={(v) => onCommit(v)}
       onLiveChange={onLiveChange}
-      speed={1}
+      min={min}
+      max={max}
+      step={step}
       className="tl-num"
       style={{
         width: 44,

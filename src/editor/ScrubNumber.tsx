@@ -1,6 +1,41 @@
 import { useEffect, useRef, useState } from "react";
 
 /**
+ * min/max からスクラブ 1px あたりの delta を決める。
+ * 実効レンジ ≤ 1（opacity / amount 等の正規化値）は range/100（既定 0.01）で細かく調整可能にする。
+ */
+export function resolveScrubSpeed(
+  speed: number,
+  min?: number,
+  max?: number,
+  step?: number,
+): number {
+  if (min !== undefined && max !== undefined) {
+    const range = max - min;
+    if (range > 0 && range <= 1) {
+      if (step !== undefined && step > 0 && step <= range) return step;
+      return range / 100;
+    }
+  }
+  return speed;
+}
+
+export function resolveScrubDecimals(
+  speed: number,
+  decimals: number | undefined,
+  min?: number,
+  max?: number,
+): number {
+  if (decimals !== undefined) return decimals;
+  if (min !== undefined && max !== undefined) {
+    const range = max - min;
+    if (range > 0 && range <= 1) return 2;
+  }
+  const effective = resolveScrubSpeed(speed, min, max);
+  return effective < 0.1 ? 2 : 1;
+}
+
+/**
  * Scrubby slider (AE 準拠): ドラッグで値変更 / クリックでテキスト入力。
  * Shift=10倍速, Ctrl/Cmd=0.1倍速。
  * onCommit は1ジェスチャーにつき1回だけ呼ばれる（undo エントリ1件）。
@@ -10,6 +45,7 @@ export function ScrubNumber({
   onCommit,
   onLiveChange,
   speed = 1,
+  step,
   decimals,
   min,
   max,
@@ -22,13 +58,16 @@ export function ScrubNumber({
   /** スクラブ中に Preview へ即反映する（undo なし）。 */
   onLiveChange?: (newValue: number) => void;
   speed?: number;
+  /** ParamDescriptor.step — 正規化レンジ (≤1) ではスクラブ単位の優先値にも使う。 */
+  step?: number;
   decimals?: number;
   min?: number;
   max?: number;
   style?: React.CSSProperties;
   className?: string;
 }) {
-  const dec = decimals ?? (speed < 0.1 ? 2 : 1);
+  const effectiveSpeed = resolveScrubSpeed(speed, min, max, step);
+  const dec = resolveScrubDecimals(speed, decimals, min, max);
   const fmt = (v: number) => v.toFixed(dec);
   const clamp = (v: number): number => {
     let r = v;
@@ -62,7 +101,7 @@ export function ScrubNumber({
       if (!state.dragging && Math.abs(dx) < 3) return;
       state.dragging = true;
       const mod = ev.shiftKey ? 10 : ev.ctrlKey || ev.metaKey ? 0.1 : 1;
-      const next = clamp(state.startValue + dx * speed * mod);
+      const next = clamp(state.startValue + dx * effectiveSpeed * mod);
       setLiveValue(next);
       onLiveChange?.(next);
     };
@@ -80,7 +119,7 @@ export function ScrubNumber({
       } else {
         const dx = ev.clientX - state.startX;
         const mod = ev.shiftKey ? 10 : ev.ctrlKey || ev.metaKey ? 0.1 : 1;
-        const delta = dx * speed * mod;
+        const delta = dx * effectiveSpeed * mod;
         onCommit(clamp(state.startValue + delta), delta);
       }
     };

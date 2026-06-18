@@ -231,10 +231,9 @@ export function InspectorPanel() {
                 : { ...obj.opacity, value: v },
             })}
             onCommit={(v, d) => setOpacityKf(v, d)}
-            speed={0.01}
-            decimals={2}
             min={0}
             max={1}
+            step={0.01}
             style={numInputStyle}
           />
         </Row>
@@ -525,6 +524,8 @@ function EffectFields({
               }}
               onLiveChange={(v) => previewAnim(param.key, raw.keyframes.length > 0 ? setKeyframe(raw as AnimatedProp<number>, frame, v) : { ...raw, value: v })}
               min={param.min}
+              max={param.max}
+              step={param.step}
             />
           );
         }
@@ -914,7 +915,7 @@ function Stopwatch({ active, onClick }: { active: boolean; onClick: () => void }
 }
 
 function AnimScalarRow({
-  label, prop, value, onToggle, onCommit, onLiveChange, min,
+  label, prop, value, onToggle, onCommit, onLiveChange, min, max, step,
 }: {
   label: string;
   prop: AnimatedProp<number>;
@@ -926,6 +927,8 @@ function AnimScalarRow({
   onFocus?: () => void;
   onBlur?: () => void;
   min?: number;
+  max?: number;
+  step?: number;
 }) {
   return (
     <Row label={label}>
@@ -934,8 +937,9 @@ function AnimScalarRow({
         value={value}
         onCommit={(v) => onCommit(v)}
         onLiveChange={onLiveChange}
-        speed={1}
         min={min}
+        max={max}
+        step={step}
         style={numInputStyle}
       />
     </Row>
