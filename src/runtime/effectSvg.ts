@@ -20,7 +20,47 @@ export function displacementPadFromScale(scale: number): number {
   return Math.ceil(Math.max(0, scale) * 0.5) + 2;
 }
 
+/** displacement filter region 属性（userSpaceOnUse）。 */
+export function svgDisplaceFilterMarkup(
+  id: string,
+  primitives: string,
+  w: number,
+  h: number,
+  maxScale: number,
+  compFixed = false,
+): string {
+  let region: string;
+  if (compFixed) {
+    region = `x="0" y="0" width="${w}" height="${h}"`;
+  } else {
+    const pad = displacementPadFromScale(maxScale);
+    region = `x="${-pad}" y="${-pad}" width="${w + 2 * pad}" height="${h + 2 * pad}"`;
+  }
+  return `<filter id="${id}" color-interpolation-filters="sRGB" filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse" ${region}>${primitives}</filter>`;
+}
+
 export const DISPLACEMENT_EFFECT_TYPES = new Set(["wave", "turbulentDisplace", "ripple"]);
+
+/** type=turbulence の R/G 正バイアスを 0.5 中心へ寄せる（Amount 比例ドリフト低減）。 */
+export const TURBULENCE_CHANNEL_BIAS_INTERCEPT = -0.15;
+/** fractalNoise G チャンネル（Y 変位）— comp 全画面キャプチャ residual 低減。 */
+export const FRACTAL_NOISE_G_BIAS_INTERCEPT = -0.032;
+
+function feTurbulenceCenterNoise(
+  inName: string,
+  outName: string,
+  interceptR: number,
+  interceptG: number = interceptR,
+): string {
+  return [
+    `<feComponentTransfer in="${inName}" result="${outName}">`,
+    `<feFuncR type="linear" slope="1" intercept="${interceptR}"/>`,
+    `<feFuncG type="linear" slope="1" intercept="${interceptG}"/>`,
+    `<feFuncB type="linear" slope="0" intercept="0.5"/>`,
+    `<feFuncA type="linear" slope="1" intercept="0"/>`,
+    `</feComponentTransfer>`,
+  ].join("");
+}
 
 export function turbulenceDisplace(opts: {
   scale: number;
@@ -60,9 +100,17 @@ export function turbulenceDisplace(opts: {
   const parts = [
     `<feTurbulence type="${type}" baseFrequency="${bx} ${by}" numOctaves="${numOctaves}" seed="${s}" stitchTiles="stitch" x="0" y="0" width="${lw}" height="${lh}" result="noiseRaw"/>`,
   ];
-  const noiseIn = dx !== 0 || dy !== 0 ? "noise" : "noiseRaw";
+  let noiseIn = "noiseRaw";
+  if (type === "turbulence") {
+    parts.push(feTurbulenceCenterNoise("noiseRaw", "noiseBalanced", TURBULENCE_CHANNEL_BIAS_INTERCEPT));
+    noiseIn = "noiseBalanced";
+  } else if (type === "fractalNoise") {
+    parts.push(feTurbulenceCenterNoise("noiseRaw", "noiseBalanced", 0, FRACTAL_NOISE_G_BIAS_INTERCEPT));
+    noiseIn = "noiseBalanced";
+  }
   if (dx !== 0 || dy !== 0) {
-    parts.push(`<feOffset in="noiseRaw" dx="${dx}" dy="${dy}" result="noise"/>`);
+    parts.push(`<feOffset in="noiseBalanced" dx="${dx}" dy="${dy}" result="noise"/>`);
+    noiseIn = "noise";
   }
   parts.push(
     `<feDisplacementMap in="SourceGraphic" in2="${noiseIn}" scale="${scale}" xChannelSelector="R" yChannelSelector="G"/>`,

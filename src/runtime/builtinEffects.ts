@@ -149,7 +149,7 @@ const TURBULENT_DISPLACE_EFFECT_DEF: EffectDef = {
       baseFrequencyY: freq,
       seed: randomSeed,
       numOctaves: complexity,
-      type: "turbulence",
+      type: "fractalNoise",
       w,
       h,
       offsetX,

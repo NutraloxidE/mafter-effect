@@ -9,6 +9,9 @@ import {
   evolutionToOffsetPx,
   displacementPadFromScale,
   sizeToFrequency,
+  svgDisplaceFilterMarkup,
+  FRACTAL_NOISE_G_BIAS_INTERCEPT,
+  TURBULENCE_CHANNEL_BIAS_INTERCEPT,
   turbulenceDisplace,
   wavelengthToFrequency,
 } from "../src/runtime/effectSvg";
@@ -26,6 +29,13 @@ describe("effectSvg helpers", () => {
 
   it("displacementPadFromScale grows with amount", () => {
     expect(displacementPadFromScale(100)).toBeGreaterThan(displacementPadFromScale(10));
+  });
+
+  it("svgDisplaceFilterMarkup emits userSpaceOnUse region with pad", () => {
+    const m = svgDisplaceFilterMarkup("f1", "<feTurbulence/>", 320, 240, 50);
+    expect(m).toContain('id="f1"');
+    expect(m).toContain('filterUnits="userSpaceOnUse"');
+    expect(m).toContain('width="374"');
   });
 
   it("evolutionToOffsetPx is continuous and non-zero for non-zero evolution", () => {
@@ -53,6 +63,24 @@ describe("effectSvg helpers", () => {
     expect(s).toContain('scale="10"');
     expect(s).toContain('width="320"');
     expect(s).toContain('stitchTiles="stitch"');
+    expect(s).toContain("feComponentTransfer");
+    expect(s).toContain("noiseRaw");
+    expect(s).toContain("noiseBalanced");
+    expect(s).toContain(`intercept="${TURBULENCE_CHANNEL_BIAS_INTERCEPT}"`);
+  });
+
+  it("turbulenceDisplace balances fractalNoise G channel bias", () => {
+    const s = turbulenceDisplace({
+      scale: 10,
+      baseFrequencyX: 0.02,
+      baseFrequencyY: 0.02,
+      seed: 0,
+      type: "fractalNoise",
+      w: 100,
+      h: 100,
+    });
+    expect(s).toContain('intercept="0"');
+    expect(s).toContain(`intercept="${FRACTAL_NOISE_G_BIAS_INTERCEPT}"`);
   });
 
   it("turbulenceDisplace uses feOffset for evolution pan", () => {

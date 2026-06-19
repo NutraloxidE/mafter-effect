@@ -96,7 +96,7 @@ describe("builtinEffects apply (§27.3)", () => {
     );
     expect(r?.kind).toBe("svg");
     if (r?.kind === "svg") {
-      expect(r.primitives).toContain('type="turbulence"');
+      expect(r.primitives).toContain('type="fractalNoise"');
       expect(r.primitives).toContain('scale="50"');
       expect(r.primitives).toContain('width="1920"');
       expect(r.primitives).toContain("feOffset");

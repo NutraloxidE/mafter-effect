@@ -65,6 +65,34 @@ export function svgToDataUrl(svg: string): string {
   return `data:image/svg+xml;base64,${btoa(binary)}`;
 }
 
+/** ラスタ画像に SVG filter を適用して canvas を返す（foreignObject では CSS filter が効かない経路向け）。 */
+export async function rasterizeFilteredImage(
+  dataUrl: string,
+  w: number,
+  h: number,
+  filtersMarkup: string,
+  filterId: string,
+): Promise<HTMLCanvasElement> {
+  const svgStr = [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">`,
+    `<defs>${filtersMarkup}</defs>`,
+    `<image href="${dataUrl}" x="0" y="0" width="${w}" height="${h}" filter="url(#${filterId})"/>`,
+    `</svg>`,
+  ].join("");
+  const url = svgToDataUrl(svgStr);
+  const img = new Image();
+  img.src = url;
+  await new Promise<void>((res, rej) => {
+    img.onload = () => res();
+    img.onerror = () => rej(new Error("filtered SVG rasterization failed"));
+  });
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  canvas.getContext("2d")!.drawImage(img, 0, 0);
+  return canvas;
+}
+
 /**
  * 要素の DOM コンテンツを SVG foreignObject 経由で canvas にラスタ化する。
  * nw/nh = キャプチャ解像度。scale 省略時は nw×nh のまま返す。

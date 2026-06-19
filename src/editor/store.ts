@@ -951,6 +951,17 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   },
 }));
 
+declare global {
+  interface Window {
+    /** Playwright 実機検証用（dev のみ）。dynamic import だと別 Zustand インスタンスになるため正を window に置く。 */
+    __mafterEditorStore?: typeof useEditorStore;
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.__mafterEditorStore = useEditorStore;
+}
+
 // ---- ユーティリティ ----
 
 function nextZOrder(comp: TimelineComposition | undefined): number {

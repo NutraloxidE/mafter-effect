@@ -3,7 +3,7 @@
 > **対象（3 種のみ）**: `wave` / `turbulentDisplace` / `ripple`  
 > ワイプ系（`linearWipe` / `angularWipe`）は別経路のため本書の対象外。
 
-**状態**: 2026-06-19 時点で **Amplitude 比例スライドは解消済み**（下記「修正完了」参照）。Wave / Turbulent Displace / Ripple で Amount 増加時に host rect が動く症状は Playwright 実測で収束（amount 5/20/50/100 → dx=dy=0）。
+**状態**: 2026-06-19 更新。**Issue A（ドリフト）** は **解消済み**（Phase 2: Playwright インク centroid ≤2px・adjustment + direct）。**Issue B（プレビュー枠歪み）** は別問題として下記参照（未着手）。
 
 **関連実装**: [effectSvg.ts](../src/runtime/effectSvg.ts) / [builtinEffects.ts](../src/runtime/builtinEffects.ts) / [DomRenderer.ts](../src/runtime/DomRenderer.ts) `applyEffects`
 
@@ -11,7 +11,50 @@
 
 ---
 
-## 再現手順（共通）
+## Issue A — Amplitude 比例の右下ドリフト（**解消済み**）
+
+> **再現構成（ユーザー確認）**: **調整レイヤー + Turbulent Displace** が主報告。通常 solid への直接 `filter:` も同型。
+
+### 解消（Phase 2 — 2026-06-19 Cursor）
+
+| 項目 | 内容 |
+|------|------|
+| **根因** | (1) `feTurbulence type="turbulence"` のチャンネル平均バイアス (2) **CSS `filter` / `backdrop-filter` 経路**で foreignObject キャプチャと座標系がずれ Amount 比例 centroid シフト |
+| **修正** | **SVG displacement は raster キャプチャ + `rasterizeFilteredImage`**（調整: comp 背面キャプチャ / 通常: レイヤー子キャプチャ）。`backdrop-filter` による displacement は廃止。ノイズは **`fractalNoise` + G チャンネル `feComponentTransfer`**（`FRACTAL_NOISE_G_BIAS_INTERCEPT`）。root `isolation:isolate`、adjustment 存在時下位 displacement レイヤー `overflow:hidden` |
+| **検証** | Playwright: adjustment + direct、turbulent Amount 5/20/50/100 で **インク centroid delta ≤ 2px**（comp 座標・host rect 併記） |
+
+### 部分解消（`e337413` — host rect のみ）
+
+| 項目 | 内容 |
+|------|------|
+| **修正** | userSpaceOnUse filter region + host 実寸 + feTurbulence layer bounds |
+| **限界** | host rect 安定 ≠ visual centroid。**Phase 2 で centroid まで解消** |
+
+### 修正方針（記録・Phase 2 で実施済み）
+
+- ノイズ零平均化（`feComponentTransfer`）を `turbulenceDisplace` に追加（turbulence 型は R/G、fractalNoise 型は G）
+- adjustment + displacement: **raster 経路**（`runAdjustmentSvgDisplacePipeline`）
+- 通常 + displacement only: **raster 経路**（`runDirectSvgDisplacePipeline`）
+- adjustment 存在時: 下位 displacement レイヤー `overflow:hidden`
+- DomRenderer root `isolation:isolate`
+
+---
+
+## Issue B — プレビュー左端グレー枠の歪み（**未着手・Preview のみ**）
+
+| 項目 | 内容 |
+|------|------|
+| 症状 | プレビュー comp **左端のグレー線（枠）** までエフェクトがかかり、ゆがんだ枠が見える |
+| bundle export | **再発しない**（[BundlePlayer.setupViewport](../src/player/BundlePlayer.ts) に `boxShadow` なし） |
+| 有力原因 | [PreviewPanel.tsx](../src/editor/panels/PreviewPanel.tsx) L728 **`boxShadow: "0 0 0 1px #444"`** + adjustment `backdrop-filter` 端サンプリング |
+| スコープ | **プレビュー UI のみ**（DomRenderer / export 本体ではない） |
+| 対応方針（次タスク） | `boxShadow` を DomRenderer 外ラッパーへ移動、または `outline` / 疑似要素で UI 枠を分離 |
+
+**Issue B は Issue A 完了後に PreviewPanel 側で対応。本書では Issue A を優先。**
+
+---
+
+## 再現手順（共通・参考）
 
 1. Solid レイヤーを追加
 2. Wave / Turbulent Displace / Ripple のいずれかを付与（3 種とも同型のバグ報告あり）
@@ -24,14 +67,14 @@
 
 ---
 
-## バグ例 1 — Amplitude 比例の右下スライド（**解消済み 2026-06-19**）
+## バグ例 1 — host rect スライド（通常レイヤー `filter:`・**部分解消**）
 
 | 項目 | 内容 |
 |------|------|
-| 症状 | Amplitude / Amount を上げると、3 種すべてで実体が右下へ動く |
-| 共通化 | Wave / Turbulent Displace / Ripple で **同じバグり方**（displacement 共通パイプライン由来と推定） |
-| **修正** | `feDisplacementMap` 含む filter を **`filterUnits/primitiveUnits="userSpaceOnUse"`** + `pad=ceil(maxScale·0.5)+2` の filter region に変更。`feTurbulence` は `x/y=0 width/height=w/h` + `stitchTiles="stitch"`。host div は displacement 有効時に **コンテンツ実寸 width/height** + `overflow:visible`（[DomRenderer.ts](../src/runtime/DomRenderer.ts) / [effectSvg.ts](../src/runtime/effectSvg.ts)） |
-| **検証** | Playwright: turbulentDisplace amount 5→100 で hostRect delta 0。231 tests ✅ |
+| 症状 | 通常レイヤーで host DOM rect が Amount 比例で動く（調整レイヤー backdrop とは別症状） |
+| **修正** | userSpaceOnUse filter region + host 実寸（`e337413`） |
+| **検証** | Playwright hostRect delta 0（通常 solid） |
+| **残** | Issue A — adjustment backdrop + **visual centroid** ドリフト |
 
 ### 仮説（調査済み・未収束）
 
@@ -104,7 +147,7 @@
 | v2 | feImage userSpace `(w·0.25, h·0.25)` + host 実寸 | 効果復活・境界漏れ解消・**スライド残** |
 | `29b4222`（コミット） | 正弦波/同心円 map・ワイプ mask 修正・**レイヤー実寸 ctx** | 歪み品質改善。スライドは別問題として残存 |
 | セッション v3 | filter region 100% 案 | Playwright hostRect 不変・**目視スライド残**・**未コミット** |
-| セッション v4/v5 | host 実寸 / pad + 負 margin | 未完了・**未コミット・採用しない** |
+| `e337413` | userSpace filter + host 実寸 | **通常 layer hostRect 安定**。adjustment backdrop ドリフト **残** |
 
 ---
 

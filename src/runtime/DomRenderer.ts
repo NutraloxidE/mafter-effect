@@ -1,4 +1,4 @@
-import { DISPLACEMENT_EFFECT_TYPES, displacementPadFromScale } from "./effectSvg";
+import { DISPLACEMENT_EFFECT_TYPES, displacementPadFromScale, svgDisplaceFilterMarkup } from "./effectSvg";
 import type { CompositionMeta, Frame, HtmlComposition, RGBA, TimelineComposition } from "../core/schema";
 import type { FontOutlineCache } from "./fontOutlineCache";
 import type { ImageAssetCache } from "./imageAssetCache";
@@ -10,7 +10,7 @@ import type { ResolvedComponent, ResolvedEffect, ResolvedObject, ResolvedScene }
 import { compChildFrame, isCompNestDepthAllowed } from "./compLayer";
 import { resolve } from "./resolve";
 import { applyTextEl, rgbaCss } from "./textRender";
-import { captureElementToCanvas } from "./rasterCapture";
+import { captureElementToCanvas, rasterizeFilteredImage } from "./rasterCapture";
 import { canvasToRasterBuffer, rasterBufferToCanvas } from "./pixelSort";
 import { processRasterChainAsync } from "./rasterProcessAsync";
 import type { EffectFilter } from "./plugin";
@@ -46,6 +46,8 @@ interface ObjectEntry {
   fxLayerW: number;
   fxLayerH: number;
   fxMaxDisplaceScale: number;
+  /** adjustment + displacement → backdrop-filter 経路 */
+  fxUseBackdropDisplace: boolean;
 }
 
 interface RasterWorkItem {
@@ -70,6 +72,8 @@ export class DomRenderer implements Renderer {
   private fontCache: FontOutlineCache | null = null;
   private imageCache: ImageAssetCache | null = null;
   private frameRenderCache: FrameRenderCache | null = null;
+  /** 現フレームに adjustment + displacement がある（下位 overflow 方針用） */
+  private compHasAdjustmentDisplace = false;
 
   setTextQuality(mode: "draft" | "precise"): void {
     this.textQuality = mode;
@@ -100,6 +104,7 @@ export class DomRenderer implements Renderer {
       "transform-style:preserve-3d",
       "width:100%",
       "height:100%",
+      "isolation:isolate",
     ].join(";");
     if (comp.background) root.style.background = rgbaCss(comp.background);
     container.appendChild(root);
@@ -109,6 +114,12 @@ export class DomRenderer implements Renderer {
 
   renderFrame(scene: ResolvedScene, frame: Frame): void {
     if (!this.root) return;
+
+    this.compHasAdjustmentDisplace = scene.objects.some(
+      (o) =>
+        o.isAdjustment === true &&
+        (o.effects ?? []).some((e) => e.enabled && DISPLACEMENT_EFFECT_TYPES.has(e.type)),
+    );
 
     // camera / perspective (§6.5)
     if (scene.camera) {
@@ -148,6 +159,7 @@ export class DomRenderer implements Renderer {
           fxLayerW: 0,
           fxLayerH: 0,
           fxMaxDisplaceScale: 0,
+          fxUseBackdropDisplace: false,
         };
         this.entries.set(obj.id, entry);
       }
@@ -335,11 +347,12 @@ export class DomRenderer implements Renderer {
     entry.fxLayerW = Math.max(1, Math.round(ctx.width));
     entry.fxLayerH = Math.max(1, Math.round(ctx.height));
     entry.fxMaxDisplaceScale = fxMaxDisplaceScale;
+    entry.fxUseBackdropDisplace = obj.isAdjustment === true && hasDisplacementFx;
 
     if (hasDisplacementFx && !obj.isAdjustment) {
       entry.div.style.width = `${entry.fxLayerW}px`;
       entry.div.style.height = `${entry.fxLayerH}px`;
-      entry.div.style.overflow = "visible";
+      entry.div.style.overflow = this.compHasAdjustmentDisplace ? "hidden" : "visible";
     } else if (!obj.isAdjustment) {
       entry.div.style.overflow = "";
     }
@@ -383,7 +396,29 @@ export class DomRenderer implements Renderer {
     if (rasterChain.length === 0) {
       this.clearRasterOverlay(entry);
       if (obj.isAdjustment) this.restoreAdjustmentSuppression(obj.id);
-      this.applyFilterTokens(entry, obj, [...preTokens, ...postTokens], [...preSvgFilters, ...postSvgFilters]);
+      const allTokens = [...preTokens, ...postTokens];
+      const allSvgFilters = [...preSvgFilters, ...postSvgFilters];
+      if (hasDisplacementFx) {
+        const filterStr = allTokens.join(" ");
+        const rasterRunKey = `${fxSig}|f${frame}`;
+        entry.rasterRunKey = rasterRunKey;
+        if (entry.rasterCompletedKey === rasterRunKey && entry.rasterCanvas) {
+          this.finalizeRasterPresentation(entry, obj, "", []);
+          return;
+        }
+        if (entry.rasterInFlightKey === rasterRunKey) {
+          return;
+        }
+        const work = obj.isAdjustment
+          ? this.runAdjustmentSvgDisplacePipeline(entry, obj, ctx, filterStr, allSvgFilters, rasterRunKey)
+          : this.runDirectSvgDisplacePipeline(entry, obj, ctx, filterStr, allSvgFilters, rasterRunKey);
+        const tracked = work.finally(() => {
+          this.rasterPending.delete(tracked);
+        });
+        this.rasterPending.add(tracked);
+        return;
+      }
+      this.applyFilterTokens(entry, obj, allTokens, allSvgFilters);
       return;
     }
 
@@ -456,26 +491,7 @@ export class DomRenderer implements Renderer {
       }
       const defs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
       for (const { id, primitives } of svgFilters) {
-        const filter = document.createElementNS("http://www.w3.org/2000/svg", "filter");
-        filter.setAttribute("id", id);
-        filter.setAttribute("color-interpolation-filters", "sRGB");
-        const isDisplace = primitives.includes("feDisplacementMap");
-        if (isDisplace && entry.fxLayerW > 0 && entry.fxLayerH > 0) {
-          const pad = displacementPadFromScale(entry.fxMaxDisplaceScale);
-          filter.setAttribute("filterUnits", "userSpaceOnUse");
-          filter.setAttribute("primitiveUnits", "userSpaceOnUse");
-          filter.setAttribute("x", String(-pad));
-          filter.setAttribute("y", String(-pad));
-          filter.setAttribute("width", String(entry.fxLayerW + 2 * pad));
-          filter.setAttribute("height", String(entry.fxLayerH + 2 * pad));
-        } else {
-          filter.setAttribute("x", "-25%");
-          filter.setAttribute("y", "-25%");
-          filter.setAttribute("width", "150%");
-          filter.setAttribute("height", "150%");
-        }
-        filter.innerHTML = primitives;
-        defs.appendChild(filter);
+        defs.appendChild(this.createSvgFilterElement(id, primitives, entry));
       }
       entry.svgRoot.innerHTML = "";
       entry.svgRoot.appendChild(defs);
@@ -483,6 +499,222 @@ export class DomRenderer implements Renderer {
       entry.svgRoot.remove();
       entry.svgRoot = null;
     }
+  }
+
+  private createSvgFilterElement(
+    id: string,
+    primitives: string,
+    entry: Pick<ObjectEntry, "fxLayerW" | "fxLayerH" | "fxMaxDisplaceScale" | "fxUseBackdropDisplace">,
+  ): SVGFilterElement {
+    const filter = document.createElementNS("http://www.w3.org/2000/svg", "filter");
+    filter.setAttribute("id", id);
+    filter.setAttribute("color-interpolation-filters", "sRGB");
+    const isDisplace = primitives.includes("feDisplacementMap");
+    if (isDisplace && entry.fxLayerW > 0 && entry.fxLayerH > 0) {
+      filter.setAttribute("filterUnits", "userSpaceOnUse");
+      filter.setAttribute("primitiveUnits", "userSpaceOnUse");
+      if (entry.fxUseBackdropDisplace) {
+        filter.setAttribute("x", "0");
+        filter.setAttribute("y", "0");
+        filter.setAttribute("width", String(entry.fxLayerW));
+        filter.setAttribute("height", String(entry.fxLayerH));
+      } else {
+        const pad = displacementPadFromScale(entry.fxMaxDisplaceScale);
+        filter.setAttribute("x", String(-pad));
+        filter.setAttribute("y", String(-pad));
+        filter.setAttribute("width", String(entry.fxLayerW + 2 * pad));
+        filter.setAttribute("height", String(entry.fxLayerH + 2 * pad));
+      }
+    } else {
+      filter.setAttribute("x", "-25%");
+      filter.setAttribute("y", "-25%");
+      filter.setAttribute("width", "150%");
+      filter.setAttribute("height", "150%");
+    }
+    filter.innerHTML = primitives;
+    return filter;
+  }
+
+  /** 通常レイヤー + SVG displacement — 子コンテンツをキャプチャし SVG filter 適用（CSS filter ドリフト回避）。 */
+  private async runDirectSvgDisplacePipeline(
+    entry: ObjectEntry,
+    obj: ResolvedObject,
+    ctx: { width: number; height: number; frame: number },
+    filterStr: string,
+    svgFilters: { id: string; primitives: string }[],
+    rasterRunKey: string,
+  ): Promise<void> {
+    if (!filterStr) return;
+    const w = Math.max(1, Math.round(ctx.width));
+    const h = Math.max(1, Math.round(ctx.height));
+    if (w === 0 || h === 0) return;
+
+    entry.rasterInFlightKey = rasterRunKey;
+    entry.div.style.filter = "";
+    entry.div.style.backdropFilter = "";
+    (entry.div.style as CSSStyleDeclaration & { webkitBackdropFilter?: string }).webkitBackdropFilter = "";
+
+    try {
+      const propsHash = entry.fxSig;
+      const cacheKey = { objectId: obj.id, frame: ctx.frame, propsHash };
+      const cached = await this.frameRenderCache?.get(cacheKey);
+      if (cached?.data) {
+        this.presentRasterCanvas(entry, cached.data, w, h);
+        entry.rasterCompletedKey = rasterRunKey;
+        this.finalizeRasterPresentation(entry, obj, "", []);
+        return;
+      }
+
+      const captureEl = document.createElement("div");
+      captureEl.style.cssText = `position:relative;width:${w}px;height:${h}px;overflow:hidden;`;
+      for (const child of entry.children) {
+        const clone = child.cloneNode(true) as HTMLElement;
+        clone.style.visibility = "visible";
+        captureEl.appendChild(clone);
+      }
+
+      const canvas = await captureElementToCanvas(captureEl, w, h, "transparent");
+      let buffer = canvasToRasterBuffer(canvas);
+      const filterEntry: Pick<ObjectEntry, "fxLayerW" | "fxLayerH" | "fxMaxDisplaceScale" | "fxUseBackdropDisplace"> = {
+        fxLayerW: w,
+        fxLayerH: h,
+        fxMaxDisplaceScale: entry.fxMaxDisplaceScale,
+        fxUseBackdropDisplace: false,
+      };
+      buffer = await this.applyCssSvgFilterToBuffer(buffer, w, h, filterStr, svgFilters, filterEntry);
+
+      if (entry.rasterRunKey !== rasterRunKey) return;
+      if (!this.bufferHasVisiblePixels(buffer)) {
+        throw new Error("direct svg displace capture empty");
+      }
+
+      this.presentRasterCanvas(entry, buffer, w, h);
+      entry.rasterCompletedKey = rasterRunKey;
+      void this.frameRenderCache?.put(cacheKey, { data: buffer });
+      this.finalizeRasterPresentation(entry, obj, "", []);
+    } catch {
+      if (entry.rasterCompletedKey !== rasterRunKey) {
+        this.clearRasterOverlay(entry);
+      }
+    } finally {
+      if (entry.rasterInFlightKey === rasterRunKey) entry.rasterInFlightKey = null;
+    }
+  }
+
+  /** 調整レイヤー + SVG displacement — backdrop ではなく comp キャプチャ + filter で適用（ドリフト低減）。 */
+  private async runAdjustmentSvgDisplacePipeline(
+    entry: ObjectEntry,
+    obj: ResolvedObject,
+    ctx: { width: number; height: number; frame: number },
+    filterStr: string,
+    svgFilters: { id: string; primitives: string }[],
+    rasterRunKey: string,
+  ): Promise<void> {
+    if (!this.root || !filterStr) return;
+    const w = Math.max(1, Math.round(ctx.width));
+    const h = Math.max(1, Math.round(ctx.height));
+    const adjustZ = Math.round(obj.zOrder * BASE_Z);
+
+    entry.rasterInFlightKey = rasterRunKey;
+    entry.div.style.filter = "";
+    entry.div.style.backdropFilter = "";
+    (entry.div.style as CSSStyleDeclaration & { webkitBackdropFilter?: string }).webkitBackdropFilter = "";
+
+    const hiddenForCapture: HTMLElement[] = [];
+    const restoreCaptureVisibility = (): void => {
+      for (const div of hiddenForCapture) div.style.visibility = "";
+    };
+
+    for (const [id, other] of this.entries) {
+      const z = parseInt(other.div.style.zIndex, 10);
+      if (id !== obj.id && z < adjustZ) {
+        other.div.style.visibility = "visible";
+      }
+    }
+    for (const [id, other] of this.entries) {
+      const z = parseInt(other.div.style.zIndex, 10);
+      if (id === obj.id || z <= adjustZ) continue;
+      hiddenForCapture.push(other.div);
+      other.div.style.visibility = "hidden";
+    }
+    hiddenForCapture.push(entry.div);
+    entry.div.style.visibility = "hidden";
+
+    try {
+      const propsHash = entry.fxSig;
+      const cacheKey = { objectId: obj.id, frame: ctx.frame, propsHash };
+      const cached = await this.frameRenderCache?.get(cacheKey);
+      if (cached?.data) {
+        restoreCaptureVisibility();
+        this.presentRasterCanvas(entry, cached.data, w, h);
+        entry.rasterCompletedKey = rasterRunKey;
+        this.finalizeRasterPresentation(entry, obj, "", []);
+        return;
+      }
+
+      const canvas = await captureElementToCanvas(this.root, w, h, "transparent");
+      restoreCaptureVisibility();
+
+      let buffer = canvasToRasterBuffer(canvas);
+      const filterEntry: Pick<ObjectEntry, "fxLayerW" | "fxLayerH" | "fxMaxDisplaceScale" | "fxUseBackdropDisplace"> = {
+        fxLayerW: w,
+        fxLayerH: h,
+        fxMaxDisplaceScale: entry.fxMaxDisplaceScale,
+        fxUseBackdropDisplace: false,
+      };
+      buffer = await this.applyCssSvgFilterToBuffer(buffer, w, h, filterStr, svgFilters, filterEntry);
+
+      if (entry.rasterRunKey !== rasterRunKey) return;
+      if (!this.bufferHasVisiblePixels(buffer)) {
+        throw new Error("adjustment svg displace capture empty");
+      }
+
+      this.presentRasterCanvas(entry, buffer, w, h);
+      entry.rasterCompletedKey = rasterRunKey;
+      void this.frameRenderCache?.put(cacheKey, { data: buffer });
+      this.finalizeRasterPresentation(entry, obj, "", []);
+    } catch {
+      restoreCaptureVisibility();
+      if (entry.rasterCompletedKey === rasterRunKey && entry.rasterCanvas) {
+        this.reapplyAdjustmentSuppression(obj.id, adjustZ);
+      } else if (entry.rasterCompletedKey !== rasterRunKey) {
+        this.clearRasterOverlay(entry);
+        this.restoreAdjustmentSuppression(obj.id);
+      }
+    } finally {
+      if (entry.rasterInFlightKey === rasterRunKey) entry.rasterInFlightKey = null;
+    }
+  }
+
+  private async applyCssSvgFilterToBuffer(
+    buffer: { data: Uint8ClampedArray; width: number; height: number },
+    w: number,
+    h: number,
+    _filterStr: string,
+    svgFilters: { id: string; primitives: string }[],
+    filterEntry: Pick<ObjectEntry, "fxLayerW" | "fxLayerH" | "fxMaxDisplaceScale" | "fxUseBackdropDisplace">,
+  ): Promise<{ data: Uint8ClampedArray; width: number; height: number }> {
+    const sourceCanvas = rasterBufferToCanvas(buffer);
+    const dataUrl = sourceCanvas.toDataURL("image/png");
+    const filtersMarkup = svgFilters
+      .map(({ id, primitives }) => {
+        const isDisplace = primitives.includes("feDisplacementMap");
+        if (isDisplace && filterEntry.fxLayerW > 0 && filterEntry.fxLayerH > 0) {
+          return svgDisplaceFilterMarkup(
+            id,
+            primitives,
+            filterEntry.fxLayerW,
+            filterEntry.fxLayerH,
+            filterEntry.fxMaxDisplaceScale,
+            filterEntry.fxUseBackdropDisplace,
+          );
+        }
+        return `<filter id="${id}" color-interpolation-filters="sRGB" x="-25%" y="-25%" width="150%" height="150%">${primitives}</filter>`;
+      })
+      .join("");
+    const filterId = svgFilters[0]?.id ?? "fx";
+    const out = await rasterizeFilteredImage(dataUrl, w, h, filtersMarkup, filterId);
+    return canvasToRasterBuffer(out);
   }
 
   private reapplyAdjustmentSuppression(adjustmentId: string, adjustZ: number): void {
