@@ -154,6 +154,19 @@ export function PreviewPanel() {
     [compId, setPreviewQuality],
   );
 
+  const patchCacheSettings = useCallback((patch: Partial<PreviewCacheSettings>) => {
+    setCacheSettings((prev) => {
+      const next = { ...prev, ...patch };
+      savePreviewCacheSettings(next);
+      previewCacheService.updateSettings(next);
+      if (patch.enabled === false) {
+        setUseCachedFrame(false);
+        setRenderTick((t) => t + 1);
+      }
+      return next;
+    });
+  }, []);
+
   const effectiveZoom = useMemo(() => {
     if (!comp || viewportSize.w === 0) return 1;
     if (viewerSettings.zoomMode === "fit") {
@@ -214,7 +227,7 @@ export function PreviewPanel() {
     tick();
     const id = window.setInterval(tick, 200);
     return () => window.clearInterval(id);
-  }, [isPlaying, frame, projectRevision, renderTick]);
+  }, [isPlaying, frame, projectRevision, renderTick, cacheSettings.enabled]);
 
   // mount/remount renderer when comp changes
   useEffect(() => {
@@ -337,7 +350,7 @@ export function PreviewPanel() {
     return () => {
       cancelled = true;
     };
-  }, [renderComp, frame, renderTick, projectRevision, isPlaying, previewOverride, draftTransform]);
+  }, [renderComp, frame, renderTick, projectRevision, isPlaying, previewOverride, draftTransform, cacheSettings.enabled]);
 
   // §25.2 解像度プロキシ: DomRenderer のラスタ解像度のみ変更（INV-2 scene 値不変）
   useEffect(() => {
@@ -643,47 +656,43 @@ export function PreviewPanel() {
 
         <CacheStatusBadge status={cacheStatus} />
 
-        <button
-          onClick={() => {
-            const next = { ...cacheSettings, enabled: !cacheSettings.enabled };
-            setCacheSettings(next);
-            savePreviewCacheSettings(next);
-            previewCacheService.updateSettings(next);
-          }}
-          style={{
-            ...btnStyle,
-            fontSize: 10,
-            background: cacheSettings.enabled ? "#2a3a2a" : "#333",
-          }}
-          title="§28 RAM Preview キャッシュ"
+        <label
+          style={{ fontSize: 10, color: cacheSettings.enabled ? "#aaa" : "#666", display: "inline-flex", alignItems: "center", gap: 4, cursor: "pointer" }}
+          title="OFF: 常に live 描画（HTML/bundle 向け）。RAM/disk への書き込みなし"
         >
-          Cache
-        </button>
-        <button
-          onClick={() => void previewCacheService.clearAll()}
-          style={{ ...btnStyle, fontSize: 10 }}
-          title="プレビューキャッシュを全削除"
-        >
-          Clear
-        </button>
-        <label style={{ fontSize: 10, color: "#888", display: "inline-flex", alignItems: "center", gap: 4 }}>
-          RAM
           <input
-            type="number"
-            min={64}
-            max={4096}
-            value={cacheSettings.maxRamMB}
-            onChange={(e) => {
-              const maxRamMB = Math.max(64, Math.min(4096, Number(e.target.value) || 256));
-              const next = { ...cacheSettings, maxRamMB };
-              setCacheSettings(next);
-              savePreviewCacheSettings(next);
-              previewCacheService.updateSettings(next);
-            }}
-            style={{ width: 48, fontSize: 10, background: "#222", color: "#ccc", border: "1px solid #555" }}
+            type="checkbox"
+            checked={cacheSettings.enabled}
+            onChange={(e) => patchCacheSettings({ enabled: e.target.checked })}
           />
-          MB
+          Caching
         </label>
+        {cacheSettings.enabled && (
+          <>
+            <button
+              onClick={() => void previewCacheService.clearAll()}
+              style={{ ...btnStyle, fontSize: 10 }}
+              title="プレビューキャッシュを全削除"
+            >
+              Clear
+            </button>
+            <label style={{ fontSize: 10, color: "#888", display: "inline-flex", alignItems: "center", gap: 4 }}>
+              RAM
+              <input
+                type="number"
+                min={64}
+                max={4096}
+                value={cacheSettings.maxRamMB}
+                onChange={(e) => {
+                  const maxRamMB = Math.max(64, Math.min(4096, Number(e.target.value) || 256));
+                  patchCacheSettings({ maxRamMB });
+                }}
+                style={{ width: 48, fontSize: 10, background: "#222", color: "#ccc", border: "1px solid #555" }}
+              />
+              MB
+            </label>
+          </>
+        )}
 
         {comp && (
           <span style={{ fontSize: 10, color: "#666", marginLeft: "auto" }}>
@@ -832,6 +841,9 @@ const btnStyle: React.CSSProperties = {
 };
 
 function CacheStatusBadge({ status }: { status: PreviewCacheDisplayStatus }) {
+  if (status.kind === "off") {
+    return <span style={{ fontSize: 10, color: "#666" }}>○ Cache OFF</span>;
+  }
   if (status.kind === "realtime") {
     return <span style={{ fontSize: 10, color: "#6c6" }}>● Realtime</span>;
   }

@@ -19,6 +19,7 @@ import type { WorkArea } from "./workAreaStorage";
 
 export type PreviewCacheDisplayStatus =
   | { kind: "idle" }
+  | { kind: "off" }
   | { kind: "realtime" }
   | { kind: "cached"; hitRate: number }
   | { kind: "building"; progress: number };
@@ -57,10 +58,14 @@ export class RamPreviewController {
   }
 
   updateSettings(settings: PreviewCacheSettings): void {
+    const wasEnabled = this.settings.enabled;
     this.settings = settings;
     if (this.store instanceof DefaultTieredCacheStore) {
       this.store.setMaxRamBytes(settings.maxRamMB * 1024 * 1024);
       this.store.setDiskEnabled(settings.enableDiskCache);
+    }
+    if (wasEnabled && !settings.enabled) {
+      this.abortBuild();
     }
   }
 
@@ -195,7 +200,8 @@ export class RamPreviewController {
   }
 
   getDisplayStatus(isPlaying: boolean): PreviewCacheDisplayStatus {
-    if (!this.config || !this.settings.enabled) return { kind: "idle" };
+    if (!this.settings.enabled) return { kind: "off" };
+    if (!this.config) return { kind: "idle" };
     if (this.buildTotal > 0 && this.buildProgress < this.buildTotal) {
       return { kind: "building", progress: this.buildProgress / this.buildTotal };
     }
@@ -259,18 +265,24 @@ export class RamPreviewController {
   }
 
   private async processCacheFrame(frame: number, gen: number): Promise<void> {
-    if (!this.config || gen !== this.frameQueue.getGeneration()) return;
+    if (!this.settings.enabled || !this.config || gen !== this.frameQueue.getGeneration()) return;
     const key = this.frameCacheKey(frame);
     if (!key) return;
 
     const existing = await this.store.get(key);
+    if (!this.settings.enabled || gen !== this.frameQueue.getGeneration()) return;
     if (existing) {
       this.bumpBuildProgress(frame);
       return;
     }
 
-    const ctx = await this.ensureCaptureCtx();
-    if (!ctx || gen !== this.frameQueue.getGeneration()) return;
+    let ctx: CompFrameCaptureContext | null;
+    try {
+      ctx = await this.ensureCaptureCtx();
+    } catch {
+      return;
+    }
+    if (!this.settings.enabled || !ctx || gen !== this.frameQueue.getGeneration()) return;
 
     const pw = ctx.nw;
     const ph = ctx.nh;

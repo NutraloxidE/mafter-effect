@@ -9,7 +9,7 @@ export interface PreviewCacheSettings {
 }
 
 export const DEFAULT_PREVIEW_CACHE_SETTINGS: PreviewCacheSettings = {
-  enabled: true,
+  enabled: false,
   maxRamMB: 256,
   enableDiskCache: true,
 };

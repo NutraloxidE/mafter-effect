@@ -1457,6 +1457,8 @@ interface EffectDef {
   type: string;                       // "blur" | "tint" | "pixelSorter" | "pixelSortLite" | plugin
   label: string;
   category?: string;                  // Inspector ピッカー見出し
+  /** §28 RAM Preview: comp 内に enabled な1つでもあれば強制 non-realtime。registry メタのみ（project.json 非保存）。必須明示。 */
+  previewBakeRequired: boolean;
   params: ParamDescriptor[];          // §5.5 と同契約（animatable param は AnimatedProp で props に入る）
   bundleExportDefault?: "live" | "bake"; // 既定: builtin=live / plugin=bake（§12 安全側）
   // 純関数。resolve 済み props（具体値）→ フィルタ片。null = 何もしない（恒等）。
@@ -1470,6 +1472,24 @@ interface EffectDef {
 - `pluginRegistry` に `registerEffect` / `getEffectDef(type)` / `listEffects()` を追加。DomRenderer と Inspector/Timeline は registry を lazy 参照（component と同じパターン）。
 - builtin（`blur`/`tint`）も **エディタ初期化時に登録**する（§26.2 の builtin ComponentDef 登録と同じ場所・[store.ts](../src/editor/store.ts)）。
 - **EffectDef I/O 契約**は §10/§14 の将来 WASM effect（buffer→buffer）と整合させる方針を維持（現状は DOM フィルタ片を返すが、`apply` は純関数で副作用なし）。
+
+**登録 INVARIANT（effect / component）**: `registerEffect` / builtin `EffectDef` を追加・変更するとき、**必ず `previewBakeRequired: true` または `false` をリテラルで明記**する。未指定・`kind: "raster"` からの自動推論は禁止。
+
+- `{ kind: "raster" }` / `processPixels` を持つ effect → 原則 **`previewBakeRequired: true`**
+- `{ kind: "css" | "svg" }` のみ → 原則 **`previewBakeRequired: false`**
+- `ComponentDef` も同フィールドを必須明示（現行 builtin はすべて `false`）
+
+**§28 との二層ゲート**（2026-06 確定）:
+
+| レイヤ | 制御 | 役割 |
+|---|---|---|
+| L1 | `PreviewCacheSettings.enabled`（ユーザー Caching チェックボックス、§28.5） | scrub/playback/background cache のマスタースイッチ |
+| L2 | `compRequiresPreviewBake(comp)` — enabled effect/component の `previewBakeRequired` 集約 | Caching ON 時に Realtime 判定をバイパスしキャッシュ優先 |
+| L3 | `RealtimeDetector` 中央値ヒューリスティック | baker 無し comp でユーザーが Caching ON にした場合のみ |
+
+`exportStrategy: 'bake'`（§11.7 bundle export）とは **独立**（preview 専用メタ）。
+
+**builtin 初期値**: `pixelSorter` → `true`。その他 builtin（blur/tint/wave/turbulentDisplace/ripple/wipe/pixelSortLite/fast*）→ `false`。
 
 ### §27.3 builtin エフェクト（確定）
 
@@ -1566,6 +1586,67 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 - **INV-2 の扱い**: `quality` は `resolve()` の解決値に乗る通常プロパティであり、preview / browser export / HTML player の全経路へ**同一に**効く（解決値が一致するため INV-2 を満たす）。低 `q` による粒状感はラスタライズ品質差であって scene 解決値の差ではない（§26.7 のラスタライズ品質カーブアウトと整合）。
 - **animatable だが非推奨**: フレーム間で `quality` が変わると特に turbulent は octave 数が跳ね popping するため、原則 static 運用とする（静的既定 1.0）。
 - **重心不変**: 低 `q` でもディストーションの重心はドリフトしないことを実機計測で固定する（map 粗化が画像位置を動かさない）。
+
+#### §27.5 Fast ディストーション（近似・Web/編集 UX 向け）— 確定
+
+低スペック PC での編集スムーズ化・HTML/live 配布向けに、フル版（§27.3 `wave` / `ripple` / `turbulentDisplace`）と**共存**する超軽量近似 builtin エフェクト 3 種を提供する。カテゴリ **`ディストーション（軽量）`**。label は **`Fast Wave` / `Fast Ripple` / `Fast Turbulent Displace`**（type: `fastWave` / `fastRipple` / `fastTurbulentDisplace`）。
+
+- **使い分け**: 編集中・Web 配布・プレビュー重視 → Fast。最終仕上げ・AE 近似 → フル版 + `quality`。
+- **`quality` param は持たない**（Fast 自体が常時低品質）。
+- **INV-2**: Fast も resolved props の通常 effect。preview / export / HTML player 全経路で同一（既存 displacement raster パイプライン維持）。
+- **非目標**: AE 100% 一致、ripple 真の同心円、wave 真の正弦、重心ドリフトゼロ保証（Fast は best-effort 近似）。
+
+**共通 param `antiAlias`**（3 種）:
+
+| param key | label | kind | default | animatable |
+|---|---|---|---|---|
+| `antiAlias` | Anti Alias | bool | `true` | ❌ |
+
+- ON: displacement map / noise の直後に `feGaussianBlur stdDeviation=1`（map 座標系・固定 1px）→ `feDisplacementMap`。
+- OFF: 生のガビガビ（最大速度）。
+
+##### `fastWave` — Fast Wave
+
+| param key | label | kind | default | range | animatable |
+|---|---|---|---|---|---|
+| `amplitude` | Amplitude | scalar | `20` | min 0, max 500, step 0.1 | ✅ |
+| `wavelength` | Wavelength | scalar | `50` | min 1, max 500, step 0.1 | ✅ |
+| `direction` | Direction | enum | `"horizontal"` | `horizontal` / `vertical` | ❌ |
+| `phase` | Phase | scalar | `0` | 0..360, step 1 | ✅ |
+| `antiAlias` | Anti Alias | bool | `true` | — | ❌ |
+
+- `apply` → `{ kind: "svg", primitives }`。**`feTurbulence` 直結**（`numOctaves=1`, `fractalNoise`, bias 補正なし）。`wavelength`→`baseFrequency`、`phase`→`seed`（`phaseToSeed`）、`direction`→X/Y `baseFrequency` 比で横波っぽく近似。**`feImage` / PNG 生成なし**。
+- `amplitude === 0` は `null`。
+
+##### `fastRipple` — Fast Ripple
+
+| param key | label | kind | default | range | animatable |
+|---|---|---|---|---|---|
+| `radius` | Radius | scalar | `100` | min 0, max 1000, step 0.1 | ✅ |
+| `amplitude` | Amplitude | scalar | `10` | min 0, max 200, step 0.1 | ✅ |
+| `frequency` | Frequency | scalar | `5` | min 0.1, max 50, step 0.1 | ✅ |
+| `centerX` | Center X | scalar | `0.5` | 0..1, step 0.01 | ✅ |
+| `centerY` | Center Y | scalar | `0.5` | 0..1, step 0.01 | ✅ |
+| `antiAlias` | Anti Alias | bool | `true` | — | ❌ |
+
+- `apply` → `{ kind: "svg", primitives }`。**radialGradient SVG data URI** map + `feImage` → optional blur → `feDisplacementMap`（**PNG 生成なし**）。旧 WIP 中間版（§27.3 ripple 旧 radialGradient）と同系。渦寄り・完全な放射ベクトルではない近似。
+- `amplitude === 0` は `null`。`phase` param なし（内部 sin/cos 位相固定）。
+
+##### `fastTurbulentDisplace` — Fast Turbulent Displace
+
+| param key | label | kind | default | range | animatable |
+|---|---|---|---|---|---|
+| `amount` | Amount | scalar | `50` | min 0, max 500, step 0.1 | ✅ |
+| `size` | Size | scalar | `100` | min 1, max 2000, step 0.1 | ✅ |
+| `complexity` | Complexity | scalar | `2` | 1..6, step 1 | ✅ |
+| `evolution` | Evolution | scalar | `0` | 無制限, step 1 | ✅ |
+| `offsetX` | Offset X | scalar | `0` | 任意 px, step 1 | ✅ |
+| `offsetY` | Offset Y | scalar | `0` | 任意 px, step 1 | ✅ |
+| `randomSeed` | Random Seed | scalar | `0` | 0..9999, step 1 | ❌ |
+| `antiAlias` | Anti Alias | bool | `true` | — | ❌ |
+
+- `apply` → `{ kind: "svg", primitives }`。`feTurbulence` 直結、`numOctaves = max(1, min(2, complexity))`、bias 補正なし（速度優先）。Evolution/Offset はフル版同様 `feOffset`。
+- `amount === 0` は `null`。
 
 #### `linearWipe` — Linear Wipe
 
@@ -1794,7 +1875,7 @@ comp:{compId}:f{frame}:rev{projectRevision}:q{draft|precise}:proxy{full|half|qua
 | 再生中・リアルタイム可能 | live render + UI に `Realtime` 表示。バックグラウンド build は起動しない |
 | 再生中・リアルタイム不可 | キャッシュヒット時はキャッシュ bitmap 表示。ミス時は live + バックグラウンド build |
 
-**リアルタイム判定**: 直近 live render 時間の中央値 < `(1000/fps) * 0.85`。加えて `precise` + raster effect 含有、または `resolutionProxy !== "full"` ではリアルタイム不可。
+**リアルタイム判定**（`settings.enabled === true` のときのみ §28.5 参照）: 直近 live render 時間の中央値 < `(1000/fps) * 0.85`。加えて **`compRequiresPreviewBake(comp) === true`**（enabled effect/component の `previewBakeRequired` 集約。旧「raster effect 推論」の明示フラグ化）、または `resolutionProxy !== "full"` ではリアルタイム不可（強制 non-realtime → キャッシュ優先）。`settings.enabled === false` のときは常に live（§28.5）。
 
 ### §28.5 設定（project.json 非汚染・§19.3）
 
@@ -1802,12 +1883,18 @@ comp:{compId}:f{frame}:rev{projectRevision}:q{draft|precise}:proxy{full|half|qua
 
 ```ts
 interface PreviewCacheSettings {
-  enabled: boolean;       // 既定 true
+  enabled: boolean;       // 既定 false（2026-06）。HTML/bundle 向けは OFF 推奨
   maxRamMB: number;         // 既定 256
   enableDiskCache: boolean; // 既定 true
   cacheRootPath?: string;   // 将来デスクトップのみ
 }
 ```
+
+**Preview ツールバー UI**（§28.8 Phase 2 と整合）:
+
+- **Caching** チェックボックス — `enabled` の ON/OFF。`localStorage` キー `mafter-preview-cache-v1` に永続化（project.json 非汚染）。
+- OFF 時: scrub / playback / background cache を一切実行せず常に live 描画。進行中 build は即 abort。`Clear` / `maxRamMB` 入力は非表示。ステータス badge は **Cache OFF**。
+- ON 時: 従来どおり §28.4 の RAM Preview ポリシー。
 
 ### §28.6 不変条件
 
@@ -1830,7 +1917,7 @@ interface PreviewCacheSettings {
 | ワークエリア | comp ごと localStorage（§19.3 非汚染）。`B`/`N` で in/out 設定、`[`/`]` でジャンプ。RAM build はワークエリア内のみ |
 | `FrameRenderCache` | `TieredCacheStore` 共有・レイヤー raster キー `layer:{objectId}:f{frame}:hash{propsHash}`。DomRenderer raster パイプラインに配線 |
 | `NodeCacheFs` | 将来デスクトップ用 L2。Web では `cacheRootPath` 入力は無効（表示のみ） |
-| 設定 UI | Cache クリア・maxRamMB・disk トグル |
+| 設定 UI | Caching ON/OFF チェックボックス・Cache クリア・maxRamMB・disk トグル（disk は将来） |
 
 **ワークエリア既定**: `in=0`, `out=comp.duration`（全尺）。再生ループはワークエリア内（Preview + Timeline 共有 store 経由）。
 

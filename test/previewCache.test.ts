@@ -12,7 +12,7 @@ import {
 import { RealtimeDetector, shouldForceNonRealtime, compHasRasterEffect } from "../src/editor/realtimeDetector";
 import { registerBuiltinEffects } from "../src/runtime/builtinEffects";
 import { defaultTransform, staticProp } from "../src/core/props";
-import type { SceneObject, TimelineComposition } from "../src/core/schema";
+import type { Project, SceneObject, TimelineComposition } from "../src/core/schema";
 
 function makeComp(objects: SceneObject[] = []): TimelineComposition {
   return {
@@ -24,6 +24,26 @@ function makeComp(objects: SceneObject[] = []): TimelineComposition {
     fps: 30,
     duration: 10,
     objects,
+  };
+}
+
+function makeRamConfig(comp: TimelineComposition) {
+  const project: Project = {
+    schemaVersion: 1,
+    meta: { name: "Test", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" },
+    assets: [],
+    compositions: [comp],
+    rootComposition: comp.id,
+    pluginRefs: [],
+  };
+  return {
+    project,
+    comp,
+    projectRevision: 1,
+    quality: "draft" as const,
+    proxy: "full" as const,
+    proxyScale: 1,
+    workArea: { inPoint: 0, outPoint: comp.duration },
   };
 }
 
@@ -127,7 +147,7 @@ describe("shouldForceNonRealtime", () => {
 
 describe("previewCacheSettings", () => {
   it("has sane defaults", () => {
-    expect(DEFAULT_PREVIEW_CACHE_SETTINGS.enabled).toBe(true);
+    expect(DEFAULT_PREVIEW_CACHE_SETTINGS.enabled).toBe(false);
     expect(loadPreviewCacheSettings().maxRamMB).toBeGreaterThan(0);
   });
 });
@@ -208,6 +228,61 @@ describe("shouldPreferCacheDisplay", () => {
     const ctrl = new RamPreviewController(store, new MemoryFs(), { enabled: true, maxRamMB: 256, enableDiskCache: true });
     expect(ctrl.shouldPreferCacheDisplay()).toBe(false);
     expect(ctrl.shouldUseCacheForPlayback()).toBe(false);
+  });
+});
+
+describe("RamPreviewController enabled toggle", () => {
+  it("skips cache when disabled", () => {
+    registerBuiltinEffects();
+    const obj: SceneObject = {
+      id: "O1",
+      name: "solid",
+      parent: null,
+      zOrder: 1,
+      enabled: true,
+      inPoint: 0,
+      outPoint: 10,
+      transform: defaultTransform(),
+      opacity: staticProp(1),
+      components: [],
+      effects: [{ id: "FX1", type: "pixelSorter", enabled: true, props: {} }],
+    };
+    const comp = makeComp([obj]);
+    const store = new DefaultTieredCacheStore({ maxRamBytes: 1024, diskEnabled: false, disk: new InMemoryDiskCacheTier() });
+    const settings = { enabled: false, maxRamMB: 256, enableDiskCache: false };
+    const ctrl = new RamPreviewController(store, new MemoryFs(), settings);
+    ctrl.updateConfig(makeRamConfig(comp));
+    expect(ctrl.shouldPreferCacheDisplay()).toBe(false);
+    expect(ctrl.getDisplayStatus(false)).toEqual({ kind: "off" });
+    ctrl.cacheScrubbedFrame(0);
+    ctrl.startBackgroundBuildIfNeeded();
+    expect(ctrl.getDisplayStatus(false)).toEqual({ kind: "off" });
+  });
+
+  it("aborts background build when disabled via updateSettings", () => {
+    registerBuiltinEffects();
+    const obj: SceneObject = {
+      id: "O1",
+      name: "solid",
+      parent: null,
+      zOrder: 1,
+      enabled: true,
+      inPoint: 0,
+      outPoint: 10,
+      transform: defaultTransform(),
+      opacity: staticProp(1),
+      components: [],
+      effects: [{ id: "FX1", type: "pixelSorter", enabled: true, props: {} }],
+    };
+    const comp = makeComp([obj]);
+    const store = new DefaultTieredCacheStore({ maxRamBytes: 1024, diskEnabled: false, disk: new InMemoryDiskCacheTier() });
+    const settings = { enabled: true, maxRamMB: 256, enableDiskCache: false };
+    const ctrl = new RamPreviewController(store, new MemoryFs(), settings);
+    ctrl.updateConfig(makeRamConfig(comp));
+    ctrl.startBackgroundBuildIfNeeded();
+    expect(ctrl.getDisplayStatus(false).kind).toBe("building");
+    ctrl.updateSettings({ ...settings, enabled: false });
+    expect(ctrl.getDisplayStatus(false)).toEqual({ kind: "off" });
   });
 });
 
