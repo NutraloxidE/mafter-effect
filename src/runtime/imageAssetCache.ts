@@ -11,6 +11,15 @@ interface ImageEntry {
   size: ImageSize;
 }
 
+export interface ImageLoadOptions {
+  /**
+   * プレビュー専用: 画像の長辺がこのピクセル数に収まるよう縮小した data URL を生成する。
+   * 未指定なら原寸 data URL（export / bundle 経路）。`getSize()` は常に原寸を返すため
+   * CSS レイアウト・選択バウンディングボックス・export 一致（INV-2）は不変。
+   */
+  proxyMaxDim?: number;
+}
+
 const EXT_MIME: Record<string, string> = {
   jpg: "image/jpeg",
   jpeg: "image/jpeg",
@@ -46,11 +55,15 @@ export class ImageAssetCache {
   }
 
   /** project.assets の image を FS から読み込む。 */
-  async loadFromProject(project: Project, fs: FileSystem): Promise<void> {
+  async loadFromProject(project: Project, fs: FileSystem, options?: ImageLoadOptions): Promise<void> {
+    const proxyMaxDim = options?.proxyMaxDim;
+    // proxy 設定ごとに別キャッシュ（full-res と縮小版の取り違えを防ぐ）。
+    const cacheKey = (path: string) => `${proxyMaxDim ?? "full"}|${path}`;
     for (const asset of project.assets) {
       if (asset.kind !== "image") continue;
-      if (this.byPath.has(asset.path)) {
-        const entry = this.byPath.get(asset.path)!;
+      const ck = cacheKey(asset.path);
+      if (this.byPath.has(ck)) {
+        const entry = this.byPath.get(ck)!;
         this.byId.set(asset.id, entry);
         continue;
       }
@@ -59,8 +72,8 @@ export class ImageAssetCache {
         const mime =
           (typeof asset.meta?.mime === "string" ? asset.meta.mime : null) ??
           mimeFromPath(asset.path);
-        const entry = await decodeImageEntry(buf, mime, asset.meta);
-        this.byPath.set(asset.path, entry);
+        const entry = await decodeImageEntry(buf, mime, asset.meta, proxyMaxDim);
+        this.byPath.set(ck, entry);
         this.byId.set(asset.id, entry);
       } catch {
         /* skip unreadable image */
@@ -99,27 +112,60 @@ async function decodeImageEntry(
   buf: Uint8Array,
   mime: string,
   meta: Record<string, unknown> | undefined,
+  proxyMaxDim?: number,
 ): Promise<ImageEntry> {
   const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
-  const metaSize = ImageAssetCache.sizeFromMeta(meta);
-  const url = `data:${mime};base64,${bytesToBase64(buf)}`;
+  const canBitmap = typeof createImageBitmap === "function";
+  // SVG はベクタなのでラスタ縮小しない（元々小さく、縮小は品質劣化のみ）。
+  const isVector = mime === "image/svg+xml";
 
-  if (metaSize) {
-    return { url, size: metaSize };
+  let size = ImageAssetCache.sizeFromMeta(meta);
+  let bitmap: ImageBitmap | null = null;
+  if (canBitmap && (!size || (proxyMaxDim != null && !isVector))) {
+    try {
+      bitmap = await createImageBitmap(new Blob([ab], { type: mime }));
+    } catch {
+      bitmap = null;
+    }
+  }
+  if (!size) {
+    size = bitmap
+      ? { width: bitmap.width, height: bitmap.height }
+      : { width: 100, height: 100 };
   }
 
-  if (typeof createImageBitmap === "function") {
-    try {
-      const bitmap = await createImageBitmap(new Blob([ab], { type: mime }));
-      const size = { width: bitmap.width, height: bitmap.height };
-      bitmap.close();
-      return { url, size };
-    } catch {
-      /* fall through */
+  // プレビュー専用: 長辺が proxyMaxDim を超える画像を縮小した data URL に差し替える。
+  // size（natural）は維持するので CSS / bounds / export 一致は不変。
+  if (proxyMaxDim != null && !isVector && bitmap) {
+    const longest = Math.max(size.width, size.height);
+    if (longest > proxyMaxDim) {
+      const s = proxyMaxDim / longest;
+      const tw = Math.max(1, Math.round(size.width * s));
+      const th = Math.max(1, Math.round(size.height * s));
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = tw;
+        canvas.height = th;
+        const cx = canvas.getContext("2d");
+        if (cx) {
+          cx.drawImage(bitmap, 0, 0, tw, th);
+          // JPEG は不透明なので再エンコードも JPEG、それ以外は alpha 保持のため PNG。
+          const outMime = mime === "image/jpeg" ? "image/jpeg" : "image/png";
+          const url = outMime === "image/jpeg"
+            ? canvas.toDataURL(outMime, 0.82)
+            : canvas.toDataURL(outMime);
+          bitmap.close();
+          return { url, size };
+        }
+      } catch {
+        /* fall through to full-res */
+      }
     }
   }
 
-  return { url, size: { width: 100, height: 100 } };
+  bitmap?.close();
+  const url = `data:${mime};base64,${bytesToBase64(buf)}`;
+  return { url, size };
 }
 
 /** import 時: File から natural size を取得（store 用）。 */

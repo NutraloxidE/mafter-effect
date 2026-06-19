@@ -299,11 +299,15 @@ export class RamPreviewController {
 
   private async ensureCaptureCtx(): Promise<CompFrameCaptureContext | null> {
     if (!this.config) return null;
+    // プレビュー専用: 画像アセットを comp 解像度（長辺）まで縮小して
+    // foreignObject キャプチャの直列化/再デコードコストを抑える。export は別経路で full-res。
+    const proxyMaxDim = Math.max(this.config.comp.width, this.config.comp.height);
     const key = [
       this.config.comp.id,
       this.config.projectRevision,
       this.config.quality,
       this.config.proxy,
+      proxyMaxDim,
     ].join("|");
     if (this.captureCtx && this.captureCtxKey === key) return this.captureCtx;
     await this.disposeCaptureCtx();
@@ -311,7 +315,7 @@ export class RamPreviewController {
       this.config.project,
       this.config.comp.id,
       this.fs,
-      { textQuality: this.config.quality, proxyScale: this.config.proxyScale },
+      { textQuality: this.config.quality, proxyScale: this.config.proxyScale, proxyMaxDim },
     );
     this.captureCtxKey = key;
     return this.captureCtx;

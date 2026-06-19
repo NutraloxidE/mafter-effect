@@ -25,6 +25,11 @@ export interface CompFrameCaptureContext {
 export interface CompFrameCaptureOptions {
   textQuality: "draft" | "precise";
   proxyScale?: number;
+  /**
+   * プレビュー専用: 画像アセットを長辺 proxyMaxDim まで縮小して読み込む。
+   * 未指定なら原寸（RAM Preview は指定、bundle bake は full-res のため未指定）。
+   */
+  proxyMaxDim?: number;
 }
 
 function rgbaToHex(c: RGBA): string {
@@ -79,7 +84,7 @@ export async function createCompFrameCaptureContext(
   const imageCache = new ImageAssetCache();
   await Promise.all([
     fontCache.loadFromProject(project, fs),
-    imageCache.loadFromProject(project, fs),
+    imageCache.loadFromProject(project, fs, { proxyMaxDim: options.proxyMaxDim }),
   ]);
   renderer.setFontCache(fontCache);
   renderer.setImageCache(imageCache);

@@ -47,4 +47,26 @@ describe("ImageAssetCache", () => {
     expect(ImageAssetCache.sizeFromMeta(undefined)).toBeNull();
     expect(ImageAssetCache.sizeFromMeta({ width: 0, height: 10 })).toBeNull();
   });
+
+  it("proxyMaxDim keeps natural size and does not downscale images within the cap", async () => {
+    const fs = new MemoryFs();
+    await fs.write("assets/img1.png", tinyPngBytes());
+
+    const project = createProject({ name: "Test" });
+    project.assets = [
+      {
+        id: "01ASSET00000000000000001",
+        path: "assets/img1.png",
+        kind: "image",
+        meta: { width: 1, height: 1, mime: "image/png" },
+      },
+    ];
+
+    const cache = new ImageAssetCache();
+    // longest side (1) is well within the cap → no proxy, full-res data URL, natural size preserved.
+    await cache.loadFromProject(project, fs, { proxyMaxDim: 1920 });
+
+    expect(cache.getUrl("01ASSET00000000000000001")).toMatch(/^data:image\/png;base64,/);
+    expect(cache.getSize("01ASSET00000000000000001")).toEqual({ width: 1, height: 1 });
+  });
 });

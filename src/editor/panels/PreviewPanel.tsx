@@ -259,11 +259,13 @@ export function PreviewPanel() {
   // §26.4 asset フォントを preload
   useEffect(() => {
     if (!project) return;
+    // プレビュー専用: 画像を comp 解像度（長辺）まで縮小して読み込む（重い base64/再デコードを回避）。
+    const proxyMaxDim = comp ? Math.max(comp.width, comp.height) : undefined;
     void Promise.all([
       fontCacheRef.current.loadFromProject(project, _previewFs),
-      imageCacheRef.current.loadFromProject(project, _previewFs),
+      imageCacheRef.current.loadFromProject(project, _previewFs, { proxyMaxDim }),
     ]).then(() => setRenderTick((t) => t + 1));
-  }, [project]);
+  }, [project, comp?.width, comp?.height]); // eslint-disable-line react-hooks/exhaustive-deps
 
   textQualityRef.current = effectiveTextQuality;
   useEffect(() => {
