@@ -1,5 +1,8 @@
 import type { TimelineComposition } from "../core/schema";
-import { globalPluginRegistry } from "../runtime/pluginRegistry";
+import {
+  compHasProcessPixelsEffect,
+  compRequiresPreviewBake,
+} from "./previewCompAnalysis";
 
 const SAMPLE_SIZE = 8;
 const REALTIME_HEADROOM = 0.85;
@@ -37,15 +40,9 @@ export class RealtimeDetector {
   }
 }
 
+/** @deprecated use compHasProcessPixelsEffect */
 export function compHasRasterEffect(comp: TimelineComposition): boolean {
-  for (const obj of comp.objects) {
-    for (const fx of obj.effects ?? []) {
-      if (!fx.enabled) continue;
-      const def = globalPluginRegistry.getEffectDef(fx.type);
-      if (def?.processPixels) return true;
-    }
-  }
-  return false;
+  return compHasProcessPixelsEffect(comp);
 }
 
 export function shouldForceNonRealtime(
@@ -54,6 +51,8 @@ export function shouldForceNonRealtime(
   comp: TimelineComposition,
 ): boolean {
   if (proxy !== "full") return true;
-  if (compHasRasterEffect(comp)) return true;
+  if (compRequiresPreviewBake(comp)) return true;
   return false;
 }
+
+export { compRequiresPreviewBake } from "./previewCompAnalysis";

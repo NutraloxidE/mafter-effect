@@ -1,4 +1,5 @@
 import { DISPLACEMENT_EFFECT_TYPES, displacementPadFromScale, svgDisplaceFilterMarkup } from "./effectSvg";
+import { effectsAreFastDisplacementOnly } from "./previewDisplacement";
 import type { CompositionMeta, Frame, HtmlComposition, RGBA, TimelineComposition } from "../core/schema";
 import type { FontOutlineCache } from "./fontOutlineCache";
 import type { ImageAssetCache } from "./imageAssetCache";
@@ -74,6 +75,17 @@ export class DomRenderer implements Renderer {
   private frameRenderCache: FrameRenderCache | null = null;
   /** 現フレームに adjustment + displacement がある（下位 overflow 方針用） */
   private compHasAdjustmentDisplace = false;
+  /** §27.12 Draft Preview Fast Path / hold-last raster。 */
+  private previewMode: "default" | "draftPlayback" = "default";
+  private holdLastRaster = false;
+
+  setPreviewRenderOptions(opts: {
+    mode?: "default" | "draftPlayback";
+    holdLastRaster?: boolean;
+  }): void {
+    if (opts.mode !== undefined) this.previewMode = opts.mode;
+    if (opts.holdLastRaster !== undefined) this.holdLastRaster = opts.holdLastRaster;
+  }
 
   setTextQuality(mode: "draft" | "precise"): void {
     this.textQuality = mode;
@@ -397,11 +409,18 @@ export class DomRenderer implements Renderer {
     }
 
     if (rasterChain.length === 0) {
-      this.clearRasterOverlay(entry);
-      if (obj.isAdjustment) this.restoreAdjustmentSuppression(obj.id);
       const allTokens = [...preTokens, ...postTokens];
       const allSvgFilters = [...preSvgFilters, ...postSvgFilters];
       if (hasDisplacementFx) {
+        if (
+          this.previewMode === "draftPlayback"
+          && effectsAreFastDisplacementOnly(obj.effects, obj.isAdjustment)
+        ) {
+          this.clearRasterOverlay(entry);
+          if (obj.isAdjustment) this.restoreAdjustmentSuppression(obj.id);
+          this.applyFilterTokens(entry, obj, allTokens, allSvgFilters);
+          return;
+        }
         const filterStr = allTokens.join(" ");
         const rasterRunKey = `${fxSig}|f${frame}`;
         entry.rasterRunKey = rasterRunKey;
@@ -421,6 +440,8 @@ export class DomRenderer implements Renderer {
         this.rasterPending.add(tracked);
         return;
       }
+      this.clearRasterOverlay(entry);
+      if (obj.isAdjustment) this.restoreAdjustmentSuppression(obj.id);
       this.applyFilterTokens(entry, obj, allTokens, allSvgFilters);
       return;
     }
@@ -553,9 +574,11 @@ export class DomRenderer implements Renderer {
     if (w === 0 || h === 0) return;
 
     entry.rasterInFlightKey = rasterRunKey;
-    entry.div.style.filter = "";
-    entry.div.style.backdropFilter = "";
-    (entry.div.style as CSSStyleDeclaration & { webkitBackdropFilter?: string }).webkitBackdropFilter = "";
+    if (!this.holdLastRaster) {
+      entry.div.style.filter = "";
+      entry.div.style.backdropFilter = "";
+      (entry.div.style as CSSStyleDeclaration & { webkitBackdropFilter?: string }).webkitBackdropFilter = "";
+    }
 
     try {
       const propsHash = entry.fxSig;
@@ -619,9 +642,11 @@ export class DomRenderer implements Renderer {
     const adjustZ = Math.round(obj.zOrder * BASE_Z);
 
     entry.rasterInFlightKey = rasterRunKey;
-    entry.div.style.filter = "";
-    entry.div.style.backdropFilter = "";
-    (entry.div.style as CSSStyleDeclaration & { webkitBackdropFilter?: string }).webkitBackdropFilter = "";
+    if (!this.holdLastRaster) {
+      entry.div.style.filter = "";
+      entry.div.style.backdropFilter = "";
+      (entry.div.style as CSSStyleDeclaration & { webkitBackdropFilter?: string }).webkitBackdropFilter = "";
+    }
 
     const hiddenForCapture: HTMLElement[] = [];
     const restoreCaptureVisibility = (): void => {

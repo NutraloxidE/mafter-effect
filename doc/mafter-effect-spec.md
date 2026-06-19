@@ -1921,6 +1921,37 @@ interface PreviewCacheSettings {
 
 **ワークエリア既定**: `in=0`, `out=comp.duration`（全尺）。再生ループはワークエリア内（Preview + Timeline 共有 store 経由）。
 
+### §28.9 Auto Preview Cache（確定・2026-06）
+
+重い comp の再生開始時に **session 限定**で Caching を自動 ON にする（`localStorage` 既定値は変更しない）。
+
+**`compNeedsAutoPreviewCache(comp)`** — enabled effect/component を走査し、次のいずれかが真なら `true`:
+
+1. `previewBakeRequired === true`（`compRequiresPreviewBake` と同型）
+2. displacement 系（`DISPLACEMENT_EFFECT_TYPES` に含まれる type）
+3. `processPixels` を持つ effect（raster チェーン）
+
+**挙動**:
+
+- 再生開始（`isPlaying` が false→true）かつ上記 `true` → session フラグ `autoCacheSession` を立て、実効 `PreviewCacheSettings.enabled = true`（RAM Preview ポリシー §28.4 を適用）。同時に `startBackgroundBuildIfNeeded()`。
+- ユーザーが Caching を手動 OFF → `autoCacheSession` 解除。以降は手動設定を尊重。
+- UI badge: **`Auto Cache`**（session 中のみ。手動 ON とは区別）。
+- export / bundle player / `resolve()` 非参照（§28.1 と同様）。
+
+**`shouldPreferCacheDisplay` 拡張**: `autoCacheSession === true` かつ `compNeedsAutoPreviewCache` のとき、サンプル数不足でもキャッシュ優先（L2 + displacement/bake 即時）。
+
+### §27.12 Draft Preview Fast Path（確定・2026-06）
+
+**preview 専用**の displacement 高速経路。INV-2（export 出力の正）の対象外。
+
+| 条件 | 経路 |
+|---|---|
+| `textQuality === "draft"` かつ `isPlaying === true` かつ enabled displacement が **`fastWave` / `fastRipple` / `fastTurbulentDisplace` のみ**（調整レイヤー除く） | raster キャプチャ省略 → `applyFilterTokens` 直適用 |
+| Best（`precise`）/ スクラブ / export / bundle player / full displacement / 調整レイヤー | 従来 raster パイプライン（§27.1） |
+
+- **許容差**: ドリフト・見た目近似（§27.5 Fast の非目標と整合）。Best で最終確認。
+- **再生 UX 補助**: `holdLastRaster` — raster 完了まで前フレームの filter/canvas を保持（エフェクトなしフラッシュ抑制）。Draft/Best 再生中に有効。
+
 ---
 
 ## §29 Monetization / 無料・有料差別化（licensing 層・additive・確定）

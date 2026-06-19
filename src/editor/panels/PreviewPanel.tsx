@@ -32,6 +32,8 @@ import {
   type PreviewCacheDisplayStatus,
 } from "../ramPreview";
 import { previewCacheService } from "../previewCacheService";
+import { compNeedsAutoPreviewCache } from "../previewCompAnalysis";
+import { runPreviewFrameClock, runPreviewPlaybackLoop } from "../previewPlaybackLoop";
 import { loadWorkArea } from "../workAreaStorage";
 import { currentTimelineComp, selectedObjects, useEditorStore } from "../store";
 import type { HtmlComposition, TimelineComposition, Transform } from "../../core/schema";
@@ -95,9 +97,19 @@ export function PreviewPanel() {
   const imageCacheRef = useRef(new ImageAssetCache());
   const textQualityRef = useRef<"draft" | "precise">("draft");
   const [renderTick, setRenderTick] = useState(0);
-  const rafRef = useRef<number | null>(null);
-  const lastTimeRef = useRef<number | null>(null);
   const frameRef = useRef(frame);
+  const renderCompRef = useRef<TimelineComposition | null>(null);
+  const previewOverrideRef = useRef(previewOverride);
+  const draftTransformRef = useRef<Transform | null>(null);
+  const isPlayingRef = useRef(isPlaying);
+  const playbackConfigRef = useRef({
+    fps: 30,
+    loopStart: 0,
+    loopEnd: 150,
+    loop: false,
+    draftPlayback: true,
+  });
+  const draftPlaybackRenderGenRef = useRef(0);
   const evaluatorRef = useRef<ExpressionEvaluator | undefined>(undefined);
   const cacheOverlayRef = useRef<HTMLImageElement>(null);
 
@@ -105,6 +117,7 @@ export function PreviewPanel() {
     loadViewerSettings(compId),
   );
   const [cacheSettings, setCacheSettings] = useState<PreviewCacheSettings>(() => loadPreviewCacheSettings());
+  const [autoCacheSession, setAutoCacheSession] = useState(false);
   const [cacheStatus, setCacheStatus] = useState<PreviewCacheDisplayStatus>({ kind: "idle" });
   const [useCachedFrame, setUseCachedFrame] = useState(false);
   const [viewportSize, setViewportSize] = useState({ w: 0, h: 0 });
@@ -115,6 +128,9 @@ export function PreviewPanel() {
 
   const comp = currentTimelineComp(project, compId);
   frameRef.current = frame;
+  previewOverrideRef.current = previewOverride;
+  draftTransformRef.current = draftTransform;
+  isPlayingRef.current = isPlaying;
 
   const selected = useMemo(
     () => (comp && project ? selectedObjects(project, compId, selectedIds) : []),
@@ -133,6 +149,7 @@ export function PreviewPanel() {
     }
     return c;
   }, [comp, draftTransform, primaryObject?.id, previewOverride]);
+  renderCompRef.current = renderComp;
 
   // §25.7 comp 切替時に設定を読み込む
   useEffect(() => {
@@ -155,10 +172,13 @@ export function PreviewPanel() {
   );
 
   const patchCacheSettings = useCallback((patch: Partial<PreviewCacheSettings>) => {
+    if (patch.enabled === false) {
+      setAutoCacheSession(false);
+      previewCacheService.getController()?.setAutoCacheSession(false);
+    }
     setCacheSettings((prev) => {
       const next = { ...prev, ...patch };
       savePreviewCacheSettings(next);
-      previewCacheService.updateSettings(next);
       if (patch.enabled === false) {
         setUseCachedFrame(false);
         setRenderTick((t) => t + 1);
@@ -166,6 +186,79 @@ export function PreviewPanel() {
       return next;
     });
   }, []);
+
+  const effectiveCacheEnabled = cacheSettings.enabled || autoCacheSession;
+
+  const performPreviewRender = useCallback(async (targetFrame: number, renderGen?: number) => {
+    const isStale = () =>
+      renderGen !== undefined && renderGen !== draftPlaybackRenderGenRef.current;
+
+    const rc = renderCompRef.current;
+    const renderer = rendererRef.current;
+    if (!rc || !renderer || isStale()) return;
+
+    const ram = previewCacheService.getController();
+    const editingLive = previewOverrideRef.current !== null || draftTransformRef.current !== null;
+    const preferCache = !editingLive && (ram?.shouldPreferCacheDisplay() ?? false);
+
+    const afterLiveRender = () => {
+      if (isStale()) return;
+      if (editingLive) return;
+      if (isPlayingRef.current) ram?.cachePlaybackFrame(targetFrame);
+      else ram?.cacheScrubbedFrame(targetFrame);
+      if (!isPlayingRef.current) ram?.startBackgroundBuildIfNeeded();
+    };
+
+    if (!preferCache) {
+      setUseCachedFrame(false);
+      const t0 = performance.now();
+      renderer.renderFrame(
+        resolve(rc, targetFrame, { expressions: evaluatorRef.current }),
+        targetFrame,
+      );
+      await renderer.flushRasterEffects();
+      if (isStale()) return;
+      ram?.recordLiveRenderMs(performance.now() - t0);
+      afterLiveRender();
+      return;
+    }
+
+    const url = await ram?.getCachedBlobUrl(targetFrame);
+    if (isStale()) return;
+    if (url) {
+      if (cacheOverlayRef.current) cacheOverlayRef.current.src = url;
+      setUseCachedFrame(true);
+      if (isPlayingRef.current) ram?.notePlaybackFrame(true);
+      return;
+    }
+    setUseCachedFrame(false);
+    if (isPlayingRef.current) ram?.notePlaybackFrame(false);
+    const t0 = performance.now();
+    renderer.renderFrame(
+      resolve(rc, targetFrame, { expressions: evaluatorRef.current }),
+      targetFrame,
+    );
+    await renderer.flushRasterEffects();
+    if (isStale()) return;
+    ram?.recordLiveRenderMs(performance.now() - t0);
+    afterLiveRender();
+  }, []);
+
+  const activateAutoCacheIfNeeded = useCallback(() => {
+    const state = useEditorStore.getState();
+    const activeComp = currentTimelineComp(state.project, state.currentCompId);
+    if (!activeComp || cacheSettings.enabled || autoCacheSession) return;
+    if (!compNeedsAutoPreviewCache(activeComp)) return;
+    setAutoCacheSession(true);
+    previewCacheService.getController()?.setAutoCacheSession(true);
+    previewCacheService.updateSettings({ ...cacheSettings, enabled: true });
+    previewCacheService.getController()?.startBackgroundBuildIfNeeded();
+  }, [autoCacheSession, cacheSettings]);
+
+  const handleTogglePlay = useCallback(() => {
+    if (!isPlaying) activateAutoCacheIfNeeded();
+    togglePlay();
+  }, [activateAutoCacheIfNeeded, isPlaying, togglePlay]);
 
   const effectiveZoom = useMemo(() => {
     if (!comp || viewportSize.w === 0) return 1;
@@ -194,6 +287,8 @@ export function PreviewPanel() {
     () => (comp ? loadWorkArea(comp.id, comp.duration) : { inPoint: 0, outPoint: 1 }),
     [comp, workAreaRevision],
   );
+  const workAreaIn = workArea.inPoint;
+  const workAreaOut = workArea.outPoint;
 
   // §28 RAM Preview（共有サービス）
   useEffect(() => {
@@ -201,8 +296,10 @@ export function PreviewPanel() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    previewCacheService.updateSettings(cacheSettings);
-  }, [cacheSettings]);
+    const effective = { ...cacheSettings, enabled: effectiveCacheEnabled };
+    previewCacheService.updateSettings(effective);
+    previewCacheService.getController()?.setAutoCacheSession(autoCacheSession);
+  }, [cacheSettings, autoCacheSession, effectiveCacheEnabled]);
 
   useEffect(() => {
     if (!project || !comp) {
@@ -227,7 +324,12 @@ export function PreviewPanel() {
     tick();
     const id = window.setInterval(tick, 200);
     return () => window.clearInterval(id);
-  }, [isPlaying, frame, projectRevision, renderTick, cacheSettings.enabled]);
+  }, [isPlaying, frame, projectRevision, renderTick, effectiveCacheEnabled]);
+
+  useEffect(() => {
+    if (!isPlaying || !comp) return;
+    activateAutoCacheIfNeeded();
+  }, [isPlaying, comp, activateAutoCacheIfNeeded]);
 
   // mount/remount renderer when comp changes
   useEffect(() => {
@@ -296,12 +398,24 @@ export function PreviewPanel() {
     setRenderTick((t) => t + 1);
   }, [previewOverride]);
 
+  const editingLive = previewOverride !== null || draftTransform !== null;
+  const draftPlaybackActive = isPlaying && effectiveTextQuality === "draft" && !editingLive;
+
+  useEffect(() => {
+    const renderer = rendererRef.current;
+    if (!renderer) return;
+    renderer.setPreviewRenderOptions({
+      mode: draftPlaybackActive ? "draftPlayback" : "default",
+      holdLastRaster: isPlaying && !editingLive,
+    });
+  }, [draftPlaybackActive, isPlaying, editingLive]);
+
   // render on frame / project / draft transform (§28: scrub=live 初回、表示後キャッシュ・再訪問は cache 可)
   useEffect(() => {
     if (!renderComp || !rendererRef.current) return;
+    if (draftPlaybackActive) return;
 
     const ram = previewCacheService.getController();
-    const editingLive = previewOverride !== null || draftTransform !== null;
     const preferCache = !editingLive && (ram?.shouldPreferCacheDisplay() ?? false);
 
     const afterLiveRender = () => {
@@ -350,7 +464,47 @@ export function PreviewPanel() {
     return () => {
       cancelled = true;
     };
-  }, [renderComp, frame, renderTick, projectRevision, isPlaying, previewOverride, draftTransform, cacheSettings.enabled]);
+  }, [renderComp, frame, renderTick, projectRevision, isPlaying, previewOverride, draftTransform, effectiveCacheEnabled, draftPlaybackActive, editingLive]);
+
+  playbackConfigRef.current = {
+    fps: comp?.fps ?? 30,
+    loopStart: workAreaIn,
+    loopEnd: workAreaOut,
+    loop: viewerSettings.loop,
+    draftPlayback: draftPlaybackActive,
+  };
+
+  // §25.6 / §28 / §27.12 再生ループ（Draft=直接 render、Best=frame clock + React effect）
+  useEffect(() => {
+    if (!isPlaying || !comp) return;
+
+    const cfg = playbackConfigRef.current;
+    if (cfg.draftPlayback) {
+      return runPreviewPlaybackLoop({
+        fps: cfg.fps,
+        loopStart: cfg.loopStart,
+        loopEnd: cfg.loopEnd,
+        loop: cfg.loop,
+        initialFrame: frameRef.current,
+        onFrameChange: (f) => setFrame(f),
+        onPlaybackEnd: () => setPlaying(false),
+        renderFrame: (f) => {
+          const gen = ++draftPlaybackRenderGenRef.current;
+          return performPreviewRender(f, gen);
+        },
+      });
+    }
+
+    return runPreviewFrameClock({
+      fps: cfg.fps,
+      loopStart: cfg.loopStart,
+      loopEnd: cfg.loopEnd,
+      loop: cfg.loop,
+      initialFrame: frameRef.current,
+      onFrameChange: (f) => setFrame(f),
+      onPlaybackEnd: () => setPlaying(false),
+    });
+  }, [isPlaying, comp?.id, draftPlaybackActive, setFrame, setPlaying, performPreviewRender]);
 
   // §25.2 解像度プロキシ: DomRenderer のラスタ解像度のみ変更（INV-2 scene 値不変）
   useEffect(() => {
@@ -386,48 +540,6 @@ export function PreviewPanel() {
       window.removeEventListener("scroll", apply, true);
     };
   }, []);
-
-  // §25.6 / §28.8 ループ再生（ワークエリア内）
-  useEffect(() => {
-    if (!isPlaying || !comp) return;
-    const fps = comp.fps;
-    const loopStart = workArea.inPoint;
-    const loopEnd = workArea.outPoint;
-    const msPerFrame = 1000 / fps;
-    const loop = viewerSettings.loop;
-
-    const tick = (now: number) => {
-      if (lastTimeRef.current === null) {
-        lastTimeRef.current = now;
-        rafRef.current = requestAnimationFrame(tick);
-        return;
-      }
-      const elapsed = now - lastTimeRef.current;
-      const framesToAdvance = Math.floor(elapsed / msPerFrame);
-      if (framesToAdvance > 0) {
-        lastTimeRef.current = now - (elapsed % msPerFrame);
-        const next = frameRef.current + framesToAdvance;
-        if (next >= loopEnd) {
-          if (loop) {
-            setFrame(loopStart + ((next - loopStart) % Math.max(1, loopEnd - loopStart)));
-          } else {
-            setPlaying(false);
-            setFrame(loopStart);
-          }
-        } else {
-          setFrame(next);
-        }
-      }
-      rafRef.current = requestAnimationFrame(tick);
-    };
-
-    lastTimeRef.current = null;
-    rafRef.current = requestAnimationFrame(tick);
-    return () => {
-      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
-      lastTimeRef.current = null;
-    };
-  }, [isPlaying, comp, setFrame, setPlaying, viewerSettings.loop, workArea]);
 
   // §25.1 Ctrl+ホイールズーム / スペース+パン
   useEffect(() => {
@@ -558,7 +670,7 @@ export function PreviewPanel() {
 
       {/* §25.1 / §25.6 toolbar */}
       <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 8px", background: "#222", borderBottom: "1px solid #333", flexShrink: 0, flexWrap: "wrap" }}>
-        <button onClick={togglePlay} style={btnStyle} title="再生/停止">{isPlaying ? "⏸" : "▶"}</button>
+        <button onClick={handleTogglePlay} style={btnStyle} title="再生/停止">{isPlaying ? "⏸" : "▶"}</button>
         <button onClick={() => setFrame(0)} style={btnStyle} title="先頭へ">⏮</button>
         <button onClick={() => setFrame(Math.max(0, frame - 1))} style={btnStyle} title="1フレーム前">◀</button>
         <button onClick={() => setFrame(Math.min((comp?.duration ?? 1) - 1, frame + 1))} style={btnStyle} title="1フレーム後">▶|</button>
@@ -654,20 +766,20 @@ export function PreviewPanel() {
 
         <OverlayToggles settings={viewerSettings} onChange={patchSettings} />
 
-        <CacheStatusBadge status={cacheStatus} />
+        <CacheStatusBadge status={cacheStatus} autoCache={autoCacheSession} />
 
         <label
-          style={{ fontSize: 10, color: cacheSettings.enabled ? "#aaa" : "#666", display: "inline-flex", alignItems: "center", gap: 4, cursor: "pointer" }}
+          style={{ fontSize: 10, color: effectiveCacheEnabled ? "#aaa" : "#666", display: "inline-flex", alignItems: "center", gap: 4, cursor: "pointer" }}
           title="OFF: 常に live 描画（HTML/bundle 向け）。RAM/disk への書き込みなし"
         >
           <input
             type="checkbox"
-            checked={cacheSettings.enabled}
+            checked={effectiveCacheEnabled}
             onChange={(e) => patchCacheSettings({ enabled: e.target.checked })}
           />
           Caching
         </label>
-        {cacheSettings.enabled && (
+        {effectiveCacheEnabled && (
           <>
             <button
               onClick={() => void previewCacheService.clearAll()}
@@ -840,9 +952,12 @@ const btnStyle: React.CSSProperties = {
   fontSize: 12,
 };
 
-function CacheStatusBadge({ status }: { status: PreviewCacheDisplayStatus }) {
+function CacheStatusBadge({ status, autoCache }: { status: PreviewCacheDisplayStatus; autoCache?: boolean }) {
   if (status.kind === "off") {
     return <span style={{ fontSize: 10, color: "#666" }}>○ Cache OFF</span>;
+  }
+  if (autoCache) {
+    return <span style={{ fontSize: 10, color: "#8af" }}>⚡ Auto Cache</span>;
   }
   if (status.kind === "realtime") {
     return <span style={{ fontSize: 10, color: "#6c6" }}>● Realtime</span>;

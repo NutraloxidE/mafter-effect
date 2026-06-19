@@ -51,6 +51,7 @@ const BLUR_EFFECT_DEF: EffectDef = {
   type: "blur",
   label: "Blur",
   category: "ぼかし",
+  previewBakeRequired: false,
   params: [
     { key: "blurriness", label: "Blurriness", kind: "scalar", default: 0, animatable: true, min: 0, max: 500, step: 0.1 },
   ],
@@ -65,6 +66,7 @@ const TINT_EFFECT_DEF: EffectDef = {
   type: "tint",
   label: "Tint",
   category: "カラー補正",
+  previewBakeRequired: false,
   params: [
     { key: "mapBlack", label: "Map Black To", kind: "color", default: { r: 0, g: 0, b: 0, a: 1 }, animatable: true },
     { key: "mapWhite", label: "Map White To", kind: "color", default: { r: 1, g: 1, b: 1, a: 1 }, animatable: true },
@@ -105,6 +107,7 @@ const WAVE_EFFECT_DEF: EffectDef = {
   type: "wave",
   label: "Wave",
   category: "ディストーション",
+  previewBakeRequired: false,
   params: [
     { key: "amplitude", label: "Amplitude", kind: "scalar", default: 20, animatable: true, min: 0, max: 500, step: 0.1 },
     { key: "wavelength", label: "Wavelength", kind: "scalar", default: 50, animatable: true, min: 1, max: 500, step: 0.1 },
@@ -129,6 +132,7 @@ const TURBULENT_DISPLACE_EFFECT_DEF: EffectDef = {
   type: "turbulentDisplace",
   label: "Turbulent Displace",
   category: "ディストーション",
+  previewBakeRequired: false,
   params: [
     { key: "amount", label: "Amount", kind: "scalar", default: 50, animatable: true, min: 0, max: 500, step: 0.1 },
     { key: "size", label: "Size", kind: "scalar", default: 100, animatable: true, min: 1, max: 2000, step: 0.1 },
@@ -176,6 +180,7 @@ const RIPPLE_EFFECT_DEF: EffectDef = {
   type: "ripple",
   label: "Ripple",
   category: "ディストーション",
+  previewBakeRequired: false,
   params: [
     { key: "radius", label: "Radius", kind: "scalar", default: 100, animatable: true, min: 0, max: 1000, step: 0.1 },
     { key: "amplitude", label: "Amplitude", kind: "scalar", default: 10, animatable: true, min: 0, max: 200, step: 0.1 },
@@ -202,6 +207,7 @@ const LINEAR_WIPE_EFFECT_DEF: EffectDef = {
   type: "linearWipe",
   label: "Linear Wipe",
   category: "ワイプ",
+  previewBakeRequired: false,
   params: [
     { key: "completion", label: "Transition Completion", kind: "scalar", default: 0, animatable: true, min: 0, max: 1, step: 0.01 },
     { key: "angle", label: "Wipe Angle", kind: "scalar", default: 0, animatable: true, step: 1 },
@@ -225,6 +231,7 @@ const ANGULAR_WIPE_EFFECT_DEF: EffectDef = {
   type: "angularWipe",
   label: "Angular Wipe",
   category: "ワイプ",
+  previewBakeRequired: false,
   params: [
     { key: "completion", label: "Transition Completion", kind: "scalar", default: 0, animatable: true, min: 0, max: 1, step: 0.01 },
     { key: "startAngle", label: "Start Angle", kind: "scalar", default: 0, animatable: true, step: 1 },
@@ -252,6 +259,7 @@ const PIXEL_SORTER_EFFECT_DEF: EffectDef = {
   type: "pixelSorter",
   label: "Pixel Sorter (WIP)",
   category: "スタイライズ",
+  previewBakeRequired: true,
   params: [
     { key: "sortingMode", label: "Sorting Mode", kind: "enum", default: "simple", animatable: false, options: ["simple", "highlights", "shadows", "random"] },
     { key: "thresholdLow", label: "Threshold Low", kind: "scalar", default: 0.25, animatable: true, min: 0, max: 1, step: 0.01 },
@@ -275,6 +283,7 @@ const PIXEL_SORT_LITE_EFFECT_DEF: EffectDef = {
   type: "pixelSortLite",
   label: "Light Pixel Sort (WIP)",
   category: "スタイライズ",
+  previewBakeRequired: false,
   params: [
     { key: "angle", label: "Angle", kind: "scalar", default: 90, animatable: true, step: 1 },
     { key: "threshold", label: "Threshold", kind: "scalar", default: 0.5, animatable: true, min: 0, max: 1, step: 0.01 },

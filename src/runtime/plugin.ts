@@ -54,6 +54,8 @@ export interface EffectDef {
   label: string;
   /** Inspector エフェクト追加ピッカーでのカテゴリ見出し。未指定は「その他」。 */
   category?: string;
+  /** §28 RAM Preview L2 — comp 内に enabled が1つでもあればキャッシュ優先。registry メタのみ。 */
+  previewBakeRequired: boolean;
   params: ParamDescriptor[];
   bundleExportDefault?: "live" | "bake";
   apply(props: Record<string, unknown>, ctx: EffectRenderCtx): EffectFilter | null;

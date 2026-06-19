@@ -7,6 +7,7 @@ function mockEffect(type: string, category?: string): EffectDef {
     type,
     label: type,
     category,
+    previewBakeRequired: false,
     params: [],
     apply: () => null,
   };

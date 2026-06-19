@@ -49,6 +49,13 @@ export const DISPLACEMENT_EFFECT_TYPES = new Set([
   "fastTurbulentDisplace",
 ]);
 
+/** §27.12 Draft Preview Fast Path 対象。 */
+export const FAST_DISPLACEMENT_EFFECT_TYPES = new Set([
+  "fastWave",
+  "fastRipple",
+  "fastTurbulentDisplace",
+]);
+
 /** §27.5 Fast displacement — optional map blur stdDeviation (px, userSpace). */
 export const FAST_DISPLACE_AA_STD_DEV = 1;
 

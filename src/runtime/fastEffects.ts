@@ -31,6 +31,7 @@ const FAST_WAVE_EFFECT_DEF: EffectDef = {
   type: "fastWave",
   label: "Fast Wave",
   category: "ディストーション（軽量）",
+  previewBakeRequired: false,
   params: [
     { key: "amplitude", label: "Amplitude", kind: "scalar", default: 20, animatable: true, min: 0, max: 500, step: 0.1 },
     { key: "wavelength", label: "Wavelength", kind: "scalar", default: 50, animatable: true, min: 1, max: 500, step: 0.1 },
@@ -60,6 +61,7 @@ const FAST_RIPPLE_EFFECT_DEF: EffectDef = {
   type: "fastRipple",
   label: "Fast Ripple",
   category: "ディストーション（軽量）",
+  previewBakeRequired: false,
   params: [
     { key: "radius", label: "Radius", kind: "scalar", default: 100, animatable: true, min: 0, max: 1000, step: 0.1 },
     { key: "amplitude", label: "Amplitude", kind: "scalar", default: 10, animatable: true, min: 0, max: 200, step: 0.1 },
@@ -93,6 +95,7 @@ const FAST_TURBULENT_DISPLACE_EFFECT_DEF: EffectDef = {
   type: "fastTurbulentDisplace",
   label: "Fast Turbulent Displace",
   category: "ディストーション（軽量）",
+  previewBakeRequired: false,
   params: [
     { key: "amount", label: "Amount", kind: "scalar", default: 50, animatable: true, min: 0, max: 500, step: 0.1 },
     { key: "size", label: "Size", kind: "scalar", default: 100, animatable: true, min: 1, max: 2000, step: 0.1 },

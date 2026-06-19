@@ -14,6 +14,7 @@ import {
   RealtimeDetector,
   shouldForceNonRealtime,
 } from "./realtimeDetector";
+import { compNeedsAutoPreviewCache } from "./previewCompAnalysis";
 import type { PreviewCacheSettings } from "./previewCacheSettings";
 import type { WorkArea } from "./workAreaStorage";
 
@@ -21,8 +22,8 @@ export type PreviewCacheDisplayStatus =
   | { kind: "idle" }
   | { kind: "off" }
   | { kind: "realtime" }
-  | { kind: "cached"; hitRate: number }
-  | { kind: "building"; progress: number };
+  | { kind: "cached"; hitRate: number; autoCache?: boolean }
+  | { kind: "building"; progress: number; autoCache?: boolean };
 
 export interface RamPreviewConfig {
   project: Project;
@@ -47,6 +48,8 @@ export class RamPreviewController {
   private playbackAttempts = 0;
   private blobUrlCache = new Map<string, string>();
   private readonly frameQueue = new FrameCacheQueue();
+  /** §28.9 session 限定 Auto Preview Cache。 */
+  private autoCacheSession = false;
   onFrameCached?: () => void;
 
   constructor(
@@ -60,6 +63,9 @@ export class RamPreviewController {
   updateSettings(settings: PreviewCacheSettings): void {
     const wasEnabled = this.settings.enabled;
     this.settings = settings;
+    if (!settings.enabled) {
+      this.autoCacheSession = false;
+    }
     if (this.store instanceof DefaultTieredCacheStore) {
       this.store.setMaxRamBytes(settings.maxRamMB * 1024 * 1024);
       this.store.setDiskEnabled(settings.enableDiskCache);
@@ -126,6 +132,15 @@ export class RamPreviewController {
     /* handled via updateConfig */
   }
 
+  /** §28.9 — 重い comp 再生開始時に session 限定で Caching を有効化。 */
+  setAutoCacheSession(active: boolean): void {
+    this.autoCacheSession = active;
+  }
+
+  isAutoCacheSession(): boolean {
+    return this.autoCacheSession;
+  }
+
   recordLiveRenderMs(ms: number): void {
     this.detector.recordRenderMs(ms);
   }
@@ -144,6 +159,9 @@ export class RamPreviewController {
 
   shouldPreferCacheDisplay(): boolean {
     if (!this.settings.enabled || !this.config) return false;
+    if (this.autoCacheSession && compNeedsAutoPreviewCache(this.config.comp)) {
+      return true;
+    }
     if (shouldForceNonRealtime(this.config.quality, this.config.proxy, this.config.comp)) {
       return true;
     }
@@ -200,17 +218,18 @@ export class RamPreviewController {
   }
 
   getDisplayStatus(isPlaying: boolean): PreviewCacheDisplayStatus {
+    const autoCache = this.autoCacheSession;
     if (!this.settings.enabled) return { kind: "off" };
     if (!this.config) return { kind: "idle" };
     if (this.buildTotal > 0 && this.buildProgress < this.buildTotal) {
-      return { kind: "building", progress: this.buildProgress / this.buildTotal };
+      return { kind: "building", progress: this.buildProgress / this.buildTotal, autoCache };
     }
     if (this.frameQueue.pendingCount() > 0 && !this.isRealtimeCapable()) {
       const denom = Math.max(1, this.buildTotal || this.frameQueue.pendingCount());
-      return { kind: "building", progress: this.buildProgress / denom };
+      return { kind: "building", progress: this.buildProgress / denom, autoCache };
     }
     if (isPlaying && this.shouldUseCacheForPlayback() && this.playbackAttempts > 0) {
-      return { kind: "cached", hitRate: this.playbackHits / this.playbackAttempts };
+      return { kind: "cached", hitRate: this.playbackHits / this.playbackAttempts, autoCache };
     }
     if (this.isRealtimeCapable() && this.detector.hasEnoughSamples()) {
       return { kind: "realtime" };
