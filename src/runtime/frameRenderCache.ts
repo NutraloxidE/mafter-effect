@@ -1,9 +1,9 @@
 import type { Frame, ObjectId } from "../core/schema";
+import type { RasterBuffer } from "./plugin";
 
-/** §26.4.2 将来拡張用。MVP は get() が常に miss を返す no-op 実装。 */
+/** §26.4.2 / §28.8 レイヤー raster キャッシュ。 */
 export interface CachedFrame {
-  /** キャッシュされた描画結果（将来: canvas / bitmap）。 */
-  data: unknown;
+  data: RasterBuffer;
 }
 
 export interface FrameRenderCacheKey {
@@ -13,20 +13,20 @@ export interface FrameRenderCacheKey {
 }
 
 export interface FrameRenderCache {
-  get(key: FrameRenderCacheKey): CachedFrame | null;
-  put(key: FrameRenderCacheKey, value: CachedFrame): void;
-  invalidate(objectId: ObjectId): void;
+  get(key: FrameRenderCacheKey): Promise<CachedFrame | null>;
+  put(key: FrameRenderCacheKey, value: CachedFrame): Promise<void>;
+  invalidate(objectId: ObjectId): Promise<void>;
 }
 
 /** no-op 実装。常に miss。 */
 export class NoOpFrameRenderCache implements FrameRenderCache {
-  get(_key: FrameRenderCacheKey): CachedFrame | null {
+  async get(_key: FrameRenderCacheKey): Promise<CachedFrame | null> {
     return null;
   }
-  put(_key: FrameRenderCacheKey, _value: CachedFrame): void {
+  async put(_key: FrameRenderCacheKey, _value: CachedFrame): Promise<void> {
     /* no-op */
   }
-  invalidate(_objectId: ObjectId): void {
+  async invalidate(_objectId: ObjectId): Promise<void> {
     /* no-op */
   }
 }

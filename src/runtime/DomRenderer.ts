@@ -1,6 +1,7 @@
 import type { CompositionMeta, Frame, HtmlComposition, RGBA, TimelineComposition } from "../core/schema";
 import type { FontOutlineCache } from "./fontOutlineCache";
 import type { ImageAssetCache } from "./imageAssetCache";
+import type { FrameRenderCache } from "./frameRenderCache";
 import type { HtmlCompPlayer } from "./htmlComp";
 import { globalPluginRegistry } from "./pluginRegistry";
 import type { Renderer } from "./renderer";
@@ -10,6 +11,7 @@ import { resolve } from "./resolve";
 import { applyTextEl, rgbaCss } from "./textRender";
 import { captureElementToCanvas } from "./rasterCapture";
 import { canvasToRasterBuffer, rasterBufferToCanvas } from "./pixelSort";
+import { processRasterChainAsync } from "./rasterProcessAsync";
 import type { EffectFilter } from "./plugin";
 
 // §8 DomRenderer — フラット matrix3d レンダラ。
@@ -62,6 +64,7 @@ export class DomRenderer implements Renderer {
   private textQuality: "draft" | "precise" = "precise";
   private fontCache: FontOutlineCache | null = null;
   private imageCache: ImageAssetCache | null = null;
+  private frameRenderCache: FrameRenderCache | null = null;
 
   setTextQuality(mode: "draft" | "precise"): void {
     this.textQuality = mode;
@@ -73,6 +76,10 @@ export class DomRenderer implements Renderer {
 
   setImageCache(cache: ImageAssetCache | null): void {
     this.imageCache = cache;
+  }
+
+  setFrameRenderCache(cache: FrameRenderCache | null): void {
+    this.frameRenderCache = cache;
   }
 
   setHtmlPlayer(player: HtmlCompPlayer | null): void {
@@ -215,7 +222,10 @@ export class DomRenderer implements Renderer {
     // props を in-place で更新（<img> src は変化時のみ → 再読込しない）
     obj.components.forEach((c, i) => {
       const el = entry.children[i];
-      if (el) updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache);
+      if (el) {
+        const hostInPoint = (c.props["_hostInPoint"] as number | undefined) ?? 0;
+        updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, frame, hostInPoint, this.currentComp?.fps ?? 30);
+      }
 
       // Plugin component: registry から ComponentDef.render を呼ぶ（組み込み型は未登録でスキップ）
       if (el) {
@@ -525,6 +535,16 @@ export class DomRenderer implements Renderer {
 
     entry.rasterInFlightKey = rasterRunKey;
     try {
+      const propsHash = entry.fxSig;
+      const cacheKey = { objectId: obj.id, frame: ctx.frame, propsHash };
+      const cached = await this.frameRenderCache?.get(cacheKey);
+      if (cached?.data) {
+        this.presentRasterCanvas(entry, cached.data, w, h);
+        entry.rasterCompletedKey = rasterRunKey;
+        this.finalizeRasterPresentation(entry, obj, postFilterStr, postSvgFilters);
+        return;
+      }
+
       const captureEl = document.createElement("div");
       captureEl.style.cssText = `position:relative;width:${w}px;height:${h}px;overflow:hidden;`;
       captureEl.style.filter = entry.div.style.filter;
@@ -540,10 +560,7 @@ export class DomRenderer implements Renderer {
       const canvas = await captureElementToCanvas(captureEl, w, h, "transparent");
       let buffer = canvasToRasterBuffer(canvas);
 
-      for (const { effect, def } of rasterChain) {
-        if (!def.processPixels) continue;
-        buffer = def.processPixels(buffer, effect.props, ctx);
-      }
+      buffer = await processRasterChainAsync(buffer, rasterChain, ctx);
 
       if (entry.rasterRunKey !== rasterRunKey) return;
       if (!this.bufferHasVisiblePixels(buffer)) {
@@ -552,6 +569,7 @@ export class DomRenderer implements Renderer {
 
       this.presentRasterCanvas(entry, buffer, w, h);
       entry.rasterCompletedKey = rasterRunKey;
+      void this.frameRenderCache?.put(cacheKey, { data: buffer });
       this.finalizeRasterPresentation(entry, obj, postFilterStr, postSvgFilters);
     } catch {
       if (entry.rasterCompletedKey !== rasterRunKey) {
@@ -600,14 +618,22 @@ export class DomRenderer implements Renderer {
     entry.div.style.visibility = "hidden";
 
     try {
+      const propsHash = entry.fxSig;
+      const cacheKey = { objectId: obj.id, frame: ctx.frame, propsHash };
+      const cached = await this.frameRenderCache?.get(cacheKey);
+      if (cached?.data) {
+        restoreCaptureVisibility();
+        this.presentRasterCanvas(entry, cached.data, w, h);
+        entry.rasterCompletedKey = rasterRunKey;
+        this.finalizeRasterPresentation(entry, obj, postFilterStr, postSvgFilters);
+        return;
+      }
+
       const canvas = await captureElementToCanvas(this.root, w, h, "transparent");
       restoreCaptureVisibility();
 
       let buffer = canvasToRasterBuffer(canvas);
-      for (const { effect, def } of rasterChain) {
-        if (!def.processPixels) continue;
-        buffer = def.processPixels(buffer, effect.props, ctx);
-      }
+      buffer = await processRasterChainAsync(buffer, rasterChain, ctx);
 
       if (entry.rasterRunKey !== rasterRunKey) return;
       if (!this.bufferHasVisiblePixels(buffer)) {
@@ -616,6 +642,7 @@ export class DomRenderer implements Renderer {
 
       this.presentRasterCanvas(entry, buffer, w, h);
       entry.rasterCompletedKey = rasterRunKey;
+      void this.frameRenderCache?.put(cacheKey, { data: buffer });
       this.finalizeRasterPresentation(entry, obj, postFilterStr, postSvgFilters);
     } catch {
       restoreCaptureVisibility();
@@ -675,7 +702,8 @@ export class DomRenderer implements Renderer {
           continue;
         }
         const el = createComponentEl(c.type);
-        updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache);
+        const hostInPoint = (c.props["_hostInPoint"] as number | undefined) ?? 0;
+        updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, childFrame, hostInPoint, childComp.fps);
         div.appendChild(el);
       }
       container.appendChild(div);
@@ -690,6 +718,9 @@ function updateComponentEl(
   textQuality: "draft" | "precise" = "draft",
   fontCache: FontOutlineCache | null = null,
   imageCache: ImageAssetCache | null = null,
+  hostFrame = 0,
+  hostInPoint = 0,
+  fps = 30,
 ): void {
   switch (type) {
     case "solid": {
@@ -731,6 +762,32 @@ function updateComponentEl(
       }
       break;
     }
+    case "video": {
+      const video = el as HTMLVideoElement;
+      const assetId = props["asset"] as string | undefined;
+      const src = assetId ? (imageCache?.getUrl(assetId) ?? "") : "";
+      if (video.getAttribute("src") !== src) {
+        video.src = src;
+        video.muted = true;
+        video.playsInline = true;
+        video.preload = "auto";
+      }
+      const trimStart = (props["trimStart"] as number | undefined) ?? 0;
+      const t = Math.max(0, (hostFrame - hostInPoint) / fps + trimStart / fps);
+      if (Number.isFinite(t) && Math.abs(video.currentTime - t) > 0.05) {
+        try {
+          video.currentTime = t;
+        } catch {
+          /* seek best-effort */
+        }
+      }
+      const size = assetId ? imageCache?.getSize(assetId) : null;
+      if (size) {
+        video.style.width = `${size.width}px`;
+        video.style.height = `${size.height}px`;
+      }
+      break;
+    }
   }
 }
 
@@ -743,6 +800,11 @@ function createComponentEl(type: string): HTMLElement {
     const img = document.createElement("img");
     img.style.cssText = "position:absolute;top:0;left:0;pointer-events:none";
     return img;
+  }
+  if (type === "video") {
+    const video = document.createElement("video");
+    video.style.cssText = "position:absolute;top:0;left:0;pointer-events:none";
+    return video;
   }
   const el = document.createElement("div");
   el.style.cssText = "position:absolute;top:0;left:0;pointer-events:none";

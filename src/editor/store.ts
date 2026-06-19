@@ -42,6 +42,7 @@ import {
   type UndoRedoStack,
 } from "./commands";
 import { buildGlyphDecomposeObjects, createCanvasMeasureContext } from "./glyphDecompose";
+import { loadWorkArea, saveWorkArea } from "./workAreaStorage";
 
 /** スクラブ/カラーピッカー中に Preview へだけ反映する一時 patch。 */
 export interface PreviewOverride {
@@ -116,6 +117,12 @@ export interface EditorStore {
   previewOverride: PreviewOverride | null;
   setPreviewOverride: (override: PreviewOverride | null) => void;
   clearPreviewOverride: () => void;
+
+  /** §28.8 ワークエリア変更 tick（localStorage 永続・project.json 非汚染）。 */
+  workAreaRevision: number;
+  setWorkArea: (inPoint: Frame, outPoint: Frame) => void;
+  setWorkAreaIn: () => void;
+  setWorkAreaOut: () => void;
 
   // FS 操作
   newProject: () => void;
@@ -209,6 +216,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   undoStack: emptyStack(),
   projectRevision: 0,
   previewOverride: null,
+  workAreaRevision: 0,
 
   newProject: () => {
     const p = createProject({ name: "Untitled" });
@@ -304,6 +312,30 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
   setPreviewOverride: (override) => set({ previewOverride: override }),
   clearPreviewOverride: () => set({ previewOverride: null }),
+
+  setWorkArea: (inPoint, outPoint) => {
+    const comp = currentTimelineComp(get().project, get().currentCompId);
+    if (!comp) return;
+    const duration = comp.duration;
+    const inClamped = Math.max(0, Math.min(duration - 1, inPoint));
+    const outClamped = Math.max(inClamped + 1, Math.min(duration, outPoint));
+    saveWorkArea(comp.id, { inPoint: inClamped, outPoint: outClamped });
+    set({ workAreaRevision: get().workAreaRevision + 1 });
+  },
+
+  setWorkAreaIn: () => {
+    const comp = currentTimelineComp(get().project, get().currentCompId);
+    if (!comp) return;
+    const area = loadWorkArea(comp.id, comp.duration);
+    get().setWorkArea(get().currentFrame, area.outPoint);
+  },
+
+  setWorkAreaOut: () => {
+    const comp = currentTimelineComp(get().project, get().currentCompId);
+    if (!comp) return;
+    const area = loadWorkArea(comp.id, comp.duration);
+    get().setWorkArea(area.inPoint, get().currentFrame + 1);
+  },
 
   decomposeGlyphs: (objectId) => {
     const before = get().project;

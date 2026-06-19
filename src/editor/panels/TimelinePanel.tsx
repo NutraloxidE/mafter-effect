@@ -29,6 +29,8 @@ import type {
 } from "../../core/schema";
 import { sampleAny, sampleScalar, sampleVec3 } from "../../runtime/interpolate";
 import { globalPluginRegistry } from "../../runtime/pluginRegistry";
+import { previewCacheService } from "../previewCacheService";
+import { loadWorkArea } from "../workAreaStorage";
 
 // §21.1 SMPTE タイムコード（non-drop）。frame は正準・整数（INV-5）、これは派生表示のみ。
 function framesToTimecode(frame: Frame, fps: number): string {
@@ -119,10 +121,20 @@ export function TimelinePanel() {
   // P0-2: 再生制御はストアで共有
   const isPlaying = useEditorStore((s) => s.isPlaying);
   const togglePlay = useEditorStore((s) => s.togglePlay);
+  const workAreaRevision = useEditorStore((s) => s.workAreaRevision);
 
   const comp = currentTimelineComp(project, compId);
   const duration = comp?.duration ?? 150;
   const fps = comp?.fps ?? 30;
+  const workArea = useMemo(
+    () => (comp ? loadWorkArea(comp.id, comp.duration) : { inPoint: 0, outPoint: duration }),
+    [comp, duration, workAreaRevision],
+  );
+  const [cachedFrames, setCachedFrames] = useState<Set<number>>(() => new Set());
+
+  useEffect(() => {
+    return previewCacheService.subscribe(setCachedFrames);
+  }, [compId, workAreaRevision]);
   // P1-5: タイムラインは zOrder 降順で表示（最前面=最上段, AE 準拠）。配列順ではなく描画順に並べる。
   const objects = [...(comp?.objects ?? [])].sort((a, b) => b.zOrder - a.zOrder);
 
@@ -751,10 +763,34 @@ export function TimelinePanel() {
       if (e.key === "ArrowRight") { e.preventDefault(); setStoreFrame(Math.min(compDuration, currentFrame + (e.shiftKey ? 10 : 1))); return; }
       if (e.key === "Home") { e.preventDefault(); setStoreFrame(0); return; }
       if (e.key === "End")  { e.preventDefault(); setStoreFrame(compDuration); return; }
+
+      const bareLetter = !e.ctrlKey && !e.metaKey && !e.altKey;
+
+      // §28.8 ワークエリア（AE: B/N, [/]）
+      if (bareLetter && (e.code === "KeyB" || e.key === "b" || e.key === "B")) {
+        e.preventDefault();
+        useEditorStore.getState().setWorkAreaIn();
+        return;
+      }
+      if (bareLetter && (e.code === "KeyN" || e.key === "n" || e.key === "N")) {
+        e.preventDefault();
+        useEditorStore.getState().setWorkAreaOut();
+        return;
+      }
+      if (e.key === "[") {
+        e.preventDefault();
+        if (comp) setStoreFrame(loadWorkArea(comp.id, comp.duration).inPoint);
+        return;
+      }
+      if (e.key === "]") {
+        e.preventDefault();
+        if (comp) setStoreFrame(Math.max(0, loadWorkArea(comp.id, comp.duration).outPoint - 1));
+        return;
+      }
+
       // J/K: 前後 KF ジャンプ（AE 準拠）。
       // e.code（物理キー）でも判定 → IME 入力中（e.key="Process"）やレイアウト差でも効く。
       // Ctrl/Cmd/Alt 併用時はコピペ等と衝突しないよう無視。
-      const bareLetter = !e.ctrlKey && !e.metaKey && !e.altKey;
       if (bareLetter && (e.code === "KeyJ" || e.key === "j" || e.key === "J")) {
         e.preventDefault();
         const frames = collectKfFrames(compObjects, selectedObjectIds);
@@ -944,6 +980,8 @@ export function TimelinePanel() {
             style={{ position: "relative", flex: 1, height: 22, cursor: "pointer", overflow: "hidden" }}
             onMouseDown={(e) => { e.stopPropagation(); startScrub(e); }}
           >
+            <WorkAreaBar workArea={workArea} duration={duration} frameToPercent={frameToPercent} />
+            <PreviewCacheBar cachedFrames={cachedFrames} viewRange={viewRange} duration={duration} frameToPercent={frameToPercent} />
             <Ruler viewRange={viewRange} duration={duration} fps={fps} frameToPercent={frameToPercent} />
             <Playhead frame={frame} frameToPercent={frameToPercent} />
           </div>
@@ -1216,6 +1254,88 @@ const scrollArrowStyle: React.CSSProperties = {
   lineHeight: 1,
   flexShrink: 0,
 };
+
+function WorkAreaBar({
+  workArea,
+  frameToPercent,
+}: {
+  workArea: { inPoint: number; outPoint: number };
+  duration: number;
+  frameToPercent: (f: number) => number;
+}) {
+  const left = frameToPercent(workArea.inPoint);
+  const right = frameToPercent(workArea.outPoint);
+  const width = Math.max(0, right - left);
+  if (width <= 0) return null;
+  return (
+    <div
+      style={{
+        position: "absolute",
+        left: `${left}%`,
+        width: `${width}%`,
+        top: 0,
+        height: "100%",
+        background: "rgba(120,120,120,0.18)",
+        borderLeft: "2px solid #888",
+        borderRight: "2px solid #888",
+        pointerEvents: "none",
+        zIndex: 1,
+      }}
+    />
+  );
+}
+
+function PreviewCacheBar({
+  cachedFrames,
+  viewRange,
+  frameToPercent,
+}: {
+  cachedFrames: Set<number>;
+  viewRange: { start: number; end: number };
+  duration: number;
+  frameToPercent: (f: number) => number;
+}) {
+  if (cachedFrames.size === 0) return null;
+  const segments: { left: number; width: number }[] = [];
+  const sorted = [...cachedFrames].filter((f) => f >= viewRange.start && f < viewRange.end).sort((a, b) => a - b);
+  let runStart: number | null = null;
+  let prev = -2;
+  for (const f of sorted) {
+    if (runStart === null || f !== prev + 1) {
+      if (runStart !== null) {
+        const left = frameToPercent(runStart);
+        const right = frameToPercent(prev + 1);
+        segments.push({ left, width: Math.max(0.2, right - left) });
+      }
+      runStart = f;
+    }
+    prev = f;
+  }
+  if (runStart !== null) {
+    const left = frameToPercent(runStart);
+    const right = frameToPercent(prev + 1);
+    segments.push({ left, width: Math.max(0.2, right - left) });
+  }
+  return (
+    <>
+      {segments.map((seg, i) => (
+        <div
+          key={i}
+          style={{
+            position: "absolute",
+            left: `${seg.left}%`,
+            width: `${seg.width}%`,
+            bottom: 0,
+            height: 4,
+            background: "#3a8f3a",
+            pointerEvents: "none",
+            zIndex: 2,
+          }}
+        />
+      ))}
+    </>
+  );
+}
 
 function Ruler({ viewRange, duration, fps, frameToPercent }: {
   viewRange: { start: number; end: number };

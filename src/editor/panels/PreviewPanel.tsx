@@ -23,6 +23,16 @@ import {
   saveViewerSettings,
   type PreviewViewerSettings,
 } from "../previewViewerStorage";
+import {
+  loadPreviewCacheSettings,
+  savePreviewCacheSettings,
+  type PreviewCacheSettings,
+} from "../previewCacheSettings";
+import {
+  type PreviewCacheDisplayStatus,
+} from "../ramPreview";
+import { previewCacheService } from "../previewCacheService";
+import { loadWorkArea } from "../workAreaStorage";
 import { currentTimelineComp, selectedObjects, useEditorStore } from "../store";
 import type { HtmlComposition, TimelineComposition, Transform } from "../../core/schema";
 import { PreviewViewerOverlay } from "./PreviewViewerOverlay";
@@ -68,6 +78,7 @@ export function PreviewPanel() {
   const setPreviewQuality = useEditorStore((s) => s.setPreviewQuality);
   const projectRevision = useEditorStore((s) => s.projectRevision);
   const previewOverride = useEditorStore((s) => s.previewOverride);
+  const workAreaRevision = useEditorStore((s) => s.workAreaRevision);
 
   const timelineComps = (project?.compositions ?? []).filter((c) => c.kind === "timeline");
 
@@ -88,10 +99,14 @@ export function PreviewPanel() {
   const lastTimeRef = useRef<number | null>(null);
   const frameRef = useRef(frame);
   const evaluatorRef = useRef<ExpressionEvaluator | undefined>(undefined);
+  const cacheOverlayRef = useRef<HTMLImageElement>(null);
 
   const [viewerSettings, setViewerSettings] = useState<PreviewViewerSettings>(() =>
     loadViewerSettings(compId),
   );
+  const [cacheSettings, setCacheSettings] = useState<PreviewCacheSettings>(() => loadPreviewCacheSettings());
+  const [cacheStatus, setCacheStatus] = useState<PreviewCacheDisplayStatus>({ kind: "idle" });
+  const [useCachedFrame, setUseCachedFrame] = useState(false);
   const [viewportSize, setViewportSize] = useState({ w: 0, h: 0 });
   const [draftTransform, setDraftTransform] = useState<Transform | null>(null);
   const [spaceHeld, setSpaceHeld] = useState(false);
@@ -159,6 +174,47 @@ export function PreviewPanel() {
   }, [comp, effectiveZoom, viewportSize, viewerSettings.zoomMode, viewerSettings.viewPan]);
 
   const proxyScale = resolutionProxyScale(viewerSettings.resolutionProxy);
+  const effectiveTextQuality =
+    previewQualityEditing ? "draft" : viewerSettings.previewQuality;
+
+  const workArea = useMemo(
+    () => (comp ? loadWorkArea(comp.id, comp.duration) : { inPoint: 0, outPoint: 1 }),
+    [comp, workAreaRevision],
+  );
+
+  // §28 RAM Preview（共有サービス）
+  useEffect(() => {
+    previewCacheService.init(_previewFs, cacheSettings);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    previewCacheService.updateSettings(cacheSettings);
+  }, [cacheSettings]);
+
+  useEffect(() => {
+    if (!project || !comp) {
+      previewCacheService.updateConfig(null);
+      return;
+    }
+    previewCacheService.updateConfig({
+      project,
+      comp,
+      projectRevision,
+      quality: effectiveTextQuality,
+      proxy: viewerSettings.resolutionProxy,
+      proxyScale,
+      workArea,
+    });
+  }, [project, comp, projectRevision, effectiveTextQuality, viewerSettings.resolutionProxy, proxyScale, workArea]);
+
+  useEffect(() => {
+    const tick = () => {
+      setCacheStatus(previewCacheService.getController()?.getDisplayStatus(isPlaying) ?? { kind: "idle" });
+    };
+    tick();
+    const id = window.setInterval(tick, 200);
+    return () => window.clearInterval(id);
+  }, [isPlaying, frame, projectRevision, renderTick]);
 
   // mount/remount renderer when comp changes
   useEffect(() => {
@@ -168,7 +224,8 @@ export function PreviewPanel() {
     r.setHtmlPlayer(_htmlPlayer);
     r.setFontCache(fontCacheRef.current);
     r.setImageCache(imageCacheRef.current);
-    r.setTextQuality(textQualityRef.current); // 生成時に現在の品質を反映（effect は値不変時 re-run しない）
+    r.setFrameRenderCache(previewCacheService.getFrameRenderCache());
+    r.setTextQuality(textQualityRef.current);
     r.mount(el, comp);
     rendererRef.current = r;
     return () => {
@@ -208,9 +265,6 @@ export function PreviewPanel() {
     ]).then(() => setRenderTick((t) => t + 1));
   }, [project]);
 
-  const effectiveTextQuality =
-    previewQualityEditing ? "draft" : viewerSettings.previewQuality;
-
   textQualityRef.current = effectiveTextQuality;
   useEffect(() => {
     rendererRef.current?.setTextQuality(effectiveTextQuality);
@@ -227,14 +281,61 @@ export function PreviewPanel() {
     setRenderTick((t) => t + 1);
   }, [previewOverride]);
 
-  // render on frame / project / draft transform
+  // render on frame / project / draft transform (§28: scrub=live 初回、表示後キャッシュ・再訪問は cache 可)
   useEffect(() => {
     if (!renderComp || !rendererRef.current) return;
-    rendererRef.current.renderFrame(
-      resolve(renderComp, frame, { expressions: evaluatorRef.current }),
-      frame,
-    );
-  }, [renderComp, frame, renderTick, projectRevision]);
+
+    const ram = previewCacheService.getController();
+    const editingLive = previewOverride !== null || draftTransform !== null;
+    const preferCache = !editingLive && (ram?.shouldPreferCacheDisplay() ?? false);
+
+    const afterLiveRender = () => {
+      if (editingLive) return;
+      if (isPlaying) ram?.cachePlaybackFrame(frame);
+      else ram?.cacheScrubbedFrame(frame);
+      if (!isPlaying) ram?.startBackgroundBuildIfNeeded();
+    };
+
+    if (!preferCache) {
+      setUseCachedFrame(false);
+      const t0 = performance.now();
+      rendererRef.current.renderFrame(
+        resolve(renderComp, frame, { expressions: evaluatorRef.current }),
+        frame,
+      );
+      void rendererRef.current.flushRasterEffects().then(() => {
+        ram?.recordLiveRenderMs(performance.now() - t0);
+        afterLiveRender();
+      });
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      const url = await ram?.getCachedBlobUrl(frame);
+      if (cancelled) return;
+      if (url) {
+        if (cacheOverlayRef.current) cacheOverlayRef.current.src = url;
+        setUseCachedFrame(true);
+        if (isPlaying) ram?.notePlaybackFrame(true);
+        return;
+      }
+      setUseCachedFrame(false);
+      if (isPlaying) ram?.notePlaybackFrame(false);
+      const t0 = performance.now();
+      rendererRef.current!.renderFrame(
+        resolve(renderComp, frame, { expressions: evaluatorRef.current }),
+        frame,
+      );
+      await rendererRef.current!.flushRasterEffects();
+      ram?.recordLiveRenderMs(performance.now() - t0);
+      afterLiveRender();
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [renderComp, frame, renderTick, projectRevision, isPlaying, previewOverride, draftTransform]);
 
   // §25.2 解像度プロキシ: DomRenderer のラスタ解像度のみ変更（INV-2 scene 値不変）
   useEffect(() => {
@@ -271,11 +372,12 @@ export function PreviewPanel() {
     };
   }, []);
 
-  // §25.6 ループ再生
+  // §25.6 / §28.8 ループ再生（ワークエリア内）
   useEffect(() => {
     if (!isPlaying || !comp) return;
     const fps = comp.fps;
-    const duration = comp.duration;
+    const loopStart = workArea.inPoint;
+    const loopEnd = workArea.outPoint;
     const msPerFrame = 1000 / fps;
     const loop = viewerSettings.loop;
 
@@ -290,12 +392,12 @@ export function PreviewPanel() {
       if (framesToAdvance > 0) {
         lastTimeRef.current = now - (elapsed % msPerFrame);
         const next = frameRef.current + framesToAdvance;
-        if (next >= duration) {
+        if (next >= loopEnd) {
           if (loop) {
-            setFrame(next % duration);
+            setFrame(loopStart + ((next - loopStart) % Math.max(1, loopEnd - loopStart)));
           } else {
             setPlaying(false);
-            setFrame(0);
+            setFrame(loopStart);
           }
         } else {
           setFrame(next);
@@ -310,7 +412,7 @@ export function PreviewPanel() {
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
       lastTimeRef.current = null;
     };
-  }, [isPlaying, comp, setFrame, setPlaying, viewerSettings.loop]);
+  }, [isPlaying, comp, setFrame, setPlaying, viewerSettings.loop, workArea]);
 
   // §25.1 Ctrl+ホイールズーム / スペース+パン
   useEffect(() => {
@@ -537,6 +639,50 @@ export function PreviewPanel() {
 
         <OverlayToggles settings={viewerSettings} onChange={patchSettings} />
 
+        <CacheStatusBadge status={cacheStatus} />
+
+        <button
+          onClick={() => {
+            const next = { ...cacheSettings, enabled: !cacheSettings.enabled };
+            setCacheSettings(next);
+            savePreviewCacheSettings(next);
+            previewCacheService.updateSettings(next);
+          }}
+          style={{
+            ...btnStyle,
+            fontSize: 10,
+            background: cacheSettings.enabled ? "#2a3a2a" : "#333",
+          }}
+          title="§28 RAM Preview キャッシュ"
+        >
+          Cache
+        </button>
+        <button
+          onClick={() => void previewCacheService.clearAll()}
+          style={{ ...btnStyle, fontSize: 10 }}
+          title="プレビューキャッシュを全削除"
+        >
+          Clear
+        </button>
+        <label style={{ fontSize: 10, color: "#888", display: "inline-flex", alignItems: "center", gap: 4 }}>
+          RAM
+          <input
+            type="number"
+            min={64}
+            max={4096}
+            value={cacheSettings.maxRamMB}
+            onChange={(e) => {
+              const maxRamMB = Math.max(64, Math.min(4096, Number(e.target.value) || 256));
+              const next = { ...cacheSettings, maxRamMB };
+              setCacheSettings(next);
+              savePreviewCacheSettings(next);
+              previewCacheService.updateSettings(next);
+            }}
+            style={{ width: 48, fontSize: 10, background: "#222", color: "#ccc", border: "1px solid #555" }}
+          />
+          MB
+        </label>
+
         {comp && (
           <span style={{ fontSize: 10, color: "#666", marginLeft: "auto" }}>
             <span style={{ color: "#9bd", marginRight: 6 }}>{comp.name}</span>
@@ -585,7 +731,28 @@ export function PreviewPanel() {
                 overflow: "hidden",
               }}
             >
-              <div ref={containerRef} style={{ position: "absolute", top: 0, left: 0 }} />
+              <div
+                ref={containerRef}
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  left: 0,
+                  visibility: useCachedFrame ? "hidden" : "visible",
+                }}
+              />
+              <img
+                ref={cacheOverlayRef}
+                alt=""
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  left: 0,
+                  width: "100%",
+                  height: "100%",
+                  display: useCachedFrame ? "block" : "none",
+                  pointerEvents: "none",
+                }}
+              />
               {project && (
                 <PreviewViewerOverlay
                   comp={comp}
@@ -661,3 +828,20 @@ const btnStyle: React.CSSProperties = {
   cursor: "pointer",
   fontSize: 12,
 };
+
+function CacheStatusBadge({ status }: { status: PreviewCacheDisplayStatus }) {
+  if (status.kind === "realtime") {
+    return <span style={{ fontSize: 10, color: "#6c6" }}>● Realtime</span>;
+  }
+  if (status.kind === "building") {
+    return (
+      <span style={{ fontSize: 10, color: "#cc6" }}>
+        ◐ Caching {Math.round(status.progress * 100)}%
+      </span>
+    );
+  }
+  if (status.kind === "cached") {
+    return <span style={{ fontSize: 10, color: "#6af" }}>▶ Cached</span>;
+  }
+  return null;
+}

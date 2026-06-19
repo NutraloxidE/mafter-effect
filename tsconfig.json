@@ -24,5 +24,6 @@
 
     "types": ["vitest/globals"]
   },
-  "include": ["src", "test"]
+  "include": ["src", "test"],
+  "exclude": ["src/fs/NodeCacheFs.ts"]
 }
