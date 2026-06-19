@@ -220,7 +220,7 @@ const ANGULAR_WIPE_EFFECT_DEF: EffectDef = {
 
 const PIXEL_SORTER_EFFECT_DEF: EffectDef = {
   type: "pixelSorter",
-  label: "Pixel Sorter",
+  label: "Pixel Sorter (WIP)",
   category: "スタイライズ",
   params: [
     { key: "sortingMode", label: "Sorting Mode", kind: "enum", default: "simple", animatable: false, options: ["simple", "highlights", "shadows", "random"] },
@@ -243,7 +243,7 @@ const PIXEL_SORTER_EFFECT_DEF: EffectDef = {
 
 const PIXEL_SORT_LITE_EFFECT_DEF: EffectDef = {
   type: "pixelSortLite",
-  label: "Light Pixel Sort",
+  label: "Light Pixel Sort (WIP)",
   category: "スタイライズ",
   params: [
     { key: "angle", label: "Angle", kind: "scalar", default: 90, animatable: true, step: 1 },
