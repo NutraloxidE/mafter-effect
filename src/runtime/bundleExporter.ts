@@ -1,0 +1,206 @@
+// §11.7 Folder bundle export — index.html + player.js + project/assets ZIP。
+
+import JSZip from "jszip";
+import { pluginDir, PROJECT_JSON } from "../core/paths";
+import { canonicalizeProject, serializeProject } from "../core/serialize";
+import type { ExportConfig, Project, TimelineComposition } from "../core/schema";
+import type { FileSystem } from "../fs/FileSystem";
+import { applyBundleBake } from "./bundleBake";
+import { collectBundleDependencies } from "./bundleCollect";
+import type { BundleManifest } from "./bundleTypes";
+import type { ProgressCallback } from "./exporter";
+
+export interface BundleExportResult {
+  blob: Blob;
+  format: "html-bundle";
+}
+
+function checkAbort(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+async function loadPlayerScript(): Promise<string> {
+  try {
+    const resp = await fetch("/player.js");
+    if (resp.ok) return await resp.text();
+  } catch {
+    /* fall through */
+  }
+  throw new Error(
+    "player.js not found. Run npm run build:player and ensure public/player.js exists.",
+  );
+}
+
+function buildIndexHtml(compName: string, manifestJson: string): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${escapeHtml(compName)}</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+    #mafter-stage { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
+  </style>
+</head>
+<body>
+  <div id="mafter-stage"></div>
+  <script type="application/json" id="mafter-bundle-manifest">${manifestJson}</script>
+  <script src="./player.js"></script>
+</body>
+</html>
+`;
+}
+
+async function collectTextAndBinary(
+  fs: FileSystem,
+  textPaths: Set<string>,
+  binaryPaths: Set<string>,
+  livePluginIds: Set<string>,
+): Promise<{ textFiles: Record<string, string>; binaries: Map<string, Uint8Array>; blobs: Record<string, string> }> {
+  const textFiles: Record<string, string> = {};
+  const binaries = new Map<string, Uint8Array>();
+  const blobs: Record<string, string> = {};
+
+  for (const path of textPaths) {
+    if (path === PROJECT_JSON) continue;
+    try {
+      if (await fs.exists(path)) {
+        textFiles[path] = await fs.readText(path);
+      }
+    } catch {
+      /* skip */
+    }
+  }
+
+  for (const pluginId of livePluginIds) {
+    const dir = pluginDir(pluginId);
+    try {
+      const files = await fs.list(dir);
+      for (const p of files) {
+        if (p.endsWith(".js") || p.endsWith(".json")) {
+          try {
+            textFiles[p] = await fs.readText(p);
+          } catch {
+            /* skip */
+          }
+        }
+      }
+    } catch {
+      /* skip */
+    }
+  }
+
+  for (const path of binaryPaths) {
+    try {
+      if (!(await fs.exists(path))) continue;
+      const data = await fs.read(path);
+      binaries.set(path, data);
+      if (path.includes("/font") || path.match(/\.(woff2?|ttf|otf)$/i)) {
+        blobs[path] = bytesToBase64(data);
+      }
+    } catch {
+      /* skip */
+    }
+  }
+
+  return { textFiles, binaries, blobs };
+}
+
+export async function exportBundle(
+  project: Project,
+  compId: string,
+  fs: FileSystem,
+  config: ExportConfig,
+  onProgress: ProgressCallback,
+  signal?: AbortSignal,
+): Promise<BundleExportResult> {
+  const comp = project.compositions.find((c) => c.id === compId);
+  if (!comp || comp.kind !== "timeline") {
+    throw new Error("Timeline composition not found: " + compId);
+  }
+  const tlComp = comp as TimelineComposition;
+
+  onProgress({ phase: "prepare", frame: 0, totalFrames: 1, message: "Collecting bundle dependencies…" });
+  checkAbort(signal);
+
+  const deps = collectBundleDependencies(project, compId);
+  let bundleProject = canonicalizeProject(project);
+
+  const bakeResult = await applyBundleBake(
+    bundleProject,
+    deps.timelineCompIds,
+    config,
+    fs,
+    onProgress,
+    signal,
+  );
+  bundleProject = bakeResult.project;
+
+  for (const [path] of bakeResult.binaryFiles) {
+    deps.binaryPaths.add(path);
+  }
+
+  const collected = await collectTextAndBinary(fs, deps.textPaths, deps.binaryPaths, deps.livePluginIds);
+
+  const manifest: BundleManifest = {
+    compId,
+    fps: config.fps,
+    range: config.range,
+    loop: config.bundleLoop !== false,
+    textRenderMode: config.textRenderMode ?? "precise",
+    assetBase: ".",
+    project: bundleProject,
+    textFiles: collected.textFiles,
+    blobs: collected.blobs,
+  };
+
+  const manifestJson = JSON.stringify(manifest).replace(/</g, "\\u003c");
+  const projectJson = serializeProject(bundleProject);
+  const playerJs = await loadPlayerScript();
+  const indexHtml = buildIndexHtml(tlComp.name, manifestJson);
+
+  onProgress({ phase: "pack", frame: 0, totalFrames: 1, message: "Packaging ZIP…" });
+  checkAbort(signal);
+
+  const zip = new JSZip();
+  const fixedDate = new Date(Date.UTC(2000, 0, 1, 0, 0, 0, 0));
+  zip.file("index.html", indexHtml, { date: fixedDate });
+  zip.file("player.js", playerJs, { date: fixedDate });
+  zip.file("project.json", projectJson, { date: fixedDate });
+  zip.file("bundle-manifest.json", JSON.stringify(manifest, null, 2) + "\n", { date: fixedDate });
+
+  for (const [path, data] of collected.binaries) {
+    zip.file(path, data, { date: fixedDate });
+  }
+  for (const [path, data] of bakeResult.binaryFiles) {
+    zip.file(path, data, { date: fixedDate });
+  }
+
+  const paths = Object.keys(zip.files).sort();
+  const blob = await zip.generateAsync({ type: "blob" });
+  onProgress({
+    phase: "done",
+    frame: paths.length,
+    totalFrames: paths.length,
+    message: `Bundle ready (${paths.length} files)`,
+  });
+
+  return { blob, format: "html-bundle" };
+}

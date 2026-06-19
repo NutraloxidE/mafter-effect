@@ -17,7 +17,7 @@ import { ModuleLoader } from "./moduleLoader";
 import { resolve, type ExpressionEvaluator } from "./resolve";
 import { captureElementToCanvas } from "./rasterCapture";
 
-export type ExportPhase = "prepare" | "render" | "encode" | "audio" | "done" | "error";
+export type ExportPhase = "prepare" | "render" | "encode" | "audio" | "bake" | "pack" | "done" | "error";
 
 export interface ExportProgress {
   phase: ExportPhase;

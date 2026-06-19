@@ -169,8 +169,10 @@ export interface ExportConfig {
   range: [Frame, Frame];
   fps: number;
   scale: number;
-  format: "mp4" | "webm" | "png-seq";
+  format: "mp4" | "webm" | "png-seq" | "html-bundle";
   alpha: boolean;
   /** §26.7 テキスト描画方式。未指定時 precise。 */
   textRenderMode?: "precise" | "draft";
+  /** §11.7 html-bundle のみ。true=ループ再生 / false=1回再生。未指定時 true。 */
+  bundleLoop?: boolean;
 }

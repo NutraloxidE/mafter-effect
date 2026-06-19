@@ -3,7 +3,10 @@
 import { useCallback, useRef, useState } from "react";
 import type { ExportConfig } from "../core/schema";
 import { IndexedDbFs } from "../fs/IndexedDbFs";
+import { exportBundle } from "../runtime/bundleExporter";
 import { diagnoseVideoSupport, exportComposition, type ExportProgress } from "../runtime/exporter";
+import { findBakeTargets } from "../runtime/bundleBake";
+import { collectBundleDependencies } from "../runtime/bundleCollect";
 import type { Project } from "../core/schema";
 
 interface Props {
@@ -25,6 +28,7 @@ export function ExportDialog({ project, compId, onClose }: Props) {
   const [scale, setScale] = useState(1);
   const [alpha, setAlpha] = useState(false);
   const [textRenderMode, setTextRenderMode] = useState<"precise" | "draft">("precise");
+  const [bundleLoop, setBundleLoop] = useState(true);
 
   const [progress, setProgress] = useState<ExportProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -39,6 +43,15 @@ export function ExportDialog({ project, compId, onClose }: Props) {
 
   const isExporting = progress !== null && progress.phase !== "done" && progress.phase !== "error";
 
+  const isHtmlBundle = format === "html-bundle";
+
+  const bakeTargetCount = tl && isHtmlBundle
+    ? findBakeTargets(
+        project,
+        collectBundleDependencies(project, compId).timelineCompIds,
+      ).length
+    : 0;
+
   const onExport = useCallback(async () => {
     if (!tl) return;
     setError(null);
@@ -52,9 +65,16 @@ export function ExportDialog({ project, compId, onClose }: Props) {
       format,
       alpha,
       textRenderMode,
+      bundleLoop: format === "html-bundle" ? bundleLoop : undefined,
     };
 
     try {
+      if (format === "html-bundle") {
+        const result = await exportBundle(project, compId, fs, cfg, setProgress, ctrl.signal);
+        const name = `${tl.name.replace(/\s+/g, "_")}_bundle.zip`;
+        triggerDownload(result.blob, name);
+        return;
+      }
       const result = await exportComposition(project, compId, fs, cfg, setProgress, ctrl.signal);
       const ext = result.format === "png-seq" ? "zip" : result.format;
       const name = `${tl.name.replace(/\s+/g, "_")}.${ext}`;
@@ -81,7 +101,7 @@ export function ExportDialog({ project, compId, onClose }: Props) {
     } finally {
       abortRef.current = null;
     }
-  }, [project, compId, tl, startFrame, endFrame, fps, scale, format, alpha, textRenderMode]);
+  }, [project, compId, tl, startFrame, endFrame, fps, scale, format, alpha, textRenderMode, bundleLoop]);
 
   const onCancel = () => {
     abortRef.current?.abort();
@@ -109,6 +129,7 @@ export function ExportDialog({ project, compId, onClose }: Props) {
               <option value="mp4">MP4 (H.264, WebCodecs)</option>
               <option value="webm">WebM (VP9, WebCodecs)</option>
               <option value="png-seq">PNG Sequence (ZIP)</option>
+              <option value="html-bundle">Static HTML (ZIP)</option>
             </select>
           </Row>
           <Row label="Range">
@@ -130,10 +151,22 @@ export function ExportDialog({ project, compId, onClose }: Props) {
               <option value={2}>2× ({tl.width * 2}×{tl.height * 2})</option>
             </select>
           </Row>
-          {(format === "webm" || format === "png-seq") && (
+          {(format === "webm" || format === "png-seq") && !isHtmlBundle && (
             <Row label="Alpha">
               <input type="checkbox" checked={alpha} onChange={(e) => setAlpha(e.target.checked)} />
               <span style={{ color: "#888", fontSize: 10, marginLeft: 4 }}>transparent bg</span>
+            </Row>
+          )}
+          {isHtmlBundle && (
+            <Row label="Playback">
+              <select
+                value={bundleLoop ? "loop" : "once"}
+                onChange={(e) => setBundleLoop(e.target.value === "loop")}
+                style={selectStyle}
+              >
+                <option value="loop">ループ</option>
+                <option value="once">1回のみ</option>
+              </select>
             </Row>
           )}
           <Row label="Text">
@@ -153,6 +186,18 @@ export function ExportDialog({ project, compId, onClose }: Props) {
           <div style={{ fontSize: 11, color: "#fc8", marginBottom: 10, background: "#2a2415", padding: "6px 8px", borderRadius: 3, lineHeight: 1.5 }}>
             ⚠ {format.toUpperCase()} はこの環境で書き出せません（PNG 連番 ZIP になります）。<br />
             {videoUnsupported}
+          </div>
+        )}
+
+        {isHtmlBundle && bakeTargetCount > 0 && (
+          <div style={{ fontSize: 11, color: "#8cf", marginBottom: 10, background: "#15202a", padding: "6px 8px", borderRadius: 3, lineHeight: 1.5 }}>
+            plugin / bake レイヤ {bakeTargetCount} 件を動画に焼き込みます（時間がかかります）。
+          </div>
+        )}
+
+        {isHtmlBundle && (
+          <div style={{ fontSize: 10, color: "#666", marginBottom: 10, lineHeight: 1.5 }}>
+            ZIP を解凍し index.html を開くとブラウザで再生されます（§11.7 Folder bundle）。
           </div>
         )}
 

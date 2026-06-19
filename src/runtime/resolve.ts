@@ -96,6 +96,7 @@ function resolverFor(comp: TimelineComposition, ctx: ResolveContext | undefined)
     }
     // comp type: DomRenderer が子フレームを計算できるよう層の inPoint を注入する。
     if (c.type === "comp") props["_inPoint"] = objInPoint;
+    props["_hostInPoint"] = objInPoint;
     const out: ResolvedComponent = { type: c.type, props };
     if (c.exportStrategy !== undefined) out.exportStrategy = c.exportStrategy;
     return out;

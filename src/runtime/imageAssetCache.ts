@@ -67,6 +67,18 @@ export class ImageAssetCache {
       }
     }
   }
+
+  /** §11.7 bundle player: 相対 URL で image / video を参照する。 */
+  registerProjectUrls(project: Project, urlForPath: (path: string) => string): void {
+    for (const asset of project.assets) {
+      if (asset.kind !== "image" && asset.kind !== "video") continue;
+      const url = urlForPath(asset.path);
+      const size = ImageAssetCache.sizeFromMeta(asset.meta) ?? { width: 100, height: 100 };
+      const entry = { url, size };
+      this.byPath.set(asset.path, entry);
+      this.byId.set(asset.id, entry);
+    }
+  }
 }
 
 export function mimeFromPath(path: string): string {
