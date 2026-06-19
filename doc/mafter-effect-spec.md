@@ -1695,3 +1695,83 @@ INV-1〜8 を保持。新規 INV は不要。
 4. 通常レイヤー effects が export（mp4/webm/png-seq）で preview と一致（INV-2）。
 5. 調整レイヤーが preview で背面（低 zOrder）レイヤーにのみ作用する。export 再現性は検証し、結果（一致 or 許容済み既知差）を progress に記録。
 6. typecheck / 既存テスト / build が緑。新規 INV テスト追加。
+
+---
+
+## §28 Preview Cache / RAM Preview（確定・Phase 1）
+
+AE の RAM Preview + Disk Cache に相当する**プレビュー専用**のフレームキャッシュ。export / bundle player / `resolve()` は参照しない（INV-2 の scene 解決値の正は不変）。
+
+### §28.1 目的・スコープ
+
+| 項目 | 内容 |
+|---|---|
+| 対象 | エディタ preview のコンポジション全体フレーム（ラスタ PNG） |
+| 非対象 | export 経路、bundle player、`project.json` / zip への混入 |
+| Phase 1 範囲 | comp 全尺 `[0, duration)`。ワークエリア連動は Phase 2（§21 バックログ P2-14 依存） |
+| §26.4.2 との関係 | `FrameRenderCache`（レイヤー単位）は別キー空間。将来同一 `TieredCacheStore`（L1/L2）を共有 |
+
+### §28.2 ティアードストレージ
+
+- **L1 メモリ**: LRU + 明示バイト計上。上限は `maxRamMB`（既定 256）。
+- **L2 ディスク（Web）**: 専用 IndexedDB `mafter-effect-preview-cache`（プロジェクト FS `mafter-effect-fs` とは別 DB・INV-4 非汚染）。
+- **L2 ディスク（将来デスクトップ）**: `cacheRootPath` 配下のファイル。同一 IF の `NodeCacheFs` で差し替え。
+- **退避**: L1 合計 > 上限 → LRU を L2 へ書き出し → L1 から削除。
+
+### §28.3 キャッシュキー（決定論・INV-1/5）
+
+```
+comp:{compId}:f{frame}:rev{projectRevision}:q{draft|precise}:proxy{full|half|quarter}:w{width}:h{height}
+```
+
+- `projectRevision`: store の編集カウンタ（undo/redo・KF 変更で自動無効化）。
+- 品質・解像度プロキシ・comp 寸変更で自然ミス。
+
+### §28.4 再生経路
+
+| 状況 | 経路 |
+|---|---|
+| スクラブ（再生位置バー移動） | **初回は live render**。表示完了後そのフレームをバックグラウンドでキャッシュ（緑バー反映）。リアルタイム不可時は再訪問でキャッシュ表示可 |
+| 編集ドラフト / `previewOverride` | **常に live render**（キャッシュ書き込みなし） |
+| 再生中・リアルタイム可能 | live render + UI に `Realtime` 表示。バックグラウンド build は起動しない |
+| 再生中・リアルタイム不可 | キャッシュヒット時はキャッシュ bitmap 表示。ミス時は live + バックグラウンド build |
+
+**リアルタイム判定**: 直近 live render 時間の中央値 < `(1000/fps) * 0.85`。加えて `precise` + raster effect 含有、または `resolutionProxy !== "full"` ではリアルタイム不可。
+
+### §28.5 設定（project.json 非汚染・§19.3）
+
+`localStorage`（将来 OS 設定）:
+
+```ts
+interface PreviewCacheSettings {
+  enabled: boolean;       // 既定 true
+  maxRamMB: number;         // 既定 256
+  enableDiskCache: boolean; // 既定 true
+  cacheRootPath?: string;   // 将来デスクトップのみ
+}
+```
+
+### §28.6 不変条件
+
+- INV-1〜8 を保持。キャッシュは描画高速化のみで scene 解決値・export 出力の正に影響しない。
+- キャッシュヒット表示はラスタ近似（§27 pixelSorter 既知差と同型の残差を許容）。スクラブ初回表示は live が正。
+- offscreen capture は exporter と共有の `compFrameCapture` 経路（INV-2 整合）。
+
+### §28.7 受け入れ条件（Phase 1）
+
+1. 軽量 comp（solid のみ・draft）で `Realtime` 表示。バックグラウンド build 非起動。
+2. 重い comp（raster effect 等）で `Caching` → 完了後キャッシュ再生がフレーム落ちしない。
+3. 編集後 `projectRevision` 変化で古いキャッシュ未使用。
+4. export 結果がキャッシュ導入前後で変わらない。
+
+### §28.8 Phase 2（確定）
+
+| 項目 | 内容 |
+|---|---|
+| タイムライン緑バー | キャッシュ済みフレームをルーラー上に緑表示（AE RAM Preview 相当） |
+| ワークエリア | comp ごと localStorage（§19.3 非汚染）。`B`/`N` で in/out 設定、`[`/`]` でジャンプ。RAM build はワークエリア内のみ |
+| `FrameRenderCache` | `TieredCacheStore` 共有・レイヤー raster キー `layer:{objectId}:f{frame}:hash{propsHash}`。DomRenderer raster パイプラインに配線 |
+| `NodeCacheFs` | 将来デスクトップ用 L2。Web では `cacheRootPath` 入力は無効（表示のみ） |
+| 設定 UI | Cache クリア・maxRamMB・disk トグル |
+
+**ワークエリア既定**: `in=0`, `out=comp.duration`（全尺）。再生ループはワークエリア内（Preview + Timeline 共有 store 経由）。
