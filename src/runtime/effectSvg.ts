@@ -176,6 +176,45 @@ function allBlackMaskSvg(w: number, h: number): string {
 }
 
 /**
+ * Linear Wipe 用グラデーション端点（userSpaceOnUse）。
+ *
+ * objectBoundingBox + rotate だと斜め角度で矩形の角がグラデーション範囲外に
+ * pad され、completion≈1 でも白（表示）が残り completion=1 の全黒マスクへ
+ * 急跳びする。四隅の射影 min/max で軸を張れば任意角度で completion が線形に効く。
+ */
+export function linearWipeGradientCoords(
+  angleDeg: number,
+  w: number,
+  h: number,
+): { x1: number; y1: number; x2: number; y2: number } {
+  const rad = (angleDeg * Math.PI) / 180;
+  const dx = Math.cos(rad);
+  const dy = Math.sin(rad);
+  const corners: [number, number][] = [
+    [0, 0],
+    [w, 0],
+    [0, h],
+    [w, h],
+  ];
+  let minP = Infinity;
+  let maxP = -Infinity;
+  for (const [x, y] of corners) {
+    const p = x * dx + y * dy;
+    minP = Math.min(minP, p);
+    maxP = Math.max(maxP, p);
+  }
+  const cx = w / 2;
+  const cy = h / 2;
+  const centerP = cx * dx + cy * dy;
+  return {
+    x1: cx + dx * (minP - centerP),
+    y1: cy + dy * (minP - centerP),
+    x2: cx + dx * (maxP - centerP),
+    y2: cy + dy * (maxP - centerP),
+  };
+}
+
+/**
  * §27.3 Linear Wipe（AE 準拠の completion 極性）。
  * completion 0 = 完全表示（恒等）、1 = 完全 wipe（非表示）。
  * 表示領域 = (1 − completion)。angle で wipe の向きを回転。
@@ -194,10 +233,11 @@ export function linearWipeMask(
 
   const t = clamp01(completion);
   const edge = ((1 - t) * 100).toFixed(3); // 表示境界
+  const { x1, y1, x2, y2 } = linearWipeGradientCoords(angleDeg, w, h);
   const svg = [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">`,
     `<defs>`,
-    `<linearGradient id="g" x1="0" y1="0" x2="1" y2="0" gradientUnits="objectBoundingBox" gradientTransform="rotate(${angleDeg} 0.5 0.5)">`,
+    `<linearGradient id="g" gradientUnits="userSpaceOnUse" x1="${x1.toFixed(3)}" y1="${y1.toFixed(3)}" x2="${x2.toFixed(3)}" y2="${y2.toFixed(3)}">`,
     `<stop offset="0%" stop-color="white"/>`,
     `<stop offset="${edge}%" stop-color="white"/>`,
     `<stop offset="${edge}%" stop-color="black"/>`,

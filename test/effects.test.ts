@@ -155,7 +155,7 @@ describe("builtinEffects apply (§27.3)", () => {
     const r = LINEAR_WIPE_EFFECT_DEF.apply({ completion: 0.5, angle: -30, feather: 0 }, ctx);
     expect(r?.kind).toBe("svg");
     if (r?.kind === "svg") {
-      expect(r.primitives).toContain("rotate(-30");
+      expect(r.primitives).toContain("userSpaceOnUse");
     }
   });
 

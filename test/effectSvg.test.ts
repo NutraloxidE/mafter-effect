@@ -3,6 +3,7 @@ import {
   angularWipeMask,
   lightPixelSortDisplaceMapSvg,
   lightPixelSortFilter,
+  linearWipeGradientCoords,
   linearWipeMask,
   phaseToSeed,
   sizeToFrequency,
@@ -44,10 +45,41 @@ describe("effectSvg helpers", () => {
   it("linearWipeMask accepts angles outside 0..360", () => {
     const neg = linearWipeMask(0.5, -45, 0, 1920, 1080);
     const over = linearWipeMask(0.5, 405, 0, 1920, 1080);
-    expect(neg).toContain("rotate(-45");
-    expect(over).toContain("rotate(405");
+    expect(neg).toContain("userSpaceOnUse");
+    expect(over).toContain("userSpaceOnUse");
     expect(neg).toContain("luminanceToAlpha");
     expect(over).toContain("luminanceToAlpha");
+  });
+
+  it("linearWipeGradientCoords spans rectangle corners for diagonal angle", () => {
+    const w = 400;
+    const h = 300;
+    const { x1, y1, x2, y2 } = linearWipeGradientCoords(45, w, h);
+    const rad = (45 * Math.PI) / 180;
+    const dx = Math.cos(rad);
+    const dy = Math.sin(rad);
+    const corners: [number, number][] = [
+      [0, 0],
+      [w, 0],
+      [0, h],
+      [w, h],
+    ];
+    let minP = Infinity;
+    let maxP = -Infinity;
+    for (const [x, y] of corners) {
+      const p = x * dx + y * dy;
+      minP = Math.min(minP, p);
+      maxP = Math.max(maxP, p);
+    }
+    const proj = (x: number, y: number) => x * dx + y * dy;
+    expect(proj(x1, y1)).toBeCloseTo(minP, 5);
+    expect(proj(x2, y2)).toBeCloseTo(maxP, 5);
+  });
+
+  it("linearWipeMask at high completion uses gradient (not early all-black shortcut)", () => {
+    const s = linearWipeMask(0.99, 45, 0, 400, 300);
+    expect(s).toContain("userSpaceOnUse");
+    expect(s).toContain("1.000%25%22%20stop-color%3D%22black");
   });
 
   it("angularWipeMask includes path for partial completion", () => {
