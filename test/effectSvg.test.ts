@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   angularWipeMask,
+  lightPixelSortDisplaceMapSvg,
+  lightPixelSortFilter,
   linearWipeMask,
   phaseToSeed,
   sizeToFrequency,
@@ -66,5 +68,33 @@ describe("effectSvg helpers", () => {
     expect(over).toContain("path");
     expect(neg).toContain("luminanceToAlpha");
     expect(over).toContain("luminanceToAlpha");
+  });
+
+  it("lightPixelSortDisplaceMapSvg is deterministic for same phase", () => {
+    const a = lightPixelSortDisplaceMapSvg(90, 0.5, 64, 8, 1, 0, 320, 240);
+    const b = lightPixelSortDisplaceMapSvg(90, 0.5, 64, 8, 1, 0, 320, 240);
+    expect(a.uri).toBe(b.uri);
+    expect(a.scale).toBe(128);
+  });
+
+  it("lightPixelSortDisplaceMapSvg changes with phase", () => {
+    const a = lightPixelSortDisplaceMapSvg(90, 0.5, 64, 8, 1, 0, 320, 240);
+    const b = lightPixelSortDisplaceMapSvg(90, 0.5, 64, 8, 1, 90, 320, 240);
+    expect(a.uri).not.toBe(b.uri);
+  });
+
+  it("lightPixelSortFilter emits feDisplacementMap and luminance gate with base preserve", () => {
+    const s = lightPixelSortFilter(90, 0.5, 64, 8, 1, 0, 320, 240);
+    expect(s).toContain("feDisplacementMap");
+    expect(s).toContain("luminanceToAlpha");
+    expect(s).toContain('operator="in"');
+    expect(s).toContain("feMerge");
+    expect(s).toContain('in="base"');
+    expect(s).toContain('scale="128"');
+  });
+
+  it("lightPixelSortFilter is inert when streakLength or intensity is 0", () => {
+    expect(lightPixelSortFilter(90, 0.5, 0, 8, 1, 0, 320, 240)).toBe("");
+    expect(lightPixelSortFilter(90, 0.5, 64, 8, 0, 0, 320, 240)).toBe("");
   });
 });

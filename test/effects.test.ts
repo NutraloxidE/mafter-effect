@@ -8,6 +8,7 @@ import {
   TURBULENT_DISPLACE_EFFECT_DEF,
   WAVE_EFFECT_DEF,
   PIXEL_SORTER_EFFECT_DEF,
+  PIXEL_SORT_LITE_EFFECT_DEF,
   registerBuiltinEffects,
 } from "../src/runtime/builtinEffects";
 import { globalPluginRegistry } from "../src/runtime/pluginRegistry";
@@ -23,12 +24,12 @@ describe("builtinEffects apply (§27.3)", () => {
   it("re-registers after pluginRegistry.clear() (loadPlugins 経路)", () => {
     registerBuiltinEffects();
     expect(globalPluginRegistry.listEffects().map((e) => e.type)).toEqual([
-      "blur", "tint", "wave", "turbulentDisplace", "ripple", "linearWipe", "angularWipe", "pixelSorter",
+      "blur", "tint", "wave", "turbulentDisplace", "ripple", "linearWipe", "angularWipe", "pixelSorter", "pixelSortLite",
     ]);
     globalPluginRegistry.clear();
     registerBuiltinEffects();
     expect(globalPluginRegistry.listEffects().map((e) => e.type)).toEqual([
-      "blur", "tint", "wave", "turbulentDisplace", "ripple", "linearWipe", "angularWipe", "pixelSorter",
+      "blur", "tint", "wave", "turbulentDisplace", "ripple", "linearWipe", "angularWipe", "pixelSorter", "pixelSortLite",
     ]);
   });
 
@@ -223,6 +224,27 @@ describe("builtinEffects apply (§27.3)", () => {
       { ...ctx, frame: 5 },
     );
     expect(Array.from(out.data)).not.toEqual(Array.from(input.data));
+  });
+
+  it("pixelSortLite returns null when streakLength or intensity is 0", () => {
+    expect(PIXEL_SORT_LITE_EFFECT_DEF.apply({ streakLength: 0, intensity: 1 }, ctx)).toBeNull();
+    expect(PIXEL_SORT_LITE_EFFECT_DEF.apply({ streakLength: 64, intensity: 0 }, ctx)).toBeNull();
+  });
+
+  it("pixelSortLite returns svg kind when active", () => {
+    const r = PIXEL_SORT_LITE_EFFECT_DEF.apply({
+      angle: 90,
+      threshold: 0.5,
+      streakLength: 64,
+      stripWidth: 8,
+      intensity: 1,
+      phase: 0,
+    }, ctx);
+    expect(r?.kind).toBe("svg");
+    if (r?.kind === "svg") {
+      expect(r.primitives).toContain("feDisplacementMap");
+      expect(r.primitives).toContain("luminanceToAlpha");
+    }
   });
 });
 

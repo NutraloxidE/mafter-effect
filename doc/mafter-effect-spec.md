@@ -1424,7 +1424,7 @@ interface EffectRenderCtx {
 }
 
 interface EffectDef {
-  type: string;                       // "blur" | "tint" | "pixelSorter" | plugin
+  type: string;                       // "blur" | "tint" | "pixelSorter" | "pixelSortLite" | plugin
   label: string;
   category?: string;                  // Inspector ピッカー見出し
   params: ParamDescriptor[];          // §5.5 と同契約（animatable param は AnimatedProp で props に入る）
@@ -1559,6 +1559,25 @@ interface EffectDef {
 - **恒等**: `thresholdLow >= thresholdHigh` かつ `feather === 0`、または実質変化なし → `null`。
 - **カテゴリ**: `"スタイライズ"`。
 - **非目標（Phase 1）**: Gradients 出力 / Random Length / Noise / Mirror / Constraint masks / Stretch / v3+ 機能。**AEPS2 100% 一致は非目標**。
+
+#### `pixelSortLite` — Light Pixel Sort（GPU 近似・§27.3 additive）
+
+| param key | label | kind | default | range | animatable |
+|---|---|---|---|---|---|
+| `angle` | Angle | scalar | `90` | 無制限（度）, step 1 | ✅ |
+| `threshold` | Threshold | scalar | `0.5` | 0..1, step 0.01 | ✅ |
+| `streakLength` | Streak Length | scalar | `64` | min 0, max 512, step 1 | ✅ |
+| `stripWidth` | Strip Width | scalar | `8` | min 1, max 64, step 1 | ✅ |
+| `intensity` | Intensity | scalar | `1` | 0..1, step 0.01 | ✅ |
+| `phase` | Phase | scalar | `0` | 無制限（度）, step 1 | ✅ |
+
+- `apply` → `{ kind: "svg", primitives }`（`streakLength === 0` または `intensity === 0` → `null`）。
+- **経路**: SVG `feDisplacementMap` + 輝度マスク（`feColorMatrix luminanceToAlpha` + `feComposite in`）。**raster パイプライン非使用**。
+- **アルゴリズム（近似）**: `angle` に垂直なストリップ分割 → ストリップごとに `seededRandom(phaseToSeed(phase)+i)` で変位 map（R/G）を生成 → 輝度 ≥ `threshold` の領域のみ streak 適用。真のピクセル並び替えは行わない（引き延ばしストリーク近似）。
+- **調整レイヤー**: `backdrop-filter` 経路で **軽量**（full-comp CPU raster 不要）。
+- **カテゴリ**: `"スタイライズ"`。
+- **非目標**: 厳密 sort / Sort Blocks / highlights-shadows / `pixelSorter` とのピクセル一致。**AEPS2 100% 一致は非目標**。
+- **既知差**: 引き延ばしベース近似のため [`pixelSorter`](pixelSorter) と見た目・ピクセルは一致しない（許容）。
 
 ### §27.4 調整レイヤー（Adjustment Layer・最小実装）
 

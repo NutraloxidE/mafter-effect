@@ -4,6 +4,7 @@ import { globalPluginRegistry } from "./pluginRegistry";
 import {
   angularWipeMask,
   displaceWithMap,
+  lightPixelSortFilter,
   linearWipeMask,
   phaseToSeed,
   rippleDisplaceMapSvg,
@@ -257,6 +258,39 @@ const PIXEL_SORTER_EFFECT_DEF: EffectDef = {
   },
 };
 
+const PIXEL_SORT_LITE_EFFECT_DEF: EffectDef = {
+  type: "pixelSortLite",
+  label: "Light Pixel Sort",
+  category: "スタイライズ",
+  params: [
+    { key: "angle", label: "Angle", kind: "scalar", default: 90, animatable: true, step: 1 },
+    { key: "threshold", label: "Threshold", kind: "scalar", default: 0.5, animatable: true, min: 0, max: 1, step: 0.01 },
+    { key: "streakLength", label: "Streak Length", kind: "scalar", default: 64, animatable: true, min: 0, max: 512, step: 1 },
+    { key: "stripWidth", label: "Strip Width", kind: "scalar", default: 8, animatable: true, min: 1, max: 64, step: 1 },
+    { key: "intensity", label: "Intensity", kind: "scalar", default: 1, animatable: true, min: 0, max: 1, step: 0.01 },
+    { key: "phase", label: "Phase", kind: "scalar", default: 0, animatable: true, step: 1 },
+  ],
+  apply(props, ctx: EffectRenderCtx) {
+    const streakLength = Math.max(0, Math.round(num(props["streakLength"], 64)));
+    const intensity = Math.min(1, Math.max(0, num(props["intensity"], 1)));
+    if (streakLength === 0 || intensity === 0) return null;
+    const w = Math.max(1, ctx.width);
+    const h = Math.max(1, ctx.height);
+    const primitives = lightPixelSortFilter(
+      num(props["angle"], 90),
+      Math.min(1, Math.max(0, num(props["threshold"], 0.5))),
+      streakLength,
+      Math.max(1, Math.min(64, Math.round(num(props["stripWidth"], 8)))),
+      intensity,
+      num(props["phase"], 0),
+      w,
+      h,
+    );
+    if (!primitives) return null;
+    return { kind: "svg", primitives };
+  },
+};
+
 export function registerBuiltinEffects(): void {
   globalPluginRegistry.registerEffect(BLUR_EFFECT_DEF);
   globalPluginRegistry.registerEffect(TINT_EFFECT_DEF);
@@ -266,6 +300,7 @@ export function registerBuiltinEffects(): void {
   globalPluginRegistry.registerEffect(LINEAR_WIPE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(ANGULAR_WIPE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(PIXEL_SORTER_EFFECT_DEF);
+  globalPluginRegistry.registerEffect(PIXEL_SORT_LITE_EFFECT_DEF);
 }
 
 export {
@@ -277,4 +312,5 @@ export {
   LINEAR_WIPE_EFFECT_DEF,
   ANGULAR_WIPE_EFFECT_DEF,
   PIXEL_SORTER_EFFECT_DEF,
+  PIXEL_SORT_LITE_EFFECT_DEF,
 };

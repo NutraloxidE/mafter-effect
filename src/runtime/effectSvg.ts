@@ -1,5 +1,7 @@
 /** §27 — SVG filter primitive 組み立て（純関数・INV-1）。 */
 
+import { seededRandom } from "./exprHelpers";
+
 export function svgDataUri(svg: string): string {
   return `data:image/svg+xml,${encodeURIComponent(svg)}`;
 }
@@ -258,4 +260,105 @@ export function wavelengthToFrequency(wavelengthPx: number): number {
 /** Turbulent Displace: larger size → lower frequency。 */
 export function sizeToFrequency(size: number): number {
   return Math.max(0.001, 10 / Math.max(1, size));
+}
+
+/**
+ * §27.3 pixelSortLite — ストリップ displacement map（GPU 近似ピクセルソート）。
+ *
+ * angle 方向へ引き延ばす map を、angle に垂直な stripWidth ストリップごとに生成する。
+ * feDisplacementMap: 変位 = scale·(channel − 0.5)。G チャンネル = streak 方向成分（回転 g 内）。
+ */
+export function lightPixelSortDisplaceMapSvg(
+  angleDeg: number,
+  threshold: number,
+  streakLength: number,
+  stripWidth: number,
+  intensity: number,
+  phaseDeg: number,
+  w: number,
+  h: number,
+): { uri: string; scale: number } {
+  const sw = Math.max(1, Math.round(stripWidth));
+  const span = Math.max(w, h);
+  const numStrips = Math.max(1, Math.ceil(span / sw));
+  const baseSeed = phaseToSeed(phaseDeg);
+  const thr = clamp01(threshold);
+  const inten = clamp01(intensity);
+
+  const rects: string[] = [];
+  for (let i = 0; i < numStrips; i++) {
+    const rng = seededRandom((baseSeed + i) >>> 0)();
+    const active = rng >= 1 - thr;
+    const x = i * sw;
+    if (!active || inten <= 0) {
+      rects.push(`<rect x="${x}" y="0" width="${sw}" height="${h}" fill="rgb(128,128,128)"/>`);
+      continue;
+    }
+    const mag01 = inten * (0.35 + 0.65 * rng);
+    const g = Math.round(clamp01(0.5 + 0.5 * mag01) * 255);
+    rects.push(`<rect x="${x}" y="0" width="${sw}" height="${h}" fill="rgb(128,${g},128)"/>`);
+  }
+
+  const cx = w / 2;
+  const cy = h / 2;
+  const svg = [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">`,
+    `<g transform="rotate(${angleDeg} ${cx} ${cy})">`,
+    rects.join(""),
+    `</g>`,
+    `</svg>`,
+  ].join("");
+  return { uri: svgDataUri(svg), scale: 2 * Math.max(0, streakLength) };
+}
+
+/**
+ * pixelSortLite — 輝度しきい値ゲート + displacement streak（1 url filter 内）。
+ */
+export function lightPixelSortFilter(
+  angleDeg: number,
+  threshold: number,
+  streakLength: number,
+  stripWidth: number,
+  intensity: number,
+  phaseDeg: number,
+  w: number,
+  h: number,
+): string {
+  if (streakLength <= 0 || intensity <= 0) return "";
+  const { uri, scale } = lightPixelSortDisplaceMapSvg(
+    angleDeg,
+    threshold,
+    streakLength,
+    stripWidth,
+    intensity,
+    phaseDeg,
+    w,
+    h,
+  );
+  if (scale <= 0) return "";
+
+  const thr = clamp01(threshold);
+  const slope = thr >= 1 ? 100 : 1 / Math.max(0.001, 1 - thr);
+  const intercept = thr >= 1 ? -100 : -thr * slope;
+
+  // lumGate で streak を輝度しきい値以上に限定するが、operator="in" だけだと
+  // しきい値未満が透明になり backdrop-filter 調整レイヤーで黒潰れする。
+  // マスク反転で元画を残し feMerge で合成する。
+  return [
+    `<feColorMatrix in="SourceGraphic" type="luminanceToAlpha" result="lumA"/>`,
+    `<feComponentTransfer in="lumA" result="lumGate">`,
+    `<feFuncA type="linear" slope="${slope.toFixed(4)}" intercept="${intercept.toFixed(4)}"/>`,
+    `</feComponentTransfer>`,
+    feImageLayer(uri, w, h, "dmap"),
+    `<feDisplacementMap in="SourceGraphic" in2="dmap" scale="${scale}" xChannelSelector="R" yChannelSelector="G" result="displaced"/>`,
+    `<feComposite in="displaced" in2="lumGate" operator="in" result="streak"/>`,
+    `<feComponentTransfer in="lumGate" result="lumInv">`,
+    `<feFuncA type="table" tableValues="1 0"/>`,
+    `</feComponentTransfer>`,
+    `<feComposite in="SourceGraphic" in2="lumInv" operator="in" result="base"/>`,
+    `<feMerge>`,
+    `<feMergeNode in="base"/>`,
+    `<feMergeNode in="streak"/>`,
+    `</feMerge>`,
+  ].join("");
 }

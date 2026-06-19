@@ -1,6 +1,7 @@
 import { chromium } from "playwright";
 
-const URL = "http://localhost:5173/";
+const PORT = process.env.VERIFY_PORT ?? "5173";
+const URL = `http://localhost:${PORT}/`;
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
 const errors = [];
@@ -51,7 +52,7 @@ const report = await page.evaluate(async () => {
 
   function solidLayer(name, pos, color, type, fxProps) {
     const id = S().addSolid(name);
-    const fxId = S().addEffect(id, type);
+    const fxId = type ? S().addEffect(id, type) : null;
     const comp = S().project.compositions.find((k) => k.kind === "timeline" && k.objects.some((o) => o.id === id));
     const obj = comp.objects.find((o) => o.id === id);
     const comps = obj.components.map((c) => c.type === "solid"
@@ -60,9 +61,18 @@ const report = await page.evaluate(async () => {
     S().updateObject(id, {
       transform: { ...obj.transform, position: sp(pos) },
       components: comps,
-      effects: [patchFx(id, fxId, fxProps)],
+      effects: fxId ? [patchFx(id, fxId, fxProps)] : [],
     }, "setup");
     out.push({ name, id });
+  }
+
+  function adjustmentLayerWithFx(name, type, fxProps) {
+    const id = S().addAdjustmentLayer(name);
+    const fxId = S().addEffect(id, type);
+    S().updateObject(id, {
+      effects: [patchFx(id, fxId, fxProps)],
+    }, "setup");
+    out.push({ name, id, isAdjustment: true });
   }
 
   // quadrants of 1920x1080
@@ -71,18 +81,27 @@ const report = await page.evaluate(async () => {
   solidLayer("linearWipe", v3(60, 620), { r: 1, g: 0.5, b: 0.2, a: 1 }, "linearWipe", { completion: 0.5, angle: 0, feather: 12 });
   solidLayer("angularWipe", v3(1010, 620), { r: 0.3, g: 1, b: 0.5, a: 1 }, "angularWipe", { completion: 0.3, startAngle: 0, centerX: 0.5, centerY: 0.5, feather: 4 });
   solidLayer("pixelSorter", v3(960, 540), { r: 0.9, g: 0.4, b: 0.1, a: 1 }, "pixelSorter", { sortingMode: "simple", thresholdLow: 0.2, thresholdHigh: 0.85, angle: 45, length: 512, offset: 0, feather: 0, sortBlocks: 1 });
+  solidLayer("pixelSortLite", v3(960, 200), { r: 0.95, g: 0.55, b: 0.15, a: 1 }, "pixelSortLite", { angle: 90, threshold: 0.5, streakLength: 128, stripWidth: 1, intensity: 1, phase: 0 });
+  solidLayer("gradA", v3(400, 900), { r: 1, g: 0.25, b: 0.1, a: 1 }, null, null);
+  solidLayer("gradB", v3(1520, 900), { r: 0.15, g: 0.35, b: 1, a: 1 }, null, null);
+  adjustmentLayerWithFx("pixelSortLiteAdj", "pixelSortLite", { angle: 90, threshold: 0.4, streakLength: 96, stripWidth: 4, intensity: 1, phase: 0 });
 
   await new Promise((r) => setTimeout(r, 2500));
   for (const o of out) {
     const el = document.querySelector(`[data-object-id="${o.id}"]`);
-    o.filter = el ? getComputedStyle(el).filter : "(no el)";
+    const cs = el ? getComputedStyle(el) : null;
+    o.filter = cs ? cs.filter : "(no el)";
+    o.backdropFilter = cs ? cs.backdropFilter : "(no el)";
     o.box = el ? `${el.offsetWidth}x${el.offsetHeight}` : "-";
   }
   return { out, domCount: document.querySelectorAll("[data-object-id]").length };
 }, []);
 
-console.log("=== layers === domCount:", report.domCount);
-for (const r of report.out) console.log(`[${r.name}] ${r.id} box=${r.box} filter=${r.filter}`);
+console.log("=== layers === domCount:", report.domCount, "port:", PORT);
+for (const r of report.out) {
+  const extra = r.isAdjustment ? ` backdrop=${r.backdropFilter}` : "";
+  console.log(`[${r.name}] ${r.id} box=${r.box} filter=${r.filter}${extra}`);
+}
 console.log("=== errors:", errors.length ? errors : "none");
 
 await page.screenshot({ path: "verify-effects.png" });
