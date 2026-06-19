@@ -6,6 +6,8 @@ import { computeTextContentBounds, layoutGlyphsForDecompose, layoutTextLines, te
 import type { Font } from "opentype.js";
 import { parseTextProps } from "../src/runtime/textRender";
 import { buildGlyphDecomposeObjects, createFixedMeasureContext } from "../src/editor/glyphDecompose";
+import { computeWorldTransforms } from "../src/editor/previewViewer";
+import { vec3 } from "../src/core/props";
 
 const lin = { type: "linear" as const };
 
@@ -133,7 +135,7 @@ describe("glyph decompose", () => {
       }],
     };
     const ctx = createFixedMeasureContext(10);
-    const result = buildGlyphDecomposeObjects(obj, comp, 0, ctx);
+    const result = buildGlyphDecomposeObjects(obj, comp, 0, ctx, "keyframesOnNull");
     expect(result).not.toBeNull();
     expect(result!.length).toBe(4); // source + container + A + B
     expect(result![0]!.name).toBe("Text (source)");
@@ -142,6 +144,127 @@ describe("glyph decompose", () => {
     expect(result![1]!.components[0]!.props["text"]).toEqual(staticProp(""));
     const glyphs = result!.slice(2);
     expect(glyphs.map((g) => (g.components[0]!.props["text"] as { value: string }).value)).toEqual(["A", "B"]);
+  });
+
+  it("child mode omits container and bakes transform keyframes", () => {
+    const obj: SceneObject = {
+      id: "01OBJ",
+      name: "Text",
+      parent: null,
+      zOrder: 1,
+      enabled: true,
+      inPoint: 0,
+      outPoint: 5,
+      transform: {
+        anchor: staticProp(vec3(0, 0, 0)),
+        position: staticProp(vec3(0, 0, 0)),
+        rotation: staticProp(vec3(0, 0, 0)),
+        scale: staticProp(vec3(1, 1, 1)),
+      },
+      opacity: staticProp(1),
+      components: [{
+        type: "text",
+        props: {
+          text: staticProp("AB"),
+          size: staticProp(10),
+          color: staticProp({ r: 1, g: 1, b: 1, a: 1 }),
+          tracking: staticProp(0),
+          leading: staticProp(0),
+          strokeColor: staticProp({ r: 0, g: 0, b: 0, a: 1 }),
+          strokeWidth: staticProp(0),
+          font: "sans-serif",
+          align: "left",
+          weight: 400,
+          italic: false,
+        },
+      }],
+    };
+    const ctx = createFixedMeasureContext(10);
+    const result = buildGlyphDecomposeObjects(obj, comp, 0, ctx, "keyframesOnChild");
+    expect(result).not.toBeNull();
+    expect(result!.length).toBe(3); // source + A + B
+    expect(result!.some((o) => o.id === "01OBJ")).toBe(false);
+    const glyphs = result!.filter((o) => o.enabled);
+    expect(glyphs).toHaveLength(2);
+    expect(glyphs.every((g) => g.parent === null)).toBe(true);
+    expect(glyphs[0]!.transform.position.keyframes).toHaveLength(5);
+    expect(glyphs[1]!.transform.position.keyframes).toHaveLength(5);
+  });
+
+  it("child mode matches null mode world transforms", () => {
+    const obj: SceneObject = {
+      id: "01OBJ",
+      name: "Text",
+      parent: null,
+      zOrder: 1,
+      enabled: true,
+      inPoint: 0,
+      outPoint: 10,
+      transform: {
+        anchor: staticProp(vec3(0, 0, 0)),
+        position: {
+          value: vec3(0, 0, 0),
+          keyframes: [
+            { frame: 0, value: vec3(0, 0, 0), easing: lin },
+            { frame: 9, value: vec3(100, 0, 0), easing: lin },
+          ],
+        },
+        rotation: {
+          value: vec3(0, 0, 0),
+          keyframes: [
+            { frame: 0, value: vec3(0, 0, 0), easing: lin },
+            { frame: 9, value: vec3(0, 0, 45), easing: lin },
+          ],
+        },
+        scale: staticProp(vec3(1, 1, 1)),
+      },
+      opacity: staticProp(1),
+      components: [{
+        type: "text",
+        props: {
+          text: staticProp("AB"),
+          size: staticProp(10),
+          color: staticProp({ r: 1, g: 1, b: 1, a: 1 }),
+          tracking: staticProp(0),
+          leading: staticProp(0),
+          strokeColor: staticProp({ r: 0, g: 0, b: 0, a: 1 }),
+          strokeWidth: staticProp(0),
+          font: "sans-serif",
+          align: "left",
+          weight: 400,
+          italic: false,
+        },
+      }],
+    };
+    const ctx = createFixedMeasureContext(10);
+    const nullResult = buildGlyphDecomposeObjects(obj, comp, 0, ctx, "keyframesOnNull")!;
+    const childResult = buildGlyphDecomposeObjects(obj, comp, 0, ctx, "keyframesOnChild")!;
+
+    const buildComp = (objects: SceneObject[]): TimelineComposition => ({ ...comp, objects });
+
+    const glyphLayer = (o: SceneObject) =>
+      o.enabled && o.components.some((c) => c.type === "text" && (c.props["text"] as { value: string }).value.length === 1);
+
+    const nullGlyphs = nullResult.filter(glyphLayer);
+    const childGlyphs = childResult.filter(glyphLayer);
+    expect(nullGlyphs).toHaveLength(2);
+    expect(childGlyphs).toHaveLength(2);
+
+    for (const frame of [0, 3, 7, 9]) {
+      const nullWorld = computeWorldTransforms(buildComp(nullResult), frame);
+      const childWorld = computeWorldTransforms(buildComp(childResult), frame);
+      for (let i = 0; i < 2; i++) {
+        const nullChar = (nullGlyphs[i]!.components[0]!.props["text"] as { value: string }).value;
+        const childIdx = childGlyphs.findIndex(
+          (g) => (g.components[0]!.props["text"] as { value: string }).value === nullChar,
+        );
+        const nm = nullWorld.get(nullGlyphs[i]!.id)!;
+        const cm = childWorld.get(childGlyphs[childIdx]!.id)!;
+        for (let j = 0; j < 16; j++) {
+          expect(cm[j]).toBeCloseTo(nm[j]!, 3);
+        }
+      }
+    }
   });
 
   it("layoutGlyphsForDecompose skips whitespace", () => {

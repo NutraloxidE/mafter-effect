@@ -1304,20 +1304,46 @@ interface FrameRenderCache {
 
 AE のテキストアニメーター＋範囲セレクターは実装せず、**「1 文字 = 1 SceneObject」に分解する破壊的コマンド**で代替する。各グリフは独立した `text` レイヤーになり、**既存の Transform + キーフレーム機構だけ**で個別アニメーション（文字送り・タイポアニメ等）が作れる。
 
-#### §26.5.1 コマンド仕様
+#### §26.5.1 コマンド仕様（共通）
 
-「Decompose Glyphs（グリフ分解）」コマンド（Timeline / 右クリックメニュー / Inspector ボタンから起動、undo 可）:
+「Decompose Glyphs（グリフ分解）」は **2 方式**を Inspector から選択できる（undo 可）。いずれも:
 
 1. **現在フレームの Source Text とスタイル**（font/size/tracking/leading/weight/italic）から**文字レイアウトを測定**する。測定は**エディタ層**で Canvas 2D `measureText`（または §26.4 のフォントパーサ）を用いる。→ **`resolve()` の純粋性（INV-1）を保つため、測定は編集時に一度だけ行い、結果の座標を静的 Transform に焼き込む**（resolve 経路では測定しない）。
 2. 改行・align・tracking・leading を考慮し、各グリフの**ブロック内原点 (x, y)** を算出。
 3. グリフ 1 つにつき `SceneObject` を 1 つ生成:
    - `text` component に**その 1 文字**を格納。font/size/color/stroke/weight/italic を元レイヤーからコピー。
-   - `transform.position` に焼き込んだ原点、`anchor` をグリフ基準点に設定。
-   - `parent` = **元レイヤー**（下記 4 でコンテナ化）。→ ブロック全体の Transform/アニメをグリフが継承（§5.4 parent 継承）。
    - `zOrder` は元レイヤー近傍に連番付与（fractional・§5.4）。新 ID は ULID（INV-6）。
    - 空白文字は**レイヤーを作らず advance（送り幅）だけ**反映。
-4. **元レイヤー**は Source Text を空にして**トランスフォーム専用のコンテナ**（= 実質 null/group）として残す。これによりブロック単位の移動・回転・スケールが 1 箇所で効き、各文字は個別 KF で動かせる。
+4. 分解前の SceneObject を **`{name} (source)`** として複製保存（`enabled: false`）。二重描画回避・参照用。
 5. 全変更を **1 command（1 undo）**で確定する（§17, §21.5 の複数オブジェクト patch と同様）。
+
+#### §26.5.1a Decompose with keyframes on null（既定・現行）
+
+1. グリフの `transform.position` に焼き込んだ原点、`anchor` をグリフ基準点 `(0,0,0)` に設定（静的）。
+2. グリフの `parent` = **元レイヤー ID**（下記 3 でコンテナ化）。→ ブロック全体の Transform/アニメをグリフが継承（§5.4 parent 継承）。
+3. **元レイヤー**は Source Text を空にして**トランスフォーム専用のコンテナ**（= 実質 null/group）として残す。ブロック単位の移動・回転・スケールが 1 箇所で効き、各文字は個別 KF で動かせる。
+
+#### §26.5.1b Decompose with keyframes on child
+
+1. **コンテナ（元レイヤー）は生成しない**（元 ID のオブジェクトは削除）。
+2. グリフの `parent` = **分解前の `obj.parent`**（上位階層は維持）。
+3. 各グリフの Transform を **`inPoint`〜`outPoint-1` の全整数フレーム**でサンプルし KF 化:
+   - `L_baked(f) = L_original(f) · T(gx, gy, 0)`（§6.3 の行列合成）
+   - `L_original(f)` は KF + expression を編集時サンプル（焼き込み後は expression 除去）
+   - `L_baked` を `anchor=0` の `{ position, rotation, scale }` に分解し、フレーム間 easing は **linear**
+4. `opacity` / text component のアニメ可能 props / `effects` は各グリフへコピー（effect `id` は新 ULID）。
+
+**トレードオフ**: project.json が `glyphs × frames × channels` 分肥大化。密サンプル + 行列分解により null 方式と world 一致を目指すが、euler 分解の数値誤差がありうる。
+
+#### §26.5.1c 方式比較
+
+| 項目 | keyframes on null | keyframes on child |
+|------|-------------------|-------------------|
+| コンテナ | 元 ID・text 空・残す | なし |
+| グリフ parent | コンテナ（元 ID） | 元の parent |
+| Transform | 静的 offset のみ | 全整数フレーム KF 焼き込み |
+| ブロック一括アニメ | コンテナの KF で | 各グリフに同型 KF が既に付く |
+| `(source)` | 両方式共通 | 両方式共通 |
 
 #### §26.5.2 性質・トレードオフ（明記）
 

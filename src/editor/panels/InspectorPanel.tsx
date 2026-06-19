@@ -265,7 +265,8 @@ export function InspectorPanel() {
                 onEditFocus={() => setPreviewQualityEditing(true)}
                 onEditBlur={() => setPreviewQualityEditing(false)}
                 onClearPreview={() => clearPreviewOverride()}
-                onDecompose={() => decomposeGlyphs(obj.id)}
+                onDecomposeNull={() => decomposeGlyphs(obj.id, "keyframesOnNull")}
+                onDecomposeChild={() => decomposeGlyphs(obj.id, "keyframesOnChild")}
               />
             </InspectorFoldout>
           );
@@ -597,7 +598,8 @@ function TextComponentFields({
   onEditFocus,
   onEditBlur,
   onClearPreview,
-  onDecompose,
+  onDecomposeNull,
+  onDecomposeChild,
 }: {
   obj: SceneObject;
   compIdx: number;
@@ -607,7 +609,8 @@ function TextComponentFields({
   onEditFocus: () => void;
   onEditBlur: () => void;
   onClearPreview: () => void;
-  onDecompose: () => void;
+  onDecomposeNull: () => void;
+  onDecomposeChild: () => void;
 }) {
   const comp = obj.components[compIdx];
   if (!comp || comp.type !== "text") return null;
@@ -856,9 +859,22 @@ function TextComponentFields({
           {italic ? "On" : "Off"}
         </button>
       </Row>
-      <button onClick={onDecompose} style={{ ...btnStyle, marginTop: 4, fontSize: 10 }} title="§26.5 1文字=1レイヤーに分解（原文は (source) レイヤーとして残る）">
-        Decompose Glyphs
-      </button>
+      <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 4 }}>
+        <button
+          onClick={onDecomposeNull}
+          style={{ ...btnStyle, fontSize: 10 }}
+          title="§26.5.1a 空テキストコンテナを親に残し、グリフは静的 offset のみ"
+        >
+          Decompose with keyframes on null
+        </button>
+        <button
+          onClick={onDecomposeChild}
+          style={{ ...btnStyle, fontSize: 10 }}
+          title="§26.5.1b コンテナなし。親アニメを各グリフに密フレーム KF 焼き込み"
+        >
+          Decompose with keyframes on child
+        </button>
+      </div>
     </>
   );
 }

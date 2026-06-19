@@ -90,6 +90,54 @@ export function localMatrix(
   );
 }
 
+const RAD2DEG = 180 / Math.PI;
+
+/**
+ * anchor=0 の T(position)·R(euler ZYX)·S(scale) 行列を成分に分解する。
+ * 入力は shear なしの TRS を想定（グリフ焼き込み用）。
+ */
+export function decomposeTrs(m: Mat4): { position: Vec3; rotation: Vec3; scale: Vec3 } {
+  const position: Vec3 = { x: m[12], y: m[13], z: m[14] };
+
+  const sx = Math.hypot(m[0], m[1], m[2]);
+  const sy = Math.hypot(m[4], m[5], m[6]);
+  const sz = Math.hypot(m[8], m[9], m[10]);
+
+  const scale: Vec3 = {
+    x: sx > 1e-10 ? sx : 1,
+    y: sy > 1e-10 ? sy : 1,
+    z: sz > 1e-10 ? sz : 1,
+  };
+
+  const r00 = m[0] / scale.x;
+  const r10 = m[1] / scale.x;
+  const r20 = m[2] / scale.x;
+  const r01 = m[4] / scale.y;
+  const r11 = m[5] / scale.y;
+  const r21 = m[6] / scale.y;
+  const r22 = m[10] / scale.z;
+
+  const syAng = Math.hypot(r00, r10);
+  let rx: number;
+  let ry: number;
+  let rz: number;
+  if (syAng > 1e-6) {
+    rz = Math.atan2(r10, r00);
+    ry = Math.atan2(-r20, syAng);
+    rx = Math.atan2(r21, r22);
+  } else {
+    rz = Math.atan2(-r01, r11);
+    ry = Math.atan2(-r20, syAng);
+    rx = 0;
+  }
+
+  return {
+    position,
+    rotation: { x: rx * RAD2DEG, y: ry * RAD2DEG, z: rz * RAD2DEG },
+    scale,
+  };
+}
+
 /** 点 p（同次 w=1）に行列を適用する。 */
 export function transformPoint(m: Mat4, p: Vec3): Vec3 {
   const x = m[0] * p.x + m[4] * p.y + m[8] * p.z + m[12];

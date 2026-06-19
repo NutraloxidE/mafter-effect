@@ -41,7 +41,7 @@ import {
   type Command,
   type UndoRedoStack,
 } from "./commands";
-import { buildGlyphDecomposeObjects, createCanvasMeasureContext } from "./glyphDecompose";
+import { buildGlyphDecomposeObjects, createCanvasMeasureContext, type GlyphDecomposeMode } from "./glyphDecompose";
 import { loadWorkArea, saveWorkArea } from "./workAreaStorage";
 
 /** スクラブ/カラーピッカー中に Preview へだけ反映する一時 patch。 */
@@ -106,7 +106,7 @@ export interface EditorStore {
   previewQualityEditing: boolean;
   setPreviewQuality: (mode: "draft" | "precise") => void;
   setPreviewQualityEditing: (editing: boolean) => void;
-  decomposeGlyphs: (objectId: string) => void;
+  decomposeGlyphs: (objectId: string, mode?: GlyphDecomposeMode) => void;
 
   // Undo/Redo スタック（セッション内のみ, §17）
   undoStack: UndoRedoStack;
@@ -337,7 +337,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     get().setWorkArea(area.inPoint, get().currentFrame + 1);
   },
 
-  decomposeGlyphs: (objectId) => {
+  decomposeGlyphs: (objectId, mode = "keyframesOnNull") => {
     const before = get().project;
     if (!before) return;
     const comp = currentTimelineComp(before, get().currentCompId);
@@ -356,7 +356,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       ? sampleScalar(sizeRaw as AnimatedProp<number>, frame)
       : 48;
     const measureCtx = createCanvasMeasureContext(font, size, weight, italic);
-    const nextObjects = buildGlyphDecomposeObjects(obj, comp, frame, measureCtx);
+    const nextObjects = buildGlyphDecomposeObjects(obj, comp, frame, measureCtx, mode);
     if (!nextObjects) return;
     const afterObjects = comp.objects
       .filter((o) => o.id !== objectId)
@@ -368,7 +368,10 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         c.id === comp.id && c.kind === "timeline" ? { ...c, objects: afterObjects } : c,
       ),
     };
-    get().applyCommand({ label: "Decompose Glyphs", before, after });
+    const label = mode === "keyframesOnChild"
+      ? "Decompose Glyphs (child)"
+      : "Decompose Glyphs (null)";
+    get().applyCommand({ label, before, after });
   },
 
   // §20.2 コンポジション管理 ————————————————————————————————

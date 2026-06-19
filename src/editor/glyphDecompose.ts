@@ -1,11 +1,28 @@
 import { newObjectId } from "../core/ids";
 import { staticProp } from "../core/props";
-import type { Frame, RGBA, SceneObject, TimelineComposition } from "../core/schema";
+import type { AnimatedProp, Component, EffectInstance, Frame, RGBA, SceneObject, TimelineComposition } from "../core/schema";
 import { sampleAny } from "../runtime/interpolate";
+import type { ResolveContext } from "../runtime/resolve";
 import { layoutGlyphsForDecompose, type TextAlign } from "../runtime/textLayout";
+import { bakeGlyphTransform, cloneAnimatedProp, collectIntegerFrames } from "./glyphBake";
+
+export type GlyphDecomposeMode = "keyframesOnNull" | "keyframesOnChild";
 
 export interface GlyphMeasureContext {
   measureChar: (char: string) => number;
+}
+
+export interface GlyphDecomposeStyle {
+  font: string;
+  align: TextAlign;
+  weight: number;
+  italic: boolean;
+  size: number;
+  tracking: number;
+  leading: number;
+  color: RGBA;
+  strokeColor: RGBA;
+  strokeWidth: number;
 }
 
 function readStatic<T>(props: Record<string, unknown>, key: string, fallback: T): T {
@@ -33,12 +50,107 @@ function readAnimatedRgba(props: Record<string, unknown>, key: string, frame: Fr
   return fallback;
 }
 
+function readDecomposeStyle(
+  props: Record<string, unknown>,
+  frame: Frame,
+): GlyphDecomposeStyle {
+  return {
+    font: readStatic(props, "font", "sans-serif"),
+    align: readStatic(props, "align", "left") as TextAlign,
+    weight: readStatic(props, "weight", 400),
+    italic: readStatic(props, "italic", false),
+    size: readAnimatedNumber(props, "size", frame, 48),
+    tracking: readAnimatedNumber(props, "tracking", frame, 0),
+    leading: readAnimatedNumber(props, "leading", frame, 0),
+    color: readAnimatedRgba(props, "color", frame, { r: 1, g: 1, b: 1, a: 1 }),
+    strokeColor: readAnimatedRgba(props, "strokeColor", frame, { r: 0, g: 0, b: 0, a: 1 }),
+    strokeWidth: readAnimatedNumber(props, "strokeWidth", frame, 0),
+  };
+}
+
+function isAnimatedProp(v: unknown): v is AnimatedProp<unknown> {
+  return typeof v === "object" && v !== null && "value" in v && "keyframes" in v;
+}
+
+function cloneComponentProps(props: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, val] of Object.entries(props)) {
+    if (isAnimatedProp(val)) {
+      out[key] = cloneAnimatedProp(val);
+    } else {
+      out[key] = structuredClone(val);
+    }
+  }
+  return out;
+}
+
+function cloneEffectsForGlyph(effects: EffectInstance[] | undefined): EffectInstance[] | undefined {
+  if (!effects || effects.length === 0) return undefined;
+  return effects.map((e) => ({
+    ...e,
+    id: newObjectId(),
+    props: cloneComponentProps(e.props),
+  }));
+}
+
+function buildGlyphTextComponent(
+  char: string,
+  style: GlyphDecomposeStyle,
+  sourceProps: Record<string, unknown>,
+): Component {
+  const props = cloneComponentProps(sourceProps);
+  props["text"] = staticProp(char);
+  props["tracking"] = staticProp(0);
+  props["align"] = "left";
+  props["font"] = style.font;
+  props["weight"] = style.weight;
+  props["italic"] = style.italic;
+  if (!isAnimatedProp(props["size"])) props["size"] = staticProp(style.size);
+  if (!isAnimatedProp(props["leading"])) props["leading"] = staticProp(style.leading);
+  if (!isAnimatedProp(props["color"])) props["color"] = staticProp(style.color);
+  if (!isAnimatedProp(props["strokeColor"])) props["strokeColor"] = staticProp(style.strokeColor);
+  if (!isAnimatedProp(props["strokeWidth"])) props["strokeWidth"] = staticProp(style.strokeWidth);
+  return { type: "text", props };
+}
+
+interface GlyphPlacement {
+  char: string;
+  x: number;
+  y: number;
+}
+
+function buildGlyphObjectBase(
+  obj: SceneObject,
+  g: GlyphPlacement,
+  z: number,
+  style: GlyphDecomposeStyle,
+  sourceProps: Record<string, unknown>,
+  parent: string | null,
+  transform: SceneObject["transform"],
+): SceneObject {
+  return {
+    id: newObjectId(),
+    name: `${obj.name} ${g.char}`,
+    parent,
+    zOrder: z,
+    enabled: true,
+    inPoint: obj.inPoint,
+    outPoint: obj.outPoint,
+    transform,
+    opacity: cloneAnimatedProp(obj.opacity),
+    components: [buildGlyphTextComponent(g.char, style, sourceProps)],
+    effects: cloneEffectsForGlyph(obj.effects),
+  };
+}
+
 /** §26.5 グリフ分解: 1 command で複数 SceneObject を生成する patch を作る。 */
 export function buildGlyphDecomposeObjects(
   obj: SceneObject,
-  _comp: TimelineComposition,
+  comp: TimelineComposition,
   frame: Frame,
   ctx: GlyphMeasureContext,
+  mode: GlyphDecomposeMode = "keyframesOnNull",
+  resolveCtx?: ResolveContext,
 ): SceneObject[] | null {
   const textCompIdx = obj.components.findIndex((c) => c.type === "text");
   if (textCompIdx < 0) return null;
@@ -48,64 +160,59 @@ export function buildGlyphDecomposeObjects(
   const sourceText = readAnimatedString(props, "text", frame, "");
   if (!sourceText) return null;
 
-  const font = readStatic(props, "font", "sans-serif");
-  const align = readStatic(props, "align", "left") as TextAlign;
-  const weight = readStatic(props, "weight", 400);
-  const italic = readStatic(props, "italic", false);
-  const size = readAnimatedNumber(props, "size", frame, 48);
-  const tracking = readAnimatedNumber(props, "tracking", frame, 0);
-  const leading = readAnimatedNumber(props, "leading", frame, 0);
-  const color = readAnimatedRgba(props, "color", frame, { r: 1, g: 1, b: 1, a: 1 });
-  const strokeColor = readAnimatedRgba(props, "strokeColor", frame, { r: 0, g: 0, b: 0, a: 1 });
-  const strokeWidth = readAnimatedNumber(props, "strokeWidth", frame, 0);
-
-  const placements = layoutGlyphsForDecompose(sourceText, size, tracking, leading, align, ctx.measureChar);
+  const style = readDecomposeStyle(props, frame);
+  const placements = layoutGlyphsForDecompose(
+    sourceText,
+    style.size,
+    style.tracking,
+    style.leading,
+    style.align,
+    ctx.measureChar,
+  );
   if (placements.length === 0) return null;
 
-  /** 分解前のテキストをそのまま保持する参照レイヤー（二重描画を避けるため既定は非表示）。 */
   const sourceLayer = preserveDecomposeSourceLayer(obj);
-
   const baseZ = obj.zOrder;
   const glyphObjects: SceneObject[] = [];
   let z = baseZ;
+  const bakeFrames = collectIntegerFrames(obj.inPoint, obj.outPoint);
 
   for (const g of placements) {
     z += 0.001;
-    const id = newObjectId();
-    glyphObjects.push({
-      id,
-      name: `${obj.name} ${g.char}`,
-      parent: obj.id,
-      zOrder: z,
-      enabled: true,
-      inPoint: obj.inPoint,
-      outPoint: obj.outPoint,
-      transform: {
-        anchor: staticProp({ x: 0, y: 0, z: 0 }),
-        position: staticProp({ x: g.x, y: g.y, z: 0 }),
-        rotation: staticProp({ x: 0, y: 0, z: 0 }),
-        scale: staticProp({ x: 1, y: 1, z: 1 }),
-      },
-      opacity: { ...obj.opacity },
-      components: [
-        {
-          type: "text",
-          props: {
-            text: staticProp(g.char),
-            size: staticProp(size),
-            color: staticProp(color),
-            tracking: staticProp(0),
-            leading: staticProp(leading),
-            strokeColor: staticProp(strokeColor),
-            strokeWidth: staticProp(strokeWidth),
-            font,
-            align: "left",
-            weight,
-            italic,
+    if (mode === "keyframesOnChild") {
+      glyphObjects.push(
+        buildGlyphObjectBase(
+          obj,
+          g,
+          z,
+          style,
+          props,
+          obj.parent,
+          bakeGlyphTransform(obj, g.x, g.y, bakeFrames, comp.fps, resolveCtx),
+        ),
+      );
+    } else {
+      glyphObjects.push(
+        buildGlyphObjectBase(
+          obj,
+          g,
+          z,
+          style,
+          props,
+          obj.id,
+          {
+            anchor: staticProp({ x: 0, y: 0, z: 0 }),
+            position: staticProp({ x: g.x, y: g.y, z: 0 }),
+            rotation: staticProp({ x: 0, y: 0, z: 0 }),
+            scale: staticProp({ x: 1, y: 1, z: 1 }),
           },
-        },
-      ],
-    });
+        ),
+      );
+    }
+  }
+
+  if (mode === "keyframesOnChild") {
+    return [sourceLayer, ...glyphObjects];
   }
 
   const container: SceneObject = {
@@ -145,11 +252,11 @@ export function createCanvasMeasureContext(
   italic: boolean,
 ): GlyphMeasureContext {
   const canvas = document.createElement("canvas");
-  const ctx = canvas.getContext("2d")!;
-  const style = italic ? "italic" : "normal";
-  ctx.font = `${style} ${weight} ${size}px ${font}`;
+  const gctx = canvas.getContext("2d")!;
+  const fontStyle = italic ? "italic" : "normal";
+  gctx.font = `${fontStyle} ${weight} ${size}px ${font}`;
   return {
-    measureChar: (char: string) => ctx.measureText(char).width,
+    measureChar: (char: string) => gctx.measureText(char).width,
   };
 }
 

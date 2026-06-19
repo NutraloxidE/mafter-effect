@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  decomposeTrs,
   identity,
   invert,
   localMatrix,
@@ -57,6 +58,30 @@ describe("localMatrix — §6.3 compose order L = T(pos)·R·S·T(-anchor)", () 
     expectVecClose(transformPoint(L, vec3(10, 0, 0)), vec3(10, 0, 0));
     // content (20,0): relative to anchor (10,0) → rotated 90 → (0,10) → + position = (10,10)
     expectVecClose(transformPoint(L, vec3(20, 0, 0)), vec3(10, 10, 0));
+  });
+});
+
+describe("decomposeTrs", () => {
+  it("round-trips localMatrix with anchor=0", () => {
+    const cases = [
+      { pos: vec3(10, 20, 0), rot: vec3(0, 0, 0), scale: vec3(1, 1, 1) },
+      { pos: vec3(100, 50, 10), rot: vec3(10, 20, 30), scale: vec3(2, 1.5, 1) },
+      { pos: vec3(0, 0, 0), rot: vec3(0, 0, 90), scale: vec3(1, 1, 1) },
+    ];
+    for (const c of cases) {
+      const m = localMatrix(vec3(0, 0, 0), c.pos, c.rot, c.scale);
+      const d = decomposeTrs(m);
+      const rebuilt = localMatrix(vec3(0, 0, 0), d.position, d.rotation, d.scale);
+      for (let i = 0; i < 16; i++) {
+        expect(rebuilt[i]).toBeCloseTo(m[i]!, 4);
+      }
+    }
+  });
+
+  it("maps origin to position column", () => {
+    const m = localMatrix(vec3(0, 0, 0), vec3(30, 40, 0), vec3(0, 0, 45), vec3(2, 2, 1));
+    const d = decomposeTrs(m);
+    expectVecClose(transformPoint(m, vec3(0, 0, 0)), d.position);
   });
 });
 
