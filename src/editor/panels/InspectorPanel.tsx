@@ -273,6 +273,11 @@ export function InspectorPanel() {
       )}
 
       <InspectorFoldout label="Effects" expanded={isExpanded("effects")} onToggle={() => toggleExpanded("effects")}>
+        {obj.isAdjustment && (
+          <div style={{ color: "#8ab", fontSize: 10, marginBottom: 6, lineHeight: 1.4 }}>
+            調整レイヤー: CSS エフェクトは backdrop-filter、Pixel Sorter 等は下のレイヤー合成に適用されます。
+          </div>
+        )}
         <button
           type="button"
           onClick={() => setAddEffectOpen((v) => !v)}

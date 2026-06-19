@@ -7,6 +7,7 @@ import {
   TINT_EFFECT_DEF,
   TURBULENT_DISPLACE_EFFECT_DEF,
   WAVE_EFFECT_DEF,
+  PIXEL_SORTER_EFFECT_DEF,
   registerBuiltinEffects,
 } from "../src/runtime/builtinEffects";
 import { globalPluginRegistry } from "../src/runtime/pluginRegistry";
@@ -16,18 +17,18 @@ import type { EffectInstance, SceneObject, TimelineComposition } from "../src/co
 import { serializeProject, deserializeProject } from "../src/core/serialize";
 import { createProject } from "../src/core/createProject";
 
-const ctx = { width: 1920, height: 1080 };
+const ctx = { width: 1920, height: 1080, frame: 0 };
 
 describe("builtinEffects apply (§27.3)", () => {
   it("re-registers after pluginRegistry.clear() (loadPlugins 経路)", () => {
     registerBuiltinEffects();
     expect(globalPluginRegistry.listEffects().map((e) => e.type)).toEqual([
-      "blur", "tint", "wave", "turbulentDisplace", "ripple", "linearWipe", "angularWipe",
+      "blur", "tint", "wave", "turbulentDisplace", "ripple", "linearWipe", "angularWipe", "pixelSorter",
     ]);
     globalPluginRegistry.clear();
     registerBuiltinEffects();
     expect(globalPluginRegistry.listEffects().map((e) => e.type)).toEqual([
-      "blur", "tint", "wave", "turbulentDisplace", "ripple", "linearWipe", "angularWipe",
+      "blur", "tint", "wave", "turbulentDisplace", "ripple", "linearWipe", "angularWipe", "pixelSorter",
     ]);
   });
 
@@ -163,6 +164,65 @@ describe("builtinEffects apply (§27.3)", () => {
     if (r?.kind === "svg") {
       expect(r.primitives).toContain("path");
     }
+  });
+
+  it("pixelSorter returns null when identity threshold", () => {
+    expect(
+      PIXEL_SORTER_EFFECT_DEF.apply({
+        sortingMode: "simple",
+        thresholdLow: 0.8,
+        thresholdHigh: 0.2,
+        angle: 0,
+        length: 256,
+        offset: 0,
+        feather: 0,
+        sortBlocks: 1,
+      }, ctx),
+    ).toBeNull();
+  });
+
+  it("pixelSorter returns raster kind when active", () => {
+    expect(
+      PIXEL_SORTER_EFFECT_DEF.apply({
+        sortingMode: "simple",
+        thresholdLow: 0,
+        thresholdHigh: 1,
+        angle: 0,
+        length: 256,
+        offset: 0,
+        feather: 0,
+        sortBlocks: 1,
+      }, ctx),
+    ).toEqual({ kind: "raster" });
+  });
+
+  it("pixelSorter processPixels changes buffer", () => {
+    const data = new Uint8ClampedArray(4 * 4 * 4);
+    const pattern = [255, 32, 200, 64];
+    for (let i = 0; i < 16; i++) {
+      const v = pattern[i % 4]!;
+      const o = i * 4;
+      data[o] = v;
+      data[o + 1] = v;
+      data[o + 2] = v;
+      data[o + 3] = 255;
+    }
+    const input = { data, width: 4, height: 4 };
+    const out = PIXEL_SORTER_EFFECT_DEF.processPixels!(
+      input,
+      {
+        sortingMode: "simple",
+        thresholdLow: 0,
+        thresholdHigh: 1,
+        angle: 0,
+        length: 0,
+        offset: 0,
+        feather: 0,
+        sortBlocks: 1,
+      },
+      { ...ctx, frame: 5 },
+    );
+    expect(Array.from(out.data)).not.toEqual(Array.from(input.data));
   });
 });
 

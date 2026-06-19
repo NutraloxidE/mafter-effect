@@ -70,8 +70,9 @@ const report = await page.evaluate(async () => {
   textLayer("ripple", v3(1010, 120), "RIPPLE", "ripple", { amplitude: 26, radius: 300, frequency: 7, centerX: 0.5, centerY: 0.4 });
   solidLayer("linearWipe", v3(60, 620), { r: 1, g: 0.5, b: 0.2, a: 1 }, "linearWipe", { completion: 0.5, angle: 0, feather: 12 });
   solidLayer("angularWipe", v3(1010, 620), { r: 0.3, g: 1, b: 0.5, a: 1 }, "angularWipe", { completion: 0.3, startAngle: 0, centerX: 0.5, centerY: 0.5, feather: 4 });
+  solidLayer("pixelSorter", v3(960, 540), { r: 0.9, g: 0.4, b: 0.1, a: 1 }, "pixelSorter", { sortingMode: "simple", thresholdLow: 0.2, thresholdHigh: 0.85, angle: 45, length: 512, offset: 0, feather: 0, sortBlocks: 1 });
 
-  await new Promise((r) => setTimeout(r, 1500));
+  await new Promise((r) => setTimeout(r, 2500));
   for (const o of out) {
     const el = document.querySelector(`[data-object-id="${o.id}"]`);
     o.filter = el ? getComputedStyle(el).filter : "(no el)";

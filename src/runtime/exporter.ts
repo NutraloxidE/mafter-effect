@@ -14,6 +14,7 @@ import { ExpressionEngine } from "./expressionEngine";
 import { HtmlCompPlayer } from "./htmlComp";
 import { ModuleLoader } from "./moduleLoader";
 import { resolve, type ExpressionEvaluator } from "./resolve";
+import { captureElementToCanvas } from "./rasterCapture";
 
 export type ExportPhase = "prepare" | "render" | "encode" | "audio" | "done" | "error";
 
@@ -172,85 +173,10 @@ async function captureFrame(
   h: number,
   bg: string,
 ): Promise<HTMLCanvasElement> {
-  // Shadow DOM を flatten した clone を作る（foreignObject シリアライズ不可のため）
-  const cloned = flattenShadow(container) as HTMLElement;
-  cloned.setAttribute("xmlns", "http://www.w3.org/1999/xhtml");
-
-  const serializer = new XMLSerializer();
-  const htmlStr = serializer.serializeToString(cloned);
-
-  const svgStr = [
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${nw}" height="${nh}">`,
-    bg !== "transparent" ? `<rect width="${nw}" height="${nh}" fill="${bg}"/>` : "",
-    `<foreignObject x="0" y="0" width="${nw}" height="${nh}">`,
-    htmlStr,
-    `</foreignObject>`,
-    `</svg>`,
-  ].join("");
-
-  // 重要: SVG は **data: URL** で読み込む。blob: URL から読んだ <foreignObject> を含む
-  // SVG を drawImage すると Chromium が canvas を tainted 扱いにし、toBlob / VideoFrame が
-  // SecurityError で失敗する（cross-origin でなくても）。data: URL は same-origin 扱いで汚染しない。
-  // 非 ASCII（日本語テキスト等）を安全に乗せるため UTF-8 → base64 で data URL を組む。
-  const url = svgToDataUrl(svgStr);
-  const img = new Image();
-  img.src = url;
-  await new Promise<void>((res, rej) => {
-    img.onload = () => res();
-    img.onerror = () => rej(new Error("SVG rasterization failed"));
-  });
-
-  // native canvas でラスタ化 → scale へコピー
-  const native = document.createElement("canvas");
-  native.width = nw;
-  native.height = nh;
-  const nctx = native.getContext("2d")!;
-  if (bg !== "transparent") { nctx.fillStyle = bg; nctx.fillRect(0, 0, nw, nh); }
-  nctx.drawImage(img, 0, 0);
-
-  if (w === nw && h === nh) return native;
-
-  const scaled = document.createElement("canvas");
-  scaled.width = w;
-  scaled.height = h;
-  scaled.getContext("2d")!.drawImage(native, 0, 0, w, h);
-  return scaled;
+  return captureElementToCanvas(container, nw, nh, bg, w, h);
 }
 
-/** SVG 文字列を tainted にならない data: URL に変換する（UTF-8 → base64）。 */
-function svgToDataUrl(svg: string): string {
-  const utf8 = new TextEncoder().encode(svg);
-  let binary = "";
-  for (let i = 0; i < utf8.length; i++) binary += String.fromCharCode(utf8[i]!);
-  return `data:image/svg+xml;base64,${btoa(binary)}`;
-}
-
-/** Shadow DOM を持つノードを再帰的に clone し、shadowRoot の内容を inline に展開する。 */
-function flattenShadow(node: Node): Node {
-  if (!(node instanceof Element)) return node.cloneNode(true);
-
-  const clone = node.cloneNode(false) as Element;
-  const shadow = (node as HTMLElement).shadowRoot;
-  if (shadow) {
-    // Shadow DOM 内の <style> を収集して inline 化
-    const styles = Array.from(shadow.querySelectorAll("style"))
-      .map((s) => s.textContent ?? "")
-      .join("\n");
-    if (styles) {
-      const styleEl = document.createElement("style");
-      styleEl.textContent = styles;
-      clone.appendChild(styleEl);
-    }
-    for (const child of shadow.childNodes) {
-      if (child instanceof HTMLStyleElement) continue;
-      clone.appendChild(flattenShadow(child));
-    }
-  }
-  for (const child of node.childNodes) {
-    clone.appendChild(flattenShadow(child));
-  }
-  return clone;
-}
+// flattenShadow / svgToDataUrl は rasterCapture.ts に移動済み（下記は削除）
 
 // ─── PNG sequence ─────────────────────────────────────────────────────────────
 
@@ -274,6 +200,7 @@ async function runPngSeq(
     renderer.renderFrame(resolve(comp, frame, { expressions: evaluator }), frame);
     onProgress({ phase: "render", frame: fi, totalFrames, message: `Frame ${fi + 1}/${totalFrames}` });
 
+    await renderer.flushRasterEffects();
     // DOM が描画される次ティックまで待つ
     await nextTick();
 
@@ -483,6 +410,7 @@ async function encodeVideoFrames(
     renderer.renderFrame(resolve(comp, frame, { expressions: evaluator }), frame);
     onProgress({ phase: "render", frame: fi, totalFrames, message: `Rendering frame ${fi + 1}/${totalFrames}` });
 
+    await renderer.flushRasterEffects();
     await nextTick();
 
     const canvas = await captureFrame(renderer.getRoot()!, nw, nh, w, h, bg);

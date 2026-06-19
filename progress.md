@@ -17,7 +17,7 @@
 
 **MVP = M0–M4 全マイルストーン実装・実機検証完了。** その後 §20 Project パネル / §21 Timeline AE化 / §22 グラフエディタ / §23 precomp を MVP 後 UX として拡張中。
 
-現行テスト: **169 件全通過** / typecheck ✅ / build ✅（2026-06-19）。
+現行テスト: **186 件全通過** / typecheck ✅ / build ✅（2026-06-19）。
 
 ---
 
@@ -164,13 +164,29 @@ spec §26 に確定。`text` builtin ComponentDef 登録 + Inspector Text セク
 
 **残タスク**:
 - [x] **per-effect 視覚検証** — 2026-06-19 完了（上記）。
-- [ ] **export 一致（INV-2）**: 新 5 種の preview↔export ピクセル検証（feImage href が foreignObject ラスタ経路で再現するか要確認。再現不可なら許容済み既知差として明記）。**レイヤー実寸 ctx は export レンダラ経路でも host div を測れるか要確認**（exporter が別 DomRenderer インスタンスを使う場合、子要素レイアウト確定後に applyEffects が走るか）。
+- [ ] **export 一致（INV-2）**: 新 5 種 SVG エフェクトの preview↔export ピクセル検証（feImage href が foreignObject ラスタ経路で再現するか要確認）。
+- [x] **pixelSorter export 一致（INV-2）** — 2026-06-19 (Cursor) 完了。根因: `captureElementToCanvas` の `cloneNode` が canvas bitmap を複製しない → [`rasterCapture.ts`](src/runtime/rasterCapture.ts) `inlineCanvasBitmaps(cloned, source)` で source 側から `toDataURL`。**Playwright**: plain solid 120k px / pixelSorter 120k px（修正前 0 px）。preview↔export サンプル差分は foreignObject 二重経路による軽微残差（許容）。
 - [ ] **調整レイヤー + 新エフェクト**: backdrop-filter 経路での作用確認
 - [ ] **Timeline**: Wave `direction` enum 行の編集 UI（現状 Inspector `<select>` のみ）
 - [ ] **turbulentDisplace の size→frequency / evolution チューニング**（任意・既存確認済みのため低優先）
 - **KF アニメ実機**: 今回は静的値で検証。completion/phase/amplitude の KF アニメは resolve 経路（test 済み）だが preview スクラブの実機確認は任意で残。
 
 **関連ファイル**: [effectSvg.ts](src/runtime/effectSvg.ts) / [builtinEffects.ts](src/runtime/builtinEffects.ts) / [DomRenderer.ts](src/runtime/DomRenderer.ts) / spec §27.3 / 検証スクリプト [verify-effects.mjs](verify-effects.mjs)
+
+#### §27.3 `pixelSorter` — Pixel Sorter + raster パイプライン（**実装完了 2026-06-19**）
+
+> spec §27.1 raster パイプライン + §27.3 `pixelSorter`（AEPS2 Phase 1 コア）。**途中セッションから Cursor が継続実装・export バグ修正まで完了。**
+
+- [x] **コア（純関数）**: [`pixelSort.ts`](src/runtime/pixelSort.ts) — 輝度しきい値 / angle 回転 / simple|highlights|shadows|random / sortBlocks / feather（INV-1）
+- [x] **EffectDef**: [`builtinEffects.ts`](src/runtime/builtinEffects.ts) `pixelSorter` — `{ kind: "raster" }` + `processPixels`
+- [x] **DomRenderer §27.1**: pre css/svg → raster capture → canvas overlay → post filter。`flushRasterEffects()` / `rasterRunKey`（frame 含む stale ガード）
+- [x] **共有ラスタ化**: [`rasterCapture.ts`](src/runtime/rasterCapture.ts) — exporter と DomRenderer 共有。`flattenShadow` / `inlineCanvasBitmaps(cloned, source)`（export 用 canvas bitmap 焼き込み）
+- [x] **exporter**: [`exporter.ts`](src/runtime/exporter.ts) — 各 frame `await renderer.flushRasterEffects()` 後 root capture
+- [x] **テスト**: [`test/pixelSort.test.ts`](test/pixelSort.test.ts)（6 件）+ [`test/effects.test.ts`](test/effects.test.ts) pixelSorter 3 件。**186 tests PASS**
+- [x] **Playwright preview**: raster canvas 400×300・非ゼロピクセル確認 ✅
+- [x] **Playwright export**: pixelSorter 付き solid が PNG-seq に出力（修正前は全黒）✅
+- **非目標（Phase 1）**: Gradients / Random Length / 調整レイヤー + raster / AEPS2 100% 一致
+- **許容済み既知差**: preview ライブ canvas と export foreignObject 二重ラスタの軽微色差。random mode は frame seed 依存（INV-1 準拠）。
 
 ### Timeline AE化バックログ（spec §5 スキーマ拡張 + INV 影響評価を伴い別リビジョンで導入）
 **→ 実用性優先度リストは [doc/timeline-panel-wip.md](doc/timeline-panel-wip.md)。**
@@ -277,3 +293,4 @@ Preview 四隅 scale ハンドルも 2026-06-18 手動確認で修正済み。�
 | 2026-06-19 | (Cursor) **§27.3 ディストーション & ワイプ 5 種追加（仮実装・要修正）**: spec §27.3 追記 + [effectSvg.ts](src/runtime/effectSvg.ts) + builtin `wave`/`turbulentDisplace`/`ripple`/`linearWipe`/`angularWipe` + Inspector enum（Wave direction）。169 tests / typecheck / build ✅。Playwright: Wave/Turbulent/Linear/Angular preview filter ✅。**Ripple・export 一致・見た目チューニングは未完了 → progress §27.3 要修正リスト参照** |
 | 2026-06-19 | (Cursor) **ワイプ角度レンジ修正**: `linearWipe.angle` / `angularWipe.startAngle` の ParamDescriptor `min/max`（0..360）を削除し AE 同様に負値・360 超を入力可能に。レンダリングは元から任意角度対応。spec §27.3 更新 + テスト追加。173 tests ✅ |
 | 2026-06-19 | (Cursor) **§27.3 ディストーション 3 種スライドバグを doc 化**: 未解決の Amplitude 比例スライド（wave/turbulentDisplace/ripple）の再現手順・仮説・修正試行を [doc/distortion-effect-bugs.md](doc/distortion-effect-bugs.md) に集約。途中の未コミット pad/margin 試行は作業ツリーから撤回。176 tests ✅ |
+| 2026-06-19 | (Cursor) **§27.3 pixelSorter + raster パイプライン実装完了**: spec §27.1 raster / §27.3 pixelSorter + [pixelSort.ts](src/runtime/pixelSort.ts) + DomRenderer canvas overlay + [rasterCapture.ts](src/runtime/rasterCapture.ts) exporter 共有 + export `inlineCanvasBitmaps` 修正（clone canvas 空バグ）。186 tests / Playwright preview+export ✅ |

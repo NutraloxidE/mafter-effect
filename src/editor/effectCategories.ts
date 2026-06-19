@@ -6,6 +6,7 @@ export const EFFECT_PICKER_CATEGORY_ORDER = [
   "カラー補正",
   "ディストーション",
   "ワイプ",
+  "スタイライズ",
   "その他",
 ] as const;
 

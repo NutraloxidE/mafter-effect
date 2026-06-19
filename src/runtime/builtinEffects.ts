@@ -1,5 +1,5 @@
 import type { RGBA } from "../core/schema";
-import type { EffectDef, EffectRenderCtx } from "./plugin";
+import type { EffectDef, EffectRenderCtx, RasterBuffer } from "./plugin";
 import { globalPluginRegistry } from "./pluginRegistry";
 import {
   angularWipeMask,
@@ -11,6 +11,12 @@ import {
   turbulenceDisplace,
   waveDisplaceMapSvg,
 } from "./effectSvg";
+import {
+  isPixelSortIdentity,
+  processPixelSort,
+  type PixelSortParams,
+  type PixelSortMode,
+} from "./pixelSort";
 
 function num(v: unknown, fallback: number): number {
   return typeof v === "number" && Number.isFinite(v) ? v : fallback;
@@ -212,6 +218,45 @@ const ANGULAR_WIPE_EFFECT_DEF: EffectDef = {
   },
 };
 
+function parsePixelSortParams(props: Record<string, unknown>): PixelSortParams {
+  const mode = str(props["sortingMode"], "simple");
+  const sortingMode: PixelSortMode =
+    mode === "highlights" || mode === "shadows" || mode === "random" ? mode : "simple";
+  return {
+    sortingMode,
+    thresholdLow: Math.min(1, Math.max(0, num(props["thresholdLow"], 0.25))),
+    thresholdHigh: Math.min(1, Math.max(0, num(props["thresholdHigh"], 0.75))),
+    angle: num(props["angle"], 0),
+    length: Math.max(0, Math.round(num(props["length"], 256))),
+    offset: Math.max(0, Math.round(num(props["offset"], 0))),
+    feather: Math.max(0, num(props["feather"], 0)),
+    sortBlocks: Math.max(1, Math.min(64, Math.round(num(props["sortBlocks"], 1)))),
+  };
+}
+
+const PIXEL_SORTER_EFFECT_DEF: EffectDef = {
+  type: "pixelSorter",
+  label: "Pixel Sorter",
+  category: "スタイライズ",
+  params: [
+    { key: "sortingMode", label: "Sorting Mode", kind: "enum", default: "simple", animatable: false, options: ["simple", "highlights", "shadows", "random"] },
+    { key: "thresholdLow", label: "Threshold Low", kind: "scalar", default: 0.25, animatable: true, min: 0, max: 1, step: 0.01 },
+    { key: "thresholdHigh", label: "Threshold High", kind: "scalar", default: 0.75, animatable: true, min: 0, max: 1, step: 0.01 },
+    { key: "angle", label: "Angle", kind: "scalar", default: 0, animatable: true, step: 1 },
+    { key: "length", label: "Length", kind: "scalar", default: 256, animatable: true, min: 0, max: 4096, step: 1 },
+    { key: "offset", label: "Offset", kind: "scalar", default: 0, animatable: true, min: 0, max: 4096, step: 1 },
+    { key: "feather", label: "Feather", kind: "scalar", default: 0, animatable: true, min: 0, max: 200, step: 0.1 },
+    { key: "sortBlocks", label: "Sort Blocks", kind: "scalar", default: 1, animatable: true, min: 1, max: 64, step: 1 },
+  ],
+  apply(props) {
+    if (isPixelSortIdentity(parsePixelSortParams(props))) return null;
+    return { kind: "raster" };
+  },
+  processPixels(input: RasterBuffer, props, ctx: EffectRenderCtx) {
+    return processPixelSort(input, parsePixelSortParams(props), phaseToSeed(ctx.frame));
+  },
+};
+
 export function registerBuiltinEffects(): void {
   globalPluginRegistry.registerEffect(BLUR_EFFECT_DEF);
   globalPluginRegistry.registerEffect(TINT_EFFECT_DEF);
@@ -220,6 +265,7 @@ export function registerBuiltinEffects(): void {
   globalPluginRegistry.registerEffect(RIPPLE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(LINEAR_WIPE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(ANGULAR_WIPE_EFFECT_DEF);
+  globalPluginRegistry.registerEffect(PIXEL_SORTER_EFFECT_DEF);
 }
 
 export {
@@ -230,4 +276,5 @@ export {
   RIPPLE_EFFECT_DEF,
   LINEAR_WIPE_EFFECT_DEF,
   ANGULAR_WIPE_EFFECT_DEF,
+  PIXEL_SORTER_EFFECT_DEF,
 };

@@ -3,10 +3,13 @@ import type { FontOutlineCache } from "./fontOutlineCache";
 import type { HtmlCompPlayer } from "./htmlComp";
 import { globalPluginRegistry } from "./pluginRegistry";
 import type { Renderer } from "./renderer";
-import type { ResolvedComponent, ResolvedObject, ResolvedScene } from "./resolved";
+import type { ResolvedComponent, ResolvedEffect, ResolvedObject, ResolvedScene } from "./resolved";
 import { compChildFrame, isCompNestDepthAllowed } from "./compLayer";
 import { resolve } from "./resolve";
 import { applyTextEl, rgbaCss } from "./textRender";
+import { captureElementToCanvas } from "./rasterCapture";
+import { canvasToRasterBuffer, rasterBufferToCanvas } from "./pixelSort";
+import type { EffectFilter } from "./plugin";
 
 // §8 DomRenderer — フラット matrix3d レンダラ。
 // 各 ResolvedObject を root の兄弟 div として並べる。ネストしない。
@@ -25,9 +28,21 @@ const BASE_Z = 10; // z-index はこの値を起点に zOrder*BASE_Z で割り�
 interface ObjectEntry {
   div: HTMLDivElement;
   childSig: string; // component 型の連結。変化したら子を作り直す
-  fxSig: string; // effect 型/順序/有効状態。変化したら svg defs を作り直す
+  fxSig: string; // effect 型/順序/有効状態/props。変化したら svg defs を作り直す
   children: HTMLElement[];
   svgRoot: SVGSVGElement | null;
+  rasterCanvas: HTMLCanvasElement | null;
+  contentHidden: boolean;
+  rasterRunKey: string;
+  rasterInFlightKey: string | null;
+  rasterCompletedKey: string | null;
+  /** 調整レイヤー raster 合成時に背面へ隠したレイヤーを指す adjustment object id */
+  suppressedForAdjustment: string | null;
+}
+
+interface RasterWorkItem {
+  effect: ResolvedEffect;
+  def: NonNullable<ReturnType<typeof globalPluginRegistry.getEffectDef>>;
 }
 
 export class DomRenderer implements Renderer {
@@ -36,6 +51,7 @@ export class DomRenderer implements Renderer {
   private root: HTMLDivElement | null = null;
   private entries = new Map<string, ObjectEntry>();
   private currentComp: CompositionMeta | null = null;
+  private rasterPending = new Set<Promise<void>>();
 
   // §7 HTML comp サポート: HtmlCompPlayer を注入（optional）。
   // mount 後に setHtmlPlayer() で差し替え可。
@@ -99,7 +115,19 @@ export class DomRenderer implements Renderer {
         div.style.transformOrigin = "0 0";
         div.dataset.objectId = obj.id;
         this.root.appendChild(div);
-        entry = { div, childSig: "", fxSig: "", children: [], svgRoot: null };
+        entry = {
+          div,
+          childSig: "",
+          fxSig: "",
+          children: [],
+          svgRoot: null,
+          rasterCanvas: null,
+          contentHidden: false,
+          rasterRunKey: "",
+          rasterInFlightKey: null,
+          rasterCompletedKey: null,
+          suppressedForAdjustment: null,
+        };
         this.entries.set(obj.id, entry);
       }
       this.applyObject(entry, obj, frame);
@@ -108,6 +136,7 @@ export class DomRenderer implements Renderer {
     // 非表示になったオブジェクトを削除
     for (const [id, entry] of this.entries) {
       if (!seen.has(id)) {
+        this.restoreAdjustmentSuppression(id);
         entry.div.remove();
         this.entries.delete(id);
         this.htmlPlayer?.unmountObject(id);
@@ -124,6 +153,12 @@ export class DomRenderer implements Renderer {
   /** §11.2 export 用: マウントした root 要素を返す。 */
   getRoot(): HTMLElement | null {
     return this.root;
+  }
+
+  /** §27.1 raster — 非同期 raster effect 完了を待つ（export 用・INV-2）。 */
+  async flushRasterEffects(): Promise<void> {
+    if (this.rasterPending.size === 0) return;
+    await Promise.all([...this.rasterPending]);
   }
 
   dispose(): void {
@@ -235,19 +270,17 @@ export class DomRenderer implements Renderer {
 
     // effects は子要素のサイズ確定後に適用する（マスク/displacement map を
     // レイヤーの実寸に合わせるため offsetWidth/Height を測る・§27.1）。
-    this.applyEffects(entry, obj);
+    this.applyEffects(entry, obj, frame);
   }
 
-  /** §27.1/§27.4 — effects を filter / backdrop-filter として host div に適用。 */
-  private applyEffects(entry: ObjectEntry, obj: ResolvedObject): void {
+  /** §27.1/§27.4 — effects を filter / backdrop-filter / raster として適用。 */
+  private applyEffects(entry: ObjectEntry, obj: ResolvedObject, frame: Frame): void {
     const effects = obj.effects ?? [];
-    const fxSig = effects.map((e) => `${e.type}:${e.enabled ? 1 : 0}`).join("|");
+    const fxSig = effects
+      .map((e) => `${e.type}:${e.enabled ? 1 : 0}:${JSON.stringify(e.props)}`)
+      .join("|");
     const compW = this.currentComp?.width ?? 0;
     const compH = this.currentComp?.height ?? 0;
-    // 調整レイヤーは comp 全体に作用（§27.4）。通常レイヤーは自身のコンテンツ矩形に
-    // フィルタが効くため、その実寸を ctx に渡す（comp 寸ではマスクがズレる）。
-    // host div は position:absolute の子（solid 等）だと auto 幅が 0 に潰れるので、
-    // コンポーネント子要素の border box から実寸を測る（svgRoot は children に含めない）。
     let layerW = 0;
     let layerH = 0;
     for (const child of entry.children) {
@@ -255,10 +288,11 @@ export class DomRenderer implements Renderer {
       layerH = Math.max(layerH, child.offsetHeight);
     }
     const ctx = obj.isAdjustment
-      ? { width: compW, height: compH }
+      ? { width: compW, height: compH, frame }
       : {
           width: layerW || entry.div.offsetWidth || compW,
           height: layerH || entry.div.offsetHeight || compH,
+          frame,
         };
 
     if (fxSig !== entry.fxSig) {
@@ -267,11 +301,18 @@ export class DomRenderer implements Renderer {
         entry.svgRoot = null;
       }
       entry.fxSig = fxSig;
+      entry.rasterCompletedKey = null;
+      entry.rasterInFlightKey = null;
     }
 
-    const tokens: string[] = [];
-    let svgIndex = 0;
-    const svgFilters: { id: string; primitives: string }[] = [];
+    const preTokens: string[] = [];
+    const postTokens: string[] = [];
+    const preSvgFilters: { id: string; primitives: string }[] = [];
+    const postSvgFilters: { id: string; primitives: string }[] = [];
+    const rasterChain: RasterWorkItem[] = [];
+    let inRasterSection = false;
+    let preSvgIndex = 0;
+    let postSvgIndex = 0;
 
     for (const effect of effects) {
       if (!effect.enabled) continue;
@@ -279,16 +320,66 @@ export class DomRenderer implements Renderer {
       if (!def) continue;
       const piece = def.apply(effect.props, ctx);
       if (!piece) continue;
-      if (piece.kind === "css") {
-        tokens.push(piece.fn);
+
+      if (piece.kind === "raster") {
+        inRasterSection = true;
+        rasterChain.push({ effect, def });
+      } else if (inRasterSection) {
+        this.pushFilterPiece(piece, postTokens, postSvgFilters, `fx-${obj.id}-post-${postSvgIndex++}`);
       } else {
-        const id = `fx-${obj.id}-${svgIndex}`;
-        svgFilters.push({ id, primitives: piece.primitives });
-        tokens.push(`url(#${id})`);
-        svgIndex++;
+        this.pushFilterPiece(piece, preTokens, preSvgFilters, `fx-${obj.id}-pre-${preSvgIndex++}`);
       }
     }
 
+    if (rasterChain.length === 0) {
+      this.clearRasterOverlay(entry);
+      if (obj.isAdjustment) this.restoreAdjustmentSuppression(obj.id);
+      this.applyFilterTokens(entry, obj, [...preTokens, ...postTokens], [...preSvgFilters, ...postSvgFilters]);
+      return;
+    }
+
+    this.applyFilterTokens(entry, obj, preTokens, preSvgFilters);
+    const postFilterStr = postTokens.join(" ");
+    const rasterRunKey = `${fxSig}|f${frame}`;
+    entry.rasterRunKey = rasterRunKey;
+
+    if (entry.rasterCompletedKey === rasterRunKey && entry.rasterCanvas) {
+      this.finalizeRasterPresentation(entry, obj, postFilterStr, postSvgFilters);
+      return;
+    }
+    if (entry.rasterInFlightKey === rasterRunKey) {
+      return;
+    }
+
+    const work = obj.isAdjustment
+      ? this.runAdjustmentRasterPipeline(entry, obj, ctx, rasterChain, postFilterStr, postSvgFilters, rasterRunKey)
+      : this.runRasterPipeline(entry, obj, ctx, rasterChain, postFilterStr, postSvgFilters, rasterRunKey);
+    const tracked = work.finally(() => {
+      this.rasterPending.delete(tracked);
+    });
+    this.rasterPending.add(tracked);
+  }
+
+  private pushFilterPiece(
+    piece: EffectFilter,
+    tokens: string[],
+    svgFilters: { id: string; primitives: string }[],
+    id: string,
+  ): void {
+    if (piece.kind === "css") {
+      tokens.push(piece.fn);
+    } else if (piece.kind === "svg") {
+      svgFilters.push({ id, primitives: piece.primitives });
+      tokens.push(`url(#${id})`);
+    }
+  }
+
+  private applyFilterTokens(
+    entry: ObjectEntry,
+    obj: ResolvedObject,
+    tokens: string[],
+    svgFilters: { id: string; primitives: string }[],
+  ): void {
     const filterStr = tokens.join(" ");
     if (obj.isAdjustment) {
       entry.div.style.filter = "";
@@ -299,7 +390,10 @@ export class DomRenderer implements Renderer {
       (entry.div.style as CSSStyleDeclaration & { webkitBackdropFilter?: string }).webkitBackdropFilter = "";
       entry.div.style.filter = filterStr;
     }
+    this.syncSvgFilters(entry, svgFilters);
+  }
 
+  private syncSvgFilters(entry: ObjectEntry, svgFilters: { id: string; primitives: string }[]): void {
     if (svgFilters.length > 0) {
       if (!entry.svgRoot) {
         const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -312,8 +406,6 @@ export class DomRenderer implements Renderer {
       for (const { id, primitives } of svgFilters) {
         const filter = document.createElementNS("http://www.w3.org/2000/svg", "filter");
         filter.setAttribute("id", id);
-        // §27.3 — displacement / feather がレイヤー端で切れないよう filter region を拡張。
-        // feImage は feImageLayer で (0,0,w,h) に固定済みなので region 拡張で歪まない。
         filter.setAttribute("x", "-25%");
         filter.setAttribute("y", "-25%");
         filter.setAttribute("width", "150%");
@@ -326,6 +418,209 @@ export class DomRenderer implements Renderer {
     } else if (entry.svgRoot) {
       entry.svgRoot.remove();
       entry.svgRoot = null;
+    }
+  }
+
+  private reapplyAdjustmentSuppression(adjustmentId: string, adjustZ: number): void {
+    for (const [id, other] of this.entries) {
+      if (id === adjustmentId) continue;
+      const z = parseInt(other.div.style.zIndex, 10);
+      if (z < adjustZ) {
+        other.div.style.visibility = "hidden";
+        other.suppressedForAdjustment = adjustmentId;
+      }
+    }
+  }
+
+  /** raster 完了後の表示状態（canvas 表示・下位レイヤー抑制・post filter）。 */
+  private finalizeRasterPresentation(
+    entry: ObjectEntry,
+    obj: ResolvedObject,
+    postFilterStr: string,
+    postSvgFilters: { id: string; primitives: string }[],
+  ): void {
+    if (obj.isAdjustment) {
+      this.restoreAdjustmentSuppression(obj.id);
+      this.reapplyAdjustmentSuppression(obj.id, Math.round(obj.zOrder * BASE_Z));
+    } else if (!entry.contentHidden) {
+      for (const child of entry.children) {
+        child.style.visibility = "hidden";
+      }
+      entry.contentHidden = true;
+    }
+    entry.div.style.filter = postFilterStr;
+    this.syncSvgFilters(entry, postSvgFilters);
+  }
+
+  private restoreAdjustmentSuppression(adjustmentId: string): void {
+    for (const [, other] of this.entries) {
+      if (other.suppressedForAdjustment === adjustmentId) {
+        other.div.style.visibility = "";
+        other.suppressedForAdjustment = null;
+      }
+    }
+  }
+
+  private presentRasterCanvas(
+    entry: ObjectEntry,
+    buffer: { data: Uint8ClampedArray; width: number; height: number },
+    w: number,
+    h: number,
+  ): void {
+    if (!entry.rasterCanvas) {
+      entry.rasterCanvas = rasterBufferToCanvas(buffer);
+      entry.rasterCanvas.style.cssText = "position:absolute;top:0;left:0;pointer-events:none";
+      entry.div.appendChild(entry.rasterCanvas);
+    } else {
+      entry.rasterCanvas.width = w;
+      entry.rasterCanvas.height = h;
+      const ctx2d = entry.rasterCanvas.getContext("2d");
+      if (ctx2d) {
+        ctx2d.putImageData(new ImageData(new Uint8ClampedArray(buffer.data), w, h), 0, 0);
+      }
+    }
+  }
+
+  private bufferHasVisiblePixels(buffer: { data: Uint8ClampedArray; width: number; height: number }): boolean {
+    const { data } = buffer;
+    for (let i = 3; i < data.length; i += 16) {
+      if (data[i]! > 0 && (data[i - 3]! > 0 || data[i - 2]! > 0 || data[i - 1]! > 0)) return true;
+    }
+    return false;
+  }
+
+  private clearRasterOverlay(entry: ObjectEntry): void {
+    if (entry.rasterCanvas) {
+      entry.rasterCanvas.remove();
+      entry.rasterCanvas = null;
+    }
+    if (entry.contentHidden) {
+      for (const child of entry.children) {
+        child.style.visibility = "";
+      }
+      entry.contentHidden = false;
+    }
+    entry.rasterCompletedKey = null;
+    entry.rasterInFlightKey = null;
+  }
+
+  private async runRasterPipeline(
+    entry: ObjectEntry,
+    obj: ResolvedObject,
+    ctx: { width: number; height: number; frame: number },
+    rasterChain: RasterWorkItem[],
+    postFilterStr: string,
+    postSvgFilters: { id: string; primitives: string }[],
+    rasterRunKey: string,
+  ): Promise<void> {
+    const w = Math.max(1, Math.round(ctx.width));
+    const h = Math.max(1, Math.round(ctx.height));
+    if (w === 0 || h === 0) return;
+
+    entry.rasterInFlightKey = rasterRunKey;
+    try {
+      const captureEl = document.createElement("div");
+      captureEl.style.cssText = `position:relative;width:${w}px;height:${h}px;overflow:hidden;`;
+      captureEl.style.filter = entry.div.style.filter;
+      for (const child of entry.children) {
+        const clone = child.cloneNode(true) as HTMLElement;
+        clone.style.visibility = "visible";
+        captureEl.appendChild(clone);
+      }
+      if (entry.svgRoot) {
+        captureEl.insertBefore(entry.svgRoot.cloneNode(true), captureEl.firstChild);
+      }
+
+      const canvas = await captureElementToCanvas(captureEl, w, h, "transparent");
+      let buffer = canvasToRasterBuffer(canvas);
+
+      for (const { effect, def } of rasterChain) {
+        if (!def.processPixels) continue;
+        buffer = def.processPixels(buffer, effect.props, ctx);
+      }
+
+      if (entry.rasterRunKey !== rasterRunKey) return;
+      if (!this.bufferHasVisiblePixels(buffer)) {
+        throw new Error("raster capture empty");
+      }
+
+      this.presentRasterCanvas(entry, buffer, w, h);
+      entry.rasterCompletedKey = rasterRunKey;
+      this.finalizeRasterPresentation(entry, obj, postFilterStr, postSvgFilters);
+    } catch {
+      if (entry.rasterCompletedKey !== rasterRunKey) {
+        this.clearRasterOverlay(entry);
+      }
+    } finally {
+      if (entry.rasterInFlightKey === rasterRunKey) entry.rasterInFlightKey = null;
+    }
+  }
+
+  /** §27.4 調整レイヤー — 背面合成を comp 解像度で raster 化して buffer→buffer を適用。 */
+  private async runAdjustmentRasterPipeline(
+    entry: ObjectEntry,
+    obj: ResolvedObject,
+    ctx: { width: number; height: number; frame: number },
+    rasterChain: RasterWorkItem[],
+    postFilterStr: string,
+    postSvgFilters: { id: string; primitives: string }[],
+    rasterRunKey: string,
+  ): Promise<void> {
+    if (!this.root) return;
+    const w = Math.max(1, Math.round(ctx.width));
+    const h = Math.max(1, Math.round(ctx.height));
+    const adjustZ = Math.round(obj.zOrder * BASE_Z);
+
+    entry.rasterInFlightKey = rasterRunKey;
+    const hiddenForCapture: HTMLElement[] = [];
+    const restoreCaptureVisibility = (): void => {
+      for (const div of hiddenForCapture) div.style.visibility = "";
+    };
+
+    for (const [id, other] of this.entries) {
+      const z = parseInt(other.div.style.zIndex, 10);
+      if (id !== obj.id && z < adjustZ) {
+        other.div.style.visibility = "visible";
+      }
+    }
+
+    for (const [id, other] of this.entries) {
+      const z = parseInt(other.div.style.zIndex, 10);
+      if (id === obj.id || z <= adjustZ) continue;
+      hiddenForCapture.push(other.div);
+      other.div.style.visibility = "hidden";
+    }
+    hiddenForCapture.push(entry.div);
+    entry.div.style.visibility = "hidden";
+
+    try {
+      const canvas = await captureElementToCanvas(this.root, w, h, "transparent");
+      restoreCaptureVisibility();
+
+      let buffer = canvasToRasterBuffer(canvas);
+      for (const { effect, def } of rasterChain) {
+        if (!def.processPixels) continue;
+        buffer = def.processPixels(buffer, effect.props, ctx);
+      }
+
+      if (entry.rasterRunKey !== rasterRunKey) return;
+      if (!this.bufferHasVisiblePixels(buffer)) {
+        throw new Error("adjustment raster capture empty");
+      }
+
+      this.presentRasterCanvas(entry, buffer, w, h);
+      entry.rasterCompletedKey = rasterRunKey;
+      this.finalizeRasterPresentation(entry, obj, postFilterStr, postSvgFilters);
+    } catch {
+      restoreCaptureVisibility();
+      if (entry.rasterCompletedKey === rasterRunKey && entry.rasterCanvas) {
+        this.reapplyAdjustmentSuppression(obj.id, adjustZ);
+      } else if (entry.rasterCompletedKey !== rasterRunKey) {
+        this.clearRasterOverlay(entry);
+        this.restoreAdjustmentSuppression(obj.id);
+      }
+    } finally {
+      if (entry.rasterInFlightKey === rasterRunKey) entry.rasterInFlightKey = null;
     }
   }
 

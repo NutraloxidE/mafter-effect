@@ -1383,10 +1383,19 @@ effects[]          → host div.style.filter = (順序付きフィルタトー�
 ```
 
 - 各 effect は `EffectDef.apply(resolvedProps, ctx)` で **フィルタ片**を返す（§27.2）。`enabled === false` のエフェクトは無視。
-- フィルタ片は 2 種:
+- フィルタ片は 3 種:
   - `{ kind: "css", fn }` … CSS `<filter-function>` トークン（例 `"blur(4px)"`）。
   - `{ kind: "svg", primitives }` … SVG filter primitive 群。DomRenderer が `<svg><filter id="fx-{objId}-{i}">…</filter></svg>` を host に紐づけ、`url(#fx-{objId}-{i})` トークンを生成。
-- DomRenderer は effect 配列順にトークンを連結して **1 本の `filter` 文字列**にする（CSS `filter` は関数と `url()` を**混在・左→右順適用**できる）。例: `filter: blur(2px) url(#fx-abc-1)`。
+  - `{ kind: "raster" }` … buffer→buffer エフェクト（§27.3 `pixelSorter` 等）。DomRenderer がレイヤーを raster 化し `EffectDef.processPixels` を呼ぶ（§27.1 raster パイプライン）。
+- DomRenderer は effect 配列順にトークンを連結して **1 本の `filter` 文字列**にする（CSS `filter` は関数と `url()` を**混在・左→右順適用**できる）。例: `filter: blur(2px) url(#fx-abc-1)`。raster effect は filter トークンではなく **canvas overlay** 経路（下記）。
+- **raster パイプライン（additive・Phase 1）**: `effects[]` を配列順に走査する。
+  1. レイヤー content を DOM に描画（既存）。
+  2. **css/svg**: トークンを蓄積し host div の `filter` / `backdrop-filter` に適用（raster 到達前の分はキャプチャに焼き込まれる）。
+  3. **raster**: その時点の見た目を [`rasterCapture`](../src/runtime/rasterCapture.ts)（foreignObject 経路・exporter と共有）で `ImageData` 化 → `processPixels`（純関数）→ 結果を host div 内 **overlay `<canvas>`** に描画。元 component 子要素は `visibility:hidden`（レイアウト寸法は維持）。以降の css/svg は host div の filter で canvas にも作用する。
+  4. 複数 raster effect は配列順に buffer 連鎖。
+  5. **調整レイヤー + raster**: Phase 1 **非対象**（恒等フォールバック・preview 注記）。
+  6. **INV-2**: export は各 frame で `await renderer.flushRasterEffects()` 後に root capture（[`exporter.ts`](../src/runtime/exporter.ts)）。
+  7. リアルタイム再生時、async capture により最大 1 フレーム遅延しうる（許容済み既知差）。
 - **reconcile**: host div の filter 文字列と svg `<filter>` defs は、effect の型/順序/有効状態が変わったときだけ作り直す（既存 `childSig` と同様の `fxSig`）。毎フレームは解決済み値で filter 文字列を更新するのみ。
 - **filter region**: 各 `<filter>` には `x/y=-25% width/height=150%` を付与し、displacement / feather がレイヤー端でクリップされないようにする。`feImage` は `(0,0,w,h)` に固定（`x/y/width/height` 明示）するので region を広げても map/mask 画像は歪まない。
 
@@ -1399,21 +1408,32 @@ effects[]          → host div.style.filter = (順序付きフィルタトー�
 ```ts
 type EffectFilter =
   | { kind: "css"; fn: string }          // 例: "blur(4px)"
-  | { kind: "svg"; primitives: string }; // <filter> の中身（feColorMatrix 等）。SourceGraphic を入力に取る
+  | { kind: "svg"; primitives: string } // <filter> の中身（feColorMatrix 等）。SourceGraphic を入力に取る
+  | { kind: "raster" };                  // DomRenderer が buffer→buffer を実行
 
-interface EffectRenderCtx {
-  width: number;    // comp 解像度（tint blend / 単位換算用）
+interface RasterBuffer {
+  data: Uint8ClampedArray; // RGBA row-major
+  width: number;
   height: number;
 }
 
+interface EffectRenderCtx {
+  width: number;    // レイヤー実寸（tint blend / raster 単位換算用）
+  height: number;
+  frame: number;    // raster の決定論 seed 用（INV-1）
+}
+
 interface EffectDef {
-  type: string;                       // "blur" | "tint" | plugin
+  type: string;                       // "blur" | "tint" | "pixelSorter" | plugin
   label: string;
+  category?: string;                  // Inspector ピッカー見出し
   params: ParamDescriptor[];          // §5.5 と同契約（animatable param は AnimatedProp で props に入る）
   bundleExportDefault?: "live" | "bake"; // 既定: builtin=live / plugin=bake（§12 安全側）
   // 純関数。resolve 済み props（具体値）→ フィルタ片。null = 何もしない（恒等）。
   // DOM/乱数/Date 禁止（INV-1 相当。値は resolve() で焼き済み）。
   apply(props: Record<string, unknown>, ctx: EffectRenderCtx): EffectFilter | null;
+  /** raster effect のみ。純関数・副作用なし。apply が { kind:"raster" } を返すときのみ呼ぶ */
+  processPixels?(input: RasterBuffer, props: Record<string, unknown>, ctx: EffectRenderCtx): RasterBuffer;
 }
 ```
 
@@ -1515,6 +1535,30 @@ interface EffectDef {
 - **AE 準拠の極性**: `completion <= 0` は `null`（完全表示）。`completion >= 1` は全消去。黒い扇形（= 消える領域）が `startAngle`（0 = 真上）から時計回りに `sweep = completion·360°` で広がる。
 
 > **ワイプ共通**: エフェクト配列順を維持するため `clip-path` ではなく SVG filter 内マスク（§27.1）。AE Transition 100% 一致は非目標。
+
+#### `pixelSorter` — Pixel Sorter（AEPS2 Phase 1 コア）
+
+| param key | label | kind | default | range | animatable |
+|---|---|---|---|---|---|
+| `sortingMode` | Sorting Mode | enum | `"simple"` | `simple` / `highlights` / `shadows` / `random` | ❌ |
+| `thresholdLow` | Threshold Low | scalar | `0.25` | 0..1, step 0.01 | ✅ |
+| `thresholdHigh` | Threshold High | scalar | `0.75` | 0..1, step 0.01 | ✅ |
+| `angle` | Angle | scalar | `0` | 無制限（度）, step 1 | ✅ |
+| `length` | Length | scalar | `256` | min 0, max 4096, step 1 | ✅ |
+| `offset` | Offset | scalar | `0` | min 0, max 4096, step 1 | ✅ |
+| `feather` | Feather | scalar | `0` | min 0, max 200, step 0.1 | ✅ |
+| `sortBlocks` | Sort Blocks | scalar | `1` | min 1, max 64, step 1 | ✅ |
+
+- `apply` → `{ kind: "raster" }`（恒等時は `null`）。`processPixels` で [`pixelSort.ts`](../src/runtime/pixelSort.ts) を呼ぶ。
+- **輝度**: `L = 0.2126R + 0.7152G + 0.0722B`（0..1）。
+- **しきい値マスク**: `thresholdLow ≤ L ≤ thresholdHigh` がソート対象。`feather` はマスク端を線形ソフト化（AEPS2 近似）。
+- **Sorting Mode**: `simple`=輝度昇順 / `highlights`=明部のみソート / `shadows`=暗部のみソート / `random`=seeded shuffle（`seededRandom(phaseToSeed(frame))`・INV-1）。
+- **Angle**: バッファを `-angle` 回転 → 水平スキャンラインでスパン検出・ソート → 逆回転（バイリニアサンプリング）。
+- **Length / Offset**: スパン内で `offset` ピクセルスキップ後、最大 `length` ピクセルに制限（`length === 0` = スパン全体）。
+- **Sort Blocks**: `sortBlocks > 1` でブロック代表色をソートしブロック全体に適用（AEPS2 Sorting Blocks 近似）。
+- **恒等**: `thresholdLow >= thresholdHigh` かつ `feather === 0`、または実質変化なし → `null`。
+- **カテゴリ**: `"スタイライズ"`。
+- **非目標（Phase 1）**: Gradients 出力 / Random Length / Noise / Mirror / Constraint masks / Stretch / v3+ 機能。**AEPS2 100% 一致は非目標**。
 
 ### §27.4 調整レイヤー（Adjustment Layer・最小実装）
 

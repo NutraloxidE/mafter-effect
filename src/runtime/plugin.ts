@@ -34,11 +34,19 @@ export interface ComponentDef {
 // §27.2 EffectDef — resolve 済み props → フィルタ片（純関数）
 export type EffectFilter =
   | { kind: "css"; fn: string }
-  | { kind: "svg"; primitives: string };
+  | { kind: "svg"; primitives: string }
+  | { kind: "raster" };
+
+export interface RasterBuffer {
+  data: Uint8ClampedArray;
+  width: number;
+  height: number;
+}
 
 export interface EffectRenderCtx {
   width: number;
   height: number;
+  frame: number;
 }
 
 export interface EffectDef {
@@ -49,6 +57,8 @@ export interface EffectDef {
   params: ParamDescriptor[];
   bundleExportDefault?: "live" | "bake";
   apply(props: Record<string, unknown>, ctx: EffectRenderCtx): EffectFilter | null;
+  /** raster effect のみ。純関数・副作用なし（INV-1）。 */
+  processPixels?(input: RasterBuffer, props: Record<string, unknown>, ctx: EffectRenderCtx): RasterBuffer;
 }
 
 export interface EasingPreset {
