@@ -6,6 +6,8 @@ import {
   linearWipeGradientCoords,
   linearWipeMask,
   phaseToSeed,
+  evolutionToOffsetPx,
+  displacementPadFromScale,
   sizeToFrequency,
   turbulenceDisplace,
   wavelengthToFrequency,
@@ -17,8 +19,20 @@ describe("effectSvg helpers", () => {
     expect(wavelengthToFrequency(100)).toBeCloseTo(0.01);
   });
 
-  it("sizeToFrequency decreases with larger size", () => {
+  it("sizeToFrequency is inverse of AE Size (px wavelength)", () => {
+    expect(sizeToFrequency(100)).toBeCloseTo(0.01);
     expect(sizeToFrequency(10)).toBeGreaterThan(sizeToFrequency(100));
+  });
+
+  it("displacementPadFromScale grows with amount", () => {
+    expect(displacementPadFromScale(100)).toBeGreaterThan(displacementPadFromScale(10));
+  });
+
+  it("evolutionToOffsetPx is continuous and non-zero for non-zero evolution", () => {
+    const a = evolutionToOffsetPx(45, 100);
+    const b = evolutionToOffsetPx(90, 100);
+    expect(a.dx).not.toBe(b.dx);
+    expect(Math.hypot(a.dx, a.dy)).toBeGreaterThan(0);
   });
 
   it("phaseToSeed is deterministic", () => {
@@ -26,10 +40,35 @@ describe("effectSvg helpers", () => {
     expect(phaseToSeed(0)).not.toBe(phaseToSeed(180));
   });
 
-  it("turbulenceDisplace emits feTurbulence and feDisplacementMap", () => {
-    const s = turbulenceDisplace({ scale: 10, baseFrequencyX: 0.02, baseFrequencyY: 0.02, seed: 42 });
+  it("turbulenceDisplace emits feTurbulence and feDisplacementMap with layer bounds", () => {
+    const s = turbulenceDisplace({
+      scale: 10,
+      baseFrequencyX: 0.02,
+      baseFrequencyY: 0.02,
+      seed: 42,
+      w: 320,
+      h: 240,
+    });
     expect(s).toContain("feTurbulence");
     expect(s).toContain('scale="10"');
+    expect(s).toContain('width="320"');
+    expect(s).toContain('stitchTiles="stitch"');
+  });
+
+  it("turbulenceDisplace uses feOffset for evolution pan", () => {
+    const s = turbulenceDisplace({
+      scale: 10,
+      baseFrequencyX: 0.01,
+      baseFrequencyY: 0.01,
+      seed: 0,
+      w: 100,
+      h: 100,
+      evolutionOffsetX: 12,
+      evolutionOffsetY: 5,
+    });
+    expect(s).toContain("feOffset");
+    expect(s).toContain('dx="12"');
+    expect(s).toContain('dy="5"');
   });
 
   it("linearWipeMask returns empty string at completion 0 (AE: inert)", () => {

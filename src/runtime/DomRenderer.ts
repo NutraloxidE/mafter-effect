@@ -1,3 +1,4 @@
+import { DISPLACEMENT_EFFECT_TYPES, displacementPadFromScale } from "./effectSvg";
 import type { CompositionMeta, Frame, HtmlComposition, RGBA, TimelineComposition } from "../core/schema";
 import type { FontOutlineCache } from "./fontOutlineCache";
 import type { ImageAssetCache } from "./imageAssetCache";
@@ -41,6 +42,10 @@ interface ObjectEntry {
   rasterCompletedKey: string | null;
   /** 調整レイヤー raster 合成時に背面へ隠したレイヤーを指す adjustment object id */
   suppressedForAdjustment: string | null;
+  /** §27.3 displacement filter region 用（applyEffects で設定） */
+  fxLayerW: number;
+  fxLayerH: number;
+  fxMaxDisplaceScale: number;
 }
 
 interface RasterWorkItem {
@@ -140,6 +145,9 @@ export class DomRenderer implements Renderer {
           rasterInFlightKey: null,
           rasterCompletedKey: null,
           suppressedForAdjustment: null,
+          fxLayerW: 0,
+          fxLayerH: 0,
+          fxMaxDisplaceScale: 0,
         };
         this.entries.set(obj.id, entry);
       }
@@ -311,6 +319,31 @@ export class DomRenderer implements Renderer {
           frame,
         };
 
+    let fxMaxDisplaceScale = 0;
+    let hasDisplacementFx = false;
+    for (const effect of effects) {
+      if (!effect.enabled) continue;
+      if (!DISPLACEMENT_EFFECT_TYPES.has(effect.type)) continue;
+      hasDisplacementFx = true;
+      const p = effect.props;
+      const scale =
+        effect.type === "wave" || effect.type === "ripple"
+          ? Math.max(0, typeof p["amplitude"] === "number" ? p["amplitude"] : 0)
+          : Math.max(0, typeof p["amount"] === "number" ? p["amount"] : 0);
+      fxMaxDisplaceScale = Math.max(fxMaxDisplaceScale, scale);
+    }
+    entry.fxLayerW = Math.max(1, Math.round(ctx.width));
+    entry.fxLayerH = Math.max(1, Math.round(ctx.height));
+    entry.fxMaxDisplaceScale = fxMaxDisplaceScale;
+
+    if (hasDisplacementFx && !obj.isAdjustment) {
+      entry.div.style.width = `${entry.fxLayerW}px`;
+      entry.div.style.height = `${entry.fxLayerH}px`;
+      entry.div.style.overflow = "visible";
+    } else if (!obj.isAdjustment) {
+      entry.div.style.overflow = "";
+    }
+
     if (fxSig !== entry.fxSig) {
       if (entry.svgRoot) {
         entry.svgRoot.remove();
@@ -409,7 +442,10 @@ export class DomRenderer implements Renderer {
     this.syncSvgFilters(entry, svgFilters);
   }
 
-  private syncSvgFilters(entry: ObjectEntry, svgFilters: { id: string; primitives: string }[]): void {
+  private syncSvgFilters(
+    entry: ObjectEntry,
+    svgFilters: { id: string; primitives: string }[],
+  ): void {
     if (svgFilters.length > 0) {
       if (!entry.svgRoot) {
         const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -422,10 +458,22 @@ export class DomRenderer implements Renderer {
       for (const { id, primitives } of svgFilters) {
         const filter = document.createElementNS("http://www.w3.org/2000/svg", "filter");
         filter.setAttribute("id", id);
-        filter.setAttribute("x", "-25%");
-        filter.setAttribute("y", "-25%");
-        filter.setAttribute("width", "150%");
-        filter.setAttribute("height", "150%");
+        filter.setAttribute("color-interpolation-filters", "sRGB");
+        const isDisplace = primitives.includes("feDisplacementMap");
+        if (isDisplace && entry.fxLayerW > 0 && entry.fxLayerH > 0) {
+          const pad = displacementPadFromScale(entry.fxMaxDisplaceScale);
+          filter.setAttribute("filterUnits", "userSpaceOnUse");
+          filter.setAttribute("primitiveUnits", "userSpaceOnUse");
+          filter.setAttribute("x", String(-pad));
+          filter.setAttribute("y", String(-pad));
+          filter.setAttribute("width", String(entry.fxLayerW + 2 * pad));
+          filter.setAttribute("height", String(entry.fxLayerH + 2 * pad));
+        } else {
+          filter.setAttribute("x", "-25%");
+          filter.setAttribute("y", "-25%");
+          filter.setAttribute("width", "150%");
+          filter.setAttribute("height", "150%");
+        }
         filter.innerHTML = primitives;
         defs.appendChild(filter);
       }

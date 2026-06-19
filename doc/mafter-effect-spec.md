@@ -1424,6 +1424,7 @@ effects[]          → host div.style.filter = (順序付きフィルタトー�
   7. リアルタイム再生時、async capture により最大 1 フレーム遅延しうる（許容済み既知差）。
 - **reconcile**: host div の filter 文字列と svg `<filter>` defs は、effect の型/順序/有効状態が変わったときだけ作り直す（既存 `childSig` と同様の `fxSig`）。毎フレームは解決済み値で filter 文字列を更新するのみ。
 - **filter region**: 各 `<filter>` には `x/y=-25% width/height=150%` を付与し、displacement / feather がレイヤー端でクリップされないようにする。`feImage` は `(0,0,w,h)` に固定（`x/y/width/height` 明示）するので region を広げても map/mask 画像は歪まない。
+- **displacement filter region（§27.3 wave / turbulentDisplace / ripple）**: `feDisplacementMap` を含む filter は **`filterUnits="userSpaceOnUse"` + `primitiveUnits="userSpaceOnUse"`** とし、`x/y=-pad`, `width/height=layer+2·pad`（`pad = ceil(maxScale·0.5)+2`）でレイヤー `(0,0,w,h)` と noise/map の座標系を一致させる（Amount 比例スライド回避）。`feTurbulence` は `x/y=0 width/height=w/h` + `stitchTiles="stitch"`。host div は displacement 有効時に **コンテンツ実寸 `width/height`** を設定する。
 
 > **なぜ CSS filter か**: HTML comp が主役の DOM レンダラ（§8）と最も整合し、preview と foreignObject export（§11.4・テキスト export が既に使用）で**同一経路でラスタライズ**される＝ INV-2 を素直に満たす。`url(#)` SVG filter も foreignObject に内包できる。
 
@@ -1509,17 +1510,26 @@ interface EffectDef {
 - `direction=horizontal` は X 方向変位を R チャンネルに、`vertical` は Y 方向変位を G チャンネルに載せる。
 - `phase` は data URI 内の正弦位相に直結 → **滑らかにスクロール**（seed 跳躍なし）。純関数の文字列生成のみ、乱数禁止（INV-1）。
 
-#### `turbulentDisplace` — Turbulent Displace
+#### `turbulentDisplace` — Turbulent Displace（Phase 1: Turbulent タイプのみ）
 
 | param key | label | kind | default | range | animatable |
 |---|---|---|---|---|---|
 | `amount` | Amount | scalar | `50` | min 0, max 500, step 0.1 | ✅ |
-| `size` | Size | scalar | `50` | min 1, max 500, step 0.1 | ✅ |
-| `evolution` | Evolution | scalar | `0` | 0..360, step 1 | ✅ |
+| `size` | Size | scalar | `100` | min 1, max 2000, step 0.1 | ✅ |
+| `complexity` | Complexity | scalar | `2` | 1..6, step 1 | ✅ |
+| `evolution` | Evolution | scalar | `0` | 無制限（360°=1 revolution 相当）, step 1 | ✅ |
+| `offsetX` | Offset X | scalar | `0` | 任意 px, step 1 | ✅ |
+| `offsetY` | Offset Y | scalar | `0` | 任意 px, step 1 | ✅ |
+| `randomSeed` | Random Seed | scalar | `0` | 0..9999, step 1 | ❌ |
 
-- `apply` → `{ kind: "svg", primitives }`。`feTurbulence type="turbulence"` + `feDisplacementMap`。
+- `apply` → `{ kind: "svg", primitives }`。`feTurbulence type="turbulence"`（`stitchTiles="stitch"`・レイヤー `(0,0,w,h)` に固定）→ optional `feOffset`（Offset + Evolution パン）→ `feDisplacementMap`。
 - `amount === 0` は `null`。
-- `size` → `baseFrequency`（大→低周波）。`evolution` → `seed`（決定論的）。
+- **Size**: AE Size ≈ feature wavelength（px）。`baseFrequency = 1 / size`（`ctx.width/height` と userSpace 整合）。
+- **Complexity**: `numOctaves`（1..6、低=滑らか）。
+- **Evolution**: `feOffset` による noise 場パン（連続）。`seed` 跳躍は使わない（AE 同様 Evolution をアニメ、Random Seed は static）。
+- **Evolution 換算**: `dist = (evolution/360)·size`、`dx=cos(evolution°)·dist`、`dy=sin(evolution°)·dist`（近似・Cycle Evolution は Phase 2）。
+- **filter region / host 寸法**: §27.1 displacement filter region 規約に従う。
+- **非目標（Phase 1）**: Bulge / Twist / Vertical / Horizontal / Cross / Smoother 系、Pinning、Resize Layer、Cycle Evolution。**AE 100% 一致は非目標**。
 
 #### `ripple` — Ripple（放射状近似）
 

@@ -15,6 +15,13 @@ function feImageLayer(uri: string, w: number, h: number, result: string): string
   return `<feImage href="${uri}" x="0" y="0" width="${w}" height="${h}" preserveAspectRatio="none" result="${result}"/>`;
 }
 
+/** feDisplacementMap scale から filter region 用パディング（px）を算出。 */
+export function displacementPadFromScale(scale: number): number {
+  return Math.ceil(Math.max(0, scale) * 0.5) + 2;
+}
+
+export const DISPLACEMENT_EFFECT_TYPES = new Set(["wave", "turbulentDisplace", "ripple"]);
+
 export function turbulenceDisplace(opts: {
   scale: number;
   baseFrequencyX: number;
@@ -22,22 +29,45 @@ export function turbulenceDisplace(opts: {
   seed: number;
   numOctaves?: number;
   type?: "fractalNoise" | "turbulence";
+  w: number;
+  h: number;
+  offsetX?: number;
+  offsetY?: number;
+  evolutionOffsetX?: number;
+  evolutionOffsetY?: number;
 }): string {
   const {
     scale,
     baseFrequencyX,
     baseFrequencyY,
     seed,
-    numOctaves = 3,
+    numOctaves = 2,
     type = "turbulence",
+    w,
+    h,
+    offsetX = 0,
+    offsetY = 0,
+    evolutionOffsetX = 0,
+    evolutionOffsetY = 0,
   } = opts;
   const bx = Math.max(0.0001, baseFrequencyX);
   const by = Math.max(0.0001, baseFrequencyY);
   const s = Math.max(0, Math.floor(seed)) % 4096;
-  return [
-    `<feTurbulence type="${type}" baseFrequency="${bx} ${by}" numOctaves="${numOctaves}" seed="${s}" result="noise"/>`,
-    `<feDisplacementMap in="SourceGraphic" in2="noise" scale="${scale}" xChannelSelector="R" yChannelSelector="G"/>`,
-  ].join("");
+  const lw = Math.max(1, w);
+  const lh = Math.max(1, h);
+  const dx = offsetX + evolutionOffsetX;
+  const dy = offsetY + evolutionOffsetY;
+  const parts = [
+    `<feTurbulence type="${type}" baseFrequency="${bx} ${by}" numOctaves="${numOctaves}" seed="${s}" stitchTiles="stitch" x="0" y="0" width="${lw}" height="${lh}" result="noiseRaw"/>`,
+  ];
+  const noiseIn = dx !== 0 || dy !== 0 ? "noise" : "noiseRaw";
+  if (dx !== 0 || dy !== 0) {
+    parts.push(`<feOffset in="noiseRaw" dx="${dx}" dy="${dy}" result="noise"/>`);
+  }
+  parts.push(
+    `<feDisplacementMap in="SourceGraphic" in2="${noiseIn}" scale="${scale}" xChannelSelector="R" yChannelSelector="G"/>`,
+  );
+  return parts.join("");
 }
 
 /** displacement map (data URI) を使って SourceGraphic を変位させる。 */
@@ -297,9 +327,19 @@ export function wavelengthToFrequency(wavelengthPx: number): number {
   return 1 / Math.max(1, wavelengthPx);
 }
 
-/** Turbulent Displace: larger size → lower frequency。 */
-export function sizeToFrequency(size: number): number {
-  return Math.max(0.001, 10 / Math.max(1, size));
+/**
+ * Turbulent Displace: AE Size ≈ feature wavelength (px)。
+ * feTurbulence baseFrequency = 1 / sizePx（userSpace・レイヤー寸法と整合）。
+ */
+export function sizeToFrequency(sizePx: number): number {
+  return 1 / Math.max(1, sizePx);
+}
+
+/** Evolution（deg）→ noise 場パン量（px）。1 revolution ≈ 1 feature size 分の移動。 */
+export function evolutionToOffsetPx(evolutionDeg: number, sizePx: number): { dx: number; dy: number } {
+  const dist = (evolutionDeg / 360) * Math.max(1, sizePx);
+  const rad = (evolutionDeg * Math.PI) / 180;
+  return { dx: Math.cos(rad) * dist, dy: Math.sin(rad) * dist };
 }
 
 /**

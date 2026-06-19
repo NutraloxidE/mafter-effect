@@ -77,6 +77,7 @@ const report = await page.evaluate(async () => {
 
   // quadrants of 1920x1080
   textLayer("wave", v3(60, 120), "WAVE", "wave", { amplitude: 22, wavelength: 70, direction: "horizontal", phase: 30 });
+  textLayer("turbulent", v3(510, 120), "TURB", "turbulentDisplace", { amount: 40, size: 100, complexity: 2, evolution: 0, offsetX: 0, offsetY: 0, randomSeed: 0 });
   textLayer("ripple", v3(1010, 120), "RIPPLE", "ripple", { amplitude: 26, radius: 300, frequency: 7, centerX: 0.5, centerY: 0.4 });
   solidLayer("linearWipe", v3(60, 620), { r: 1, g: 0.5, b: 0.2, a: 1 }, "linearWipe", { completion: 0.5, angle: 0, feather: 12 });
   solidLayer("angularWipe", v3(1010, 620), { r: 0.3, g: 1, b: 0.5, a: 1 }, "angularWipe", { completion: 0.3, startAngle: 0, centerX: 0.5, centerY: 0.5, feather: 4 });

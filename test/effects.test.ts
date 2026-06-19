@@ -81,15 +81,44 @@ describe("builtinEffects apply (§27.3)", () => {
   });
 
   it("turbulentDisplace returns null when amount is 0", () => {
-    expect(TURBULENT_DISPLACE_EFFECT_DEF.apply({ amount: 0, size: 50, evolution: 0 }, ctx)).toBeNull();
+    expect(
+      TURBULENT_DISPLACE_EFFECT_DEF.apply(
+        { amount: 0, size: 100, complexity: 2, evolution: 0, offsetX: 0, offsetY: 0, randomSeed: 0 },
+        ctx,
+      ),
+    ).toBeNull();
   });
 
-  it("turbulentDisplace returns svg turbulence", () => {
-    const r = TURBULENT_DISPLACE_EFFECT_DEF.apply({ amount: 50, size: 50, evolution: 90 }, ctx);
+  it("turbulentDisplace returns svg turbulence with layer-scoped noise", () => {
+    const r = TURBULENT_DISPLACE_EFFECT_DEF.apply(
+      { amount: 50, size: 100, complexity: 2, evolution: 90, offsetX: 0, offsetY: 0, randomSeed: 0 },
+      ctx,
+    );
     expect(r?.kind).toBe("svg");
     if (r?.kind === "svg") {
       expect(r.primitives).toContain('type="turbulence"');
       expect(r.primitives).toContain('scale="50"');
+      expect(r.primitives).toContain('width="1920"');
+      expect(r.primitives).toContain("feOffset");
+    }
+  });
+
+  it("turbulentDisplace evolution uses feOffset not seed jump", () => {
+    const base = {
+      amount: 50,
+      size: 100,
+      complexity: 2,
+      offsetX: 0,
+      offsetY: 0,
+      randomSeed: 0,
+    };
+    const a = TURBULENT_DISPLACE_EFFECT_DEF.apply({ ...base, evolution: 0 }, ctx);
+    const b = TURBULENT_DISPLACE_EFFECT_DEF.apply({ ...base, evolution: 45 }, ctx);
+    expect(a?.kind === "svg" && b?.kind === "svg" && a.primitives !== b.primitives).toBe(true);
+    if (a?.kind === "svg" && b?.kind === "svg") {
+      expect(a.primitives).toContain('seed="0"');
+      expect(b.primitives).toContain('seed="0"');
+      expect(b.primitives).toContain("feOffset");
     }
   });
 

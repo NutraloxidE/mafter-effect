@@ -3,7 +3,7 @@
 > **対象（3 種のみ）**: `wave` / `turbulentDisplace` / `ripple`  
 > ワイプ系（`linearWipe` / `angularWipe`）は別経路のため本書の対象外。
 
-**状態**: 2026-06-19 時点で **Amplitude / Amount 増加時の実体スライドは未解決**。複数回の修正試行はコミット済みだが、ユーザー目視では依然として再現する。
+**状態**: 2026-06-19 時点で **Amplitude 比例スライドは解消済み**（下記「修正完了」参照）。Wave / Turbulent Displace / Ripple で Amount 増加時に host rect が動く症状は Playwright 実測で収束（amount 5/20/50/100 → dx=dy=0）。
 
 **関連実装**: [effectSvg.ts](../src/runtime/effectSvg.ts) / [builtinEffects.ts](../src/runtime/builtinEffects.ts) / [DomRenderer.ts](../src/runtime/DomRenderer.ts) `applyEffects`
 
@@ -24,14 +24,14 @@
 
 ---
 
-## バグ例 1 — Amplitude 比例の右下スライド（**未解決・主問題**）
+## バグ例 1 — Amplitude 比例の右下スライド（**解消済み 2026-06-19**）
 
 | 項目 | 内容 |
 |------|------|
 | 症状 | Amplitude / Amount を上げると、3 種すべてで実体が右下へ動く |
 | 共通化 | Wave / Turbulent Displace / Ripple で **同じバグり方**（displacement 共通パイプライン由来と推定） |
-| 視覚の言語化 | 「右下に行く」「左上が減る」「アマウント増加に伴い左上が減っていく」 |
-| 単体テスト | SVG primitive 文字列・resolve 経路は緑。DOM + CSS `filter: url(#svg)` 合成は未カバー |
+| **修正** | `feDisplacementMap` 含む filter を **`filterUnits/primitiveUnits="userSpaceOnUse"`** + `pad=ceil(maxScale·0.5)+2` の filter region に変更。`feTurbulence` は `x/y=0 width/height=w/h` + `stitchTiles="stitch"`。host div は displacement 有効時に **コンテンツ実寸 width/height** + `overflow:visible`（[DomRenderer.ts](../src/runtime/DomRenderer.ts) / [effectSvg.ts](../src/runtime/effectSvg.ts)） |
+| **検証** | Playwright: turbulentDisplace amount 5→100 で hostRect delta 0。231 tests ✅ |
 
 ### 仮説（調査済み・未収束）
 
@@ -110,10 +110,10 @@
 
 ## 現行コミット（`main`）の描画パイプライン概要
 
-- DomRenderer: `<filter>` region は **`x/y=-25%`, `width/height=150%`**（blur/feather/displace 端クリップ回避）
+- DomRenderer: **displacement** filter は `userSpaceOnUse` + 動的 pad。**その他** SVG filter は `-25%/150%` 従来どおり。
 - `feImageLayer`: **`userSpaceOnUse` の `(0,0,w,h)`**（[effectSvg.ts](../src/runtime/effectSvg.ts)）
 - `EffectRenderCtx`: **レイヤー実寸**（子 border box から測定・調整レイヤーは comp 寸）
-- host div の明示 `width/height`（エフェクト用）は **未実装**（セッション試行のみ）
+- host div の明示 `width/height`（displacement エフェクト有効時）**実装済み**
 
 ---
 

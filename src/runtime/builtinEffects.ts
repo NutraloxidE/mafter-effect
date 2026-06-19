@@ -4,6 +4,7 @@ import { globalPluginRegistry } from "./pluginRegistry";
 import {
   angularWipeMask,
   displaceWithMap,
+  evolutionToOffsetPx,
   lightPixelSortFilter,
   linearWipeMask,
   phaseToSeed,
@@ -118,26 +119,43 @@ const WAVE_EFFECT_DEF: EffectDef = {
 
 const TURBULENT_DISPLACE_EFFECT_DEF: EffectDef = {
   type: "turbulentDisplace",
-  label: "Turbulent Displace (WIP)",
+  label: "Turbulent Displace",
   category: "ディストーション",
   params: [
     { key: "amount", label: "Amount", kind: "scalar", default: 50, animatable: true, min: 0, max: 500, step: 0.1 },
-    { key: "size", label: "Size", kind: "scalar", default: 50, animatable: true, min: 1, max: 500, step: 0.1 },
-    { key: "evolution", label: "Evolution", kind: "scalar", default: 0, animatable: true, min: 0, max: 360, step: 1 },
+    { key: "size", label: "Size", kind: "scalar", default: 100, animatable: true, min: 1, max: 2000, step: 0.1 },
+    { key: "complexity", label: "Complexity", kind: "scalar", default: 2, animatable: true, min: 1, max: 6, step: 1 },
+    { key: "evolution", label: "Evolution", kind: "scalar", default: 0, animatable: true, step: 1 },
+    { key: "offsetX", label: "Offset X", kind: "scalar", default: 0, animatable: true, step: 1 },
+    { key: "offsetY", label: "Offset Y", kind: "scalar", default: 0, animatable: true, step: 1 },
+    { key: "randomSeed", label: "Random Seed", kind: "scalar", default: 0, animatable: false, min: 0, max: 9999, step: 1 },
   ],
-  apply(props, _ctx: EffectRenderCtx) {
+  apply(props, ctx: EffectRenderCtx) {
     const amount = Math.max(0, num(props["amount"], 0));
     if (amount === 0) return null;
-    const size = Math.max(1, num(props["size"], 50));
+    const size = Math.max(1, num(props["size"], 100));
+    const complexity = Math.min(6, Math.max(1, Math.round(num(props["complexity"], 2))));
     const evolution = num(props["evolution"], 0);
+    const offsetX = num(props["offsetX"], 0);
+    const offsetY = num(props["offsetY"], 0);
+    const randomSeed = Math.max(0, Math.floor(num(props["randomSeed"], 0))) % 4096;
+    const w = Math.max(1, ctx.width);
+    const h = Math.max(1, ctx.height);
     const freq = sizeToFrequency(size);
+    const { dx: evoDx, dy: evoDy } = evolutionToOffsetPx(evolution, size);
     const primitives = turbulenceDisplace({
       scale: amount,
       baseFrequencyX: freq,
       baseFrequencyY: freq,
-      seed: phaseToSeed(evolution),
-      numOctaves: 3,
+      seed: randomSeed,
+      numOctaves: complexity,
       type: "turbulence",
+      w,
+      h,
+      offsetX,
+      offsetY,
+      evolutionOffsetX: evoDx,
+      evolutionOffsetY: evoDy,
     });
     return { kind: "svg", primitives };
   },

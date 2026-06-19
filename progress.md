@@ -17,7 +17,7 @@
 
 **MVP = M0–M4 全マイルストーン実装・実機検証完了。** その後 §20 Project パネル / §21 Timeline AE化 / §22 グラフエディタ / §23 precomp を MVP 後 UX として拡張中。
 
-現行テスト: **206 件全通過** / typecheck ✅ / build ✅（2026-06-19）。
+現行テスト: **231 件全通過** / typecheck ✅ / build ✅（2026-06-19）。
 
 ---
 
@@ -153,14 +153,14 @@ spec §26 に確定。`text` builtin ComponentDef 登録 + Inspector Text セク
 | type | label | 2026-06-19 修正内容 |
 |---|---|---|
 | `wave` | Wave | **noise→真の正弦波 displacement map**（feImage linearGradient + feDisplacementMap、scale=2A）。**phase が seed 跳躍ではなく滑らかにスクロール**。AE Wave Warp 相当に。 |
-| `turbulentDisplace` | Turbulent Displace | 変更なし（AE 同様ノイズが正・既存確認済み）。evolution の連続進化は SVG seed 制約で離散近似のまま。 |
+| `turbulentDisplace` | Turbulent Displace | **本実装（Phase 1）**: Size=1/size 換算・Complexity→numOctaves・Evolution→feOffset 連続パン・Random Seed 分離・(WIP) 解除。displacement filter region 座標系修正（スライド解消）含む。 |
 | `ripple` | Ripple | **noise→同心円 displacement map**（radialGradient userSpaceOnUse、sin/cos で半径方向に変位回転、(1−o) 減衰）。**center が実際にリング中心を動かす**（旧実装は seed 入力のみで無効だった）。 |
 | `linearWipe` | Linear Wipe | **構造バグ修正**: マスクが luminance で、feComposite "in" は alpha 参照のため**実際は切り抜いていなかった** → `feColorMatrix luminanceToAlpha` を挿入。**completion 極性を AE 準拠に反転**（0=表示/恒等・1=全 wipe）。feather 二重適用解消。 |
 | `angularWipe` | Angular Wipe | 同上の luminanceToAlpha 修正 + 極性反転。白背景＋黒扇形（消去領域）が startAngle(=真上) から CW に completion·360° で拡大。 |
 
-**共通**: DomRenderer の `<filter>` に region `-25%/150%` を付与（displacement/feather のエッジクリップ回避）。feImage は (0,0,w,h) 固定で region 拡張に不感。
+**共通**: displacement 系 filter は userSpaceOnUse + 動的 pad。非 displacement SVG filter は region `-25%/150%` 従来どおり。
 
-**ディストーション 3 種の既知バグ（未解決）**: Wave / Turbulent Displace / Ripple で Amplitude / Amount 増加時に実体が右下へスライドする報告が継続。複数回の修正試行はコミット済み／未コミット混在で紛らわしかったため、**事例・仮説・試行履歴を [doc/distortion-effect-bugs.md](doc/distortion-effect-bugs.md) に集約**（ワイプは対象外）。次回修正時は同ドキュメントを正とする。
+**ディストーション 3 種スライドバグ**: **解消済み**（[doc/distortion-effect-bugs.md](doc/distortion-effect-bugs.md) 参照）。
 
 **残タスク**:
 - [x] **per-effect 視覚検証** — 2026-06-19 完了（上記）。
@@ -168,7 +168,6 @@ spec §26 に確定。`text` builtin ComponentDef 登録 + Inspector Text セク
 - [x] **pixelSorter export 一致（INV-2）** — 2026-06-19 (Cursor) 完了。根因: `captureElementToCanvas` の `cloneNode` が canvas bitmap を複製しない → [`rasterCapture.ts`](src/runtime/rasterCapture.ts) `inlineCanvasBitmaps(cloned, source)` で source 側から `toDataURL`。**Playwright**: plain solid 120k px / pixelSorter 120k px（修正前 0 px）。preview↔export サンプル差分は foreignObject 二重経路による軽微残差（許容）。
 - [ ] **調整レイヤー + 新エフェクト**: backdrop-filter 経路での作用確認
 - [ ] **Timeline**: Wave `direction` enum 行の編集 UI（現状 Inspector `<select>` のみ）
-- [ ] **turbulentDisplace の size→frequency / evolution チューニング**（任意・既存確認済みのため低優先）
 - **KF アニメ実機**: 今回は静的値で検証。completion/phase/amplitude の KF アニメは resolve 経路（test 済み）だが preview スクラブの実機確認は任意で残。
 
 **関連ファイル**: [effectSvg.ts](src/runtime/effectSvg.ts) / [builtinEffects.ts](src/runtime/builtinEffects.ts) / [DomRenderer.ts](src/runtime/DomRenderer.ts) / spec §27.3 / 検証スクリプト [verify-effects.mjs](verify-effects.mjs)
@@ -303,4 +302,4 @@ Preview 四隅 scale ハンドルも 2026-06-18 手動確認で修正済み。�
 | 2026-06-19 | (Cursor) **§28 スクラブ時フレームキャッシュ**: 再生位置バー移動で live 表示したフレームを `cacheScrubbedFrame` でバックグラウンド保存（緑バー即時反映）。リアルタイム不可 comp は再訪問時キャッシュ表示。spec §28.4 更新。215 tests / Playwright ✅ |
 | 2026-06-19 | (Cursor) **§28 ブラウザ UX 最適化（並列化 Phase A）**: [frameCacheQueue.ts](src/cache/frameCacheQueue.ts)（scrub > playback > background 優先度）+ PNG encode Worker + pixelSorter [rasterWorkerPool.ts](src/runtime/rasterWorkerPool.ts)（`hardwareConcurrency-1` 最大4）+ [pngEncode.ts](src/runtime/pngEncode.ts)。218 tests / typecheck / build ✅ |
 | 2026-06-19 | (Cursor) **M5 Phase 1 Static HTML Bundle Export（§11.7 Folder bundle）**: `ExportConfig.format: "html-bundle"` + [bundleExporter.ts](src/runtime/bundleExporter.ts) / [bundleCollect.ts](src/runtime/bundleCollect.ts) / [bundleBake.ts](src/runtime/bundleBake.ts) + [src/player/](src/player/)（IIFE `player.js`・`BundlePlayer`・`BundleAudioClock`）+ [ExportDialog.tsx](src/editor/ExportDialog.tsx)「Static HTML (ZIP)」+ DomRenderer `video` 最小対応 + `npm run build:player`。214 tests（bundle 4）/ typecheck / build ✅。Playwright [verify-bundle-export.mjs](verify-bundle-export.mjs) 2/2 ✅ |
-| 2026-06-19 | (Cursor) **§26.5 グリフ分解 2 方式**: null（親コンテナ + 静的 offset）と child（コンテナなし・全整数フレーム Transform 焼き込み）を Inspector から選択。`decomposeTrs` + [glyphBake.ts](src/editor/glyphBake.ts) + spec §26.5.1a–c。227 tests / typecheck ✅ |
+| 2026-06-19 | (Cursor) **Turbulent Displace 本実装（Phase 1）**: spec §27.3 更新（Size/Complexity/Evolution/Offset/RandomSeed）+ displacement filter userSpaceOnUse 座標系修正（3 種スライド解消）+ [effectSvg.ts](src/runtime/effectSvg.ts) evolution feOffset + [builtinEffects.ts](src/runtime/builtinEffects.ts) (WIP) 解除。231 tests / typecheck ✅。Playwright hostRect 安定 + verify-effects turbulent ✅ |
