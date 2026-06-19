@@ -22,7 +22,18 @@ const TEXT_COMPONENT_DEF: ComponentDef = {
   render() { /* DomRenderer */ },
 };
 
+const IMAGE_COMPONENT_DEF: ComponentDef = {
+  type: "image",
+  label: "Image",
+  params: [
+    { key: "asset", label: "Source", kind: "asset", default: "", animatable: false },
+    { key: "fit", label: "Fit", kind: "enum", default: "contain", animatable: false, options: ["contain", "cover", "fill"] },
+  ],
+  render() { /* DomRenderer */ },
+};
+
 /** registry.clear() 後も再登録できる（loadPlugins 経路）。 */
 export function registerBuiltinComponents(): void {
   globalPluginRegistry.registerComponent(TEXT_COMPONENT_DEF);
+  globalPluginRegistry.registerComponent(IMAGE_COMPONENT_DEF);
 }

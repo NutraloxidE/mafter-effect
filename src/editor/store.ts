@@ -25,6 +25,7 @@ import { sampleScalar, sampleVec3 } from "../runtime/interpolate";
 import { ModuleLoader } from "../runtime/moduleLoader";
 import type { PluginContext, PluginManifest, EffectDef } from "../runtime/plugin";
 import { globalPluginRegistry } from "../runtime/pluginRegistry";
+import { probeImageFile } from "../runtime/imageAssetCache";
 import {
   cmdAddObject,
   cmdDuplicateObjects,
@@ -172,6 +173,10 @@ export interface EditorStore {
   importAudioAsset: (file: File) => Promise<string | null>;
   // M3: audio component を持つ SceneObject を追加する
   addAudioLayer: (assetId: string, name?: string) => string | null;
+  // 画像アセットをインポートして project.assets に追加する
+  importImageAsset: (file: File) => Promise<string | null>;
+  // image component を持つ SceneObject を追加する
+  addImageLayer: (assetId: string, name?: string) => string | null;
 
   // M4: plugin ロード・管理
   loadPlugins: () => Promise<void>;
@@ -648,6 +653,53 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       transform: defaultTransform(),
       opacity: staticProp(1),
       components: [{ type: "audio", props: { asset: assetId, gain: 1, trimStart: 0 } }],
+    };
+    cmdAddObject(get(), obj);
+    return id;
+  },
+
+  importImageAsset: async (file) => {
+    const before = get().project;
+    if (!before) return null;
+    const id = newObjectId();
+    const ext = file.name.split(".").pop() ?? "png";
+    const assetPath = `${DIR_ASSETS}/${id}.${ext}`;
+    const buf = await file.arrayBuffer();
+    await fs.write(assetPath, new Uint8Array(buf));
+    let meta: Record<string, unknown> = {};
+    try {
+      const probe = await probeImageFile(file);
+      meta = { width: probe.width, height: probe.height, mime: probe.mime };
+    } catch {
+      /* meta optional */
+    }
+    const asset: AssetEntry = { id, path: assetPath, kind: "image", meta };
+    const after: Project = {
+      ...before,
+      assets: [...before.assets, asset].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+    };
+    get().applyCommand({ label: "Import Image", before, after });
+    return id;
+  },
+
+  addImageLayer: (assetId, name) => {
+    const p = get().project;
+    const comp = p?.compositions.find((c) => c.id === get().currentCompId) as TimelineComposition | undefined;
+    if (!p || !comp) return null;
+    const asset = p.assets.find((a) => a.id === assetId);
+    if (!asset || asset.kind !== "image") return null;
+    const id = newObjectId();
+    const obj: SceneObject = {
+      id,
+      name: name ?? asset.path.split("/").pop() ?? "Image",
+      parent: null,
+      zOrder: nextZOrder(comp),
+      enabled: true,
+      inPoint: 0,
+      outPoint: comp.duration,
+      transform: defaultTransform(),
+      opacity: staticProp(1),
+      components: [{ type: "image", props: { asset: assetId, fit: "contain" } }],
     };
     cmdAddObject(get(), obj);
     return id;

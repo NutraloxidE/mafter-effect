@@ -10,6 +10,7 @@ import type { ExportConfig, HtmlComposition, Project, TimelineComposition } from
 import type { FileSystem } from "../fs/FileSystem";
 import { DomRenderer } from "./DomRenderer";
 import { FontOutlineCache } from "./fontOutlineCache";
+import { ImageAssetCache } from "./imageAssetCache";
 import { ExpressionEngine } from "./expressionEngine";
 import { HtmlCompPlayer } from "./htmlComp";
 import { ModuleLoader } from "./moduleLoader";
@@ -104,8 +105,13 @@ export async function exportComposition(
     const renderer = new DomRenderer();
     renderer.setHtmlPlayer(player);
     const fontCache = new FontOutlineCache();
-    await fontCache.loadFromProject(project, fs);
+    const imageCache = new ImageAssetCache();
+    await Promise.all([
+      fontCache.loadFromProject(project, fs),
+      imageCache.loadFromProject(project, fs),
+    ]);
     renderer.setFontCache(fontCache);
+    renderer.setImageCache(imageCache);
     renderer.setTextQuality(config.textRenderMode ?? "precise");
     renderer.mount(container, tlComp);
     renderer.setHtmlComps(new Map(htmlComps.map((c) => [c.id, c])));

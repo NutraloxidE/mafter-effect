@@ -52,6 +52,7 @@ interface PreviewViewerOverlayProps {
   onPan: (delta: { x: number; y: number }) => void;
   textQuality?: "draft" | "precise";
   getFont?: (family: string) => Font | null;
+  getImageSize?: (assetId: string) => { width: number; height: number } | null;
 }
 
 const HANDLE_SIZE = 8;
@@ -85,6 +86,7 @@ export function PreviewViewerOverlay({
   onPan,
   textQuality = "draft",
   getFont,
+  getImageSize,
 }: PreviewViewerOverlayProps) {
   const dragRef = useRef<{
     mode: DragMode;
@@ -110,8 +112,8 @@ export function PreviewViewerOverlay({
     : null;
 
   const boundsCtx = useMemo<LayerBoundsContext>(
-    () => ({ textQuality, getFont }),
-    [textQuality, getFont],
+    () => ({ textQuality, getFont, getImageSize }),
+    [textQuality, getFont, getImageSize],
   );
 
   const selectionAabb = computeSelectionAabb(

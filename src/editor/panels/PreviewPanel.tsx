@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { resolve, type ExpressionEvaluator } from "../../runtime/resolve";
 import { DomRenderer } from "../../runtime/DomRenderer";
 import { FontOutlineCache } from "../../runtime/fontOutlineCache";
+import { ImageAssetCache } from "../../runtime/imageAssetCache";
 import { ExpressionEngine } from "../../runtime/expressionEngine";
 import { HtmlCompPlayer } from "../../runtime/htmlComp";
 import { ModuleLoader } from "../../runtime/moduleLoader";
@@ -80,6 +81,7 @@ export function PreviewPanel() {
   const fitRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<DomRenderer | null>(null);
   const fontCacheRef = useRef(new FontOutlineCache());
+  const imageCacheRef = useRef(new ImageAssetCache());
   const textQualityRef = useRef<"draft" | "precise">("draft");
   const [renderTick, setRenderTick] = useState(0);
   const rafRef = useRef<number | null>(null);
@@ -165,6 +167,7 @@ export function PreviewPanel() {
     const r = new DomRenderer();
     r.setHtmlPlayer(_htmlPlayer);
     r.setFontCache(fontCacheRef.current);
+    r.setImageCache(imageCacheRef.current);
     r.setTextQuality(textQualityRef.current); // 生成時に現在の品質を反映（effect は値不変時 re-run しない）
     r.mount(el, comp);
     rendererRef.current = r;
@@ -199,7 +202,10 @@ export function PreviewPanel() {
   // §26.4 asset フォントを preload
   useEffect(() => {
     if (!project) return;
-    void fontCacheRef.current.loadFromProject(project, _previewFs).then(() => setRenderTick((t) => t + 1));
+    void Promise.all([
+      fontCacheRef.current.loadFromProject(project, _previewFs),
+      imageCacheRef.current.loadFromProject(project, _previewFs),
+    ]).then(() => setRenderTick((t) => t + 1));
   }, [project]);
 
   const effectiveTextQuality =
@@ -598,6 +604,7 @@ export function PreviewPanel() {
                   onPan={handlePan}
                   textQuality={effectiveTextQuality}
                   getFont={(family) => fontCacheRef.current.getFont(family) ?? null}
+                  getImageSize={(assetId) => imageCacheRef.current.getSize(assetId)}
                 />
               )}
             </div>

@@ -21,6 +21,8 @@ export function ProjectPanel() {
   const setCurrentComp = useEditorStore((s) => s.setCurrentComp);
   const importAudioAsset = useEditorStore((s) => s.importAudioAsset);
   const addAudioLayer = useEditorStore((s) => s.addAudioLayer);
+  const importImageAsset = useEditorStore((s) => s.importImageAsset);
+  const addImageLayer = useEditorStore((s) => s.addImageLayer);
   const selectObjects = useEditorStore((s) => s.selectObjects);
   const newProject = useEditorStore((s) => s.newProject);
   const loadFromFs = useEditorStore((s) => s.loadFromFs);
@@ -32,6 +34,7 @@ export function ProjectPanel() {
   const pluginsVersion = useEditorStore((s) => s.pluginsVersion);
   const fileInput = useRef<HTMLInputElement>(null);
   const audioInput = useRef<HTMLInputElement>(null);
+  const imageInput = useRef<HTMLInputElement>(null);
 
   const [showExport, setShowExport] = useState(false);
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -57,6 +60,14 @@ export function ProjectPanel() {
     const assetId = await importAudioAsset(file);
     if (assetId) {
       const layerId = addAudioLayer(assetId, file.name.replace(/\.[^.]+$/, ""));
+      if (layerId) selectObjects([layerId]);
+    }
+  };
+
+  const onImportImage = async (file: File) => {
+    const assetId = await importImageAsset(file);
+    if (assetId) {
+      const layerId = addImageLayer(assetId, file.name.replace(/\.[^.]+$/, ""));
       if (layerId) selectObjects([layerId]);
     }
   };
@@ -148,33 +159,56 @@ export function ProjectPanel() {
 
         {/* Footage / Assets section */}
         <SectionHeader label="Footage">
+          <button onClick={() => imageInput.current?.click()} style={miniBtn} title="画像ファイルをインポート">+ Image</button>
           <button onClick={() => audioInput.current?.click()} style={miniBtn} title="音声ファイルをインポート">+ Audio</button>
+          <input ref={imageInput} type="file" accept="image/*" style={{ display: "none" }}
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) void onImportImage(f); e.target.value = ""; }} />
           <input ref={audioInput} type="file" accept="audio/*" style={{ display: "none" }}
             onChange={(e) => { const f = e.target.files?.[0]; if (f) void onImportAudio(f); e.target.value = ""; }} />
         </SectionHeader>
         {assets.length === 0 && <div style={{ padding: "4px 10px", color: "#444", fontSize: 10 }}>No footage</div>}
-        {assets.map((a) => (
+        {assets.map((a) => {
+          const isFootage = a.kind === "audio" || a.kind === "image";
+          const onFootageClick = () => {
+            if (a.kind === "audio") {
+              const id = addAudioLayer(a.id);
+              if (id) selectObjects([id]);
+            } else if (a.kind === "image") {
+              const id = addImageLayer(a.id);
+              if (id) selectObjects([id]);
+            }
+          };
+          return (
           <div
             key={a.id}
-            title={a.kind === "audio" ? "クリック or ドラッグでアクティブ comp に配置" : undefined}
-            onClick={() => { if (a.kind === "audio") { const id = addAudioLayer(a.id); if (id) selectObjects([id]); } }}
-            draggable={a.kind === "audio"}
+            title={isFootage ? "クリック or ドラッグでアクティブ comp に配置" : undefined}
+            onClick={() => { if (isFootage) onFootageClick(); }}
+            draggable={isFootage}
             onDragStart={(e) => {
-              if (a.kind !== "audio") { e.preventDefault(); return; }
-              e.dataTransfer.setData(DRAG_MIME, JSON.stringify({ kind: "audio-asset", id: a.id }));
-              e.dataTransfer.effectAllowed = "copy";
+              if (a.kind === "audio") {
+                e.dataTransfer.setData(DRAG_MIME, JSON.stringify({ kind: "audio-asset", id: a.id }));
+                e.dataTransfer.effectAllowed = "copy";
+              } else if (a.kind === "image") {
+                e.dataTransfer.setData(DRAG_MIME, JSON.stringify({ kind: "image-asset", id: a.id }));
+                e.dataTransfer.effectAllowed = "copy";
+              } else {
+                e.preventDefault();
+              }
             }}
-            style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 10px", cursor: a.kind === "audio" ? "pointer" : "default" }}
+            style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 10px", cursor: isFootage ? "pointer" : "default" }}
             onMouseEnter={(e) => (e.currentTarget.style.background = "#262626")}
             onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
           >
-            <span style={{ color: a.kind === "audio" ? "#a88" : "#888" }}>{a.kind === "audio" ? "♪" : "▭"}</span>
+            <span style={{ color: a.kind === "audio" ? "#a88" : a.kind === "image" ? "#8a8" : "#888" }}>
+              {a.kind === "audio" ? "♪" : a.kind === "image" ? "🖼" : "▭"}
+            </span>
             <span style={{ flex: 1, color: "#aaa", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {a.path.split("/").pop() ?? a.id}
             </span>
             <span style={{ color: "#555", fontSize: 10 }}>{a.kind}</span>
           </div>
-        ))}
+          );
+        })}
 
         {/* Plugins section */}
         <SectionHeader label="Plugins">

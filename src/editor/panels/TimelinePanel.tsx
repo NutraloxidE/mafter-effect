@@ -111,6 +111,8 @@ export function TimelinePanel() {
   const addHtmlInstance = useEditorStore((s) => s.addHtmlInstance);
   const addAudioLayer = useEditorStore((s) => s.addAudioLayer);
   const importAudioAsset = useEditorStore((s) => s.importAudioAsset);
+  const addImageLayer = useEditorStore((s) => s.addImageLayer);
+  const importImageAsset = useEditorStore((s) => s.importImageAsset);
   const addPluginObject = useEditorStore((s) => s.addPluginObject);
   const addCompLayer = useEditorStore((s) => s.addCompLayer);
   // P0-2: 再生制御はストアで共有
@@ -235,14 +237,23 @@ export function TimelinePanel() {
       return;
     }
 
-    // OS からのオーディオファイルドロップ（Windows Explorer 等）
-    const files = Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith("audio/") || /\.(mp3|wav|ogg|flac|aac|m4a)$/i.test(f.name));
-    if (files.length > 0) {
+    // OS からのメディアファイルドロップ（Windows Explorer 等）
+    const droppedFiles = Array.from(e.dataTransfer.files);
+    const audioFiles = droppedFiles.filter((f) => f.type.startsWith("audio/") || /\.(mp3|wav|ogg|flac|aac|m4a)$/i.test(f.name));
+    const imageFiles = droppedFiles.filter((f) => f.type.startsWith("image/") || /\.(jpg|jpeg|png|webp|gif|bmp|svg)$/i.test(f.name));
+    if (audioFiles.length > 0 || imageFiles.length > 0) {
       void (async () => {
-        for (const file of files) {
+        for (const file of audioFiles) {
           const assetId = await importAudioAsset(file);
           if (assetId) {
             const layerId = addAudioLayer(assetId, file.name.replace(/\.[^.]+$/, ""));
+            if (layerId) selectObjects([layerId]);
+          }
+        }
+        for (const file of imageFiles) {
+          const assetId = await importImageAsset(file);
+          if (assetId) {
+            const layerId = addImageLayer(assetId, file.name.replace(/\.[^.]+$/, ""));
             if (layerId) selectObjects([layerId]);
           }
         }
@@ -258,6 +269,7 @@ export function TimelinePanel() {
       let newId: string | null = null;
       if (item.kind === "html-comp" && item.id) newId = addHtmlInstance(item.id);
       else if (item.kind === "audio-asset" && item.id) newId = addAudioLayer(item.id);
+      else if (item.kind === "image-asset" && item.id) newId = addImageLayer(item.id);
       else if (item.kind === "plugin-component" && item.componentType) newId = addPluginObject(item.componentType);
       else if (item.kind === "timeline-comp" && item.id) newId = addCompLayer(item.id);
       if (newId) selectObjects([newId]);

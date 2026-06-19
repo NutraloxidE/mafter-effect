@@ -1,5 +1,6 @@
 import type { CompositionMeta, Frame, HtmlComposition, RGBA, TimelineComposition } from "../core/schema";
 import type { FontOutlineCache } from "./fontOutlineCache";
+import type { ImageAssetCache } from "./imageAssetCache";
 import type { HtmlCompPlayer } from "./htmlComp";
 import { globalPluginRegistry } from "./pluginRegistry";
 import type { Renderer } from "./renderer";
@@ -60,6 +61,7 @@ export class DomRenderer implements Renderer {
   // §26.4 テキスト品質モード
   private textQuality: "draft" | "precise" = "precise";
   private fontCache: FontOutlineCache | null = null;
+  private imageCache: ImageAssetCache | null = null;
 
   setTextQuality(mode: "draft" | "precise"): void {
     this.textQuality = mode;
@@ -67,6 +69,10 @@ export class DomRenderer implements Renderer {
 
   setFontCache(cache: FontOutlineCache | null): void {
     this.fontCache = cache;
+  }
+
+  setImageCache(cache: ImageAssetCache | null): void {
+    this.imageCache = cache;
   }
 
   setHtmlPlayer(player: HtmlCompPlayer | null): void {
@@ -209,7 +215,7 @@ export class DomRenderer implements Renderer {
     // props を in-place で更新（<img> src は変化時のみ → 再読込しない）
     obj.components.forEach((c, i) => {
       const el = entry.children[i];
-      if (el) updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache);
+      if (el) updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache);
 
       // Plugin component: registry から ComponentDef.render を呼ぶ（組み込み型は未登録でスキップ）
       if (el) {
@@ -669,7 +675,7 @@ export class DomRenderer implements Renderer {
           continue;
         }
         const el = createComponentEl(c.type);
-        updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache);
+        updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache);
         div.appendChild(el);
       }
       container.appendChild(div);
@@ -683,6 +689,7 @@ function updateComponentEl(
   props: ResolvedComponent["props"],
   textQuality: "draft" | "precise" = "draft",
   fontCache: FontOutlineCache | null = null,
+  imageCache: ImageAssetCache | null = null,
 ): void {
   switch (type) {
     case "solid": {
@@ -714,9 +721,14 @@ function updateComponentEl(
       const img = el as HTMLImageElement;
       const fit = props["fit"] as string | undefined;
       img.style.objectFit = (fit as "contain" | "cover" | "fill") ?? "contain";
-      // asset の src 解決は AssetStore 経由（後続）。MVP は src を直接 props で受ける。
-      const src = (props["src"] as string | undefined) ?? "";
-      if (img.getAttribute("src") !== src) img.src = src; // 変化時のみ → flicker 回避
+      const assetId = props["asset"] as string | undefined;
+      const src = assetId ? (imageCache?.getUrl(assetId) ?? "") : "";
+      if (img.getAttribute("src") !== src) img.src = src;
+      const size = assetId ? imageCache?.getSize(assetId) : null;
+      if (size) {
+        img.style.width = `${size.width}px`;
+        img.style.height = `${size.height}px`;
+      }
       break;
     }
   }
