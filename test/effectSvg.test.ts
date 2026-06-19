@@ -10,15 +10,40 @@ import {
   displacementPadFromScale,
   rippleDisplaceMap,
   rippleDisplacementSample,
+  rippleMapDims,
   RIPPLE_MAP_MAX_DIM,
   sizeToFrequency,
   svgDisplaceFilterMarkup,
+  waveDisplaceMapSvg,
   FRACTAL_NOISE_G_BIAS_INTERCEPT,
   TURBULENCE_CHANNEL_BIAS_INTERCEPT,
   turbulenceDisplace,
   wavelengthToFrequency,
 } from "../src/runtime/effectSvg";
 import { rgbaToPngDataUri } from "../src/runtime/pngDataUri";
+import {
+  RIPPLE_EFFECT_DEF,
+  TURBULENT_DISPLACE_EFFECT_DEF,
+  WAVE_EFFECT_DEF,
+} from "../src/runtime/builtinEffects";
+
+/** PNG data URI の IHDR から width/height を読む（テスト用）。 */
+function pngDims(uri: string): { w: number; h: number } {
+  const bytes = Uint8Array.from(atob(uri.split(",")[1]!), (c) => c.charCodeAt(0));
+  const dv = new DataView(bytes.buffer);
+  return { w: dv.getUint32(16), h: dv.getUint32(20) };
+}
+
+/** SVG data URI 内の <stop 個数を数える（テスト用）。 */
+function countStops(uri: string): number {
+  return decodeURIComponent(uri.split(",")[1]!).split("<stop").length - 1;
+}
+
+/** SVG primitives 文字列から numOctaves 属性値を読む（テスト用）。 */
+function numOctavesOf(primitives: string): number {
+  const m = primitives.match(/numOctaves="(\d+)"/);
+  return m ? Number(m[1]) : NaN;
+}
 
 describe("effectSvg helpers", () => {
   it("wavelengthToFrequency inverts wavelength", () => {
@@ -208,7 +233,8 @@ describe("ripple radial displacement (§27.3)", () => {
 
   it("displacement vector points along the radius (not a spiral)", () => {
     // 渦バグの回帰: 変位ベクトルは (dx,dy) と平行（外積≈0）でなければならない。
-    for (const [dx, dy] of [[30, 0], [0, -40], [50, 70], [-90, 25], [-15, -120]]) {
+    const cases: [number, number][] = [[30, 0], [0, -40], [50, 70], [-90, 25], [-15, -120]];
+    for (const [dx, dy] of cases) {
       const { x, y } = rippleDisplacementSample(dx, dy, R, FREQ, 0);
       const cross = dx * y - dy * x; // 平行なら 0
       const scale = Math.hypot(dx, dy) * Math.hypot(x, y);
@@ -264,5 +290,88 @@ describe("rgbaToPngDataUri (pure PNG encoder)", () => {
   it("is deterministic", () => {
     const rgba = new Uint8Array([1, 2, 3, 255, 9, 8, 7, 255]);
     expect(rgbaToPngDataUri(rgba, 2, 1)).toBe(rgbaToPngDataUri(rgba, 2, 1));
+  });
+});
+
+describe("§27.4 distortion quality knob", () => {
+  const ctx = { width: 1920, height: 1080, frame: 0 };
+
+  it("rippleMapDims shrinks the generated map as quality drops (q=1 unchanged)", () => {
+    const full = rippleMapDims(1920, 1080, 1);
+    const half = rippleMapDims(1920, 1080, 0.5);
+    const low = rippleMapDims(1920, 1080, 0.3);
+    // q=1 は従来どおり長辺 RIPPLE_MAP_MAX_DIM 付近に張り付く。
+    expect(Math.max(full.mw, full.mh)).toBe(RIPPLE_MAP_MAX_DIM);
+    expect(Math.max(half.mw, half.mh)).toBeLessThan(Math.max(full.mw, full.mh));
+    expect(Math.max(low.mw, low.mh)).toBeLessThan(Math.max(half.mw, half.mh));
+    // 下限 16 を割らない。
+    expect(Math.max(...Object.values(rippleMapDims(1920, 1080, 0.1)))).toBeGreaterThanOrEqual(16);
+  });
+
+  it("rippleDisplaceMap PNG resolution follows quality", () => {
+    const full = pngDims(rippleDisplaceMap(200, 10, 5, 0.5, 0.5, 1920, 1080, 0, 1).uri);
+    const low = pngDims(rippleDisplaceMap(200, 10, 5, 0.5, 0.5, 1920, 1080, 0, 0.3).uri);
+    expect(Math.max(low.w, low.h)).toBeLessThan(Math.max(full.w, full.h));
+  });
+
+  it("rippleDisplaceMap is backward-compatible: omitted quality == quality 1", () => {
+    const omitted = rippleDisplaceMap(200, 13, 5, 0.4, 0.6, 640, 480);
+    const explicit = rippleDisplaceMap(200, 13, 5, 0.4, 0.6, 640, 480, 0, 1);
+    expect(omitted.uri).toBe(explicit.uri);
+    expect(omitted.scale).toBe(explicit.scale);
+  });
+
+  it("waveDisplaceMapSvg uses fewer gradient stops at lower quality (q=1 unchanged)", () => {
+    const full = countStops(waveDisplaceMapSvg(20, 50, "horizontal", 0, 1920, 1080, 1).uri);
+    const low = countStops(waveDisplaceMapSvg(20, 50, "horizontal", 0, 1920, 1080, 0.3).uri);
+    expect(low).toBeLessThan(full);
+    expect(low).toBeGreaterThanOrEqual(2);
+  });
+
+  it("waveDisplaceMapSvg is backward-compatible: omitted quality == quality 1", () => {
+    const omitted = waveDisplaceMapSvg(20, 50, "horizontal", 30, 1920, 1080);
+    const explicit = waveDisplaceMapSvg(20, 50, "horizontal", 30, 1920, 1080, 1);
+    expect(omitted.uri).toBe(explicit.uri);
+  });
+
+  it("turbulentDisplace reduces numOctaves as quality drops (complexity·q)", () => {
+    const full = TURBULENT_DISPLACE_EFFECT_DEF.apply({ amount: 50, complexity: 4, quality: 1 }, ctx);
+    const low = TURBULENT_DISPLACE_EFFECT_DEF.apply({ amount: 50, complexity: 4, quality: 0.3 }, ctx);
+    expect(full?.kind).toBe("svg");
+    expect(low?.kind).toBe("svg");
+    const fullOct = numOctavesOf((full as { primitives: string }).primitives);
+    const lowOct = numOctavesOf((low as { primitives: string }).primitives);
+    expect(fullOct).toBe(4); // complexity·1
+    expect(lowOct).toBe(Math.max(1, Math.round(4 * 0.3))); // = 1
+    expect(lowOct).toBeLessThan(fullOct);
+  });
+
+  it("turbulentDisplace octaves never drop below 1", () => {
+    const r = TURBULENT_DISPLACE_EFFECT_DEF.apply({ amount: 50, complexity: 1, quality: 0.1 }, ctx);
+    expect(numOctavesOf((r as { primitives: string }).primitives)).toBe(1);
+  });
+
+  it("effect defs are backward-compatible: omitted quality == quality 1", () => {
+    const waveA = WAVE_EFFECT_DEF.apply({ amplitude: 20, wavelength: 50 }, ctx);
+    const waveB = WAVE_EFFECT_DEF.apply({ amplitude: 20, wavelength: 50, quality: 1 }, ctx);
+    expect(waveA).toEqual(waveB);
+
+    const ripA = RIPPLE_EFFECT_DEF.apply({ amplitude: 10, radius: 200 }, ctx);
+    const ripB = RIPPLE_EFFECT_DEF.apply({ amplitude: 10, radius: 200, quality: 1 }, ctx);
+    expect(ripA).toEqual(ripB);
+
+    const turbA = TURBULENT_DISPLACE_EFFECT_DEF.apply({ amount: 50, complexity: 3 }, ctx);
+    const turbB = TURBULENT_DISPLACE_EFFECT_DEF.apply({ amount: 50, complexity: 3, quality: 1 }, ctx);
+    expect(turbA).toEqual(turbB);
+  });
+
+  it("exposes a quality param on all three distortion effects", () => {
+    for (const def of [WAVE_EFFECT_DEF, RIPPLE_EFFECT_DEF, TURBULENT_DISPLACE_EFFECT_DEF]) {
+      const p = def.params.find((p) => p.key === "quality");
+      expect(p).toBeDefined();
+      expect(p?.default).toBe(1);
+      expect(p?.min).toBe(0.1);
+      expect(p?.max).toBe(1);
+    }
   });
 });

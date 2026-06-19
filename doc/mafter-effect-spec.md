@@ -1,4 +1,4 @@
-# Mafter Effect — MVP 仕様書 v0.11
+# Mafter Effect — MVP 仕様書 v0.12
 
 > **Mafter Effect = After Effects, but with Markup language.**
 > Git で管理できる / HTML・CSS・JS をネイティブに扱う / AI フレンドリーな映像制作エンジン。
@@ -705,6 +705,9 @@ SSoT 違反を避けるため、scope と正準性を分離する:
 | OPFS アセット格納 / time remap / per-axis easing・expression | 将来 |
 | グラフエディタ Phase 2（per-axis 値カーブ, §22.0） | 将来（additive スキーマ） |
 | グラフエディタ Phase 3（空間モーションパス / 速度グラフ, §22.0） | 将来（additive スキーマ + resolve 拡張） |
+| Monetization / entitlement 層（feature-flag, account/app レベル, §29） | 将来（MVP 後・スキーマ/INV 非変更） |
+| watermark（raster 出力, §29.2） | 将来（MVP 後・依存: raster export=M3） |
+| tier ゲート（bundle=§11.7 / headless=M3.5 / native=§14, §29.3） | 将来（MVP 後・依存: §11.7 / M3.5 / §14） |
 
 ---
 
@@ -1503,8 +1506,10 @@ interface EffectDef {
 | `wavelength` | Wavelength | scalar | `50` | min 1, max 500, step 0.1 | ✅ |
 | `direction` | Direction | enum | `"horizontal"` | `horizontal` / `vertical` | ❌ |
 | `phase` | Phase | scalar | `0` | 0..360, step 1 | ✅ |
+| `quality` | Quality | scalar | `1` | 0.1..1, step 0.05 | ✅ |
 
 - `apply` → `{ kind: "svg", primitives }`。**真の正弦波** displacement map（`feImage`(data URI linearGradient) → `feDisplacementMap`）。AE Wave Warp のクリーンな正弦に合わせ、ノイズ（`feTurbulence`）は使わない。
+- **`quality`（軽量化ノブ・§27.4）**: gradient サンプル数に乗算（`round(cycles·8·q)`、下限 2）。`q=1` で従来出力と一致。低 `q` ほど stop が粗く軽い（wave は元々軽量で効果は小さい）。
 - `amplitude === 0` は `null`（恒等）。
 - displacement map の各 stop 色 = `0.5 + 0.5·sin(2π·pos/λ + phase)` を片チャンネルに載せる（他チャンネルは中立 128）。`feDisplacementMap scale = 2·amplitude`（変位 = `scale·(channel−0.5)` ゆえ振幅 `amplitude` px）。
 - **横波（transverse）**: AE Wave Warp 同様、波の**進行方向に垂直**に変位する（旗のはためき・tearing なし）。`direction=horizontal`（X 方向に進む波）は **Y 方向変位を G チャンネル**に（X 軸 linearGradient）、`vertical`（Y 方向に進む波）は **X 方向変位を R チャンネル**に載せる（他チャンネルは中立 128）。
@@ -1521,11 +1526,13 @@ interface EffectDef {
 | `offsetX` | Offset X | scalar | `0` | 任意 px, step 1 | ✅ |
 | `offsetY` | Offset Y | scalar | `0` | 任意 px, step 1 | ✅ |
 | `randomSeed` | Random Seed | scalar | `0` | 0..9999, step 1 | ❌ |
+| `quality` | Quality | scalar | `1` | 0.1..1, step 0.05 | ✅ |
 
 - `apply` → `{ kind: "svg", primitives }`。`feTurbulence type="turbulence"`（`stitchTiles="stitch"`・レイヤー `(0,0,w,h)` に固定）→ optional `feOffset`（Offset + Evolution パン）→ `feDisplacementMap`。
 - `amount === 0` は `null`。
 - **Size**: AE Size ≈ feature wavelength（px）。`baseFrequency = 1 / size`（`ctx.width/height` と userSpace 整合）。
 - **Complexity**: `numOctaves`（1..6、低=滑らか）。
+- **`quality`（軽量化ノブ・§27.4）**: 実効 `numOctaves = max(1, round(complexity·q))`。`feTurbulence` の支配コスト=octave を削減するため**最も効く**。`q=1` で complexity 維持。低 `q` ほど粗く軽い（ガビガビ）。
 - **Evolution**: `feOffset` による noise 場パン（連続）。`seed` 跳躍は使わない（AE 同様 Evolution をアニメ、Random Seed は static）。
 - **Evolution 換算**: `dist = (evolution/360)·size`、`dx=cos(evolution°)·dist`、`dy=sin(evolution°)·dist`（近似・Cycle Evolution は Phase 2）。
 - **filter region / host 寸法**: §27.1 displacement filter region 規約に従う。
@@ -1540,13 +1547,25 @@ interface EffectDef {
 | `frequency` | Frequency | scalar | `5` | min 0.1, max 50, step 0.1 | ✅ |
 | `centerX` | Center X | scalar | `0.5` | 0..1, step 0.01 | ✅ |
 | `centerY` | Center Y | scalar | `0.5` | 0..1, step 0.01 | ✅ |
+| `quality` | Quality | scalar | `1` | 0.1..1, step 0.05 | ✅ |
 
 - `apply` → `{ kind: "svg", primitives }`。**真の放射方向**同心円 displacement map（`feImage`(**PNG data URI**) → `feDisplacementMap`）。各ピクセルで変位ベクトルを**半径方向の単位ベクトル** `(dx,dy)/dist` に向け、`mag = (1 − dist/radius)·sin(2π·frequency·dist/radius + phase)` を載せる（R=X 変位 / G=Y 変位・中立 128）。`radius` 外と中心は無変位（段差なし）。`center` は中心 px、`frequency` = `radius` 内のリング数。
   - **放射方向ベクトル `(cosθ, sinθ)` は radialGradient（半径方向にしか変化できない）では表現できない**ため、2D 場をピクセル単位で計算した PNG map を使う（純関数 `rippleDisplaceMap`／PNG エンコードは無圧縮 `rgbaToPngDataUri`・INV-1）。map は `RIPPLE_MAP_MAX_DIM`(=256) 以下に縮小生成し `feImage` がレイヤー実寸へ引き伸ばす（場は滑らかなので劣化しない・PNG 肥大化を防ぐ）。
+  - **`quality`（軽量化ノブ・§27.4）**: 実効マップ長辺 = `max(16, round(RIPPLE_MAP_MAX_DIM·q))`。`q=1`→256（従来と一致）, 低 `q` ほど PNG セル数が二乗で減り生成＋`feImage` デコードが軽くなる（`feImage` 拡大でガビガビ化）。場が滑らかなので低 `q` でも放射方向・重心は保たれる。
   - 旧実装（radialGradient に sin/cos を載せ変位ベクトルを半径で回転）は**リングではなく渦（spiral）**になっていた回帰。`rippleDisplacementSample` は変位ベクトルが `(dx,dy)` と平行であることを単体テストで固定。
 - 単一スカラ map ではなく per-pixel ベクトル map なので AE Ripple に近い同心円が出る（**AE 100% 一致は非目標**・現状 `phase` は内部既定 0・UI param 未公開）。
 - `amplitude === 0` は `null`。`feDisplacementMap scale = 2·amplitude`（変位 = `scale·(channel−0.5)` ゆえ半径方向振幅 `amplitude` px）。
 - **preview↔export 一致（INV-2）**: displacement raster パイプライン（`runDirectSvgDisplacePipeline` → `rasterizeFilteredImage`）で先に displaced canvas を焼き、export はその canvas を `inlineCanvasBitmaps` で bake するため**同一ピクセル**（実測 alpha-coverage diff 0）。
+
+#### §27.4 ディストーション軽量化ノブ（`quality`）— 確定
+
+HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `turbulentDisplace`）の SVG フィルタは視聴者ブラウザで毎フレーム評価されるため、低スペック端末向けに「ガビガビだが軽い」描画へ落とせる per-effect ノブを持つ。
+
+- **param**: `quality`（scalar・animatable・既定 `1`・min 0.1 / max 1 / step 0.05）。各エフェクトに追加。
+- **写像（quality `q`）**: ripple = マップ長辺 `max(16, round(256·q))`、turbulentDisplace = `numOctaves max(1, round(complexity·q))`、wave = gradient サンプル数 `round(cycles·8·q)`（下限 2）。いずれも `q=1` で従来出力と完全一致（**後方互換**。`project.json` に未設定の既存作品は `1` フォールバックで挙動不変）。
+- **INV-2 の扱い**: `quality` は `resolve()` の解決値に乗る通常プロパティであり、preview / browser export / HTML player の全経路へ**同一に**効く（解決値が一致するため INV-2 を満たす）。低 `q` による粒状感はラスタライズ品質差であって scene 解決値の差ではない（§26.7 のラスタライズ品質カーブアウトと整合）。
+- **animatable だが非推奨**: フレーム間で `quality` が変わると特に turbulent は octave 数が跳ね popping するため、原則 static 運用とする（静的既定 1.0）。
+- **重心不変**: 低 `q` でもディストーションの重心はドリフトしないことを実機計測で固定する（map 粗化が画像位置を動かさない）。
 
 #### `linearWipe` — Linear Wipe
 
@@ -1814,3 +1833,72 @@ interface PreviewCacheSettings {
 | 設定 UI | Cache クリア・maxRamMB・disk トグル |
 
 **ワークエリア既定**: `in=0`, `out=comp.duration`（全尺）。再生ループはワークエリア内（Preview + Timeline 共有 store 経由）。
+
+---
+
+## §29 Monetization / 無料・有料差別化（licensing 層・additive・確定）
+
+> **位置づけ（厳守）**: これは **licensing / entitlement 層**であり、スキーマ・INV・アーキテクチャを一切変更しない。単一 `@mafter/runtime`（INV-7）上の **feature-flag** として実現し、free/paid を別コードベースにしない（INV-2 / INV-7 維持）。entitlement は **account / app レベル**に保持し、**`project.json` には入れない**（§19.3 と同原則：作品データはライセンス状態から独立）。**engine マイルストーン（M0–M5）のブロッカーにしない。**
+>
+> 内部依存の対応: web bundle export = §11.7（M5） / local headless・canonical render = M3.5（§16）・§11 export / native effect・高速化 = §14（WASM/Rust/Go） / 開放 Plugin API = §12 / 設定の project.json 非汚染原則 = §19.3。
+
+### §29.1 競合前提（確定・重要）
+
+無料で強力な incumbent が存在する（例: 日本の **AviUtl** = 無料・no-watermark・25 年分の無料スクリプト/エフェクト生態系・Windows / desktop / raster）。帰結:
+
+- **価格の床は $0**（趣味層）。**watermark で casual は変換しない**。価格では奪えない。
+- 勝ち筋は ① UX / cross-platform / web で incumbent に不満な層と新規を取る ② incumbent が**構造的に出せない領域**で課金する。
+
+### §29.2 ゲート原則（確定）
+
+- **watermark の本職 = 商用出力の封じ**。client 納品不可にして commercial ユーザを変換する。casual 変換は期待しない（AviUtl が床を握っているため）。
+- 編集・基本 effect・性能（WASM, browser）・file/git アクセスは **無料**（funnel + 開放 Plugin API §12 のアイデンティティ + incumbent に客を流さない）。
+- **web bundle（§11.7）は目玉だが live DOM ゆえ watermark 不能**（devtools で除去可）→ 無料では bundle export を無効化、有料で解放 + 商用ライセンス。
+- 金は **incumbent 不在領域**に置く: web bundle / cross-platform（Mac / web。AviUtl は Windows 専用） / 商用ライセンス / B2B・埋め込み / automation。
+
+### §29.3 tier 表（構造は確定・価格は参考値で契約ではない。個人 $12–19/月, Team $25–40/seat）
+
+| capability | Free | 個人 | Team/Studio | B2B/Embedding |
+|---|---|---|---|---|
+| web エディタ / object model / 性能(WASM) / 基本 effect / community plugin / 実フォルダ(git, File System Access API) | ○ | ○ | ○ | ○ |
+| raster 出力(MP4/GIF/連番, §11/M3) | watermark 付 | watermark なし・4K・長尺 | 同 | 同 |
+| **web bundle export（§11.7/M5）** | ✕ | ○ + 商用ライセンス | ○ | 埋め込み/配信ライセンス |
+| ローカル headless / canonical render（pixel 完全・batch, M3.5） | ✕ | ○(desktop) | ○ | ○ |
+| desktop（オフライン / 実FS / native multicore） | ✕ | ○ | ○ | ○ |
+| 重い native effect（compute-gated, §14） | ✕ | ○ | ○ | ○ |
+| premium effect / easing パック | ✕ | 一部同梱 + 購入 | 同 | 同 |
+| team seat / 共有・コラボ | ✕ | ✕ | ○ | ○ |
+| automation / API / プログラム的レンダー | ✕ | ✕ | △ | ○ |
+| bundle player 商用埋め込み（広告/サイト/サイネージ at scale） | ✕ | △ | △ | ○（本命収益） |
+| plugin marketplace | 出品/購入可 | 同 | 同 | 手数料 % が横断収益 |
+
+### §29.4 effect 課金（確定）
+
+カテゴリごとの paywall は禁止（§12 開放 API + JP の無料スクリプト文化に二重に負ける）。effect の課金は次の **3 経路のみ**:
+
+1. **compute-gated な重い effect**（native / headless 能力で自然にゲート, §14 / M3.5）
+2. **curated premium パック**
+3. **marketplace 手数料**
+
+基本 effect は無料。
+
+### §29.5 ゲートしてはいけないもの（確定）
+
+編集能力・object model・基本 effect・性能（WASM）・file/git（実FS・git アクセス）・決定論。funnel と「開放型・web-native・dev フレンドリー」アイデンティティ（§1 / §12）を毀損し、また incumbent に客を流すため。**実FS / git は Free に含める。**
+
+### §29.6 COGS 規律（確定）
+
+定額 × 無制限のクラウドレンダー禁止。クラウド提供時は使用量課金。ローカル headless（desktop 内, M3.5 / §14）は原価ゼロで安全。
+
+### §29.7 段階化（確定）
+
+- **ローンチ**: 無料 web（性能フル・watermark raster） + 有料 web（watermark なし・bundle export §11.7・4K・商用ライセンス）。
+- **後続**: desktop（ローカル headless / 実FS / オフライン, M3.5）・native 高速化（§14）・B2B / 埋め込みライセンス・marketplace。
+
+### §29.8 要判断（未確定・要ユーザ確認 — 推奨にマーク）
+
+> 推奨案は §29.3 tier 表 / §29.5 に既に反映済み。確定化はユーザ承認待ち。
+
+1. **実FS / git を Free に含めるか** — 推奨: **含める**（dev 客層獲得・§29.5）。
+2. **web bundle（§11.7）を個人 tier で解放するか B2B 限定か** — 推奨: **個人 tier で解放 + 商用ライセンス**（§29.3 で個人 ○ として反映済み）。B2B は at-scale 埋め込み/配信ライセンスで上乗せ。
+3. **premium パックの個人 tier 同梱範囲** — 推奨: **一部同梱 + 残りは購入**（§29.3 反映済み。同梱量は別途確定）。

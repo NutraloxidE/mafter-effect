@@ -7,6 +7,7 @@ import {
   setKeyframe,
   useEditorStore,
 } from "../store";
+import { staticProp } from "../../core/props";
 import { ColorSwatch, isRgba } from "../ColorSwatch";
 import { ScrubNumber } from "../ScrubNumber";
 import { globalPluginRegistry } from "../../runtime/pluginRegistry";
@@ -528,7 +529,11 @@ function EffectFields({
   return (
     <>
       {params.map((param) => {
-        const raw = props[param.key];
+        // 後から追加された param（例 §27.4 quality）は既存 effect インスタンスの
+        // props に無い。レジストリ済み param は常に編集可能であるべきなので、
+        // animatable param は欠落時に既定値へフォールバックして行を描画する。
+        const stored = props[param.key];
+        const raw = stored === undefined && param.animatable ? staticProp(param.default) : stored;
         if (param.kind === "enum" && !param.animatable) {
           const val = typeof raw === "string" ? raw : String(param.default ?? "");
           return (

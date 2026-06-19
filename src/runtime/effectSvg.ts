@@ -153,14 +153,16 @@ export function waveDisplaceMapSvg(
   phaseDeg: number,
   w: number,
   h: number,
+  quality = 1,
 ): { uri: string; scale: number } {
   const lambda = Math.max(1, wavelength);
   const phase = (phaseDeg * Math.PI) / 180;
   const horizontal = direction !== "vertical";
   const span = Math.max(1, horizontal ? w : h);
   const cycles = span / lambda;
-  // 1 周期あたり ~8 サンプル。極端な高周波は上限でエイリアスを許容（AE も同様）。
-  const samples = Math.min(512, Math.max(2, Math.round(cycles * 8) + 1));
+  const q = Math.min(1, Math.max(0.1, quality));
+  // 1 周期あたり ~8 サンプル（quality で粗化）。極端な高周波は上限でエイリアスを許容（AE も同様）。
+  const samples = Math.min(512, Math.max(2, Math.round(cycles * 8 * q) + 1));
   const stops: string[] = [];
   for (let i = 0; i < samples; i++) {
     const o = i / (samples - 1);
@@ -188,6 +190,23 @@ export function waveDisplaceMapSvg(
 
 /** Ripple displacement map の最大解像度（長辺 px）。場は滑らかなので feImage で引き伸ばす。 */
 export const RIPPLE_MAP_MAX_DIM = 256;
+
+/** Ripple map の生成解像度（quality で粗化）。場が滑らかなので低解像度でも放射方向・重心は保たれる。 */
+export function rippleMapDims(
+  w: number,
+  h: number,
+  quality = 1,
+): { mw: number; mh: number } {
+  const lw = Math.max(1, Math.round(w));
+  const lh = Math.max(1, Math.round(h));
+  const q = Math.min(1, Math.max(0.1, quality));
+  const cap = Math.max(16, Math.round(RIPPLE_MAP_MAX_DIM * q));
+  const down = Math.max(1, Math.max(lw, lh) / cap);
+  return {
+    mw: Math.max(2, Math.round(lw / down)),
+    mh: Math.max(2, Math.round(lh / down)),
+  };
+}
 
 /**
  * §27.3 Ripple — 真の**放射方向**正規化変位ベクトル（成分は [-1,1]）。純関数（INV-1）。
@@ -229,6 +248,7 @@ export function rippleDisplaceMap(
   w: number,
   h: number,
   phaseDeg = 0,
+  quality = 1,
 ): { uri: string; scale: number } {
   const lw = Math.max(1, Math.round(w));
   const lh = Math.max(1, Math.round(h));
@@ -238,9 +258,7 @@ export function rippleDisplaceMap(
   const cx = clamp01(centerX) * lw;
   const cy = clamp01(centerY) * lh;
 
-  const down = Math.max(1, Math.max(lw, lh) / RIPPLE_MAP_MAX_DIM);
-  const mw = Math.max(2, Math.round(lw / down));
-  const mh = Math.max(2, Math.round(lh / down));
+  const { mw, mh } = rippleMapDims(lw, lh, quality);
   const rgba = new Uint8Array(mw * mh * 4);
   for (let my = 0; my < mh; my++) {
     const ly = ((my + 0.5) / mh) * lh; // map セル中心 → レイヤー座標

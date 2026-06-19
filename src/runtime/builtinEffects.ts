@@ -27,6 +27,11 @@ function str(v: unknown, fallback: string): string {
   return typeof v === "string" ? v : fallback;
 }
 
+/** §27.4 軽量化ノブ。未設定は 1（従来挙動・後方互換）。0.1..1 にクランプ。 */
+function quality(props: Record<string, unknown>): number {
+  return Math.min(1, Math.max(0.1, num(props["quality"], 1)));
+}
+
 function rgba(v: unknown, fallback: RGBA): RGBA {
   if (typeof v === "object" && v !== null && "r" in v && "g" in v && "b" in v) {
     const o = v as RGBA;
@@ -103,6 +108,7 @@ const WAVE_EFFECT_DEF: EffectDef = {
     { key: "wavelength", label: "Wavelength", kind: "scalar", default: 50, animatable: true, min: 1, max: 500, step: 0.1 },
     { key: "direction", label: "Direction", kind: "enum", default: "horizontal", animatable: false, options: ["horizontal", "vertical"] },
     { key: "phase", label: "Phase", kind: "scalar", default: 0, animatable: true, min: 0, max: 360, step: 1 },
+    { key: "quality", label: "Quality", kind: "scalar", default: 1, animatable: true, min: 0.1, max: 1, step: 0.05 },
   ],
   apply(props, ctx: EffectRenderCtx) {
     const amplitude = Math.max(0, num(props["amplitude"], 0));
@@ -112,7 +118,7 @@ const WAVE_EFFECT_DEF: EffectDef = {
     const phase = num(props["phase"], 0);
     const w = Math.max(1, ctx.width);
     const h = Math.max(1, ctx.height);
-    const { uri, scale } = waveDisplaceMapSvg(amplitude, wavelength, direction, phase, w, h);
+    const { uri, scale } = waveDisplaceMapSvg(amplitude, wavelength, direction, phase, w, h, quality(props));
     return { kind: "svg", primitives: displaceWithMap(uri, scale, w, h) };
   },
 };
@@ -129,6 +135,7 @@ const TURBULENT_DISPLACE_EFFECT_DEF: EffectDef = {
     { key: "offsetX", label: "Offset X", kind: "scalar", default: 0, animatable: true, step: 1 },
     { key: "offsetY", label: "Offset Y", kind: "scalar", default: 0, animatable: true, step: 1 },
     { key: "randomSeed", label: "Random Seed", kind: "scalar", default: 0, animatable: false, min: 0, max: 9999, step: 1 },
+    { key: "quality", label: "Quality", kind: "scalar", default: 1, animatable: true, min: 0.1, max: 1, step: 0.05 },
   ],
   apply(props, ctx: EffectRenderCtx) {
     const amount = Math.max(0, num(props["amount"], 0));
@@ -142,13 +149,15 @@ const TURBULENT_DISPLACE_EFFECT_DEF: EffectDef = {
     const w = Math.max(1, ctx.width);
     const h = Math.max(1, ctx.height);
     const freq = sizeToFrequency(size);
+    // §27.4 軽量化: octave が feTurbulence の支配コスト。quality で削減（粗化）。
+    const octaves = Math.max(1, Math.round(complexity * quality(props)));
     const { dx: evoDx, dy: evoDy } = evolutionToOffsetPx(evolution, size);
     const primitives = turbulenceDisplace({
       scale: amount,
       baseFrequencyX: freq,
       baseFrequencyY: freq,
       seed: randomSeed,
-      numOctaves: complexity,
+      numOctaves: octaves,
       type: "fractalNoise",
       w,
       h,
@@ -171,6 +180,7 @@ const RIPPLE_EFFECT_DEF: EffectDef = {
     { key: "frequency", label: "Frequency", kind: "scalar", default: 5, animatable: true, min: 0.1, max: 50, step: 0.1 },
     { key: "centerX", label: "Center X", kind: "scalar", default: 0.5, animatable: true, min: 0, max: 1, step: 0.01 },
     { key: "centerY", label: "Center Y", kind: "scalar", default: 0.5, animatable: true, min: 0, max: 1, step: 0.01 },
+    { key: "quality", label: "Quality", kind: "scalar", default: 1, animatable: true, min: 0.1, max: 1, step: 0.05 },
   ],
   apply(props, ctx: EffectRenderCtx) {
     const amplitude = Math.max(0, num(props["amplitude"], 0));
@@ -181,7 +191,7 @@ const RIPPLE_EFFECT_DEF: EffectDef = {
     const centerY = Math.min(1, Math.max(0, num(props["centerY"], 0.5)));
     const w = Math.max(1, ctx.width);
     const h = Math.max(1, ctx.height);
-    const { uri, scale } = rippleDisplaceMap(radius, amplitude, frequency, centerX, centerY, w, h);
+    const { uri, scale } = rippleDisplaceMap(radius, amplitude, frequency, centerX, centerY, w, h, 0, quality(props));
     return { kind: "svg", primitives: displaceWithMap(uri, scale, w, h) };
   },
 };
