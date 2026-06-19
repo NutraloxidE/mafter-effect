@@ -8,6 +8,9 @@ import {
   phaseToSeed,
   evolutionToOffsetPx,
   displacementPadFromScale,
+  rippleDisplaceMap,
+  rippleDisplacementSample,
+  RIPPLE_MAP_MAX_DIM,
   sizeToFrequency,
   svgDisplaceFilterMarkup,
   FRACTAL_NOISE_G_BIAS_INTERCEPT,
@@ -15,6 +18,7 @@ import {
   turbulenceDisplace,
   wavelengthToFrequency,
 } from "../src/runtime/effectSvg";
+import { rgbaToPngDataUri } from "../src/runtime/pngDataUri";
 
 describe("effectSvg helpers", () => {
   it("wavelengthToFrequency inverts wavelength", () => {
@@ -195,5 +199,70 @@ describe("effectSvg helpers", () => {
   it("lightPixelSortFilter is inert when streakLength or intensity is 0", () => {
     expect(lightPixelSortFilter(90, 0.5, 0, 8, 1, 0, 320, 240)).toBe("");
     expect(lightPixelSortFilter(90, 0.5, 64, 8, 0, 0, 320, 240)).toBe("");
+  });
+});
+
+describe("ripple radial displacement (§27.3)", () => {
+  const R = 200;
+  const FREQ = 5;
+
+  it("displacement vector points along the radius (not a spiral)", () => {
+    // 渦バグの回帰: 変位ベクトルは (dx,dy) と平行（外積≈0）でなければならない。
+    for (const [dx, dy] of [[30, 0], [0, -40], [50, 70], [-90, 25], [-15, -120]]) {
+      const { x, y } = rippleDisplacementSample(dx, dy, R, FREQ, 0);
+      const cross = dx * y - dy * x; // 平行なら 0
+      const scale = Math.hypot(dx, dy) * Math.hypot(x, y);
+      expect(Math.abs(cross)).toBeLessThanOrEqual(scale * 1e-9 + 1e-9);
+    }
+  });
+
+  it("is zero at the center and outside the radius", () => {
+    expect(rippleDisplacementSample(0, 0, R, FREQ, 0)).toEqual({ x: 0, y: 0 });
+    expect(rippleDisplacementSample(R + 1, 0, R, FREQ, 0)).toEqual({ x: 0, y: 0 });
+    expect(rippleDisplacementSample(R, 0, R, FREQ, 0)).toEqual({ x: 0, y: 0 });
+  });
+
+  it("magnitude decays toward the radius (envelope)", () => {
+    // 同位相サンプルで内側の方が振幅が大きい（1 − dist/radius 包絡）。
+    const inner = rippleDisplacementSample(R * 0.25, 0, R, 1, Math.PI / 2);
+    const outer = rippleDisplacementSample(R * 0.75, 0, R, 1, Math.PI / 2);
+    expect(Math.hypot(inner.x, inner.y)).toBeGreaterThan(Math.hypot(outer.x, outer.y));
+  });
+
+  it("rippleDisplaceMap emits a PNG feImage map with scale=2·amplitude", () => {
+    const { uri, scale } = rippleDisplaceMap(R, 13, FREQ, 0.5, 0.5, 640, 480);
+    expect(uri.startsWith("data:image/png;base64,")).toBe(true);
+    expect(scale).toBe(26);
+  });
+
+  it("rippleDisplaceMap caps map resolution but moves with center", () => {
+    const a = rippleDisplaceMap(R, 10, FREQ, 0.25, 0.5, 1920, 1080);
+    const b = rippleDisplaceMap(R, 10, FREQ, 0.75, 0.5, 1920, 1080);
+    expect(a.uri).not.toBe(b.uri);
+    // 長辺 1920 でも RIPPLE_MAP_MAX_DIM 以下に縮小されている（PNG が巨大化しない）。
+    expect(RIPPLE_MAP_MAX_DIM).toBeLessThanOrEqual(256);
+  });
+});
+
+describe("rgbaToPngDataUri (pure PNG encoder)", () => {
+  it("produces a valid PNG signature and IHDR dimensions", () => {
+    const w = 3;
+    const h = 2;
+    const rgba = new Uint8Array(w * h * 4).fill(200);
+    const uri = rgbaToPngDataUri(rgba, w, h);
+    expect(uri.startsWith("data:image/png;base64,")).toBe(true);
+    const bytes = Uint8Array.from(atob(uri.split(",")[1]!), (c) => c.charCodeAt(0));
+    expect([...bytes.slice(0, 8)]).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    // IHDR width/height（offset 16..24, big-endian）。
+    const dv = new DataView(bytes.buffer);
+    expect(dv.getUint32(16)).toBe(w);
+    expect(dv.getUint32(20)).toBe(h);
+    // 末尾 IEND。
+    expect([...bytes.slice(-8)]).toEqual([0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82]);
+  });
+
+  it("is deterministic", () => {
+    const rgba = new Uint8Array([1, 2, 3, 255, 9, 8, 7, 255]);
+    expect(rgbaToPngDataUri(rgba, 2, 1)).toBe(rgbaToPngDataUri(rgba, 2, 1));
   });
 });

@@ -1507,7 +1507,7 @@ interface EffectDef {
 - `apply` → `{ kind: "svg", primitives }`。**真の正弦波** displacement map（`feImage`(data URI linearGradient) → `feDisplacementMap`）。AE Wave Warp のクリーンな正弦に合わせ、ノイズ（`feTurbulence`）は使わない。
 - `amplitude === 0` は `null`（恒等）。
 - displacement map の各 stop 色 = `0.5 + 0.5·sin(2π·pos/λ + phase)` を片チャンネルに載せる（他チャンネルは中立 128）。`feDisplacementMap scale = 2·amplitude`（変位 = `scale·(channel−0.5)` ゆえ振幅 `amplitude` px）。
-- `direction=horizontal` は X 方向変位を R チャンネルに、`vertical` は Y 方向変位を G チャンネルに載せる。
+- **横波（transverse）**: AE Wave Warp 同様、波の**進行方向に垂直**に変位する（旗のはためき・tearing なし）。`direction=horizontal`（X 方向に進む波）は **Y 方向変位を G チャンネル**に（X 軸 linearGradient）、`vertical`（Y 方向に進む波）は **X 方向変位を R チャンネル**に載せる（他チャンネルは中立 128）。
 - `phase` は data URI 内の正弦位相に直結 → **滑らかにスクロール**（seed 跳躍なし）。純関数の文字列生成のみ、乱数禁止（INV-1）。
 
 #### `turbulentDisplace` — Turbulent Displace（Phase 1: Turbulent タイプのみ）
@@ -1541,9 +1541,12 @@ interface EffectDef {
 | `centerX` | Center X | scalar | `0.5` | 0..1, step 0.01 | ✅ |
 | `centerY` | Center Y | scalar | `0.5` | 0..1, step 0.01 | ✅ |
 
-- `apply` → `{ kind: "svg", primitives }`。**同心円状** displacement map（`feImage`(data URI radialGradient・`userSpaceOnUse` 円形) → `feDisplacementMap`）。半径方向に `sin`/`cos` を R/G に載せ、変位ベクトルを半径に応じて回転させて「水紋」状にする。振幅は `(1−o)` で外側へ減衰し、`radius` 外は中立（無変位）。`center` は radialGradient の `cx/cy` に直結（AE 同様に中心が効く）。`frequency` = `radius` 内のリング数。
-- 単一 displacement map では厳密な放射方向ベクトルを表現できないため**近似**（AE Ripple 100% 一致は非目標）。ノイズより遥かに波紋らしい見た目を優先。
-- `amplitude === 0` は `null`。`feDisplacementMap scale = 2·amplitude`。
+- `apply` → `{ kind: "svg", primitives }`。**真の放射方向**同心円 displacement map（`feImage`(**PNG data URI**) → `feDisplacementMap`）。各ピクセルで変位ベクトルを**半径方向の単位ベクトル** `(dx,dy)/dist` に向け、`mag = (1 − dist/radius)·sin(2π·frequency·dist/radius + phase)` を載せる（R=X 変位 / G=Y 変位・中立 128）。`radius` 外と中心は無変位（段差なし）。`center` は中心 px、`frequency` = `radius` 内のリング数。
+  - **放射方向ベクトル `(cosθ, sinθ)` は radialGradient（半径方向にしか変化できない）では表現できない**ため、2D 場をピクセル単位で計算した PNG map を使う（純関数 `rippleDisplaceMap`／PNG エンコードは無圧縮 `rgbaToPngDataUri`・INV-1）。map は `RIPPLE_MAP_MAX_DIM`(=256) 以下に縮小生成し `feImage` がレイヤー実寸へ引き伸ばす（場は滑らかなので劣化しない・PNG 肥大化を防ぐ）。
+  - 旧実装（radialGradient に sin/cos を載せ変位ベクトルを半径で回転）は**リングではなく渦（spiral）**になっていた回帰。`rippleDisplacementSample` は変位ベクトルが `(dx,dy)` と平行であることを単体テストで固定。
+- 単一スカラ map ではなく per-pixel ベクトル map なので AE Ripple に近い同心円が出る（**AE 100% 一致は非目標**・現状 `phase` は内部既定 0・UI param 未公開）。
+- `amplitude === 0` は `null`。`feDisplacementMap scale = 2·amplitude`（変位 = `scale·(channel−0.5)` ゆえ半径方向振幅 `amplitude` px）。
+- **preview↔export 一致（INV-2）**: displacement raster パイプライン（`runDirectSvgDisplacePipeline` → `rasterizeFilteredImage`）で先に displaced canvas を焼き、export はその canvas を `inlineCanvasBitmaps` で bake するため**同一ピクセル**（実測 alpha-coverage diff 0）。
 
 #### `linearWipe` — Linear Wipe
 

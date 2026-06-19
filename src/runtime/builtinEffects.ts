@@ -8,7 +8,7 @@ import {
   lightPixelSortFilter,
   linearWipeMask,
   phaseToSeed,
-  rippleDisplaceMapSvg,
+  rippleDisplaceMap,
   sizeToFrequency,
   turbulenceDisplace,
   waveDisplaceMapSvg,
@@ -96,7 +96,7 @@ const TINT_EFFECT_DEF: EffectDef = {
 
 const WAVE_EFFECT_DEF: EffectDef = {
   type: "wave",
-  label: "Wave (WIP)",
+  label: "Wave",
   category: "ディストーション",
   params: [
     { key: "amplitude", label: "Amplitude", kind: "scalar", default: 20, animatable: true, min: 0, max: 500, step: 0.1 },
@@ -163,7 +163,7 @@ const TURBULENT_DISPLACE_EFFECT_DEF: EffectDef = {
 
 const RIPPLE_EFFECT_DEF: EffectDef = {
   type: "ripple",
-  label: "Ripple (WIP)",
+  label: "Ripple",
   category: "ディストーション",
   params: [
     { key: "radius", label: "Radius", kind: "scalar", default: 100, animatable: true, min: 0, max: 1000, step: 0.1 },
@@ -181,7 +181,7 @@ const RIPPLE_EFFECT_DEF: EffectDef = {
     const centerY = Math.min(1, Math.max(0, num(props["centerY"], 0.5)));
     const w = Math.max(1, ctx.width);
     const h = Math.max(1, ctx.height);
-    const { uri, scale } = rippleDisplaceMapSvg(radius, amplitude, frequency, centerX, centerY, w, h);
+    const { uri, scale } = rippleDisplaceMap(radius, amplitude, frequency, centerX, centerY, w, h);
     return { kind: "svg", primitives: displaceWithMap(uri, scale, w, h) };
   },
 };

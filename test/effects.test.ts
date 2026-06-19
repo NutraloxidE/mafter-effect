@@ -126,12 +126,15 @@ describe("builtinEffects apply (§27.3)", () => {
     expect(RIPPLE_EFFECT_DEF.apply({ amplitude: 0, radius: 100, frequency: 5, centerX: 0.5, centerY: 0.5 }, ctx)).toBeNull();
   });
 
-  it("ripple returns a radial displacement map driven by center", () => {
+  it("ripple returns a radial PNG displacement map driven by center", () => {
     const r = RIPPLE_EFFECT_DEF.apply({ amplitude: 10, radius: 100, frequency: 5, centerX: 0.5, centerY: 0.5 }, ctx);
     expect(r?.kind).toBe("svg");
     if (r?.kind === "svg") {
       expect(r.primitives).toContain("feDisplacementMap");
       expect(r.primitives).toContain("feImage");
+      // 放射方向ベクトルは radialGradient では表現できないため PNG ラスタ map を使う。
+      expect(r.primitives).toContain("data:image/png;base64,");
+      expect(r.primitives).toContain('scale="20"');
     }
   });
 

@@ -1,6 +1,7 @@
 /** §27 — SVG filter primitive 組み立て（純関数・INV-1）。 */
 
 import { seededRandom } from "./exprHelpers";
+import { rgbaToPngDataUri } from "./pngDataUri";
 
 export function svgDataUri(svg: string): string {
   return `data:image/svg+xml,${encodeURIComponent(svg)}`;
@@ -185,16 +186,41 @@ export function waveDisplaceMapSvg(
   return { uri: svgDataUri(svg), scale: 2 * amplitude };
 }
 
+/** Ripple displacement map の最大解像度（長辺 px）。場は滑らかなので feImage で引き伸ばす。 */
+export const RIPPLE_MAP_MAX_DIM = 256;
+
 /**
- * §27.3 Ripple — 同心円状 displacement map（中心から外へ減衰する波紋）。
+ * §27.3 Ripple — 真の**放射方向**正規化変位ベクトル（成分は [-1,1]）。純関数（INV-1）。
  *
- * radialGradient（userSpaceOnUse・円形）で半径方向に sin/cos を載せ、変位ベクトルを
- * 半径に応じて回転させることで「水紋」状の見た目にする。完全な放射方向ではない近似だが
- * （単一 map では半径方向ベクトルを厳密に表現できない）、ノイズより遥かに波紋らしい。
- * 振幅は (1−o) で外側へ減衰し、radius 外（offset 1 の pad）は中立で無変位。
- * center は radialGradient の cx/cy に直結（AE 同様に中心が効く）。
+ * 中心からの距離 `dist` に沿って正弦が走り、変位は**半径方向の単位ベクトル**へ向く
+ * （= AE Ripple 同様に同心円リングが内外へ押し引きされる）。`radius` 外と中心は無変位。
+ * かつての実装は変位ベクトルが半径に応じて回転し、リングではなく**渦（spiral）**になっていた。
  */
-export function rippleDisplaceMapSvg(
+export function rippleDisplacementSample(
+  dx: number,
+  dy: number,
+  radius: number,
+  frequency: number,
+  phase: number,
+): { x: number; y: number } {
+  const dist = Math.hypot(dx, dy);
+  if (dist < 1e-6 || dist >= radius) return { x: 0, y: 0 };
+  const env = 1 - dist / radius; // 外側へ線形減衰（radius でゼロ＝段差なし）
+  const theta = (2 * Math.PI * frequency * dist) / radius + phase;
+  const mag = env * Math.sin(theta);
+  return { x: (dx / dist) * mag, y: (dy / dist) * mag };
+}
+
+/**
+ * §27.3 Ripple — 同心円状（放射方向）displacement map を PNG data URI で生成。
+ *
+ * radialGradient（半径方向にしか変化できない）では放射方向ベクトル `(cosθ, sinθ)` を
+ * 表現できないため、2D 場をピクセル単位で計算した PNG を `feImage` で参照する。
+ * R=X 変位 / G=Y 変位（中立 128）。`feDisplacementMap scale = 2·amplitude`。
+ * `center` は中心 px、`frequency` は radius 内のリング数。map は低解像度で生成し
+ * feImage がレイヤー実寸へ引き伸ばす（場は滑らかなので劣化しない）。
+ */
+export function rippleDisplaceMap(
   radius: number,
   amplitude: number,
   frequency: number,
@@ -202,30 +228,33 @@ export function rippleDisplaceMapSvg(
   centerY: number,
   w: number,
   h: number,
+  phaseDeg = 0,
 ): { uri: string; scale: number } {
-  const cx = clamp01(centerX) * w;
-  const cy = clamp01(centerY) * h;
+  const lw = Math.max(1, Math.round(w));
+  const lh = Math.max(1, Math.round(h));
   const r = Math.max(1, radius);
-  const cycles = Math.max(0.1, frequency);
-  const samples = Math.min(512, Math.max(16, Math.round(cycles * 16)));
-  const stops: string[] = [];
-  for (let i = 0; i <= samples; i++) {
-    const o = i / samples;
-    const env = 1 - o; // 外側へ減衰
-    const ph = 2 * Math.PI * cycles * o;
-    const rC = Math.round(clamp01(0.5 + 0.5 * env * Math.sin(ph)) * 255);
-    const gC = Math.round(clamp01(0.5 + 0.5 * env * Math.cos(ph)) * 255);
-    stops.push(`<stop offset="${(o * 100).toFixed(2)}%" stop-color="rgb(${rC},${gC},128)"/>`);
+  const freq = Math.max(0.1, frequency);
+  const phase = (phaseDeg * Math.PI) / 180;
+  const cx = clamp01(centerX) * lw;
+  const cy = clamp01(centerY) * lh;
+
+  const down = Math.max(1, Math.max(lw, lh) / RIPPLE_MAP_MAX_DIM);
+  const mw = Math.max(2, Math.round(lw / down));
+  const mh = Math.max(2, Math.round(lh / down));
+  const rgba = new Uint8Array(mw * mh * 4);
+  for (let my = 0; my < mh; my++) {
+    const ly = ((my + 0.5) / mh) * lh; // map セル中心 → レイヤー座標
+    for (let mx = 0; mx < mw; mx++) {
+      const lx = ((mx + 0.5) / mw) * lw;
+      const { x, y } = rippleDisplacementSample(lx - cx, ly - cy, r, freq, phase);
+      const o = (my * mw + mx) * 4;
+      rgba[o] = Math.round(clamp01(0.5 + 0.5 * x) * 255);
+      rgba[o + 1] = Math.round(clamp01(0.5 + 0.5 * y) * 255);
+      rgba[o + 2] = 128;
+      rgba[o + 3] = 255;
+    }
   }
-  const svg = [
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">`,
-    `<defs><radialGradient id="r" gradientUnits="userSpaceOnUse" cx="${cx}" cy="${cy}" r="${r}">`,
-    stops.join(""),
-    `</radialGradient></defs>`,
-    `<rect width="100%" height="100%" fill="url(#r)"/>`,
-    `</svg>`,
-  ].join("");
-  return { uri: svgDataUri(svg), scale: 2 * amplitude };
+  return { uri: rgbaToPngDataUri(rgba, mw, mh), scale: 2 * amplitude };
 }
 
 /**
