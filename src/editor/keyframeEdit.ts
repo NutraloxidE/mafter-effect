@@ -31,6 +31,27 @@ export function isAnimatedProp(v: unknown): v is AnimatedProp<unknown> {
   );
 }
 
+/** タイムライン J/K 用: 選択レイヤー（未選択時は全レイヤー）の KF フレームを昇順で返す。 */
+export function collectKfFrames(objects: SceneObject[], selectedIds: string[]): number[] {
+  const targetObjs = selectedIds.length > 0 ? objects.filter((o) => selectedIds.includes(o.id)) : objects;
+  const frameSet = new Set<number>();
+  for (const obj of targetObjs) {
+    [obj.transform.anchor, obj.transform.position, obj.transform.rotation, obj.transform.scale, obj.opacity]
+      .forEach((prop) => prop.keyframes.forEach((kf) => frameSet.add(kf.frame)));
+    for (const comp of obj.components) {
+      for (const val of Object.values(comp.props)) {
+        if (isAnimatedProp(val)) val.keyframes.forEach((kf) => frameSet.add(kf.frame));
+      }
+    }
+    for (const effect of obj.effects ?? []) {
+      for (const val of Object.values(effect.props)) {
+        if (isAnimatedProp(val)) val.keyframes.forEach((kf) => frameSet.add(kf.frame));
+      }
+    }
+  }
+  return [...frameSet].sort((a, b) => a - b);
+}
+
 export function getPropByPath(obj: SceneObject, path: PropPath): AnimatedProp<unknown> {
   if (path === "opacity") return obj.opacity;
   if (path.startsWith("transform.")) {

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   applyKfEasing,
   buildKfPatches,
+  collectKfFrames,
   deleteKfFrames,
   getPropByPath,
   groupSelectedKfs,
@@ -435,22 +436,6 @@ export function TimelinePanel() {
     flashStatus(`📋 ${shifted.length} レイヤーを F${frame} に貼り付け`);
   };
 
-  // P0-4: 前後 KF フレームを取得（選択中レイヤーまたは全レイヤー）。P1-7: component prop KF も含む。
-  const getKfFrames = (): number[] => {
-    const targetObjs = selectedIds.length > 0 ? objects.filter((o) => selectedIds.includes(o.id)) : objects;
-    const frameSet = new Set<number>();
-    for (const obj of targetObjs) {
-      [obj.transform.anchor, obj.transform.position, obj.transform.rotation, obj.transform.scale, obj.opacity]
-        .forEach((prop) => prop.keyframes.forEach((kf) => frameSet.add(kf.frame)));
-      for (const comp of obj.components) {
-        for (const val of Object.values(comp.props)) {
-          if (isAnimatedProp(val)) val.keyframes.forEach((kf) => frameSet.add(kf.frame));
-        }
-      }
-    }
-    return [...frameSet].sort((a, b) => a - b);
-  };
-
   // §21.5 KF ダイヤの mousedown。
   const beginKfDrag = (objId: string, path: PropPath, kfFrame: number, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -746,30 +731,42 @@ export function TimelinePanel() {
     const inInput = !!(t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable));
 
     if (!inInput) {
-      // P0-2: Space = 再生/停止
-      if (e.code === "Space") { e.preventDefault(); togglePlay(); return; }
+      const {
+        project,
+        currentCompId,
+        currentFrame,
+        selectedObjectIds,
+        setFrame: setStoreFrame,
+        togglePlay: storeTogglePlay,
+      } = useEditorStore.getState();
+      const comp = currentTimelineComp(project, currentCompId);
+      const compDuration = comp?.duration ?? duration;
+      const compObjects = [...(comp?.objects ?? [])].sort((a, b) => b.zOrder - a.zOrder);
 
-      // P0-4: フレームナビゲーション
-      if (e.key === "ArrowLeft")  { e.preventDefault(); setFrame(Math.max(0, frame - (e.shiftKey ? 10 : 1))); return; }
-      if (e.key === "ArrowRight") { e.preventDefault(); setFrame(Math.min(duration, frame + (e.shiftKey ? 10 : 1))); return; }
-      if (e.key === "Home") { e.preventDefault(); setFrame(0); return; }
-      if (e.key === "End")  { e.preventDefault(); setFrame(duration); return; }
+      // P0-2: Space = 再生/停止
+      if (e.code === "Space") { e.preventDefault(); storeTogglePlay(); return; }
+
+      // P0-4: フレームナビゲーション（store 正本 — ref ハンドラの stale closure を避ける）
+      if (e.key === "ArrowLeft")  { e.preventDefault(); setStoreFrame(Math.max(0, currentFrame - (e.shiftKey ? 10 : 1))); return; }
+      if (e.key === "ArrowRight") { e.preventDefault(); setStoreFrame(Math.min(compDuration, currentFrame + (e.shiftKey ? 10 : 1))); return; }
+      if (e.key === "Home") { e.preventDefault(); setStoreFrame(0); return; }
+      if (e.key === "End")  { e.preventDefault(); setStoreFrame(compDuration); return; }
       // J/K: 前後 KF ジャンプ（AE 準拠）。
       // e.code（物理キー）でも判定 → IME 入力中（e.key="Process"）やレイアウト差でも効く。
       // Ctrl/Cmd/Alt 併用時はコピペ等と衝突しないよう無視。
       const bareLetter = !e.ctrlKey && !e.metaKey && !e.altKey;
       if (bareLetter && (e.code === "KeyJ" || e.key === "j" || e.key === "J")) {
         e.preventDefault();
-        const frames = getKfFrames();
-        const prev = [...frames].filter((f) => f < frame).pop();
-        if (prev !== undefined) setFrame(prev);
+        const frames = collectKfFrames(compObjects, selectedObjectIds);
+        const prev = [...frames].filter((f) => f < currentFrame).pop();
+        if (prev !== undefined) setStoreFrame(prev);
         return;
       }
       if (bareLetter && (e.code === "KeyK" || e.key === "k" || e.key === "K")) {
         e.preventDefault();
-        const frames = getKfFrames();
-        const next = frames.find((f) => f > frame);
-        if (next !== undefined) setFrame(next);
+        const frames = collectKfFrames(compObjects, selectedObjectIds);
+        const next = frames.find((f) => f > currentFrame);
+        if (next !== undefined) setStoreFrame(next);
         return;
       }
 
@@ -788,7 +785,7 @@ export function TimelinePanel() {
       // P0-1: \ = ビューをリセット（fit all）
       if (e.key === "\\" || e.key === "|") {
         e.preventDefault();
-        setViewRange({ start: 0, end: duration });
+        setViewRange({ start: 0, end: compDuration });
         return;
       }
 
