@@ -339,7 +339,10 @@ export class DomRenderer implements Renderer {
       hasDisplacementFx = true;
       const p = effect.props;
       const scale =
-        effect.type === "wave" || effect.type === "ripple"
+        effect.type === "wave" ||
+        effect.type === "ripple" ||
+        effect.type === "fastWave" ||
+        effect.type === "fastRipple"
           ? Math.max(0, typeof p["amplitude"] === "number" ? p["amplitude"] : 0)
           : Math.max(0, typeof p["amount"] === "number" ? p["amount"] : 0);
       fxMaxDisplaceScale = Math.max(fxMaxDisplaceScale, scale);

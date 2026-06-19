@@ -19,6 +19,8 @@ import {
 } from "./pixelSort";
 import { parsePixelSortParams } from "./pixelSortParams";
 
+import { registerFastEffects } from "./fastEffects";
+
 function num(v: unknown, fallback: number): number {
   return typeof v === "number" && Number.isFinite(v) ? v : fallback;
 }
@@ -312,6 +314,7 @@ export function registerBuiltinEffects(): void {
   globalPluginRegistry.registerEffect(ANGULAR_WIPE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(PIXEL_SORTER_EFFECT_DEF);
   globalPluginRegistry.registerEffect(PIXEL_SORT_LITE_EFFECT_DEF);
+  registerFastEffects();
 }
 
 export {

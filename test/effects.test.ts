@@ -11,6 +11,11 @@ import {
   PIXEL_SORT_LITE_EFFECT_DEF,
   registerBuiltinEffects,
 } from "../src/runtime/builtinEffects";
+import {
+  FAST_RIPPLE_EFFECT_DEF,
+  FAST_TURBULENT_DISPLACE_EFFECT_DEF,
+  FAST_WAVE_EFFECT_DEF,
+} from "../src/runtime/fastEffects";
 import { globalPluginRegistry } from "../src/runtime/pluginRegistry";
 import { resolve } from "../src/runtime/resolve";
 import { defaultTransform, staticProp, vec3 } from "../src/core/props";
@@ -25,11 +30,13 @@ describe("builtinEffects apply (§27.3)", () => {
     registerBuiltinEffects();
     expect(globalPluginRegistry.listEffects().map((e) => e.type)).toEqual([
       "blur", "tint", "wave", "turbulentDisplace", "ripple", "linearWipe", "angularWipe", "pixelSorter", "pixelSortLite",
+      "fastWave", "fastRipple", "fastTurbulentDisplace",
     ]);
     globalPluginRegistry.clear();
     registerBuiltinEffects();
     expect(globalPluginRegistry.listEffects().map((e) => e.type)).toEqual([
       "blur", "tint", "wave", "turbulentDisplace", "ripple", "linearWipe", "angularWipe", "pixelSorter", "pixelSortLite",
+      "fastWave", "fastRipple", "fastTurbulentDisplace",
     ]);
   });
 
@@ -142,6 +149,67 @@ describe("builtinEffects apply (§27.3)", () => {
     const a = RIPPLE_EFFECT_DEF.apply({ amplitude: 10, radius: 100, frequency: 5, centerX: 0.25, centerY: 0.5 }, ctx);
     const b = RIPPLE_EFFECT_DEF.apply({ amplitude: 10, radius: 100, frequency: 5, centerX: 0.75, centerY: 0.5 }, ctx);
     expect(a?.kind === "svg" && b?.kind === "svg" && a.primitives !== b.primitives).toBe(true);
+  });
+
+  it("fastWave returns feTurbulence without feImage", () => {
+    const r = FAST_WAVE_EFFECT_DEF.apply(
+      { amplitude: 20, wavelength: 50, direction: "horizontal", phase: 0, antiAlias: false },
+      ctx,
+    );
+    expect(r?.kind).toBe("svg");
+    if (r?.kind === "svg") {
+      expect(r.primitives).toContain("feTurbulence");
+      expect(r.primitives).not.toContain("feImage");
+      expect(r.primitives).not.toContain("feComponentTransfer");
+    }
+  });
+
+  it("fastWave antiAlias adds feGaussianBlur", () => {
+    const on = FAST_WAVE_EFFECT_DEF.apply(
+      { amplitude: 20, wavelength: 50, direction: "horizontal", phase: 0, antiAlias: true },
+      ctx,
+    );
+    const off = FAST_WAVE_EFFECT_DEF.apply(
+      { amplitude: 20, wavelength: 50, direction: "horizontal", phase: 0, antiAlias: false },
+      ctx,
+    );
+    expect(on?.kind).toBe("svg");
+    expect(off?.kind).toBe("svg");
+    if (on?.kind === "svg" && off?.kind === "svg") {
+      expect(on.primitives).toContain("feGaussianBlur");
+      expect(off.primitives).not.toContain("feGaussianBlur");
+    }
+  });
+
+  it("fastRipple returns SVG radialGradient map not PNG", () => {
+    const r = FAST_RIPPLE_EFFECT_DEF.apply(
+      { amplitude: 10, radius: 100, frequency: 5, centerX: 0.5, centerY: 0.5, antiAlias: false },
+      ctx,
+    );
+    expect(r?.kind).toBe("svg");
+    if (r?.kind === "svg") {
+      expect(r.primitives).toContain("feImage");
+      expect(r.primitives).toContain("data:image/svg+xml");
+      expect(r.primitives).not.toContain("data:image/png");
+    }
+  });
+
+  it("fastTurbulentDisplace caps octaves at 2 and skips bias", () => {
+    const r = FAST_TURBULENT_DISPLACE_EFFECT_DEF.apply(
+      { amount: 50, size: 100, complexity: 6, evolution: 0, offsetX: 0, offsetY: 0, randomSeed: 0, antiAlias: false },
+      ctx,
+    );
+    expect(r?.kind).toBe("svg");
+    if (r?.kind === "svg") {
+      expect(r.primitives).toContain('numOctaves="2"');
+      expect(r.primitives).not.toContain("feComponentTransfer");
+    }
+  });
+
+  it("fast effects return null when amplitude/amount is 0", () => {
+    expect(FAST_WAVE_EFFECT_DEF.apply({ amplitude: 0, wavelength: 50, direction: "horizontal", phase: 0 }, ctx)).toBeNull();
+    expect(FAST_RIPPLE_EFFECT_DEF.apply({ amplitude: 0, radius: 100, frequency: 5, centerX: 0.5, centerY: 0.5 }, ctx)).toBeNull();
+    expect(FAST_TURBULENT_DISPLACE_EFFECT_DEF.apply({ amount: 0, size: 100, complexity: 2, evolution: 0, offsetX: 0, offsetY: 0, randomSeed: 0 }, ctx)).toBeNull();
   });
 
   it("linearWipe returns null when completion <= 0 (AE: inert)", () => {

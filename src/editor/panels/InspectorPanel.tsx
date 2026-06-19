@@ -533,7 +533,12 @@ function EffectFields({
         // props に無い。レジストリ済み param は常に編集可能であるべきなので、
         // animatable param は欠落時に既定値へフォールバックして行を描画する。
         const stored = props[param.key];
-        const raw = stored === undefined && param.animatable ? staticProp(param.default) : stored;
+        const raw =
+          stored === undefined && param.animatable
+            ? staticProp(param.default)
+            : stored === undefined && param.kind === "bool"
+              ? param.default
+              : stored;
         if (param.kind === "enum" && !param.animatable) {
           const val = typeof raw === "string" ? raw : String(param.default ?? "");
           return (
@@ -547,6 +552,18 @@ function EffectFields({
                   <option key={opt} value={opt}>{opt}</option>
                 ))}
               </select>
+            </Row>
+          );
+        }
+        if (param.kind === "bool" && !param.animatable) {
+          const val = typeof raw === "boolean" ? raw : Boolean(param.default);
+          return (
+            <Row key={param.key} label={param.label}>
+              <input
+                type="checkbox"
+                checked={val}
+                onChange={(e) => writeEffects({ ...props, [param.key]: e.target.checked }, `Edit ${param.label}`)}
+              />
             </Row>
           );
         }

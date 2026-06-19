@@ -30,4 +30,12 @@ describe("groupEffectsForPicker", () => {
     ]);
     expect(grouped[2]?.effects.map((e) => e.type)).toEqual(["wave"]);
   });
+
+  it("orders lightweight distortion after full distortion", () => {
+    const grouped = groupEffectsForPicker([
+      mockEffect("fastWave", "ディストーション（軽量）"),
+      mockEffect("wave", "ディストーション"),
+    ]);
+    expect(grouped.map((g) => g.category)).toEqual(["ディストーション", "ディストーション（軽量）"]);
+  });
 });

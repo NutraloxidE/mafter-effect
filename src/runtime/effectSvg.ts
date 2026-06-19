@@ -40,7 +40,17 @@ export function svgDisplaceFilterMarkup(
   return `<filter id="${id}" color-interpolation-filters="sRGB" filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse" ${region}>${primitives}</filter>`;
 }
 
-export const DISPLACEMENT_EFFECT_TYPES = new Set(["wave", "turbulentDisplace", "ripple"]);
+export const DISPLACEMENT_EFFECT_TYPES = new Set([
+  "wave",
+  "turbulentDisplace",
+  "ripple",
+  "fastWave",
+  "fastRipple",
+  "fastTurbulentDisplace",
+]);
+
+/** §27.5 Fast displacement — optional map blur stdDeviation (px, userSpace). */
+export const FAST_DISPLACE_AA_STD_DEV = 1;
 
 /** type=turbulence の R/G 正バイアスを 0.5 中心へ寄せる（Amount 比例ドリフト低減）。 */
 export const TURBULENCE_CHANNEL_BIAS_INTERCEPT = -0.15;
@@ -63,6 +73,10 @@ function feTurbulenceCenterNoise(
   ].join("");
 }
 
+function displaceMapBlur(inName: string, outName: string, stdDev: number): string {
+  return `<feGaussianBlur in="${inName}" stdDeviation="${stdDev}" result="${outName}"/>`;
+}
+
 export function turbulenceDisplace(opts: {
   scale: number;
   baseFrequencyX: number;
@@ -76,6 +90,9 @@ export function turbulenceDisplace(opts: {
   offsetY?: number;
   evolutionOffsetX?: number;
   evolutionOffsetY?: number;
+  /** §27.5 — skip feComponentTransfer bias (Fast 近似・速度優先) */
+  skipBias?: boolean;
+  antiAlias?: boolean;
 }): string {
   const {
     scale,
@@ -90,6 +107,8 @@ export function turbulenceDisplace(opts: {
     offsetY = 0,
     evolutionOffsetX = 0,
     evolutionOffsetY = 0,
+    skipBias = false,
+    antiAlias = false,
   } = opts;
   const bx = Math.max(0.0001, baseFrequencyX);
   const by = Math.max(0.0001, baseFrequencyY);
@@ -102,29 +121,48 @@ export function turbulenceDisplace(opts: {
     `<feTurbulence type="${type}" baseFrequency="${bx} ${by}" numOctaves="${numOctaves}" seed="${s}" stitchTiles="stitch" x="0" y="0" width="${lw}" height="${lh}" result="noiseRaw"/>`,
   ];
   let noiseIn = "noiseRaw";
-  if (type === "turbulence") {
-    parts.push(feTurbulenceCenterNoise("noiseRaw", "noiseBalanced", TURBULENCE_CHANNEL_BIAS_INTERCEPT));
-    noiseIn = "noiseBalanced";
-  } else if (type === "fractalNoise") {
-    parts.push(feTurbulenceCenterNoise("noiseRaw", "noiseBalanced", 0, FRACTAL_NOISE_G_BIAS_INTERCEPT));
-    noiseIn = "noiseBalanced";
+  if (!skipBias) {
+    if (type === "turbulence") {
+      parts.push(feTurbulenceCenterNoise("noiseRaw", "noiseBalanced", TURBULENCE_CHANNEL_BIAS_INTERCEPT));
+      noiseIn = "noiseBalanced";
+    } else if (type === "fractalNoise") {
+      parts.push(feTurbulenceCenterNoise("noiseRaw", "noiseBalanced", 0, FRACTAL_NOISE_G_BIAS_INTERCEPT));
+      noiseIn = "noiseBalanced";
+    }
   }
   if (dx !== 0 || dy !== 0) {
-    parts.push(`<feOffset in="noiseBalanced" dx="${dx}" dy="${dy}" result="noise"/>`);
+    parts.push(`<feOffset in="${noiseIn}" dx="${dx}" dy="${dy}" result="noise"/>`);
     noiseIn = "noise";
   }
+  let dispIn = noiseIn;
+  if (antiAlias) {
+    parts.push(displaceMapBlur(noiseIn, "noiseAA", FAST_DISPLACE_AA_STD_DEV));
+    dispIn = "noiseAA";
+  }
   parts.push(
-    `<feDisplacementMap in="SourceGraphic" in2="${noiseIn}" scale="${scale}" xChannelSelector="R" yChannelSelector="G"/>`,
+    `<feDisplacementMap in="SourceGraphic" in2="${dispIn}" scale="${scale}" xChannelSelector="R" yChannelSelector="G"/>`,
   );
   return parts.join("");
 }
 
 /** displacement map (data URI) を使って SourceGraphic を変位させる。 */
-export function displaceWithMap(uri: string, scale: number, w: number, h: number): string {
-  return [
-    feImageLayer(uri, w, h, "dmap"),
-    `<feDisplacementMap in="SourceGraphic" in2="dmap" scale="${scale}" xChannelSelector="R" yChannelSelector="G"/>`,
-  ].join("");
+export function displaceWithMap(
+  uri: string,
+  scale: number,
+  w: number,
+  h: number,
+  antiAlias = false,
+): string {
+  const parts = [feImageLayer(uri, w, h, "dmap")];
+  let dispIn = "dmap";
+  if (antiAlias) {
+    parts.push(displaceMapBlur("dmap", "dmapAA", FAST_DISPLACE_AA_STD_DEV));
+    dispIn = "dmapAA";
+  }
+  parts.push(
+    `<feDisplacementMap in="SourceGraphic" in2="${dispIn}" scale="${scale}" xChannelSelector="R" yChannelSelector="G"/>`,
+  );
+  return parts.join("");
 }
 
 /** phase/evolution (deg) → 決定論的 seed。 */
@@ -273,6 +311,122 @@ export function rippleDisplaceMap(
     }
   }
   return { uri: rgbaToPngDataUri(rgba, mw, mh), scale: 2 * amplitude };
+}
+
+/**
+ * §27.5 Fast Ripple — radialGradient SVG displacement map（PNG 生成なし・旧 WIP 中間版同系）。
+ *
+ * 半径方向 sin/cos を載せた 1D radialGradient。真の放射ベクトルではない近似（渦寄り）だが
+ * per-pixel PNG より軽い。samples は粗め（最大 32）で map 文字列も小さく保つ。
+ */
+export function fastRippleDisplaceMapSvg(
+  radius: number,
+  amplitude: number,
+  frequency: number,
+  centerX: number,
+  centerY: number,
+  w: number,
+  h: number,
+): { uri: string; scale: number } {
+  const lw = Math.max(1, Math.round(w));
+  const lh = Math.max(1, Math.round(h));
+  const cx = clamp01(centerX) * lw;
+  const cy = clamp01(centerY) * lh;
+  const r = Math.max(1, radius);
+  const cycles = Math.max(0.1, frequency);
+  const samples = Math.min(32, Math.max(8, Math.round(cycles * 4)));
+  const stops: string[] = [];
+  for (let i = 0; i <= samples; i++) {
+    const o = i / samples;
+    const env = 1 - o;
+    const ph = 2 * Math.PI * cycles * o;
+    const rC = Math.round(clamp01(0.5 + 0.5 * env * Math.sin(ph)) * 255);
+    const gC = Math.round(clamp01(0.5 + 0.5 * env * Math.cos(ph)) * 255);
+    stops.push(`<stop offset="${(o * 100).toFixed(2)}%" stop-color="rgb(${rC},${gC},128)"/>`);
+  }
+  const svg = [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${lw}" height="${lh}">`,
+    `<defs><radialGradient id="r" gradientUnits="userSpaceOnUse" cx="${cx}" cy="${cy}" r="${r}">`,
+    stops.join(""),
+    `</radialGradient></defs>`,
+    `<rect width="100%" height="100%" fill="url(#r)"/>`,
+    `</svg>`,
+  ].join("");
+  return { uri: svgDataUri(svg), scale: 2 * amplitude };
+}
+
+/** §27.5 Fast Wave — feTurbulence 直結近似（feImage/PNG なし）。 */
+export function fastWaveDisplace(opts: {
+  amplitude: number;
+  wavelength: number;
+  direction: string;
+  phaseDeg: number;
+  w: number;
+  h: number;
+  antiAlias?: boolean;
+}): string {
+  const { amplitude, wavelength, direction, phaseDeg, w, h, antiAlias = false } = opts;
+  const freq = wavelengthToFrequency(wavelength);
+  const horizontal = direction !== "vertical";
+  const f = freq;
+  return turbulenceDisplace({
+    scale: amplitude,
+    baseFrequencyX: horizontal ? f : f * 0.25,
+    baseFrequencyY: horizontal ? f * 0.25 : f,
+    seed: phaseToSeed(phaseDeg),
+    numOctaves: 1,
+    type: "fractalNoise",
+    w,
+    h,
+    skipBias: true,
+    antiAlias,
+  });
+}
+
+/** §27.5 Fast Turbulent Displace — 低 octave feTurbulence 直結（bias なし）。 */
+export function fastTurbulentDisplace(opts: {
+  amount: number;
+  size: number;
+  complexity: number;
+  evolution: number;
+  offsetX: number;
+  offsetY: number;
+  randomSeed: number;
+  w: number;
+  h: number;
+  antiAlias?: boolean;
+}): string {
+  const {
+    amount,
+    size,
+    complexity,
+    evolution,
+    offsetX,
+    offsetY,
+    randomSeed,
+    w,
+    h,
+    antiAlias = false,
+  } = opts;
+  const freq = sizeToFrequency(size);
+  const octaves = Math.max(1, Math.min(2, Math.round(complexity)));
+  const { dx: evoDx, dy: evoDy } = evolutionToOffsetPx(evolution, size);
+  return turbulenceDisplace({
+    scale: amount,
+    baseFrequencyX: freq,
+    baseFrequencyY: freq,
+    seed: randomSeed,
+    numOctaves: octaves,
+    type: "fractalNoise",
+    w,
+    h,
+    offsetX,
+    offsetY,
+    evolutionOffsetX: evoDx,
+    evolutionOffsetY: evoDy,
+    skipBias: true,
+    antiAlias,
+  });
 }
 
 /**

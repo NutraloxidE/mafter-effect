@@ -8,6 +8,11 @@ import {
   phaseToSeed,
   evolutionToOffsetPx,
   displacementPadFromScale,
+  DISPLACEMENT_EFFECT_TYPES,
+  displaceWithMap,
+  fastRippleDisplaceMapSvg,
+  fastTurbulentDisplace,
+  fastWaveDisplace,
   rippleDisplaceMap,
   rippleDisplacementSample,
   rippleMapDims,
@@ -373,5 +378,46 @@ describe("§27.4 distortion quality knob", () => {
       expect(p?.min).toBe(0.1);
       expect(p?.max).toBe(1);
     }
+  });
+});
+
+describe("§27.5 Fast distortion (approximate)", () => {
+  it("DISPLACEMENT_EFFECT_TYPES includes fast variants", () => {
+    expect(DISPLACEMENT_EFFECT_TYPES.has("fastWave")).toBe(true);
+    expect(DISPLACEMENT_EFFECT_TYPES.has("fastRipple")).toBe(true);
+    expect(DISPLACEMENT_EFFECT_TYPES.has("fastTurbulentDisplace")).toBe(true);
+  });
+
+  it("fastRippleDisplaceMapSvg returns SVG data URI not PNG", () => {
+    const { uri } = fastRippleDisplaceMapSvg(100, 10, 5, 0.5, 0.5, 640, 480);
+    expect(uri.startsWith("data:image/svg+xml,")).toBe(true);
+    expect(uri.includes("radialGradient")).toBe(true);
+  });
+
+  it("displaceWithMap antiAlias toggles feGaussianBlur", () => {
+    const uri = "data:image/svg+xml,test";
+    const on = displaceWithMap(uri, 20, 100, 100, true);
+    const off = displaceWithMap(uri, 20, 100, 100, false);
+    expect(on).toContain("feGaussianBlur");
+    expect(off).not.toContain("feGaussianBlur");
+  });
+
+  it("fastWaveDisplace uses single octave turbulence without bias", () => {
+    const s = fastWaveDisplace({ amplitude: 20, wavelength: 50, direction: "horizontal", phaseDeg: 0, w: 320, h: 240, antiAlias: false });
+    expect(s).toContain('numOctaves="1"');
+    expect(s).not.toContain("feComponentTransfer");
+    expect(s).not.toContain("feImage");
+  });
+
+  it("fastTurbulentDisplace caps octaves and supports antiAlias", () => {
+    const off = fastTurbulentDisplace({
+      amount: 50, size: 100, complexity: 6, evolution: 0, offsetX: 0, offsetY: 0, randomSeed: 0, w: 320, h: 240, antiAlias: false,
+    });
+    const on = fastTurbulentDisplace({
+      amount: 50, size: 100, complexity: 6, evolution: 0, offsetX: 0, offsetY: 0, randomSeed: 0, w: 320, h: 240, antiAlias: true,
+    });
+    expect(off).toContain('numOctaves="2"');
+    expect(on).toContain("feGaussianBlur");
+    expect(off).not.toContain("feGaussianBlur");
   });
 });

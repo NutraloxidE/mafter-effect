@@ -5,6 +5,7 @@ export const EFFECT_PICKER_CATEGORY_ORDER = [
   "ぼかし",
   "カラー補正",
   "ディストーション",
+  "ディストーション（軽量）",
   "ワイプ",
   "スタイライズ",
   "その他",
