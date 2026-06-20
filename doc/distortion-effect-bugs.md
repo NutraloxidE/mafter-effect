@@ -54,6 +54,45 @@
 
 ---
 
+## Issue C — Fast* distortion 通常レイヤー実体スライド（**解消済み**・2026-06-20）
+
+> **対象**: `fastWave` / `fastRipple` / `fastTurbulentDisplace` のみ（full 版 §27.3 は Issue A で解消済み）。
+
+### 症状（ユーザー報告）
+
+| 構成 | ラスター化 | ドリフト |
+|---|---|---|
+| **通常レイヤー + Fast*** | なし（CSS filter 直適用） | **実体スライド**（右下に未変形 solid が見える） |
+| **Live 調整 + Fast*** | comp 背面 capture | 別症状（follow-up） |
+
+視覚 lock: Solid + Linear Wipe（disabled）+ Fast Turbulent Displace（Amount≈155）。
+
+### 根因
+
+- `DomRenderer.fastDisplaceDirect === true`（PreviewPanel / BundlePlayer）かつ `effectsAreFastDisplacementOnly` → **CSS `filter` 直適用**（canvas なし）
+- SVG displacement filter の座標系ずれにより Amount 比例で host / 実体がスライド
+
+### 修正（2026-06-20 Cursor）
+
+| 項目 | 内容 |
+|------|------|
+| **方針** | Fast* の CSS 直適用を**廃止**。通常レイヤーも `runDirectSvgDisplacePipeline`（self-capture raster）へ統一 |
+| **SSOT** | [effectRouting.ts](../src/runtime/effectRouting.ts) `needsSvgDisplaceCapture()` — DomRenderer / pipelineAnalysis 共用 |
+| **`fastDisplaceDirect`** | deprecated（常に無視） |
+| **Pipeline UI** | 通常レイヤー + Fast* → `raster` 表示 |
+
+### 検証
+
+| ケース | host rect | ink centroid（amount スイープ） | canvas |
+|---|---|---|---|
+| fastWave | 安定 | ≤ 0.6px | あり |
+| fastTurbulentDisplace | **安定** | ~6px（強 amount・エッジクリップ寄与・follow-up） | あり |
+| wipe(disabled) + fastTurbulent | **安定** | ~8px（同上） | あり |
+
+**受け入れ**: ユーザー報告の「実体スライド」は **host rect 安定**で解消。fastTurbulent の centroid は map 系と異なり強 displacement 時にエッジクリップでわずかに動く（§27.5 注記）。
+
+---
+
 ## 再現手順（共通・参考）
 
 1. Solid レイヤーを追加

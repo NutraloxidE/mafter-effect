@@ -1,7 +1,8 @@
 # Progress
 
 > AIエージェントはセッション開始時にこのファイルを読み、終了時に更新すること。
-> 完了済みの詳細なバグ修正履歴は要約済み。コード詳細は spec（SSoT）と git log を正とする。
+> 完了済みの詳細はコミット履歴を正とし、ここは「現在地・残タスク・既知バグ・次の一手」に絞る。
+> （2026-06-20 に compact 済み。古い詳細な更新履歴は git log を参照。）
 
 ---
 
@@ -12,321 +13,70 @@
 | M0 Foundations | ✅ 完了 |
 | M1 Core animation + DomRenderer | ✅ 完了 |
 | M2 HTML comp + expression | ✅ 完了 |
-| M3 Export | ✅ 完了（実機 export 9/9 検証済み） |
-| M4 Plugin API v1 | ✅ 完了（実機検証済み 14/14） |
+| M3 Export | ✅ 完了（実機 9/9 検証済み） |
+| M4 Plugin API v1 | ✅ 完了（実機 14/14 検証済み） |
+| M5 Web Bundle Export（§11.7） | 🚧 Phase 1（Static HTML/ZIP bundle）実装済み・Phase 2 以降残 |
 
-**MVP = M0–M4 全マイルストーン実装・実機検証完了。** その後 §20 Project パネル / §21 Timeline AE化 / §22 グラフエディタ / §23 precomp を MVP 後 UX として拡張中。
+**MVP = M0–M4 完了。** 以降 §20 Project / §21 Timeline AE化 / §22 グラフエディタ / §23 precomp / §24 Ease / §25 Preview編集 / §26 テキスト / §27 エフェクト & 調整レイヤー / §28 Preview Cache / §30 Null / §19.5 Pipeline パネル を拡張中。
 
-現行テスト: **231 件全通過** / typecheck ✅ / build ✅（2026-06-19）。
-
----
-
-## 完了済みタスク（要約）
-
-### M0 Foundations（2026-06-15〜16 完了, spec v0.3 同期済み）
-project.json schema（[schema.ts](src/core/schema.ts)）/ 正準シリアライズ（[serialize.ts](src/core/serialize.ts), RFC 8785/JCS + NFC 正規化）/ FileSystem 抽象（[MemoryFs](src/fs/MemoryFs.ts) / [IndexedDbFs](src/fs/IndexedDbFs.ts)）/ 決定論 zip（[zip.ts](src/fs/zip.ts)）/ 作成・読込・validate・マイグレーション。
-- **受け入れ**: 作成→保存→再読込→zip→再import が byte 等価（roundtrip.test.ts）。日本語名/zip/float の round-trip 緑化。
-- **方針確定**: optional は「値があれば書く・機能不在はキー省略」。`saveProject` は updatedAt を自動 bump しない（command 層で実変更時のみ）。
-
-### M1 Core animation + DomRenderer（2026-06-16 完了）
-- **`@mafter/runtime` 境界（INV-7）** — [src/runtime/](src/runtime/)。React/Zustand/UI 非依存、外部依存は `../core/schema` の型のみ。preview / exporter / bundle player の共有核。契約: [runtime/README.md](src/runtime/README.md)。
-- 凍結した核: `Mat4`（column-major, [mat4.ts](src/runtime/mat4.ts)）/ `ResolvedScene`・`Renderer` interface / easing（cubic-bezier ソルバ）/ interpolate（成分線形 + clamp + hold）/ `resolve()`（純関数 INV-1, parent チェーン畳み込み・§6.3 合成順・camera viewMatrix）。
-- DOM/UI: [DomRenderer.ts](src/runtime/DomRenderer.ts)（flat matrix3d + opacity + z-index + reconcile）/ Zustand [store.ts](src/editor/store.ts)（正は IndexedDbFs）/ [commands.ts](src/editor/commands.ts)（before/after スナップショット undo・**全編集 immutable** が load-bearing 不変条件）/ [WorkspaceLayout.tsx](src/editor/WorkspaceLayout.tsx)（LayoutNode 再帰描画・localStorage 永続化, project.json を汚さない §19.3）/ Preview・Timeline・Inspector・Project パネル。
-- **M1→M2 凍結ゲート**: background INV-3 違反除去 / expression 評価シームを `resolve(comp, frame, ctx?)` に凍結（additive）/ undo snapshot 方式確定 / DomRenderer reconcile 化 / scale-to-fit。
-
-### M2 HTML comp + expression（2026-06-16 完了, 実機検証済み）
-- **§9 Expression**: [exprHelpers.ts](src/runtime/exprHelpers.ts)（seededRandom=mulberry32 / wiggle / remap, 全純関数）/ [moduleLoader.ts](src/runtime/moduleLoader.ts)（FS→Blob→createObjectURL→dynamic import, ネガティブキャッシュ付き）/ [expressionEngine.ts](src/runtime/expressionEngine.ts)（async prepare → sync evaluator, throw→fallback §9）。
-- **§7 HTML Composition (Model A)**: [htmlComp.ts](src/runtime/htmlComp.ts) `HtmlCompPlayer`（Shadow DOM 隔離・inPoint 相対 frame）。DomRenderer に `html` 型サポート。
-- **実機修正（型/単体テストで検出不能だった致命バグ）**: ModuleLoader がオブジェクト default export を拒否していた（→ 関数/オブジェクト両対応）/ HTML comp 配置 UI・expression 付与 UI 欠落を補完。Playwright で Shadow DOM・per-frame render・wiggle アニメート・決定論を確認。
-
-### M3 Export（2026-06-16 完了, 実機 export 9/9 PASS）
-- [exporter.ts](src/runtime/exporter.ts): Project+compId+FS+config → Blob（mp4 / webm / png-seq）。オフスクリーン DomRenderer で preview と同一パイプライン（INV-2 担保）。DOM→raster は SVG foreignObject + Shadow DOM flatten。WebCodecs VideoEncoder + mp4-muxer/webm-muxer、非対応は PNG-seq フォールバック。音声は OfflineAudioContext mix → AudioEncoder → muxer。[ExportDialog.tsx](src/editor/ExportDialog.tsx)。
-- **実機で発見・修正した致命バグ**: tainted canvas（blob: URL → data: URL に変更で解決）/ AVC level 固定（解像度から動的算出 `avcCodecString`）/ HW エンコーダ強制（isConfigSupported フォールバック）。`VideoEncoder` の headless クラッシュは GL backend 起因（`--use-gl=angle --use-angle=swiftshader` で安定）→ 実 Chrome では発生しない見込み。
-- **Opus レビュー後のバグ修正計 7 件**: PNG-seq/webm alpha 無視 / buildAudioMix の不要実行 / DomRenderer html unmount 漏れ / PreviewPanel wiggle チラつき / サブレンジ音声 A/V sync ズレ。
-
-### M4 Plugin API v1（2026-06-16 完了, 実機 14/14 PASS）
-- **§12 フル登録 API**: [plugin.ts](src/runtime/plugin.ts)（型）/ [pluginRegistry.ts](src/runtime/pluginRegistry.ts)（`globalPluginRegistry`・`activate`・`getComponentDef`/`getExprHelpers`/`getEasings`）。DomRenderer・ExpressionEngine が registry を lazy 参照。store に `loadPlugins`/`installSamplePlugin`/`togglePlugin`/`addPluginObject`。pluginRefs は project.json に永続化 → loadFromFs 時に自動ロード。
-- **サンプル plugin**: gradient-rect（width/height/colorA/colorB/angle, 全 animatable）。
-- 留意点: plugin `ComponentDef.render` は host div の**子要素**に適用。keyframe easing は `{ type: "linear" }`（`kind` ではない）。
+現行: **318 tests PASS** / typecheck ✅ / build ✅（2026-06-20）。
 
 ---
 
-## MVP 後の UX 拡張（実装済み）
+## 完了済みの主要機能（要約）
 
-### §20 Project パネル / コンポジション管理（spec v0.4, スキーマ不変, 実機 13/13）
-AE の Project パネル化。store に `addTimelineComp`/`removeComposition`（最後の timeline comp 保護・root 張り替え・html comp の FS 掃除）/`renameComposition`。ProjectPanel = Compositions / Footage / Plugins の倉庫ビュー。PreviewPanel にコンポタブ。データモデルに新フィールドは足さず UI 層 + store 規約で実現。
-
-### §21 Timeline AE化 — Tier A + P0 + P1（spec v0.5〜0.7, スキーマ不変, 実機検証済み）
-[TimelinePanel.tsx](src/editor/panels/TimelinePanel.tsx)。詳細作業計画は [doc/timeline-panel-wip.md](doc/timeline-panel-wip.md)。
-- **Tier A**: SMPTE タイムコード（non-drop, INV-5 保持）/ 時間ルーラー+プレイヘッド / プロパティツリー+ストップウォッチ+インライン値編集+KF ダイヤ行 / レイヤーバー drag（in/out トリム・スライド・footage 源オフセット連動）。実バグ修正: graphRef 未接続で px→frame 変換が無効化していた。
-- **§21.5 KF 複数選択**: ラバーバンド（全レイヤー/プロパティ横断・中心 hit-test・Shift 追加）/ まとめて移動・削除 / ハイライト。`cmdUpdateObjects`/`updateObjects`（複数オブジェクト 1 undo）。
-- **§21.6 U/UU キー**: U=KF ありプロパティのみ展開 / UU=変更済みのみ。物理キー `e.code` 併用で IME 環境対応。
-- **§21.7 Duplicate(Ctrl+D)/Split(Ctrl+Shift+D)**: footage 系の source offset 連動。
-- **P0**: Ctrl+スクロールズーム / Shift+パン / `\`=fit all / 下部スクロールバー / `isPlaying` をストア昇格 / KF 右クリックでイージングメニュー（F9=Easy Ease 等・ダイヤ色で easing 種別）/ ←→ フレーム移動・J/K で前後 KF。
-- **P1**: レイヤー DnD 並べ替え（zOrder 降順ソート・再採番, 上=#1）/ 複数レイヤー選択（Shift 範囲・Ctrl トグル）/ component props の animatable KF 行（PropPath を string 拡張）/ スナップ（再生ヘッド/秒境界/端に ~10px 吸着）/ KF・レイヤーのコピー/カット/ペースト（AE 準拠の文脈分岐: KF 選択中は KF・それ以外はレイヤー / ペーストは再生ヘッド基準 / `flashStatus` フィードバック）。
-
-### §22 グラフエディタ Phase 1（spec v0.7, スキーマ不変, 実機検証済み）
-ツールバー 📈 で値カーブレーンに切替。実サンプラでカーブ描画（hold/オーバーシュート反映, Vec3 は x/y/z 色分け）。KF 点ドラッグで時間+値編集 / ベジェハンドルで区間 easing 編集（linear→bezier 自動変換・y クランプ無し）。参照軸=|Δ|最大。1 操作 1 undo（`setPropByPath`）。`GraphLane` コンポーネント。
-**未実装（Phase 2/3）**: ① per-axis 値カーブ（Vec3 軸独立カーブ=`Keyframe<Vec3>` per-axis easing override の additive スキーマ要）② 空間モーションパス（spatial tangent + resolve 補間拡張 + INV-1/2 再検証）③ 速度グラフ ④ グラフ内 KF 追加/削除・ラバーバンド ⑤ opacity 等の値域クランプ。詳細は spec §22.0。
-
-### §23 comp layer (precomp) Phase 1（スキーマ不変, 実機検証中）
-Project パネルの timeline/HTML comp を draggable 化（DnD 必須）。`store.addCompLayer(compId)` + BFS 循環参照検出。DomRenderer に `setTimelineComps`/`renderNestedComp`（depth≤4, non-collapse 相当）。`resolve()` が `comp` type に `_inPoint` を注入 → childFrame = clamp(parentFrame - inPoint + trimStart, 0, duration-1) で Freeze 挙動。spec §23 追記。
-- **2026-06-18 (Cursor)**: comp レイヤーの split/左端トリムで `trimStart` 連動（§21.3 相当・AE 準拠）。タイムラインにトリム済み源のゴースト表示（comp/html/video/audio）。
-- **2026-06-18 (Cursor)**: 自動検証追加 — `test/precomp.test.ts`（14 件）+ `src/runtime/compLayer.ts` 純関数抽出。✅ Freeze 時間マッピング / ✅ 循環参照 BFS 拒否（store 統合含む）/ ✅ depth≤4 ガード / ✅ resolve `_inPoint` 注入。comp-in-comp **描画**はユーザー確認済み。
-
-### インフラ / デプロイ（2026-06-17）
-- `vite.config.ts` に `server.host = true`（LAN 公開）。
-- `scripts/deploy-ssh.mjs` + `npm run deploy:ssh`: SSH ホストへ `dist` 転送（`--build`/`--clean`/`--identity`/`--port`）。`.env`（`DEPLOY_HOST`/`DEPLOY_PASSWORD` 等）対応で無引数実行可。パスワード認証は sshpass / plink+pscp 自動選択。配備後 Caddy コンテナで 80/443 自動待受（`DEPLOY_SITE_HOST` で HTTPS, `--no-serve` で無効）。`.env` は `.gitignore` 済み。
-- `scripts/claude-auto-continue.ps1`: 500 検知で `続けて` を stdin 送出。
+- **コア（M0–M2）**: project.json schema / 正準シリアライズ（JCS+NFC）/ FS 抽象（Memory/IndexedDb）/ 決定論 zip / `@mafter/runtime` 単一核（INV-7: Mat4・easing・interpolate・純関数 `resolve()`・module loader・expression engine）/ DomRenderer（flat matrix3d）/ Zustand store（正は FS）/ commands（before/after snapshot undo）/ HTML comp（Shadow DOM 隔離）。
+- **Export（M3）**: WebCodecs mp4/webm + PNG-seq フォールバック + 音声 mux。preview と同一パイプライン（INV-2）。
+- **Plugin（M4）**: フル登録 API + pluginRegistry + gradient-rect サンプル。
+- **§20–§26 UX**: Project パネル / Timeline AE化（Tier A + P0 + P1・KF 複数選択・U/UU・Duplicate/Split・コピペ・DnD 並べ替え）/ グラフエディタ Phase 1 / precomp（Freeze・循環参照 BFS・depth≤4）/ Flow 風 Ease パネル / Preview ビューア編集（ズーム/オーバーレイ/直接操作/KF 書き戻し）/ テキストレイヤー本実装（Draft=DOM・Best=SVG・グリフ分解・opentype.js）/ 画像アセット読み込み（プレビュー縮小プロキシ付き）。
+- **§27 エフェクト & 調整レイヤー**: EffectDef（kind=css/svg/raster × executionPath=live/raster）/ builtin blur・tint・wave・ripple・turbulentDisplace・linearWipe・angularWipe・pixelSorter・pixelSortLite / Fast 系（fastWave・fastRipple・fastTurbulent）/ raster パイプライン（rasterCapture 共有・exporter flush）/ Inspector Effects foldout + Timeline effect KF 行。
+- **§27.4 Live/Raster 調整レイヤー Phase 1**: `adjustmentMode:"live"|"raster"`（live=backdrop-filter 軽量 / raster=comp 背面 capture 高精度）。export mp4 は `auto_raster_mp4` で Live を自動 raster 化。byte 等価（raster のみ書く）。
+- **§28 Preview Cache / RAM Preview**: 二層キャッシュ（L1 メモリ LRU + L2 専用 IDB）/ ワークエリア / 緑バー / Caching ON/OFF トグル（既定 OFF）/ Auto Preview Cache + Draft Fast Path（§27.12）/ `previewBakeRequired` フラグ（§27.2）。
+- **§28.10 per-layer raster キャッシュ（local frame 基準）**: 自己 capture（displacement）の per-layer キャッシュキーを comp 絶対フレーム → **layer-local frame**（`compFrame − inPoint`）に変更。レイヤーをスライド(move)しても内容不変なら再ラスタしない。`ResolvedObject.inPoint` を passthrough（resolve）。タイムラインに per-layer 緑線（レイヤーバー直上, `cacheSegments.framesToSegments` 共有・`previewCacheService.subscribeLayerFrames`）。comp 全体緑バー(ルーラー)は補助として共存。
+- **§30 Null レイヤー Phase 1** / **§21.8 Parent リンク UI**（循環検証・world 保持 reparent）/ **§19.5 Pipeline パネル Phase 2**（合成順序可視化・崖検出・mp4 auto_raster 注記）。
+- **インフラ**: vite LAN 公開 / `deploy:ssh`（.env・パスワード認証・Caddy 自動構成・`root@ssh.gycp.party` 配備済み）/ `cursor-agent` 委任ハーネス（delegate-to-cursor skill）。
 
 ---
 
-## 進行中・未完了タスク
+## 既知のバグ・未解決課題
 
-### §23 precomp Phase 1 — 残（手動のみ）
-- [x] **Freeze** 時間マッピング — `test/precomp.test.ts` + `compChildFrame()` で自動検証済み
-- [x] **循環参照拒否** — BFS + `store.addCompLayer` 統合テストで自動検証済み
-- [x] **depth 制限（≤4）** — `isCompNestDepthAllowed()` 単体テストで自動検証済み
-- [x] comp-in-comp **描画** — ユーザー確認済み
-- [ ] **Playwright 実機 E2E**（DnD 配置・ネスト描画のブラウザ回帰）— 未セットアップ。ロジック面は上記でカバー済み
+- **§27.3 SVG 5 種の export 一致（INV-2）未検証**: wave/ripple/turbulent/linearWipe/angularWipe の preview↔export ピクセル parity（feImage href が foreignObject ラスタ経路で再現するか）。pixelSorter は検証済み。
+- **Issue B（[doc/distortion-effect-bugs.md](doc/distortion-effect-bugs.md)）**: turbulent プレビュー左端グレー枠の歪み漏れ。未着手。
+- **Issue C / fastTurbulent centroid**: 強 amount で centroid ~6–8px ドリフト残（[effectRouting.ts](src/runtime/effectRouting.ts) で self-capture raster 統一後も残るチューニング課題）。
+- **ディストーション phase/speed/direction（要設計判断・スキーマ追加）**: AE Ripple/Wave Warp の Ripple Phase（伝播アニメ）・Wave Speed/Type/任意角度 Direction が現状 param 未公開。effects params スキーマ追加になるため Claude Code 設計待ち（`rippleDisplaceMap` は `phaseDeg` を既に受けられる）。
+- **§26.4 Draft/Best 残差（許容済み）**: DOM vs SVG 経路差で 100% ピクセル一致は非目標（実測 ≤2px・実用上問題なし）。
+- **調整レイヤー export follow-up**: §27.4.1 multi-pass flush の厳密 sequential 化（積層調整の export 順序）/ precomp ネスト内 Live 調整の export auto_raster（compFrameCapture へ option 未配線）/ RAM preview cache の Live 調整 fidelity。
+- **verify スクリプト未整合**: `verify-preview-cache.mjs`（cache 既定 OFF 後の Realtime 期待）・`verify-effects.mjs`（project ロード前提）が現行挙動と FAIL。要更新。
+- **インフラ**: `npm install` 時の transitive deps 脆弱性警告（dev/build 由来・実行時影響なし・`npm audit` 精査推奨）/ IndexedDbFs.list は全 key 取得 → IDBKeyRange 最適化余地（§11.1）。
 
-### §24 Flow 風イージングプリセットパネル（spec v0.8・Phase 1 スキーマ不変・**実装済み 2026-06-18**）
-仕様は spec §24 に確定。[EasePanel.tsx](src/editor/panels/EasePanel.tsx) + 共有モジュール群。
-- [x] **パネル登録** — 右カラム tabs `[inspector, ease]`（§19.3 localStorage 永続・project.json 非汚染）
-- [x] **EasePanel** — カーブプレビュー/エディタ + 数値入力 + プリセットグリッド + default/user セット + ★保存 + in/out/both + APPLY
-- [x] **組み込みプリセット** — [builtinEasingPresets.ts](src/editor/builtinEasingPresets.ts) §24.4 全件
-- [x] **適用ロジック** — [easingApply.ts](src/editor/easingApply.ts) + `test/easingApply.test.ts`（7 件）。KF 選択は store `selectedKfKeys` でタイムラインと共有
-- [x] **★保存** — [easingPresetFs.ts](src/editor/easingPresetFs.ts) → `presets/easing/<id>.json`
-- [x] **回帰（自動）** — typecheck / **107 tests PASS** / build ✅
-- [ ] **回帰（手動）** — §21 F9 メニュー・§22 グラフエディタとの SSoT 共有をブラウザで確認
-
-### §25 Preview ビューア編集（spec v0.9・スキーマ不変・**実装済み 2026-06-18**）
-spec §25 に確定。AE コンポビューア相当の編集機能を Preview に実装。
-- [x] **§25.1 ビューア制御** — viewZoom/viewPan、Ctrl+ホイール（カーソルアンカー）、スペース/中ボタン パン、Fit/Fit≤100%/100%/%ドロップダウン
-- [x] **§25.2 オーバーレイ** — 透明チェッカー / セーフマージン / グリッド・中心十字・定規 / 解像度プロキシ（表示専用・INV-2 不変）
-- [x] **§25.3 直接操作** — 選択 bbox＋8 ハンドル scale＋回転＋移動＋アンカー点（先頭 1 レイヤー）
-- [x] **§25.4 座標逆算** — [previewViewer.ts](src/editor/previewViewer.ts) 純関数 + `test/previewViewer.test.ts`（11 件）
-- [x] **§25.5 KF 書き戻し** — animated→現 frame KF / static→value（§21.2 同一規約）
-- [x] **§25.6 再生コントロール** — 1フレーム前後 / 末尾へ / ループ / タイムコード直接入力
-- [x] **§25.7 永続化** — [previewViewerStorage.ts](src/editor/previewViewerStorage.ts) localStorage（comp ごと可）、project.json 非汚染
-- [x] **回帰（自動）** — typecheck / **119 tests PASS** / build ✅
-- [ ] **回帰（手動）** — ブラウザで直接操作・ズーム・オーバーレイ・animated KF 書き戻し確認
-- **将来**: ガイド線ドラッグ / マスク・シェイプ オンキャンバス編集 / モーションパス / チャンネル・スナップショット / ROI
-
-### §26 テキストレイヤー本実装（spec v0.10・**実装済み 2026-06-18**）
-spec §26 に確定。`text` builtin ComponentDef 登録 + Inspector Text セクション + Draft/Best 品質切替 + SVG アウトライン + グリフ分解 + export 方式選択。
-- [x] **§26.1 スキーマ** — `addText` 既定値（tracking/leading/weight/italic/stroke）。静的 props は raw 値、animatable は AnimatedProp。
-- [x] **§26.2 builtin ComponentDef** — [builtinComponents.ts](src/runtime/builtinComponents.ts) + Timeline PropRow kind 拡張（string/color/enum/bool）。
-- [x] **§26.3 Inspector Text** — [InspectorPanel.tsx](src/editor/panels/InspectorPanel.tsx) + [ColorSwatch.tsx](src/editor/ColorSwatch.tsx)。編集中 draft 自動降格。
-- [x] **§26.4 品質モード** — Preview Draft/Best トグル + [previewViewerStorage.ts](src/editor/previewViewerStorage.ts) 永続化。[textRender.ts](src/runtime/textRender.ts) **Draft=DOM（分解前の正）** / Best=SVG（DOM line box に baseline 合わせ）。[fontOutlineCache.ts](src/runtime/fontOutlineCache.ts) + opentype.js。
-- [x] **§26.4.2 キャッシュ IF** — [frameRenderCache.ts](src/runtime/frameRenderCache.ts) no-op。
-- [x] **§26.5 グリフ分解** — [glyphDecompose.ts](src/editor/glyphDecompose.ts) + store `decomposeGlyphs` + Inspector ボタン。
-- [x] **§26.6 補間** — `sampleRgba` + string hold（[interpolate.ts](src/runtime/interpolate.ts)）。
-- [x] **§26.7 Export** — ExportDialog テキスト描画方式 + DomRenderer `textRenderMode`。
-- [x] **回帰（自動）** — typecheck / **136 tests PASS** / build ✅
-- [x] **回帰（手動・部分 2026-06-18）** — ユーザー確認: Undo ✅ / グリフ分解 ✅ / Draft↔Best 切替 ✅（**わずかな誤差あり・実用上問題なし**）/ 位置 KF アニメ ✅ / export（precomp・テキスト・MP4/PNG）Playwright 確認 ✅
-- [x] **既知バグ潰し（ブロッカー）解消 2026-06-18** — §26.4 Draft/Best 「位置が一致しない」根因を特定・修正。**根因**: `PreviewPanel` の renderer は comp 準備後に生成されるが、`effectiveTextQuality→setTextQuality` effect は値不変時 re-run しないため、生成された renderer に "draft" が届かず DomRenderer 既定 "precise" のまま固定 → **Draft 切替が無効化し常に SVG 描画**だった。修正: `textQualityRef` を導入し renderer 生成時に `setTextQuality(textQualityRef.current)` を適用（[PreviewPanel.tsx](src/editor/panels/PreviewPanel.tsx)）。**検証**: Playwright ピクセル差分で left/center/right/multiline/96px/stroke 全件 draft↔best が AA バンド相当（330〜1084/128000、位置ズレなら数千px差）→ グリフ実体が縦横・baseline・leading とも整合を実機確認。export は `setTextQuality` を生成後明示呼びで無影響。
-- [x] **§25 × §26 Preview 四隅 scale ハンドル** — 2026-06-18 手動確認で **solid 同等に修正済み**（Canvas bounds + ドラッグ起点相対 scale）。
-- **将来（§16）**: 段落ボックステキスト / 文字単位混在スタイル / パステキスト / 範囲セレクター式アニメーター / tracking 1/1000em / フォントセレクト UI / レイヤー個別品質 / レンダーキャッシュ実体
-
-### §27 エフェクト & 調整レイヤー（spec v0.11・**実装完了 2026-06-19**）
-
-- [x] **スキーマ（§5.5b）**: `EffectInstance` / `SceneObject.effects?` / `isAdjustment?`（[schema.ts](src/core/schema.ts)）
-- [x] **基盤（§27.1/§27.2）**: [plugin.ts](src/runtime/plugin.ts) `EffectDef` / [pluginRegistry.ts](src/runtime/pluginRegistry.ts) / [builtinEffects.ts](src/runtime/builtinEffects.ts)（blur/tint）
-- [x] **解決・描画（§27.5/§27.1/§27.4）**: [resolve.ts](src/runtime/resolve.ts) / [resolved.ts](src/runtime/resolved.ts) / [DomRenderer.ts](src/runtime/DomRenderer.ts)（filter + backdrop-filter + svg defs + fxSig）
-- [x] **UI（§27.6/§27.7）**: [InspectorPanel.tsx](src/editor/panels/InspectorPanel.tsx) Effects foldout / [TimelinePanel.tsx](src/editor/panels/TimelinePanel.tsx) effect KF 行 + ADJ バッジ
-- [x] **ストア（§27.8）**: [store.ts](src/editor/store.ts) `addEffect`/`removeEffect`/`reorderEffect`/`toggleEffect`/`addAdjustmentLayer`/`toggleAdjustment`
-- [x] **PropPath**: [keyframeEdit.ts](src/editor/keyframeEdit.ts) `effects.<id>.<key>`
-- [x] **テスト**: [test/effects.test.ts](test/effects.test.ts) + [test/effectSvg.test.ts](test/effectSvg.test.ts) + 既存回帰 **169 tests PASS** / typecheck / build ✅
-- [x] **Playwright 実機**: Blur preview + KF アニメ / Tint url filter / 調整レイヤー backdrop-filter ✅
-- **調整レイヤー export**: preview ベストエフォート（§27.4）。export ピクセル一致は未検証 → **許容済み既知差候補**（foreignObject + backdrop-filter 経路依存）。通常レイヤー effects は既存 export パイプライン（filter 文字列）で preview 一致想定。
-
-#### §27.3 追加エフェクト（**AE 寄せリファイン 2026-06-19・コア修正＋視覚検証 完了**）
-
-> **2026-06-19 リファイン（Opus）**: 仮実装の **構造的バグと AE 乖離を修正**。spec §27.3/§27.1 を修正済みレシピに更新。typecheck / **172 tests PASS** / build ✅。
-> **Playwright 視覚検証済み（4 象限・別レイヤー分離）**: Wave=クリーンな横波（旗状・tearing なし）/ Ripple=中心起点の同心円ディストーション / Linear Wipe(0.5)=左半分残し＋feather エッジで**実切り抜き** / Angular Wipe(0.3)=真上から CW に 108°扇形除去。コンソールエラーなし。検証スクリプト [verify-effects.mjs](verify-effects.mjs)（空 IDB → アプリ boot → 各エフェクトを別象限に配置 → screenshot）。
->
-> **検証中に判明・修正した追加バグ（Opus・実機でのみ顕在化）**:
-> 1. **横波化**: Wave は当初 longitudinal（進行方向と同軸の変位）で文字が縦割れ（tearing）→ AE 同様 **transverse**（進行方向に垂直な変位）に修正（[effectSvg.ts](src/runtime/effectSvg.ts)）。
-> 2. **レイヤー実寸サイズの ctx**: SVG エフェクトの filter はレイヤー（host div）座標系で効くのに ctx に **comp 寸**を渡していたため、comp サイズの mask/map が小さいレイヤーの一部しか覆わず**ワイプが全く効かない**（mask 左端の白だけ見える）バグ。`EffectRenderCtx` をレイヤー実寸に変更（[DomRenderer.ts](src/runtime/DomRenderer.ts)）。host div は absolute 子（solid 等）だと offsetWidth=0 に潰れるため、**コンポーネント子要素の border box** から実寸を測る。調整レイヤーのみ comp 全体寸を渡す。
-
-| type | label | 2026-06-19 修正内容 |
-|---|---|---|
-| `wave` | Wave | **noise→真の正弦波 displacement map**（feImage linearGradient + feDisplacementMap、scale=2A）。**phase が seed 跳躍ではなく滑らかにスクロール**。AE Wave Warp 相当に。 |
-| `turbulentDisplace` | Turbulent Displace | **本実装（Phase 1）**: Size=1/size 換算・Complexity→numOctaves・Evolution→feOffset 連続パン・Random Seed 分離・(WIP) 解除。displacement filter region 座標系修正（スライド解消）含む。 |
-| `ripple` | Ripple | **noise→同心円 displacement map**（radialGradient userSpaceOnUse、sin/cos で半径方向に変位回転、(1−o) 減衰）。**center が実際にリング中心を動かす**（旧実装は seed 入力のみで無効だった）。 |
-| `linearWipe` | Linear Wipe | **構造バグ修正**: マスクが luminance で、feComposite "in" は alpha 参照のため**実際は切り抜いていなかった** → `feColorMatrix luminanceToAlpha` を挿入。**completion 極性を AE 準拠に反転**（0=表示/恒等・1=全 wipe）。feather 二重適用解消。 |
-| `angularWipe` | Angular Wipe | 同上の luminanceToAlpha 修正 + 極性反転。白背景＋黒扇形（消去領域）が startAngle(=真上) から CW に completion·360° で拡大。 |
-
-**共通**: displacement 系 filter は userSpaceOnUse + 動的 pad。非 displacement SVG filter は region `-25%/150%` 従来どおり。
-
-**ディストーション 3 種スライドバグ**: **解消済み**（[doc/distortion-effect-bugs.md](doc/distortion-effect-bugs.md) 参照）。
-
-**残タスク**:
-- [x] **per-effect 視覚検証** — 2026-06-19 完了（上記）。
-- [ ] **export 一致（INV-2）**: 新 5 種 SVG エフェクトの preview↔export ピクセル検証（feImage href が foreignObject ラスタ経路で再現するか要確認）。
-- [x] **pixelSorter export 一致（INV-2）** — 2026-06-19 (Cursor) 完了。根因: `captureElementToCanvas` の `cloneNode` が canvas bitmap を複製しない → [`rasterCapture.ts`](src/runtime/rasterCapture.ts) `inlineCanvasBitmaps(cloned, source)` で source 側から `toDataURL`。**Playwright**: plain solid 120k px / pixelSorter 120k px（修正前 0 px）。preview↔export サンプル差分は foreignObject 二重経路による軽微残差（許容）。
-- [ ] **調整レイヤー + 新エフェクト**: backdrop-filter 経路での作用確認
-- [ ] **Timeline**: Wave `direction` enum 行の編集 UI（現状 Inspector `<select>` のみ）
-- **KF アニメ実機**: 今回は静的値で検証。completion/phase/amplitude の KF アニメは resolve 経路（test 済み）だが preview スクラブの実機確認は任意で残。
-
-**関連ファイル**: [effectSvg.ts](src/runtime/effectSvg.ts) / [builtinEffects.ts](src/runtime/builtinEffects.ts) / [DomRenderer.ts](src/runtime/DomRenderer.ts) / spec §27.3 / 検証スクリプト [verify-effects.mjs](verify-effects.mjs)
-
-#### §27.3 `pixelSorter` — Pixel Sorter + raster パイプライン（**実装完了 2026-06-19**）
-
-> spec §27.1 raster パイプライン + §27.3 `pixelSorter`（AEPS2 Phase 1 コア）。**途中セッションから Cursor が継続実装・export バグ修正まで完了。**
-
-- [x] **コア（純関数）**: [`pixelSort.ts`](src/runtime/pixelSort.ts) — 輝度しきい値 / angle 回転 / simple|highlights|shadows|random / sortBlocks / feather（INV-1）
-- [x] **EffectDef**: [`builtinEffects.ts`](src/runtime/builtinEffects.ts) `pixelSorter` — `{ kind: "raster" }` + `processPixels`
-- [x] **DomRenderer §27.1**: pre css/svg → raster capture → canvas overlay → post filter。`flushRasterEffects()` / `rasterRunKey`（frame 含む stale ガード）
-- [x] **共有ラスタ化**: [`rasterCapture.ts`](src/runtime/rasterCapture.ts) — exporter と DomRenderer 共有。`flattenShadow` / `inlineCanvasBitmaps(cloned, source)`（export 用 canvas bitmap 焼き込み）
-- [x] **exporter**: [`exporter.ts`](src/runtime/exporter.ts) — 各 frame `await renderer.flushRasterEffects()` 後 root capture
-- [x] **テスト**: [`test/pixelSort.test.ts`](test/pixelSort.test.ts)（6 件）+ [`test/effects.test.ts`](test/effects.test.ts) pixelSorter 3 件。**186 tests PASS**
-- [x] **Playwright preview**: raster canvas 400×300・非ゼロピクセル確認 ✅
-- [x] **Playwright export**: pixelSorter 付き solid が PNG-seq に出力（修正前は全黒）✅
-- **非目標（Phase 1）**: Gradients / Random Length / 調整レイヤー + raster / AEPS2 100% 一致
-- **許容済み既知差**: preview ライブ canvas と export foreignObject 二重ラスタの軽微色差。random mode は frame seed 依存（INV-1 準拠）。
-
-### Timeline AE化バックログ（spec §5 スキーマ拡張 + INV 影響評価を伴い別リビジョンで導入）
-**→ 実用性優先度リストは [doc/timeline-panel-wip.md](doc/timeline-panel-wip.md)。**
-- **Tier B（additive スキーマ）**: ラベル色 / solo / lock / shy / parent リンク UI。`SceneObject` にフラグ追加。
-- **Tier C（renderer + INV 拡張）**: ブレンドモード（mix-blend-mode）/ トラックマット。flat DOM レンダラ(INV-3) と exporter foreignObject の両方で best-effort 対応要。
-- **Tier D（大規模）**: モーションブラー / フレームブレンド / 3D レイヤートグル / 調整レイヤー。決定論モデル整合評価要。
-- **DF タイムコード**: 29.97/59.94 の `0;00;00;00` 表示（現状 non-drop）。
-- **グラフエディタ Phase 2/3**（上記 §22 未実装項目）。
-
-### 既知の縮退（§20.2 で意図的に MVP 仕様化）
-削除した html comp を `compId` 参照する html インスタンスはカスケード削除しない。参照先不在は DomRenderer/HtmlCompPlayer 側で「何も描かない」で安全縮退。自動掃除は将来。
-
----
-
-## 開発方針（2026-06-18 明記）
-
-**§26 テキストレイヤーは機能実装済み。§26.4 Draft/Best の大きな位置ズレ（ブロッカー）は 2026-06-18 解消済み。**
-Draft↔Best は **100% ピクセル一致ではない**（DOM vs SVG アウトラインの経路差によるわずかな残差）。手動回帰（2026-06-18）で実用上問題なしと確認 — **許容済み既知差**として扱い、ブロッカー対象外。
-Preview 四隅 scale ハンドルも 2026-06-18 手動確認で修正済み。自動テスト（136 PASS）だけでは UI 品質は保証されないため、実機（Playwright）検証を併用する。
-
-> **次の機能・マイルストーン（M5 / Timeline Tier B 等）に進む前に、既知バグを必ず潰すこと。**
-> バグが残ったまま新規スコープを広げない。優先順位は **既知バグ修正 > 手動回帰 > 新機能**。
-
----
-
-## 既知のバグ・課題
-
-### §26 テキスト × §25 Preview
-
-- ~~**§26.4 Draft / Best 切替の位置ズレ（ブロッカー）**~~ — **2026-06-18 解消（2 段階）**。詳細は更新履歴参照。
-- **§26.4 Draft / Best — 残差（許容済み・非ブロッカー）**: Draft(DOM) と Best(SVG) は描画経路が異なるため **100% ピクセル一致は保証しない**。修正後も切替時にわずかな位置/形状差が残りうる（Playwright 実測では ≤2px 級、手動回帰 2026-06-18 でも目視でわずかな差を確認・**実用上問題なし**と判断）。INV-2（preview↔export 一致）は export 時に選択した `textRenderMode` 経路内での一致が正準。
-- ~~**Preview 四隅 scale ハンドル（テキストレイヤー）**~~ — **2026-06-18 手動確認で修正済み**。solid と同等にドラッグ開始ジャンプなし。
-- **§26 手動回帰（2026-06-18 ユーザー）**: Undo ✅ / グリフ分解 ✅ / Draft↔Best ✅（残差許容）/ 位置 KF アニメ ✅。Inspector Source Text 入力バグは 2026-06-18 修正済み。
-- ~~**export 通し（precomp / MP4）**~~ — **2026-06-18 (Cursor) 修正**: §23 precomp 追加後 `exporter.ts` が `setTimelineComps` 未注入のままだったため comp レイヤーが export で空描画（preview のみ正しい）。`PreviewPanel` と同様に timeline comp 一覧を注入。Playwright 実測: precomp preview/export インクピクセル **delta=0**。MP4/WebM/PNG-seq + テキストは UI 経由でダウンロード確認済み。
-
-### §27.3 ディストーション 3 種（wave / turbulentDisplace / ripple）
-
-- ~~**Amplitude / Amount 増加時の実体スライド**~~ — **解消済み**（raster pipeline 統一）。2026-06-20 (Cursor) wave/ripple も Playwright で amp 0/10/40/80/140 centroid 不変を実測確認（turbulent は前セッションで解消済み）。
-- ~~**ripple が渦（spiral）で同心円にならない**~~ — **2026-06-20 (Cursor) 解消**: 放射方向 per-pixel PNG displacement map（`rippleDisplaceMap`）。詳細は更新履歴参照。
-- ~~**wave WIP**~~ — **2026-06-20 検証完了**（横波・正弦・ドリフトなし）。ラベル `(WIP)` 除去。
-- **解消済み（参考・同 doc）**: host 0×0 による効果無効化・境界線への歪み漏れはセッション内修正で解消報告あり（現行コミットへの取り込み状況は doc 参照）。
-- **要設計判断（Claude Code・スキーマ追加のため Cursor 単独で進めず）**: AE Ripple/Wave Warp は **Ripple Phase**（波が外へ伝播するアニメ）と **Wave Speed/Wave Type(矩形/三角)/任意角度 Direction/Pinning** を持つ。現状 `ripple` には `phase` param が無く（内部既定 0・静的）、`wave` の `direction` は horizontal/vertical enum のみ。`phase`/`speed`/`direction` 角度化は **effects params スキーマ追加**になるため設計判断待ち（実装側 `rippleDisplaceMap` は `phaseDeg` 引数を既に受けられる）。
-
-### インフラ・その他
-
-- `npm install` 時に transitive deps の脆弱性警告（moderate×3 / high×1 / critical×1）。dev/build ツールチェーン由来で実行時影響なし。`npm audit` で精査推奨。
-- IndexedDbFs.list は全 key 取得 → prefix フィルタ。アセット増加時は IDBKeyRange 範囲クエリへ最適化（§11.1 注記）。
+> ~~§27 Blur 回帰~~ — **2026-06-20 解消**（`rasterizeFilteredImage` が CSS filter token を捨てていた。filter chain 全体を `<image>` の CSS filter property へ。[test/rasterCapture.test.ts](test/rasterCapture.test.ts) で lock）。
 
 ---
 
 ## Next steps（次のセッションでやること）
 
-**ゲート: 下記 1〜2 が完了するまで、4 以降（新機能）に着手しない。**
+**優先順位: 既知バグ修正 > 手動回帰 > 新機能。**
 
-1. ~~**§26.4 Draft/Best 切替バグ修正**~~ — **2026-06-18 解消済み**（renderer 初期化順 + baseline 式・Playwright 検証済み）。**残差は許容済み（100% 一致非目標）**。
-2. ~~**§26 手動回帰（残）** — 作成→編集（即時反映）→export 通し~~ — **2026-06-18 export 修正済み**（§23 precomp `setTimelineComps` 欠落 + 動画 encode 失敗時 PNG-seq フォールバック）。
-3. **§25 Preview 手動回帰** — 直接操作・ズーム・オーバーレイ・animated KF 書き戻し（solid / text）。
-4. **§24 Ease パネル手動回帰** — F9 メニュー・グラフエディタとの SSoT 共有確認。
-5. ~~**§23 precomp Playwright E2E**~~ → ロジックは `test/precomp.test.ts` で自動化済み。Playwright E2E は任意。
-6. **M5 Web Bundle Export（§11.7）** — 上記ゲート通過後。`@mafter/runtime` player + bundle export。
-7. **Timeline バックログ Tier B〜D / グラフエディタ Phase 2** — 上記ゲート通過後（要 spec 追記・INV 評価）。
+1. **手動回帰（残）** — §25 Preview（直接操作・ズーム・オーバーレイ・animated KF 書き戻し）/ §24 Ease パネル（F9 メニュー・グラフエディタとの SSoT 共有）。
+2. **verify スクリプト更新** — `verify-preview-cache.mjs` / `verify-effects.mjs` を現行 UX（cache 既定 OFF・project ロード手順）に合わせて修正。
+3. **§27 INV-2 export parity** — SVG 5 種（wave/ripple/turbulent/wipe）の preview↔export ピクセル検証。Issue B / fastTurbulent centroid チューニング。
+4. **§27.4 調整レイヤー follow-up** — multi-pass flush 厳密化 / precomp ネスト Live 調整 export。
+5. **ディストーション phase/speed/direction スキーマ** — 設計判断（Claude Code）後に実装。
+6. **M5 Phase 2+ Web Bundle** / **Timeline Tier B–D**（ラベル色/solo/lock/shy・ブレンドモード・トラックマット・モーションブラー）/ **グラフエディタ Phase 2/3**（per-axis カーブ・空間モーションパス・速度グラフ）。いずれも spec 追記 + INV 評価が前提。
 
-### 参考: 先取り済みの境界（spec v0.3 新規）
-- **INV-7 `@mafter/runtime` 単一核**: resolve / Renderer / module loader(§11.3) / expression engine(§9) / 再生クロック をエディタ非依存ライブラリに括出し。preview / video exporter / web bundle player が共有。
-- **INV-8**: web bundle player は実時間・別の決定論クラス（フレーム精度非保証, マスタークロック=音声）。MP4/headless とは別保証。
-- **§19 パネルシステム**: `LayoutNode` 直列化ツリー + レジストリ。MVP は固定レイアウト + スプリッタ resize のみ。レイアウト状態は project.json に入れない（§19.3）。ドッキングは将来。
+### 参考: 先取り済みの境界
+- **INV-7**: `@mafter/runtime` 単一核（resolve / Renderer / module loader / expression / 再生クロック）。preview / exporter / web bundle player が共有。
+- **INV-8**: web bundle player は実時間・別の決定論クラス（マスタークロック=音声）。
+- **§19 パネルシステム**: `LayoutNode` 直列化ツリー。レイアウト状態は project.json に入れない（§19.3・localStorage 永続）。
+
+### §27.4.1 / §19.5 合成順序モデル（設計確定済み）
+canvas 化結果は以降から見て通常の背面ピクセルと等価（zOrder 昇順単一規則）/ precomp は non-collapse 固定 / Raster 出力を確定境界（上の live は再計算なし）/ export = multi-pass flush（zOrder 昇順・各 raster ポイントで背面 capture・depth≤4）。PipelinePanel が live/raster 経路と崖を可視化。
 
 ---
 
-## 更新履歴（主要マイルストーンのみ）
+## 開発方針
 
-| 日時 | 内容 |
-|---|---|
-| 2026-06-15 | progress.md 初期化 / M0 Foundations 完了（schema・正準シリアライズ・FS・zip・テスト） |
-| 2026-06-16 | spec v0.3 同期 + M0 リファイン。M1 凍結ゲート + 決定論コア（@mafter/runtime 境界 / Mat4 / easing / resolve / §19）。M1 DOM/UI 層完了（DomRenderer / store / commands / パネル群）。M1→M2 検証リファクタ |
-| 2026-06-16 | M2 HTML comp + expression 完了。実機修正（ModuleLoader オブジェクト default export 拒否の致命バグ等）Playwright 検証 |
-| 2026-06-16 | M3 Export 完了。実機致命バグ修正（tainted canvas / AVC level / HW エンコーダ）+ Opus レビュー後 7 件。実機 export 9/9 PASS |
-| 2026-06-16 | M4 Plugin API v1 完了（plugin.ts / pluginRegistry / DomRenderer・ExpressionEngine 拡張 / gradient-rect サンプル）。実機 14/14 PASS。**MVP 全クローズ** |
-| 2026-06-16〜17 | spec v0.4 §20 Project パネル（実機 13/13）。spec v0.5〜0.7 §21 Timeline Tier A + P0 + P1 + §21.5 KF 複数選択 + §21.6 U/UU + §21.7 Duplicate/Split。実機検証・実バグ修正（graphRef 未接続 / IME J/K / box-sizing 原点ズレ等） |
-| 2026-06-17 | spec v0.7 §22 グラフエディタ Phase 1（実機検証済）。Timeline コピー/カット/ペースト AE 準拠化（実機検証済） |
-| 2026-06-17 | デプロイ基盤: vite LAN 公開 / `deploy:ssh`（.env・パスワード認証・Caddy 自動構成） |
-| 2026-06-17 | §23 comp layer (precomp) Phase 1 実装（スキーマ不変・循環参照 BFS 検出・Freeze 挙動）。実機検証待ち |
-| 2026-06-18 | §23 precomp 自動検証: `compLayer.ts` + `test/precomp.test.ts`（14 件）。typecheck/test/build 一括確認（100 tests PASS） |
-| 2026-06-18 | §24 Flow 風 Ease パネル Phase 1 実装（EasePanel / easingApply / builtin presets / FS 保存 / store KF 選択共有）。107 tests PASS |
-| 2026-06-18 | spec v0.8 §24 Flow 風イージングプリセットパネル仕様確定（独立常設パネル / in-out-both 3 モード / カーブ編集+★保存 / cubic-bezier プリセットのみ・bounce/elastic は Phase 2）。実装は progress バックログに記載・未着手 |
-| 2026-06-18 | (Cursor) §26 テキストレイヤー本実装（builtin text ComponentDef / Inspector Text + ColorSwatch / Draft-Best 品質 / SVG アウトライン + opentype.js / グリフ分解 / export textRenderMode）。128 tests PASS |
-| 2026-06-18 | (Cursor) §26 テキスト scale ジャンプ修正: `textMeasure.ts`（Canvas `measureText` 実測）+ `previewViewer` の `getLayerLocalBounds` テキスト case を推定式から差し替え |
-| 2026-06-18 | (Cursor) §25/§26 テキスト scale ハンドル ジャンプ修正: `scaleFromOppositeCorner` をドラッグ起点相対に変更 / Draft DOM を Canvas bounds と一致 / Best 時は opentype bounds でハンドル整合。130 tests PASS |
-| 2026-06-18 | (Cursor) §26 手動確認: Preview 四隅 scale ハンドル **修正済み**。§26.4 **Draft/Best 切替は未修正（ブロッカー継続）** — 次セッション優先 |
-| 2026-06-18 | §26.4 Draft/Best 位置ズレ **解消(1)**: renderer 初期化順（生成後の renderer に "draft" が届かず常に precise=SVG 固定）。`textQualityRef` で生成時に品質適用（PreviewPanel.tsx）。130 tests ✅ |
-| 2026-06-18 | §26.4 Draft/Best **縦ズレ解消(2)**: Best baseline 式をインク基準→CSS line-box 同式（フォントメトリクス + 正 half-leading, system は fontBoundingBox）に修正（textLayout.ts textBaselineY）。Playwright インク実測で 0.08em→≤0.02em。baseline 回帰 3 件追加。133 tests / typecheck / build ✅ |
-| 2026-06-18 | (Cursor) エージェントルール更新: 実装→修正ループで **Playwright + Chromium 実機検証を必須**と明記（`.cursor/rules/mafter-effect-agent.mdc` / `debug-visual-render-bug.mdc` / skill 同期） |
-| 2026-06-18 | (Cursor) §26 グリフ分解: 分解前テキストを **`{name} (source)`** レイヤーとして複製保存（`enabled: false` で二重描画回避）。元 ID は従来どおり空テキスト container + glyph 子。133 tests ✅ |
-| 2026-06-18 | (Cursor) §26.5 グリフ分解位置ズレ **解消**: 原因は (1) center/right で SVG `text-anchor` 行描画と per-glyph レイアウトの不一致 (2) `translate(-minX)` + `g.x-minX` の二重オフセット。修正: `resolveTextLayout` を Draft/Best/分解の単一正に、per-glyph 描画へ統一。Playwright 実測 center/right/multiline dx≈0（37px→0）。136 tests ✅ |
-| 2026-06-18 | (Cursor) Inspector/Timeline プロパティ編集の **Preview 即時反映**: `previewOverride`（スクラブ/カラーピッカー中の undo 対象外 patch）+ `ScrubNumber`/`ColorSwatch` `onLiveChange` + `PreviewPanel` `renderComp` マージ。選択ハンドルも `mergeObjectPreviewOverride` で bounds/transform 追従。136 tests ✅ |
-| 2026-06-18 | (ユーザー) §26 手動回帰（部分）: Undo ✅ / グリフ分解 ✅ / Draft↔Best ✅。**Draft↔Best は 100% ピクセル一致ではない**（わずかな残差）が実用上問題なし → progress に許容済み既知差として明記 |
-| 2026-06-18 | (ユーザー) §26 手動回帰: 位置 KF アニメ ✅ |
-| 2026-06-18 | (Cursor) **export 回帰修正**: §23 precomp 後 `exporter.ts` に `setTimelineComps` 未注入 → comp レイヤーが export で空。Preview と同型注入 + encode 失敗時 PNG-seq フォールバック + `flushVideoEncoder` タイムアウト。Playwright: precomp preview/export ink delta=0 / PNG+MP4 UI ダウンロード確認。136 tests ✅ |
-| 2026-06-18 | (Cursor) **MP4/WebM 再生不能バグ修正**: 前回追加の encode 健全性チェックが `flush()` 前に走り「9/10 chunks」で誤フォールバック → ZIP が `.mp4`/`.webm` 名で保存され再生不能に。**修正**: 検証を flush 後へ移動 / VP9 は decoderConfig 不要 / 偶数解像度 / キュー drain / `ExportResult` で実際の format を返し拡張子一致。Playwright: テキスト含む MP4+WebM `<video>` 再生 OK。136 tests ✅ |
-| 2026-06-18 | (Cursor) **export 常時 PNG-seq フォールバック修正**: `drainEncoderQueue` が毎フレーム `encodeQueueSize===0` を 30s 待ち → HW エンコーダ環境でタイムアウトし MP4/WebM 選択でも ZIP 出力に。**修正**: 閾値ベース `backpressureEncoderQueue`（旧挙動）へ戻す / `decoderConfig` 検出を `description` 限定から緩和。Playwright: MP4/WebM 150f + `<video>` 再生 OK。136 tests ✅ |
-| 2026-06-18 | (Cursor) **export 常時 PNG-seq フォールバック修正(2)**: 誤検知の `assertVideoEncodeHealthy`（chunkCount/decoderConfig）と `flush()` 20s タイムアウト、音声 encode 失敗が映像まで PNG-seq フォールバックに連鎖。**修正**: 実エンコーダ error のみ検査 / flush は通常 await / 音声失敗は映像-only で継続。136 tests ✅ |
-| 2026-06-18 | (Claude Code) `cursor-agent` CLI を Composer 2.5 への実装委任ハーネスとして追加: [.claude/skills/delegate-to-cursor/SKILL.md](.claude/skills/delegate-to-cursor/SKILL.md)（隔離 worktree + `--print --force` 非対話実行 + マージ前レビュー必須）。ユーザー明示依頼時のみ起動 |
-| 2026-06-18 | (Cursor) **`deploy:ssh` 修正・デプロイ完了**: SFTP 有効化（`openssh-sftp-server` + `kill -HUP`）/ SFTP 優先 + tar fallback（接続分離）/ Windows build spawn / Caddy bash 構文修正 / Docker 不可時 `python3 -m http.server :80` fallback。**`root@ssh.gycp.party:~/mafter-effect` へ配備済み** |
-| 2026-06-19 | (Claude Code) **spec v0.11 §27 エフェクト & 調整レイヤー 設計確定**: §5.5b additive スキーマ（`EffectInstance` / `SceneObject.effects?` / `isAdjustment?`・byte 等価）+ §27 基盤（`EffectDef`/`registerEffect`/CSS filter 連結）+ builtin Blur/Tint + 調整レイヤー backdrop-filter 最小設計 + Inspector/Timeline 統合 + INV 評価 + 作業分解。**実装は Cursor 委任予定**（weekly limit 残 7%・設計に予算集中） |
-| 2026-06-19 | (Cursor) **Inspector Unity 風 foldout UI**: [InspectorPanel.tsx](src/editor/panels/InspectorPanel.tsx) に `InspectorFoldout`（▶/▼ 三角・コンポーネント毎の仕切り）を導入。Transform / components[]（text）/ Expression / Keyframes / In-Out を個別展開・折りたたみ可（レイヤー毎に状態保持・既定展開）。機能は不変。136 tests ✅ / Playwright 折りたたみ検証 ✅ |
-| 2026-06-19 | (Cursor) **§27 エフェクト & 調整レイヤー実装**: schema §5.5b + EffectDef/blur/tint + resolve/DomRenderer filter/backdrop-filter + Inspector Effects foldout + Timeline effect KF 行 + store アクション。144 tests / typecheck / build ✅。Playwright: Blur KF / Tint / 調整レイヤー backdrop ✅。調整レイヤー export 一致は未検証（§27.4 許容済み既知差候補） |
-| 2026-06-19 | (Cursor) **§27.3 ディストーション & ワイプ 5 種追加（仮実装・要修正）**: spec §27.3 追記 + [effectSvg.ts](src/runtime/effectSvg.ts) + builtin `wave`/`turbulentDisplace`/`ripple`/`linearWipe`/`angularWipe` + Inspector enum（Wave direction）。169 tests / typecheck / build ✅。Playwright: Wave/Turbulent/Linear/Angular preview filter ✅。**Ripple・export 一致・見た目チューニングは未完了 → progress §27.3 要修正リスト参照** |
-| 2026-06-19 | (Cursor) **ワイプ角度レンジ修正**: `linearWipe.angle` / `angularWipe.startAngle` の ParamDescriptor `min/max`（0..360）を削除し AE 同様に負値・360 超を入力可能に。レンダリングは元から任意角度対応。spec §27.3 更新 + テスト追加。173 tests ✅ |
-| 2026-06-19 | (Cursor) **§27.3 ディストーション 3 種スライドバグを doc 化**: 未解決の Amplitude 比例スライド（wave/turbulentDisplace/ripple）の再現手順・仮説・修正試行を [doc/distortion-effect-bugs.md](doc/distortion-effect-bugs.md) に集約。途中の未コミット pad/margin 試行は作業ツリーから撤回。176 tests ✅ |
-| 2026-06-19 | (Cursor) **§27.3 pixelSorter + raster パイプライン実装完了**: spec §27.1 raster / §27.3 pixelSorter + [pixelSort.ts](src/runtime/pixelSort.ts) + DomRenderer canvas overlay + [rasterCapture.ts](src/runtime/rasterCapture.ts) exporter 共有 + export `inlineCanvasBitmaps` 修正（clone canvas 空バグ）。186 tests / Playwright preview+export ✅ |
-| 2026-06-19 | (Cursor) **画像アセット読み込み**: [imageAssetCache.ts](src/runtime/imageAssetCache.ts)（data URL + natural size）+ store `importImageAsset`/`addImageLayer` + Project/Timeline UI（+Image / DnD / OS ドロップ）+ DomRenderer `asset` 解決 + exporter/preload 配線 + builtin image ComponentDef。189 tests / typecheck / build ✅。Playwright: 1×1 PNG + 4032×2268 JPG preview 実寸表示 ✅ |
-| 2026-06-19 | (Cursor) **§27.3 pixelSortLite（Light Pixel Sort）実装完了**: spec §27.3 additive + [effectSvg.ts](src/runtime/effectSvg.ts) `lightPixelSortDisplaceMapSvg`/`lightPixelSortFilter`（strip displacement + 輝度ゲート）+ builtin `pixelSortLite` 登録。195 tests / typecheck ✅。Playwright [verify-effects.mjs](verify-effects.mjs): solid `filter:url(#…)` + 調整レイヤー `backdrop-filter:url(#…)`・コンソールエラーなし ✅ |
-| 2026-06-19 | (Cursor) **pixelSortLite 調整レイヤー黒潰れ修正**: `feComposite operator="in"` だけだとしきい値未満が透明→backdrop-filter で黒表示。`lumInv` + `feMerge(base,streak)` で元画を保持。Playwright 画像+Adj でプレビュー正常表示確認 ✅ |
-| 2026-06-19 | (Cursor) **タイムライン J/K キーフレームジャンプ修正**: `TimelinePanel` キーボードハンドラが React closure の古い `frame`/`objects` を参照し、KF 追加後に J/K（および ←→）が無反応になるバグ。**修正**: キー処理時に `useEditorStore.getState()` から現フレーム・comp・選択レイヤーを再取得 + `collectKfFrames()` を [keyframeEdit.ts](src/editor/keyframeEdit.ts) に抽出（effect props KF も対象）。197 tests ✅ / Playwright 実機確認 ✅ |
-| 2026-06-19 | (Cursor) **§28 Preview Cache / RAM Preview Phase 1**: spec §28 追記 + [tieredCacheStore.ts](src/cache/tieredCacheStore.ts)（L1 メモリ LRU + L2 [PreviewCacheDb](src/fs/PreviewCacheDb.ts) 専用 IDB）+ [compFrameCapture.ts](src/runtime/compFrameCapture.ts) offscreen PNG + [ramPreview.ts](src/editor/ramPreview.ts) / [realtimeDetector.ts](src/editor/realtimeDetector.ts) / [previewCacheSettings.ts](src/editor/previewCacheSettings.ts) + [PreviewPanel.tsx](src/editor/panels/PreviewPanel.tsx) 統合（scrub=live / 再生=cached・`● Realtime`/`◐ Caching`/`▶ Cached` 表示・Cache トグル）。206 tests / typecheck / build ✅。Playwright [verify-preview-cache.mjs](verify-preview-cache.mjs) ✅ |
-| 2026-06-19 | (Cursor) **§28 Preview Cache Phase 2**: spec §28.8 追記 + ワークエリア（[workAreaStorage.ts](src/editor/workAreaStorage.ts) / store `setWorkArea*` / B・N・[・] ショートカット / 再生ループはワークエリア内）+ タイムライン緑バー・ワークエリアバー（[TimelinePanel.tsx](src/editor/panels/TimelinePanel.tsx) + [previewCacheService.ts](src/editor/previewCacheService.ts) 共有）+ §26.4.2 [tieredFrameRenderCache.ts](src/runtime/tieredFrameRenderCache.ts) を DomRenderer raster パイプラインに配線 + Preview Clear/RAM MB UI + [NodeCacheFs.ts](src/fs/NodeCacheFs.ts)（将来デスクトップ L2・Web bundle から除外）。214 tests / typecheck / build ✅。Playwright verify-preview-cache（ワークエリア + 緑バー）✅ |
-| 2026-06-19 | (Cursor) **§28 スクラブ時フレームキャッシュ**: 再生位置バー移動で live 表示したフレームを `cacheScrubbedFrame` でバックグラウンド保存（緑バー即時反映）。リアルタイム不可 comp は再訪問時キャッシュ表示。spec §28.4 更新。215 tests / Playwright ✅ |
-| 2026-06-19 | (Cursor) **§28 ブラウザ UX 最適化（並列化 Phase A）**: [frameCacheQueue.ts](src/cache/frameCacheQueue.ts)（scrub > playback > background 優先度）+ PNG encode Worker + pixelSorter [rasterWorkerPool.ts](src/runtime/rasterWorkerPool.ts)（`hardwareConcurrency-1` 最大4）+ [pngEncode.ts](src/runtime/pngEncode.ts)。218 tests / typecheck / build ✅ |
-| 2026-06-19 | (Cursor) **M5 Phase 1 Static HTML Bundle Export（§11.7 Folder bundle）**: `ExportConfig.format: "html-bundle"` + [bundleExporter.ts](src/runtime/bundleExporter.ts) / [bundleCollect.ts](src/runtime/bundleCollect.ts) / [bundleBake.ts](src/runtime/bundleBake.ts) + [src/player/](src/player/)（IIFE `player.js`・`BundlePlayer`・`BundleAudioClock`）+ [ExportDialog.tsx](src/editor/ExportDialog.tsx)「Static HTML (ZIP)」+ DomRenderer `video` 最小対応 + `npm run build:player`。214 tests（bundle 4）/ typecheck / build ✅。Playwright [verify-bundle-export.mjs](verify-bundle-export.mjs) 2/2 ✅ |
-| 2026-06-19 | (Cursor) **Turbulent Displace 本実装（Phase 1）**: spec §27.3 更新（Size/Complexity/Evolution/Offset/RandomSeed）+ displacement filter userSpaceOnUse 座標系修正（3 種スライド解消）+ [effectSvg.ts](src/runtime/effectSvg.ts) evolution feOffset + [builtinEffects.ts](src/runtime/builtinEffects.ts) (WIP) 解除。231 tests / typecheck ✅。Playwright hostRect 安定 + verify-effects turbulent ✅ |
-| 2026-06-19 | (Cursor) **Turbulent Displace ドリフト Phase 2 + Issue B 分離**: Issue A **解消** — SVG displacement を raster キャプチャ + [rasterizeFilteredImage](src/runtime/rasterCapture.ts) 経路に統一（adjustment/direct）、`fractalNoise` + G bias、`feComponentTransfer`。Issue B（プレビュー左端グレー枠歪み）は [distortion-effect-bugs.md](doc/distortion-effect-bugs.md) に未着手として記録。233 tests / Playwright centroid ≤2px ✅ |
-| 2026-06-20 | (Cursor) **§27.3 ディストーション wave / ripple 視覚修正完了**: 計測駆動（Playwright + grid image ink centroid + rasterCanvas ピクセル読み）。**Wave は元から正しい**（横波・正弦・amp 0/10/40/80/140 で centroid 不変＝ドリフトなし）→ `(WIP)` ラベル除去。**Ripple は渦（spiral）バグ** — 旧 radialGradient 実装は変位ベクトルが半径で回転しリングにならず。**修正**: 真の放射方向 displacement map を per-pixel 計算した **PNG data URI**（`feImage`）に変更（[effectSvg.ts](src/runtime/effectSvg.ts) `rippleDisplaceMap`/`rippleDisplacementSample` + 純関数 PNG エンコーダ [pngDataUri.ts](src/runtime/pngDataUri.ts) `rgbaToPngDataUri`・無圧縮・INV-1）。変位 = `(dx,dy)/dist · (1−dist/r)·sin(2π·freq·dist/r)`、map は `RIPPLE_MAP_MAX_DIM`=256 に縮小し feImage 引き伸ばし。Playwright: ripple が中心起点の**同心円リング**（centered/offset とも radial・centroid 不変）。**INV-2 preview↔export 一致**: export bake（`captureElementToCanvas`+`inlineCanvasBitmaps`）と preview rasterCanvas が alpha-coverage diff **0/230400**。spec §27.3 wave（横波）/ripple（放射 PNG）prose 更新。**241 tests**（effectSvg +7 / effects 強化）/ typecheck ✅。回帰: turbulent/wipe/pixelSorter は verify-effects でエラーなし描画。`phase` param 未公開（要設計判断・下記）。 |
-| 2026-06-20 | (Cursor) **§27.4 ディストーション軽量化ノブ `quality` 追加**: HTML(live) 再生向けに wave/ripple/turbulentDisplace へ per-effect `quality`（scalar・animatable・既定 1.0・0.1..1・step 0.05）を追加。**写像**: ripple=マップ長辺 `max(16, round(256·q))`（[effectSvg.ts](src/runtime/effectSvg.ts) `rippleMapDims`/`rippleDisplaceMap`）/ turbulent=`numOctaves max(1, round(complexity·q))`（[builtinEffects.ts](src/runtime/builtinEffects.ts) apply・feTurbulence 支配コスト=octave 削減で最も効く）/ wave=gradient サンプル `round(cycles·8·q)`（下限 2）。`q=1` で従来出力と完全一致＝**後方互換**（`num(props,1)` フォールバック・既存 project.json 不変）。UI は params 自動生成。spec §27.3 各表 + 新節 §27.4 追記。**INV-2**: `quality` は resolve 解決値に乗る通常 prop で preview/export/HTML player 全経路に同一に効く（粒状感はラスタライズ品質差・§26.7 と整合）。**250 tests**（effectSvg quality +9）/ typecheck ✅。**Playwright 実機計測**: q=1/0.5/0.3 スイープで ink centroid ドリフト wave dx0.20/dy0.40・turbulent dx0.58/dy0.63・ripple 0.0（全 ≤2px＝粗化しても中身は動かない）/ quality が出力を変える（ガビガビ化）=3 種 true / capture 二回同一バイト＝preview↔export 同経路 parity / 回帰 3 種正常描画・pageerror なし。`quality` は animatable だが turbulent は octave 跳躍で popping するため static 運用推奨（spec 注記）。 |
-| 2026-06-20 | (Cursor) **画像ロード時のプレビュー重さ修正（プレビュー専用 縮小プロキシ）**: 原因を Playwright 実機計測で確定 — 編集毎の RAM Preview 背景ビルドが foreignObject に full-res base64（4032×2268 で 3.68MB）を毎フレーム直列化・再デコードし、150f で約70s（capture 471ms/frame）。**修正**: [imageAssetCache.ts](src/runtime/imageAssetCache.ts) `loadFromProject(project, fs, { proxyMaxDim })` を追加し、長辺が comp 解像度を超える画像を縮小した data URL に差し替え（`getSize` は原寸維持＝CSS/bounds/export 一致 INV-2 不変）。[compFrameCapture.ts](src/runtime/compFrameCapture.ts) に `proxyMaxDim` を通し、[ramPreview.ts](src/editor/ramPreview.ts)（comp 長辺）と [PreviewPanel.tsx](src/editor/panels/PreviewPanel.tsx) ライブ cache でプレビュー専用に指定。**export 経路（[exporter.ts](src/runtime/exporter.ts) / [bundleBake.ts](src/runtime/bundleBake.ts)）は proxy 未指定で full-res 維持**。再計測: capture 471→98ms/frame（背景ビルド 70→15s）、data URL 3.68MB→506KB、frame0 PNG は full-res と視覚的に同等。234 tests / typecheck ✅。imageAssetCache 回帰テスト 1 件追加 |
-| 2026-06-20 | (Cursor) **§27.5 Fast ディストーション 3 種（builtin）**: Web/低スペック編集 UX 向け超軽量近似エフェクト **`fastWave` / `fastRipple` / `fastTurbulentDisplace`**（label: Fast Wave/Ripple/Turbulent Displace、category: **ディストーション（軽量）**）を [fastEffects.ts](src/runtime/fastEffects.ts) で追加。**アルゴリズム**: fastWave=feTurbulence 直結（octaves=1・bias なし・feImage/PNG なし）/ fastRipple=旧 WIP **radialGradient SVG map**（PNG 生成なし・渦寄り近似）/ fastTurbulent=feTurbulence 直結（octaves max 2・bias なし）。共通 **`antiAlias` bool**（既定 true・animatable false）で map/noise 直後 `feGaussianBlur stdDeviation=1` を ON/OFF（OFF=最大速度・ガビガビ）。**配線**: [effectSvg.ts](src/runtime/effectSvg.ts) `DISPLACEMENT_EFFECT_TYPES` 拡張・`displaceWithMap`/`turbulenceDisplace` に antiAlias/skipBias、[DomRenderer.ts](src/runtime/DomRenderer.ts) scale 判定拡張、[InspectorPanel.tsx](src/editor/panels/InspectorPanel.tsx) effect bool チェックボックス、[effectCategories.ts](src/editor/effectCategories.ts) カテゴリ順追加。spec §27.5 追記。**261 tests**（+11）/ typecheck ✅。**Playwright**: Fast 3 種 addEffect 描画・pageerror なし・antiAlias ON/OFF で feGaussianBlur 有無切替・Inspector checkbox 表示 ✅。フル版 `quality` とは別物（Fast は常時低品質・AE 一致非目標）。 |
-| 2026-06-20 | (Cursor) **§28 プレビューキャッシュ ON/OFF トグル UX 改善**: HTML/bundle 向けユーザー向けに Preview ツールバーの **Caching チェックボックス**（旧 `Cache` 暗黙トグルを置換）+ **Cache OFF** badge + OFF 時 `Clear`/RAM MB 非表示。**既定 `enabled: false`**（新規・localStorage 未設定時。既存保存値は merge で維持）。OFF 切替時 `updateSettings` で background build **abort** + `processCacheFrame` に enabled 再チェック（race 対策）。spec §28.5 UI 追記。**263 tests** / typecheck ✅。Playwright: 既定 OFF・badge・Clear 表示切替・localStorage 永続化 ✅ |
-| 2026-06-20 | (Cursor) **§28 プレビュー最適化（進行中・未コミット）**: Draft 再生 RAF バイパス（`previewPlaybackLoop.ts`）/ `previewBakeRequired` + `previewCompAnalysis.ts` / DomRenderer `holdLastRaster` / Auto Cache session。**263 tests** / typecheck / build ✅。PreviewPanel TDZ 修正済み（要 dev 再起動 + Playwright 再検証）。 |
-| 2026-06-20 | (Cursor) **全アプリ監査（テスト・性能・バグ）**: 263 tests / typecheck / build 緑。**Playwright 回帰ゲート未整合**: `verify-preview-cache.mjs`（cache 既定 OFF 後の Realtime 期待）・`verify-effects.mjs`（project 未ロード）FAIL。**高優先**: displacement `previewBakeRequired` 方針（wave/ripple/turbulent）、INV-2 export parity 未検証（SVG 5種）、verify スクリプト更新。**性能**: raster パイプライン・PreviewPanel store 購読16本・RAM capture context 再利用。**修正プラン**: Phase1=§28 仕上げ+verify 更新 → Phase2=性能 → Phase3=INV-2 export/調整レイヤー/Issue B。 |
-
-## 監査メモ（2026-06-20）
-
-**ゲート**: §28 未コミット変更をコミット可能状態に仕上げ → verify スクリプト更新 → 手動回帰 §25/§24 → INV-2 export 検証。
-
-| Phase | 内容 |
-|---|---|
-| **1 Critical** | PreviewPanel TDZ 再検証 / verify-preview-cache・verify-effects 更新 / §28 コミット / `previewBakeRequired` 方針確定 |
-| **2 Performance** | Draft RAF + holdLastRaster 完成 / displacement force non-realtime / RAM capture 再利用 / PreviewPanel selector 統合 |
-| **3 Quality** | INV-2 export parity（wave/ripple/turbulent/wipe）/ Issue B boxShadow 分離 / 調整レイヤー export / CI ゲート |
-
-**追加テスト推奨**: `effectDefRegistry` previewBakeRequired lint / `previewPlaybackLoop.test` / INV-2 Playwright parity / previewPanelBoot smoke / scrubCacheWhenDisabled。
-
-| 2026-06-20 | (Cursor) **プレビュー再生 UX 改善（計画完了）**: spec §28.9 Auto Preview Cache + §27.12 Draft Preview Fast Path 追記。**実装**: [previewCompAnalysis.ts](src/editor/previewCompAnalysis.ts)（`compNeedsAutoPreviewCache` 等）+ `EffectDef.previewBakeRequired` 全 builtin + [previewPlaybackLoop.ts](src/editor/previewPlaybackLoop.ts)（Draft=RAF+render / Best=frame clock）+ [PreviewPanel.tsx](src/editor/panels/PreviewPanel.tsx)（session Auto Cache・`handleTogglePlay`・draft 再生時 React render バイパス）+ [ramPreview.ts](src/editor/ramPreview.ts) `autoCacheSession` + [DomRenderer.ts](src/runtime/DomRenderer.ts) `setPreviewRenderOptions`（draftPlayback fast* filter 直適用 / hold-last raster coalesce）。**270 tests** / typecheck ✅。**Playwright**: `window.__mafterEditorStore` 経由（dynamic import は別 Zustand インスタンスになるため）— fastWave + Draft 再生でタイムコード進行・`Auto Cache` badge・frame>0 ✅。§27.12 Best=`default` モードで fast path 非発動の gate テスト追加。 |
-| 2026-06-20 | (Cursor) **§27.2 / §28 Preview Bake Required Flag（キャッシュ UX 整合版）**: spec §27.2 `previewBakeRequired` INVARIANT + §28.4 二層ゲート（L1=`enabled` / L2=`compRequiresPreviewBake` / L3=RealtimeDetector）追記。**型**: [plugin.ts](src/runtime/plugin.ts) `EffectDef`/`ComponentDef` に required 追加・全 builtin/fastEffects/builtinComponents 明示（`pixelSorter` のみ `true`）。**集約**: [previewCompAnalysis.ts](src/editor/previewCompAnalysis.ts) `compRequiresPreviewBake`（effect + component）→ [realtimeDetector.ts](src/editor/realtimeDetector.ts) `shouldForceNonRealtime`。**UI**: [bakerLabel.tsx](src/editor/bakerLabel.tsx) Baker バッジ + [InspectorPanel.tsx](src/editor/panels/InspectorPanel.tsx) ピッカー/適用済み行。**Preview**: [PreviewPanel.tsx](src/editor/panels/PreviewPanel.tsx) `effectiveCacheEnabled` 時のみ `FrameRenderCache` 注入。**ルール**: [.cursor/rules/mafter-effect-agent.mdc](.cursor/rules/mafter-effect-agent.mdc) effect 登録時必須明示。**272 tests** / typecheck ✅。Playwright 実機: Caching ON + blur→Realtime / pixelSorter→Caching / Baker ピッカー+適用行 ✅。 |
-| 2026-06-20 | (Cursor) **§27.5 / §27.12 Fast 系 Distortion 軽量化再実装**: 根本原因=Fast SVG は軽量だが preview/Best/スクラブ時も full 版と同じ raster パイプラインへ乗っていた。**修正**: `DomRenderer.fastDisplaceDirect` フラグ（PreviewPanel + BundlePlayer=常時 true / export=未設定→raster 維持）で fast* のみ CSS filter 直適用（Draft 再生限定を撤廃）。`effectsAreFastDisplacementOnly` を displacement 種別のみ判定に修正（blur+fastWave 併用 OK）。`compNeedsAutoPreviewCache` から fast-only comp 除外。fastWave/fastTurbulent に G チャンネル bias 復活・`antiAlias` 既定 false。spec §27.5/§27.12 更新。**272 tests** / typecheck / build ✅。**Playwright**: fastWave 直適用（canvas なし+filter url）/ full wave raster canvas / blur+fastWave 直適用 / scrub median ~31ms ✅。 |
+- 「先に spec（SSoT）→ 次に実装」を厳守。散文を根拠にスキーマを変えない。
+- INV / §5 スキーマ / project.json 直列化形式の変更は事前にユーザー確認（選択肢＋推奨案）。
+- 自動テスト緑だけでは UI 品質を保証しない。視覚・パリティ系は Playwright + Chromium 実機検証を併用（`window.__mafterEditorStore` 経由。dynamic import は別 Zustand インスタンスになる点に注意）。
+- 新規スコープを広げる前に既知バグを潰す。

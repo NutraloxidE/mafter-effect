@@ -248,6 +248,8 @@ interface SceneObject {
   // ...既存フィールド...
   effects?: EffectInstance[];   // 省略/[] = エフェクトなし。配列順 = 適用順（先頭が先に適用）
   isAdjustment?: boolean;       // true = 調整レイヤー（content components を描画せず effects を背面に適用・§27.4）
+  adjustmentMode?: "live" | "raster"; // isAdjustment 時のみ有効。省略 = "live"（§27.4）。"raster" のときだけ直列化（byte 等価維持）
+  isNull?: boolean;             // true = Null レイヤー（描画なし・transform 親のみ・§30）
 }
 ```
 
@@ -310,7 +312,7 @@ interface PluginRef { id: string; version: string; enabled: boolean; }
 **(a) データ正規化（順序・直列化前）**
 - **集合配列は id 昇順にソート**: `objects` / `assets` / `compositions` / `pluginRefs`。配列順に意味を持たせない（描画順は `zOrder` が持つ、§5.4-note）。
 - **意味順を持つ配列は並べ替えない**: `components`（重なり順が意味）、`effects`（適用順が意味・§5.5b/§27）、各 `AnimatedProp.keyframes`（`frame` 昇順を維持）。
-  - `SceneObject.effects` / `SceneObject.isAdjustment` は **optional**。`effects` は空（無し）なら**キーごと省略**、`isAdjustment` は `false` なら省略する（(b) の optional 規則）。これによりエフェクト未使用の既存 project.json は **byte 等価のまま**（INV-4・回帰なし）。`EffectInstance.id` は ULID（INV-6）、`props` は component props と同じく正準化対象。
+  - `SceneObject.effects` / `SceneObject.isAdjustment` / `SceneObject.adjustmentMode` / `SceneObject.isNull` は **optional**。`effects` は空（無し）なら**キーごと省略**、`isAdjustment` / `isNull` は `false` なら省略、`adjustmentMode` は既定 `"live"` なら省略し `"raster"` のときだけ書く（(b) の optional 規則）。これによりエフェクト未使用、および既存 `isAdjustment: true`（live 相当）の project.json は **byte 等価のまま**（INV-4・回帰なし）。`EffectInstance.id` は ULID（INV-6）、`props` は component props と同じく正準化対象。
 - 文字列は **Unicode NFC** へ正規化。
 
 **(b) バイト直列化（RFC 8785 / JSON Canonicalization Scheme を基礎）**
@@ -416,6 +418,7 @@ interface ResolvedObject {
   zOrder: number;              // 描画順
   opacity: number;             // per-object。親から継承しない
   components: ResolvedComponent[];
+  inPoint: Frame;              // この comp 内での表示開始（§28.10 per-layer cache の local frame 算出用 passthrough）
 }
 
 type Mat4 = [number, number, number, number,
@@ -757,7 +760,7 @@ SSoT 違反を避けるため、scope と正準性を分離する:
 AE / VSCode / Illustrator 風の **単一ウィンドウ + 複数パネル**。MVP では「ドッキング可能になるよう設計しておくが、実装は固定レイアウト + スプリッタ resize に留める」（レンダラ抽象化と同じく**境界だけ今切る**）。
 
 ### §19.2 パネルアーキテクチャ（確定・後方互換のため今決める）
-- **パネルは ID で引ける自己完結ユニット**（`preview` / `timeline` / `project`(assets) / `inspector` / `log` …）。各パネルは自分の状態を持ち、他パネルと直接結合しない（共有は `@mafter/runtime` / エディタストア経由）。
+- **パネルは ID で引ける自己完結ユニット**（`preview` / `timeline` / `project`(assets) / `inspector` / `pipeline` / `log` …）。各パネルは自分の状態を持ち、他パネルと直接結合しない（共有は `@mafter/runtime` / エディタストア経由）。
 - **レイアウトは直列化可能なツリー**で表現する（VSCode / 各種 docking lib と同型）:
 
 ```ts
@@ -777,6 +780,19 @@ type LayoutNode =
 - **ドラッグ・ドッキング / タブ並べ替え / パネル追加削除**: `LayoutNode` ツリーを編集可能にするだけの増分。MVP の固定ツリーが土台になる。
 - **デタッチ（別ウィンドウ）**: ブラウザ = `window.open` 子ウィンドウ + `BroadcastChannel`/`SharedWorker` でストア同期、アプリ版 = ネイティブ OS ウィンドウ。状態同期が要るため独立フェーズ。
 - **実装方針**: ドッキングは自作せず **dockview / FlexLayout / rc-dock / react-mosaic** 等を評価して採用（車輪の再発明回避、Remotion と同じ姿勢）。ただし上記 `LayoutNode` の直列化形と状態置き場所（§19.3）は採用ライブラリに依存せず本仕様側で固定する。
+
+### §19.5 Pipeline パネル（パイプライン可視化・確定 2026-06-20）
+
+現在のアクティブ comp が live / raster の経路を何段通るか（= §27.4.1 合成順序の multi-pass flush 段数）を可視化し、軽量維持派が `live→raster→live` の崖を避け、映像派が必要なだけ raster できるようにする。
+
+- **配置**: 既定レイアウトの左カラム（`project`）を col split `[project, pipeline]` 化（§19.2 既定ツリーへの追加）。レイアウトは project.json に入れない（§19.3）。旧レイアウト（左 `project` 単一）は migration で補正。
+- **表示（progressive）**:
+  - 既定: **サマリ1行**（例 `raster 2段・やや重い`。段数 0 / 1 / 2+ で色分け。閾値は §28 リアルタイム判定と整合）。
+  - クリック展開: **レイヤースタックを zOrder 順に縦並び**、各段に live / raster バッジ、**raster 確定境界をハイライト**、**「減らせる崖」**（無駄な live↔raster 交替）を警告表示。precomp はネスト展開（depth 表示）。
+- **算出**: §27.4.1 合成順序に基づく純関数 `pipelineAnalysis(comp)`（comp を zOrder 昇順走査 → 段リスト・raster 確定境界・段数・崖。precomp 再帰 depth ≤ 4）。`executionPath`（§27.2）/ `adjustmentMode`（§27.4）/ `isAdjustment` を根拠に判定。
+- **依存**: 正確な判定は `executionPath` メタと Live/Raster 調整レイヤー（§27.4 / §27.13）の実装が前提。
+- **非目標**: パネルからの直接編集（並べ替え等）は将来（§19.4）。可視化のみ。
+- **INV-7**: UI 層（エディタ側）。`pipelineAnalysis` は runtime 純関数（DOM/乱数なし・INV-1 と整合）。
 
 ---
 
@@ -853,7 +869,7 @@ AE タイムラインの機能を **Tier A〜D** に分け、本リビジョン�
 | Tier | 内容 | スキーマ影響 | 区分 |
 |---|---|---|---|
 | **A** | プロパティツリー展開 / per-property ストップウォッチ＋値編集 / KF 行 / レイヤーバーの drag（in/out トリム・スライド）/ 時間ルーラー＋SMPTE タイムコード / レイヤー番号 | **なし**（既存スキーマで成立） | **本リビジョン** |
-| **B** | ラベル色 / solo / lock / shy / 親とリンク(parent) ドロップダウン UI | additive（`SceneObject` にフラグ追加） | 将来（優先度高） |
+| **B** | ラベル色 / solo / lock / shy / **親とリンク(parent) ドロップダウン UI（§21.8 部分実装済み）** | additive（`SceneObject` にフラグ追加） | 将来（優先度高） |
 | **C** | ブレンドモード / トラックマット | renderer(INV-3)＋export 経路拡張 | 将来（優先度高） |
 | **D** | モーションブラー / フレームブレンド / 3D レイヤー / 調整レイヤー | 大規模・決定論モデル評価要 | 将来 |
 
@@ -925,6 +941,30 @@ AE 同様、KF 行をまたいで複数キーフレームを選択し、まと�
 - **展開モード**: `"all"`（caret クリック, 全行）/ `"kf"`（U キー）/ `"uu"`（UU キー）。caret クリックは常に "all" に切替（"kf"/"uu" → "all" にアップグレード、"all" → 折りたたむ）。
 - **アクティブ comp 切替**時に展開状態をすべてクリアする。
 - 入力欄（input/textarea/contentEditable）フォーカス中は U/UU を無視する。
+
+### §21.8 Parent リンク UI（Tier B 部分実装・確定）
+
+AE の「Parent & Link」相当。**スキーマ不変** — 既存 `SceneObject.parent: ObjectId | null`（§5.4）を Timeline から編集する UI 層のみ。
+
+#### §21.8.1 配置・選択肢
+
+- 各レイヤー行ラベル列内、レイヤー名と削除ボタンの間に compact `<select>`（Parent プルダウン）。
+- 選択肢: **`None`**（`parent: null`）+ comp 内他レイヤー。option ラベル = `name`。並び = タイムライン表示順（`zOrder` 降順）。
+- **候補から除外**: 自分自身、自分の子孫（循環防止）。load 時 validate（§5.4-note）と整合。
+
+#### §21.8.2 操作規約
+
+- 確定は `updateObjects` 経由 **1 command / 1 undo**（§21.5）。
+- **複数選択**: プルダウン操作行が選択集合に含まれるとき、**選択中の全レイヤー**に同一 `parent` を適用。含まれないときは操作行のみ。
+- **world 保持（AE 準拠）**: 親変更時、**現フレーム**の world transform を維持するよう `transform`（position / rotation / scale）を補正。`anchor` は維持。編集時のみ行列計算（INV-1）。
+- **animated**: §21.2 規約 — KF あり Vec3 チャンネルは現 frame に KF 更新、static は `value` 更新。
+- 無効操作（循環・存在しない id）は UI で reject + ステータスフィードバック。project.json には書かない。
+
+#### §21.8.3 実装タッチポイント
+
+- [src/editor/parentLink.ts](../src/editor/parentLink.ts): 候補列挙・循環検証
+- [src/editor/reparent.ts](../src/editor/reparent.ts): world 保持 reparent patch
+- [src/editor/panels/TimelinePanel.tsx](../src/editor/panels/TimelinePanel.tsx): ParentSelect UI
 
 ---
 
@@ -1025,6 +1065,7 @@ childFrame = clamp(parentFrame - layer.inPoint + trimStart, 0, childComp.duratio
 | precomp opacity | レイヤー全体で適用 | 同じ（CSS opacity 継承） |
 | 循環参照 | UI 拒否 | 追加時に BFS 検出・拒否 |
 | nested html/plugin comp | 専用レンダラ | Phase 3 以降 |
+| 調整レイヤーの作用範囲 | comp スコープ（collapse 時は親へ展開） | 自 comp スコープ（non-collapse 固定・§27.4.1 合成順序） |
 
 ---
 
@@ -1302,6 +1343,7 @@ interface FrameRenderCache {
 ```
 
 - キャッシュキーは決定論的（INV-1/2）に算出可能なものに限る（frame は整数・INV-5、props は正準ハッシュ）。**キャッシュは描画の高速化のみで scene 解決値・出力ピクセルの正には影響しない**。
+- **実装（§28.10）**: `key.frame` は **layer-local frame**（`compFrame − inPoint`）を用いる。スライド不変・comp 全体キャッシュとは別同一性モデルである点は §28.10 を正とする。
 
 ### §26.5 グリフ分解（GG 分解）— テキストアニメーションの代替（確定）
 
@@ -1459,6 +1501,10 @@ interface EffectDef {
   category?: string;                  // Inspector ピッカー見出し
   /** §28 RAM Preview: comp 内に enabled な1つでもあれば強制 non-realtime。registry メタのみ（project.json 非保存）。必須明示。 */
   previewBakeRequired: boolean;
+  /** §27.4 実行経路。"live" = DOM filter/backdrop-filter を同期適用（軽量）/ "raster" = canvas でピクセル処理（高精度・確実）。
+   *  kind（css/svg/raster）とは独立: full displacement（wave/ripple/turbulentDisplace）は kind:"svg" でも executionPath:"raster"。
+   *  registry メタのみ（project.json 非保存）。必須明示。 */
+  executionPath: "live" | "raster";
   params: ParamDescriptor[];          // §5.5 と同契約（animatable param は AnimatedProp で props に入る）
   bundleExportDefault?: "live" | "bake"; // 既定: builtin=live / plugin=bake（§12 安全側）
   // 純関数。resolve 済み props（具体値）→ フィルタ片。null = 何もしない（恒等）。
@@ -1473,11 +1519,21 @@ interface EffectDef {
 - builtin（`blur`/`tint`）も **エディタ初期化時に登録**する（§26.2 の builtin ComponentDef 登録と同じ場所・[store.ts](../src/editor/store.ts)）。
 - **EffectDef I/O 契約**は §10/§14 の将来 WASM effect（buffer→buffer）と整合させる方針を維持（現状は DOM フィルタ片を返すが、`apply` は純関数で副作用なし）。
 
-**登録 INVARIANT（effect / component）**: `registerEffect` / builtin `EffectDef` を追加・変更するとき、**必ず `previewBakeRequired: true` または `false` をリテラルで明記**する。未指定・`kind: "raster"` からの自動推論は禁止。
+**登録 INVARIANT（effect / component）**: `registerEffect` / builtin `EffectDef` を追加・変更するとき、**必ず `previewBakeRequired` と `executionPath` を両方リテラルで明記**する。未指定・`kind` からの自動推論は禁止。
 
 - `{ kind: "raster" }` / `processPixels` を持つ effect → 原則 **`previewBakeRequired: true`**
 - `{ kind: "css" | "svg" }` のみ → 原則 **`previewBakeRequired: false`**
-- `ComponentDef` も同フィールドを必須明示（現行 builtin はすべて `false`）
+- `ComponentDef` も `previewBakeRequired` を必須明示（現行 builtin はすべて `false`）
+
+**`executionPath` の確定割り当て**（§27.4 Live/Raster 調整レイヤーの effect 振り分けに使用。`kind` とは独立軸）:
+
+| executionPath | builtin effect | 経路 |
+|---|---|---|
+| **`"live"`** | `blur` / `tint` / `linearWipe` / `angularWipe` / `pixelSortLite` / `fastWave` / `fastRipple` / `fastTurbulentDisplace` | DOM `filter` / `backdrop-filter` を同期適用（中間 raster 化なし・軽量） |
+| **`"raster"`** | `wave` / `turbulentDisplace` / `ripple` / `pixelSorter` | canvas でピクセル処理（full displacement はドリフト対策で raster 必須・§27.1） |
+
+- **Live調整レイヤー**の effect ピッカーは **`executionPath === "live"` のみ列挙**（§27.4 / §27.6）。**Raster調整レイヤー**と**通常レイヤー**は両方可。
+- plugin effect は `executionPath` を必須明示。`processPixels` を持つなら原則 `"raster"`。
 
 **§28 との二層ゲート**（2026-06 確定）:
 
@@ -1593,8 +1649,8 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 
 - **使い分け**: 編集中・Web 配布・プレビュー重視 → Fast。最終仕上げ・AE 近似 → フル版 + `quality`。
 - **`quality` param は持たない**（Fast 自体が常時低品質）。
-- **INV-2**: Fast も resolved props の通常 effect。`resolve()` 解決値は preview / export / HTML player 全経路で同一。**描画経路**は §27.12 参照（editor preview / bundle player = CSS filter 直適用、raster export = raster パイプライン）。
-- **非目標**: AE 100% 一致、ripple 真の同心円、wave 真の正弦。preview/bundle 直適用経路では重心ドリフトを G チャンネル bias で best-effort 抑制（§27.12）。
+- **INV-2**: Fast も resolved props の通常 effect。`resolve()` 解決値は preview / export / HTML player 全経路で同一。**描画経路**は §27.12 参照（**全経路 self-capture raster 統一**・CSS filter 直適用は廃止）。
+- **非目標**: AE 100% 一致、ripple 真の同心円、wave 真の正弦。**実体（host rect）の amplitude/amount 比例スライドを禁止**（Draft/Best/export 共通）。ink centroid: map 系（fastWave/fastRipple）は amount スイープで **≤ 2px**（comp 座標）。fastTurbulent は強い amount でエッジクリップにより centroid がわずかに動くことがある（host 安定が正準）。map 系は 0.5 中心 map + userSpace filter region。turbulent は **G bias 必須**（`skipBias: false`, `type="fractalNoise"`）。
 
 **共通 param `antiAlias`**（3 種）:
 
@@ -1615,7 +1671,7 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 | `phase` | Phase | scalar | `0` | 0..360, step 1 | ✅ |
 | `antiAlias` | Anti Alias | bool | `false` | — | ❌ |
 
-- `apply` → `{ kind: "svg", primitives }`。**`feTurbulence` 直結**（`numOctaves=1`, `fractalNoise`, G チャンネル bias のみ）。`wavelength`→`baseFrequency`、`phase`→`seed`（`phaseToSeed`）、`direction`→X/Y `baseFrequency` 比で横波っぽく近似。**`feImage` / PNG 生成なし**。
+- `apply` → `{ kind: "svg", primitives }`。WIP `wave` と**同一アルゴ** — `waveDisplaceMapSvg`（linearGradient 正弦 map）+ `feImage` → optional blur → `feDisplacementMap`。**固定 quality** `WAVE_FAST_QUALITY = 0.5`（param なし・full `wave` の `quality` とは独立）。PNG 生成なし。
 - `amplitude === 0` は `null`。
 
 ##### `fastRipple` — Fast Ripple
@@ -1629,7 +1685,7 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 | `centerY` | Center Y | scalar | `0.5` | 0..1, step 0.01 | ✅ |
 | `antiAlias` | Anti Alias | bool | `false` | — | ❌ |
 
-- `apply` → `{ kind: "svg", primitives }`。**radialGradient SVG data URI** map + `feImage` → optional blur → `feDisplacementMap`（**PNG 生成なし**）。旧 WIP 中間版（§27.3 ripple 旧 radialGradient）と同系。渦寄り・完全な放射ベクトルではない近似。
+- `apply` → `{ kind: "svg", primitives }`。**`rippleDisplaceMapSvg`**（WIP 中間版 radialGradient・sample 式 `min(512, max(16, round(cycles*16)))`）+ `feImage` → optional blur → `feDisplacementMap`（**PNG 生成なし**）。渦寄り・完全な放射ベクトルではない近似。
 - `amplitude === 0` は `null`。`phase` param なし（内部 sin/cos 位相固定）。
 
 ##### `fastTurbulentDisplace` — Fast Turbulent Displace
@@ -1645,7 +1701,8 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 | `randomSeed` | Random Seed | scalar | `0` | 0..9999, step 1 | ❌ |
 | `antiAlias` | Anti Alias | bool | `false` | — | ❌ |
 
-- `apply` → `{ kind: "svg", primitives }`。`feTurbulence` 直結、`numOctaves = max(1, min(2, complexity))`、G チャンネル bias のみ（速度優先・重心ドリフト低減）。Evolution/Offset はフル版同様 `feOffset`。
+- `apply` → `{ kind: "svg", primitives }`。`feTurbulence` 直結、`type="fractalNoise"`（WIP の `turbulence` 型は CSS filter 直適用 path で centroid ≤2px を満たせないため Fast は fractalNoise + G bias を採用）、`numOctaves = max(1, min(2, complexity))`。Evolution/Offset は WIP / フル版同様 `feOffset`。
+- preview/bundle 直適用 path の受け入れ条件: amount 5/20/50/100 スイープで ink centroid delta **≤ 2px**（comp 座標）。
 - `amount === 0` は `null`。
 
 #### `linearWipe` — Linear Wipe
@@ -1718,21 +1775,43 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 - **非目標**: 厳密 sort / Sort Blocks / highlights-shadows / `pixelSorter` とのピクセル一致。**AEPS2 100% 一致は非目標**。
 - **既知差**: 引き延ばしベース近似のため [`pixelSorter`](pixelSorter) と見た目・ピクセルは一致しない（許容）。
 
-### §27.4 調整レイヤー（Adjustment Layer・最小実装）
+### §27.4 調整レイヤー（Adjustment Layer・Live / Raster 2 モード・確定 2026-06-20）
 
 **意味（AE 準拠）**: 調整レイヤーは自身の content を描画せず、`effects[]` を**その下（背面・低 zOrder）に重なる全レイヤーの合成結果**に適用する。
 
-**DOM 実装（確定・最小）**:
-- `SceneObject.isAdjustment === true` のオブジェクトは host div の **content components を描画しない**（透明）。
-- effects は `filter` ではなく **`backdrop-filter`** として host div に適用する。`backdrop-filter` は描画順で**背面に既に描かれた内容**に作用する＝ DomRenderer の z-index(=zOrder) 順描画と一致し、低 zOrder のレイヤーだけが対象になる（AE「下のレイヤーに効く」と一致）。
-- **作用範囲 = host div の矩形**（transform 適用後）。既定サイズ = comp 全体（width×height）。transform で縮小/移動すれば AE 同様に作用領域を限定できる（マスク相当は将来）。
-- store に `addAdjustmentLayer()`（isAdjustment=true・content component なし・既定 full-comp サイズ・zOrder 最前）と `toggleAdjustment(objId)` を追加。Inspector/Timeline に調整レイヤーバッジ（§27.6/§27.7）。
+**2 モード（`SceneObject.adjustmentMode`）**: 同じ「背面に effect を適用」という意味を、2 つの合成方式で提供する。「軽量に作りたい層（web / モーションデザイン）」と「精度重視層（AE 代替）」の双方を受け入れる戦略（§29）であり、技術的必然（mp4 = ピクセル列、`backdrop-filter` は最終ラスタライズで欠落）に基づく。
 
-**`backdrop-filter` トークン**: §27.1 と同じ順序付きフィルタ文字列を `backdrop-filter` に入れる。
+| モード | preview | web bundle export | mp4 / png export | 載せられる effect |
+|---|---|---|---|---|
+| **`"live"`**（既定・軽量） | `backdrop-filter`（同期・軽量） | `backdrop-filter`（live DOM・中間 raster 化ゼロ） | **comp 背面 capture → 自動 raster 化**で見た目維持（重い・UI 明示） | `executionPath === "live"` のみ |
+| **`"raster"`**（高精度） | comp 背面 capture → canvas（cache 前提） | bake（raster） | raster（高精度・確実） | live + raster 両方 |
 
-> **INV-2（preview = export）に関する注記（重要・確定）**:
-> - **通常レイヤーの effects（`filter`）は export でも一致**する（foreignObject ラスタ経路がテキスト export で実証済み・§11.4）。Blur / Tint はここで保証対象。
-> - **調整レイヤーの `backdrop-filter` は foreignObject ラスタ化で再現性が browser/経路依存**（背面合成結果への作用は SVG foreignObject→canvas で欠落しうる）。よって調整レイヤーは **preview ベストエフォート**とし、export 一致は実装時に Playwright ピクセル差分で**検証必須**。再現できない場合は §26 の Draft/Best 残差と同格の「**許容済み既知差（preview 専用）**」として progress に明記し、ブロッカーにしない。将来の厳密対応（背面を一旦 raster してから filter する合成パス）は Phase 2。
+**DOM 実装**:
+- どちらも `isAdjustment === true` の host div は **content components を描画しない**（透明）。
+- **Live**: effects を §27.1 と同じ順序付きフィルタ文字列で **`backdrop-filter`** に適用。`backdrop-filter` は描画順で背面に既に描かれた内容に作用＝ DomRenderer の z-index(=zOrder) 順描画と一致し、低 zOrder レイヤーのみ対象（AE「下のレイヤーに効く」と一致）。
+- **Raster**: comp 背面（低 zOrder の合成結果）を canvas にキャプチャし、effect chain をピクセル処理して overlay する。既存の `runAdjustment*Pipeline`（displacement/raster 用）を全 effect へ一般化する。
+- **作用範囲 = host div の矩形**（transform 適用後）。既定サイズ = comp 全体（width×height）。transform で縮小/移動すれば作用領域を限定できる（マスク相当は将来）。
+
+**mp4/png export での Live 自動 raster 化（= 旧 §27.4 注記の "Phase 2" を実装・確定）**:
+- mp4/webm/png は**ピクセルのフレーム列**で、最終ラスタライズ（foreignObject→canvas）は不可避。**通常レイヤーの CSS/SVG filter は最終ラスタライズでブラウザが一括適用される**（実証済み）が、**`backdrop-filter` だけは foreignObject ラスタ化で背面参照が欠落して消える**（実証済み）。
+- よって export 経路（`fastDisplaceDirect` 不問・exporter / `compFrameCapture`）では、**Live調整レイヤーを Raster 同等の comp 背面 capture 経路へ自動フォールバック**して焼く（`auto_raster_mp4`）。これで mp4/png でも Live調整の見た目を維持する。中間 raster 化のコスト増が発生するため **UI で明示**する。
+- 帰結: **Live調整の「中間 raster 化ゼロ」の利点は web bundle（live DOM 再生）でのみ成立**。mp4 では実質 Raster と同コスト。この棲み分けは好みでなく技術的必然。
+
+**store / 作成 UI**:
+- `addLiveAdjustmentLayer()` / `addRasterAdjustmentLayer()`（共に isAdjustment=true・content なし・full-comp サイズ・zOrder 最前。前者は adjustmentMode 省略=live、後者は `"raster"`）。`setAdjustmentMode(objId, mode)` でモード切替（各 1 undo・§17）。旧 `addAdjustmentLayer()` は `addLiveAdjustmentLayer()` の別名として残す。
+- **後方互換**: 既存 `isAdjustment: true`（adjustmentMode 省略）→ **live 扱い**。挙動は改善方向（従来 mp4 で消えていた effect が auto_raster_mp4 で見た目維持される）。
+
+**Inspector / Timeline バッジ**: モード（Live / Raster）をバッジ表示（§27.6 / §27.7）。**Live調整選択時、effect 追加メニューは `executionPath === "live"` のみ列挙**し、raster 専用 effect（pixelSorter / wave / ripple / turbulentDisplace）は**出さない**（§27.6）。
+
+### §27.4.1 合成順序（Live / Raster / 通常レイヤーの積み重ね・確定 2026-06-20）
+
+複数の調整レイヤー・raster effect・precomp が混在したときの合成順序を確定する（multi-pass flush の基盤・§19.5 Pipeline パネルの算出根拠）。
+
+- **不変原則（確定）**: canvas にラスタライズされた結果は、それ以降（高 zOrder）のレイヤー・調整レイヤーから見て、**通常の背面ピクセルと完全に等価**。これにより合成は **zOrder 昇順の単一規則**に閉じる。
+- **軸1 — precomp 境界 = non-collapse 固定**: precomp（§23・`Component.type="comp"`）は1枚に合成・確定してから親 comp が1レイヤーとして扱う（§23.5 の non-collapse と一貫）。調整レイヤーの作用範囲は **自 comp スコープ**（precomp 内の調整は内で閉じ、precomp 外の調整は precomp を1枚の背面レイヤーとして参照）。collapse（境界透過）は将来。
+- **軸2 — Raster 出力 = 確定境界（キャッシュ境界）**: Raster調整 / raster effect / Live調整の export 時 auto_raster が canvas に焼いた結果は**確定境界**。その上の live（通常レイヤーの `filter` / Live調整の `backdrop-filter`）は**背面の確定ピクセルに作用するだけで、確定済み部分を再計算しない**。重い Raster を一度焼けば、上に live を足しても再ラスタライズは走らない。
+- **ラスタに live をかけられるか（確定）**: **かけられる**。canvas はピクセルなので CSS filter / backdrop-filter が作用する。preview は backdrop-filter が描画順で背面（canvas overlay 含む）を自動参照。export は下記 multi-pass flush で「Raster を先に確定 → その上の Live を背面 capture」する。
+- **export = multi-pass flush（INV-2・§27.9）**: 単一 root capture（現状 [exporter.ts](../src/runtime/exporter.ts) `flushRasterEffects()` → `captureFrame(root)`）ではなく、**zOrder 昇順に各 raster ポイント（Raster調整 / raster effect / Live調整の auto_raster）で「それ未満の確定ピクセルを背面 capture → 処理 → overlay → 確定」を繰り返す**。precomp は内側 depth から先に確定（depth ≤ 4・§23.4）。これで多段 raster・調整レイヤー・precomp ネストが preview と一致して焼ける。
 
 ### §27.5 解決（resolve）と ResolvedScene（確定・INV-1/3）
 
@@ -1748,6 +1827,7 @@ interface ResolvedObject {
   // ...既存...
   effects?: ResolvedEffect[];       // 省略 = なし。配列順 = 適用順
   isAdjustment?: boolean;
+  adjustmentMode?: "live" | "raster"; // isAdjustment 時のみ。resolve で透過（省略 = "live"）。レンダラの経路分岐に使用（§27.4）
 }
 ```
 
@@ -1763,7 +1843,7 @@ interface ResolvedObject {
 - 各 `EffectInstance` を**サブ foldout**として表示: ヘッダに `enabled` トグル（◉/◯）・エフェクト名（label）・並べ替え（▲▼, 配列順が適用順）・削除（×）。
 - 本体に param 行を `ParamDescriptor.kind` 別 PropRow で描画（既存 ScrubNumber / ColorSwatch / enum / bool を流用）。animatable param は**ストップウォッチ ◇ で KF 化**（書き込みは command 経由・undo 可・§17）。
 - ヘッダの **「+ エフェクトを追加」**メニュー: `globalPluginRegistry.listEffects()`（builtin Blur/Tint + plugin）から選択 → `addEffect(objId, type)`。
-- **調整レイヤー**: Inspector に `isAdjustment` トグル（または専用作成）。ON のとき content components セクションは「調整レイヤー（描画なし）」と注記。
+- **調整レイヤー**: Inspector にモードバッジ（**Live / Raster**）と切替（`setAdjustmentMode`）。ON のとき content components セクションは「調整レイヤー（描画なし）」と注記。**effect 追加メニューは Live調整のとき `executionPath === "live"` のみ列挙**する（Raster調整・通常レイヤーは全列挙）。Live調整選択時は「mp4/png 出力では自動 raster 化されます（重くなります）」を注記（§27.4 auto_raster_mp4）。
 
 ### §27.7 Timeline UI（確定・Inspector と SSoT 共有）
 
@@ -1780,7 +1860,7 @@ Layer
 ```
 
 - PropPath を `effects.<effectId>.<key>` で addressable に拡張（現状 string PropPath を拡張・§21 P1 で component props も同様に拡張済み）。KF ダイヤ・グラフエディタ（§22）・Ease パネル（§24）と**同じ KF 機構を共有**。
-- 調整レイヤーはレイヤーバーにバッジ表示（AE のアイコン相当・任意）。
+- 調整レイヤーはレイヤーバーに**モードバッジ（Live / Raster）**を表示（AE のアイコン相当）。
 
 ### §27.8 ストア / コマンド / Undo（確定）
 
@@ -1788,7 +1868,7 @@ Layer
 
 - `addEffect(objId, type)` / `removeEffect(objId, effectId)` / `reorderEffect(objId, effectId, dir)` / `toggleEffect(objId, effectId)`。
 - effect param の値/KF 書き込みは既存 `setPropByPath` / `setKeyframe` を **PropPath 拡張**（`effects.<id>.<key>`）で流用。スクラブ中の即時反映は §（2026-06-18）`previewOverride` 経路を流用。
-- `addAdjustmentLayer()` / `toggleAdjustment(objId)`。
+- `addLiveAdjustmentLayer()` / `addRasterAdjustmentLayer()` / `setAdjustmentMode(objId, "live"|"raster")` / `toggleAdjustment(objId)`。旧 `addAdjustmentLayer()` は Live 版の別名として残す。
 - 新規 `EffectInstance.id` は ULID（INV-6）。既定 props は `EffectDef.params[].default` から生成。
 
 ### §27.9 不変条件（INV 影響評価・確定）
@@ -1796,8 +1876,8 @@ Layer
 INV-1〜8 を保持。新規 INV は不要。
 
 - **INV-1**: `resolve()` / `EffectDef.apply` は純関数。effect param は resolve で焼く。
-- **INV-2**: 通常レイヤー effects は preview/export 一致（§27.4 注記）。調整レイヤーは preview ベストエフォート（export 検証必須・再現不可なら許容済み既知差）。
-- **INV-3**: レンダラは `ResolvedScene`（焼き済み）のみ受け取る。`effects`/`isAdjustment` は ResolvedObject に載る。
+- **INV-2**: 通常レイヤー effects は preview/export 一致。**Live調整レイヤー** = preview / web bundle export 一致（`backdrop-filter`）、mp4/png export は comp 背面 capture で**自動 raster 化**し見た目維持（近似・§27.4）。**Raster調整レイヤー** = preview / 全 export を raster で一致（精度基準）。いずれも `resolve()` の scene 解決値は同一＝ **INV-2 本体（解決値一致）は維持**（モード差はレンダリング方式の差）。export は §27.4.1 合成順序の **multi-pass flush**（zOrder 昇順・各 raster ポイントで背面 capture→確定・precomp は内側 depth 先・depth ≤ 4）で多段 raster を確定する。
+- **INV-3**: レンダラは `ResolvedScene`（焼き済み）のみ受け取る。`effects`/`isAdjustment`/`adjustmentMode` は ResolvedObject に載る。
 - **INV-4**: optional 省略で既存 project.json byte 等価（§5.6-canon）。
 - **INV-5/6**: 整数 frame / ULID（`EffectInstance.id`）。
 - **INV-7**: effect 解決・registry・apply は `@mafter/runtime` 側。Inspector/Timeline UI はエディタ側。
@@ -1913,13 +1993,31 @@ interface PreviewCacheSettings {
 
 | 項目 | 内容 |
 |---|---|
-| タイムライン緑バー | キャッシュ済みフレームをルーラー上に緑表示（AE RAM Preview 相当） |
+| タイムライン緑バー（ルーラー） | comp 全体キャッシュ済みフレームをルーラー上に緑表示（AE RAM Preview 相当） |
+| タイムライン緑線（レイヤーバー直上） | per-layer raster キャッシュ済み区間を**各レイヤー行のバーのすぐ上**に緑線表示（§28.10） |
 | ワークエリア | comp ごと localStorage（§19.3 非汚染）。`B`/`N` で in/out 設定、`[`/`]` でジャンプ。RAM build はワークエリア内のみ |
-| `FrameRenderCache` | `TieredCacheStore` 共有・レイヤー raster キー `layer:{objectId}:f{frame}:hash{propsHash}`。DomRenderer raster パイプラインに配線 |
+| `FrameRenderCache` | `TieredCacheStore` 共有・レイヤー raster キー `layer:{objectId}:f{localFrame}:hash{propsHash}`（**local frame 基準**・§28.10）。DomRenderer raster パイプラインに配線 |
 | `NodeCacheFs` | 将来デスクトップ用 L2。Web では `cacheRootPath` 入力は無効（表示のみ） |
 | 設定 UI | Caching ON/OFF チェックボックス・Cache クリア・maxRamMB・disk トグル（disk は将来） |
 
 **ワークエリア既定**: `in=0`, `out=comp.duration`（全尺）。再生ループはワークエリア内（Preview + Timeline 共有 store 経由）。
+
+### §28.10 per-layer raster キャッシュ（local frame 基準・確定 2026-06-20）
+
+自己 capture（§27.12 displacement self-capture raster）は重い。per-layer raster キャッシュ（§26.4.2 `FrameRenderCache`）を **comp 絶対フレームではなく layer-local frame** でキーすることで、レイヤーをタイムライン上で **スライド（move）しても内容不変なら再ラスタしない**。
+
+**キー**: `layer:{objectId}:f{localFrame}:hash{propsHash}`
+- `localFrame = max(0, compFrame − obj.inPoint)`（INV-5: 整数 Frame）。
+- `propsHash = fxSig`（frame で解決済みの effect type/enabled/props 署名）。
+- comp 全体キャッシュ（§28.3 `comp:…:rev{projectRevision}…`）とは**別キー空間・別同一性モデル**。per-layer キーは `projectRevision` を含まない。
+
+**スライド不変性**: move は `inPoint`/`outPoint` とレイヤーのキーフレームを同量シフトする（`shiftObjectKeyframes`）。よってある `localFrame` の「子 DOM 内容 + 解決済み effect 値」はスライド前後で不変 → 同 `localFrame` かつ同 `fxSig` で正しく HIT。transform は capture 後に matrix3d で別途適用するため焼かれる buffer に無関係。
+
+**comp 全体との関係**: per-layer 優先・comp 全体は補助（共存）。comp 全体キャッシュはスライドで `projectRevision` が変わり無効化されるが、再構築時に per-layer HIT を使うため重い再ラスタは走らない。
+
+**正準性 / INV**: INV-1/2/3/5 保持（キャッシュは描画高速化のみ、scene 解決値・export 出力に不影響）。HIT 条件が一致したときの buffer は常に正しく、最悪ケースは「ミス＝再レンダ」で誤ピクセルは生じない。
+
+**緑線 UI**: per-layer キーを prefix `layer:{objectId}:` で列挙し `localFrame` を抽出、`compFrame = localFrame + obj.inPoint` で comp 位置へ写像して `[inPoint, outPoint)` 内をレイヤーバー直上に緑表示。`fxSig` ハッシュは照合しないため内容編集直後に旧ハッシュ entry が LRU 退避されるまで僅かに over-report しうる（indicator として best-effort）。
 
 ### §28.9 Auto Preview Cache（確定・2026-06）
 
@@ -1940,20 +2038,53 @@ interface PreviewCacheSettings {
 
 **`shouldPreferCacheDisplay` 拡張**: `autoCacheSession === true` かつ `compNeedsAutoPreviewCache` のとき、サンプル数不足でもキャッシュ優先（L2 + displacement/bake 即時）。
 
-### §27.12 Fast Displacement Direct Path（確定・2026-06 改定）
+### §27.12 Fast* Displacement 描画経路（確定・2026-06-20 改定2）
 
-**editor preview / HTML bundle player 専用**の displacement 高速経路。raster export（§11/M3）の INV-2 正は raster パイプライン維持。
+**preview / export / HTML bundle 共通** — Fast* distortion（`fastWave` / `fastRipple` / `fastTurbulentDisplace`）は **CSS `filter` 直適用を廃止**（2026-06 実体ドリフト修正）。通常レイヤーも full 版と同型の **self-capture raster**（`runDirectSvgDisplacePipeline`）へ統一し、INV-2（全経路同一 scene 解決値・同一描画パイプライン）を満たす。
 
-**`effectsAreFastDisplacementOnly` 判定**: enabled **displacement** effect がすべて `fastWave` / `fastRipple` / `fastTurbulentDisplace` であること。`blur` / ワイプ等の非 displacement effect の併用は許可（fast path を無効化しない）。調整レイヤーは対象外。
+**経路判定 SSOT**: [src/runtime/effectRouting.ts](../src/runtime/effectRouting.ts) の `needsSvgDisplaceCapture()` / `hasEnabledDisplacement()`。DomRenderer・Pipeline 分析の双方がこれを参照する。
 
 | 条件 | 経路 |
 |---|---|
-| `fastDisplaceDirect === true`（PreviewPanel / BundlePlayer）かつ `effectsAreFastDisplacementOnly`（調整レイヤー除く） | raster キャプチャ省略 → `applyFilterTokens` 直適用（scrub / Best / 停止 / 再生すべて） |
-| raster export（`compFrameCapture` / exporter）/ full displacement / 調整レイヤー + displacement | 従来 raster パイプライン（§27.1） |
+| enabled displacement（full + Fast*）| 通常レイヤー → `runDirectSvgDisplacePipeline` / 調整レイヤー → `runAdjustmentSvgDisplacePipeline` |
+| Raster調整 + live effect tokens（blur/tint/wipe）| comp 背面 capture（§27.4） |
+| export `auto_raster_mp4`（Live調整）| comp 背面 capture（§27.4） |
+| displacement なし・Live調整 + blur のみ | `backdrop-filter` 直適用（従来） |
 
-- **許容差**: preview/bundle 直適用は見た目近似・preview↔export ピクセル差ありうる（§27.5 Fast の非目標と整合）。最終確認は raster export。
-- **`compNeedsAutoPreviewCache`**: enabled displacement が fast* のみの comp では Auto Cache を起動しない。
-- **再生 UX 補助**: `holdLastRaster` — full displacement の raster 完了まで前フレームの filter/canvas を保持。`draftPlayback` モード（RAF バイパス等）は §28.9 と独立。
+- **`fastDisplaceDirect`**: **廃止**（`setPreviewRenderOptions` は受け取るが無視）。PreviewPanel / BundlePlayer からの設定は不要。
+- **Pipeline UI**: 通常レイヤー + Fast* → `raster`（reason: 自己 capture・ドリフト回避）。
+- **`compNeedsAutoPreviewCache`**: fast-only comp も Auto Cache 対象（per-layer raster のため）。
+- **再生 UX 補助**: `holdLastRaster` — raster 完了まで前フレームの canvas を保持。`draftPlayback` モード（RAF バイパス等）は §28.9 と独立。
+
+### §27.13 Live / Raster 調整レイヤー — 実装作業分解（確定 2026-06-20）
+
+§27.4 の 2 モードを実装するための変更点（spec 確定済み・Cursor 主導）。**先に spec（本節）、次に実装**の順を守る。
+
+**スキーマ / 型**
+- [src/core/schema.ts](../src/core/schema.ts): `SceneObject.adjustmentMode?: "live" | "raster"`（§5.5b）。
+- [src/runtime/plugin.ts](../src/runtime/plugin.ts): `EffectDef.executionPath: "live" | "raster"` を必須化（§27.2）。
+- [src/runtime/resolved.ts](../src/runtime/resolved.ts): `ResolvedObject.adjustmentMode?`（§27.5）。
+- [src/runtime/resolve.ts](../src/runtime/resolve.ts): `adjustmentMode` 透過（省略 = `"live"`）。
+- [src/core/validate.ts](../src/core/validate.ts): `adjustmentMode` は `isAdjustment` 時のみ有効、不正値は warn。canonical 直列化（`"live"` 省略・`"raster"` のみ書く・§5.6-canon）。
+
+**effect メタ**
+- [src/runtime/builtinEffects.ts](../src/runtime/builtinEffects.ts) / [src/runtime/fastEffects.ts](../src/runtime/fastEffects.ts): 各 `EffectDef` に `executionPath` をリテラル付与（live: blur/tint/linearWipe/angularWipe/pixelSortLite/fastWave/fastRipple/fastTurbulentDisplace、raster: wave/turbulentDisplace/ripple/pixelSorter）。
+
+**描画**
+- [src/runtime/DomRenderer.ts](../src/runtime/DomRenderer.ts):
+  - `adjustmentMode` で分岐。**Live** = `backdrop-filter`（preview / bundle）、export 時のみ comp 背面 capture 自動 raster 化（auto_raster_mp4・§27.4）。**Raster** = 常に comp 背面 capture。
+  - 既存 `runAdjustment*Pipeline` を全 effect chain に一般化（backdrop-filter 系 blur/tint/wipe も raster 経路で焼けるように）。
+  - `DISPLACEMENT_EFFECT_TYPES` のハードコードを registry の `executionPath` / メタ参照へ寄せる（リファクタ）。
+
+**UI / store**
+- [src/editor/store.ts](../src/editor/store.ts): `addLiveAdjustmentLayer` / `addRasterAdjustmentLayer` / `setAdjustmentMode`（旧 `addAdjustmentLayer` は live 別名）。
+- [src/editor/panels/InspectorPanel.tsx](../src/editor/panels/InspectorPanel.tsx): モードバッジ / 切替 + effect ピッカーの `executionPath` フィルタ + mp4 自動 raster 注記（§27.6）。
+- [src/editor/panels/TimelinePanel.tsx](../src/editor/panels/TimelinePanel.tsx): Live / Raster バッジ（§27.7）。
+
+**テスト（Playwright parity・必須）**
+- Live調整: preview と web bundle が一致。mp4 / png export で auto_raster_mp4 により effect が**消えず**に出る。
+- Raster調整: preview / mp4 / png / bundle が一致（精度基準）。
+- 後方互換: 既存 `isAdjustment: true` が live として読み込まれ、project.json は byte 等価。
 
 ---
 
@@ -2023,3 +2154,61 @@ interface PreviewCacheSettings {
 1. **実FS / git を Free に含めるか** — 推奨: **含める**（dev 客層獲得・§29.5）。
 2. **web bundle（§11.7）を個人 tier で解放するか B2B 限定か** — 推奨: **個人 tier で解放 + 商用ライセンス**（§29.3 で個人 ○ として反映済み）。B2B は at-scale 埋め込み/配信ライセンスで上乗せ。
 3. **premium パックの個人 tier 同梱範囲** — 推奨: **一部同梱 + 残りは購入**（§29.3 反映済み。同梱量は別途確定）。
+
+---
+
+## §30 Null Layer（確定・additive）
+
+AE の Null Object 相当。Transform 専用の制御レイヤー。最終出力（preview / export / bundle player）に**ピクセルを出さない**。parent チェーンによる transform 継承のみが目的。
+
+### §30.1 スキーマ（§5 additive）
+
+```ts
+interface SceneObject {
+  // ...既存フィールド...
+  isNull?: boolean;   // true = Null レイヤー。false/未設定 → キー省略（INV-4 byte 等価）
+}
+```
+
+- **相互排他**: `isNull === true` と `isAdjustment === true` は同時不可。load 時 warn + store 作成時ガード。
+- **content**: Null 作成時 `components: []` 固定。component を持たない。
+- **Effects**: 許可（AE 同様。可視コンテンツがないため実質 noop。UI 制限なし）。
+
+### §30.2 挙動（AE 準拠）
+
+| 項目 | 挙動 |
+|---|---|
+| 描画 | DomRenderer / export は DOM entry を作らない（INV-2 維持） |
+| Transform | 既存 `transform` / `opacity` / KF / expression をそのまま使用 |
+| parenting | 既存 `parent` フィールド。`resolve()` の `worldOf` は **isNull も含め** parent チェーンを畳む（§6.3） |
+| 可視性 | `enabled && inPoint <= frame < outPoint` のとき ResolvedScene に載るが DOM はスキップ |
+| Preview | **editor のみ**: 有効な Null すべてに 100×100px 十字ワイヤーフレーム（§25 overlay・export 非経路） |
+
+### §30.3 既定作成（store `addNullLayer`）
+
+- 名前: comp 内既存 Null 数に応じ `Null` / `Null 2` …
+- `position = (width/2, height/2, 0)`（comp 中心）
+- `anchor = (0,0,0)`, `scale = (1,1,1)`, `opacity = 1`
+- `zOrder`: 既存 `nextZOrder` 規約
+
+### §30.4 グリフ分解との関係
+
+- **Phase 1**: §26.5.1a `keyframesOnNull` は空 text コンテナのまま（既存分解結果を壊さない）。
+- **Phase 2（将来）**: 分解出力を `isNull: true` コンテナへ移行可。
+
+### §30.5 受け入れ条件（Phase 1）
+
+- [ ] `+ Null` で comp 中心に editor ワイヤーフレーム表示
+- [ ] Null を親にした子の worldTransform が AE 同型（parent チェーン）
+- [ ] export / bundle で Null 追加前後の可視ピクセル一致
+- [ ] 既存 project.json byte 等価 roundtrip
+- [ ] `isNull + isAdjustment` 同時 → validate warn
+
+### §30.6 実装タッチポイント
+
+- [src/core/schema.ts](../src/core/schema.ts): `SceneObject.isNull?`
+- [src/runtime/resolved.ts](../src/runtime/resolved.ts): `ResolvedObject.isNull?`
+- [src/runtime/resolve.ts](../src/runtime/resolve.ts): components 空化 + フラグ透過
+- [src/runtime/DomRenderer.ts](../src/runtime/DomRenderer.ts): isNull → DOM スキップ
+- [src/editor/store.ts](../src/editor/store.ts): `addNullLayer`
+- [src/editor/panels/TimelinePanel.tsx](../src/editor/panels/TimelinePanel.tsx) / Inspector / PreviewViewerOverlay

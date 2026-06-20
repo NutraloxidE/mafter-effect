@@ -8,23 +8,22 @@ alwaysApply: true
 このリポジトリで作業する Agent は **必ず `CLAUDE.md` に従う**。
 矛盾がある場合は CLAUDE.md → `doc/mafter-effect-spec.md`（SSoT）の優先順位に従う。
 
-## 役割分担（Claude Code / Cursor 共存ルール）
+## 役割分担（運用変更: 2026-06 以降）
 
-このプロジェクトは **2 つの AI が分業**する。Cursor（Composer 2.5）は主に**実装**を担当する。
+> **重要（運用変更）**: Claude Code (Opus) は利用制限により停止中。当面は **Cursor が設計・spec 編集も含めて単独で担当**する。
+> したがって「設計は Claude Code に仰ぐ」という旧前提は無効。Cursor が spec を編集してよい。
 
-| 担当 | 主な役割 | やること |
-|------|---------|---------|
-| **Claude Code (Opus)** | 設計 | 仕様策定、`doc/mafter-effect-spec.md`（spec）の追記・更新、スキーマ・不変条件の決定、アーキテクチャ判断 |
-| **Cursor (Composer 2.5)** | 実装 | 確定済み spec に沿ったコード実装、型・テスト・ビルドを緑にする、リファクタ |
+### Cursor が守ること（更新後）
 
-### Cursor が守ること
-
-- **spec / スキーマを勝手に変えない。** Cursor は spec を「正」として実装する側。
-  実装中に spec の不足・矛盾・曖昧さを見つけたら、**自分で型や不変条件を変更せず**、
-  その箇所をユーザーに報告し設計判断（Claude Code 側）を仰ぐ。
-- **CLAUDE.md は編集しない**（Claude Code 用の ground truth）。読むのは可。
+- **spec は Cursor が編集してよい。** ただし「先に spec → 次に実装」の順を厳守し、SSoT を壊さない。
+- **次の変更は勝手に進めず、編集・実装の前に必ずユーザーへ確認する**（選択肢＋推奨案を提示）:
+  - **INVARIANT（INV-1〜INV-6 等）の追加・変更・緩和**
+  - **§5 データスキーマ（TypeScript 型）の追加・変更**
+  - **`project.json` の直列化形式の変更**
+- 上記以外（散文の追記・整理、§5/INV に触れない spec 更新、実装・リファクタ・テスト）は Cursor 主導でよい。
 - spec に未定義の挙動を実装で「事実上の仕様」にしない。曖昧なら先に確認。
-- `project.json` のスキーマ・直列化形式に手を入れる変更は spec 更新を伴うため、勝手に進めない。
+
+（歴史的経緯）当初は 2 AI 分業（Cursor=実装 / Claude Code=設計）だったが、Claude Code 停止により Cursor 単独運用へ移行した。
 
 ## セッション開始時（実装・仕様変更の前）
 
