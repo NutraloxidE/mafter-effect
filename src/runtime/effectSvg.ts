@@ -320,53 +320,82 @@ export function rippleDisplaceMap(
   return { uri: rgbaToPngDataUri(rgba, mw, mh), scale: 2 * amplitude };
 }
 
-/** §27.5 Fast Wave — WIP wave 同型 gradient map の固定 quality（param なし）。 */
-export const WAVE_FAST_QUALITY = 0.5;
-
 /**
- * §27.3 / §27.5 Ripple — radialGradient SVG displacement map（WIP 中間版・PNG なし）。
+ * §27.5 改定4 — Fast Wave（`feTurbulence` 近似・`feImage` なし・Web 軽量）。
  *
- * 半径方向 sin/cos を載せた 1D radialGradient。真の放射ベクトルではない近似（渦寄り）。
- * full `ripple` の per-pixel PNG より軽い。Fast ripple は本関数をそのまま使用。
+ * フル `wave` の linearGradient 正弦 map（`feImage`・data URI・毎フレーム再デコード）を捨て、
+ * GPU ネイティブな `feTurbulence`（`type="fractalNoise"`・`numOctaves=1`）へ置換する。
+ * 正弦の見た目は意図的に放棄し（ユーザー承認 2026-06-21）、進行方向に沿って揺れる方向性ノイズ
+ * 歪みになる。per-frame コストは `fastTurbulentDisplace` と同等。
+ * - 進行方向(direction)軸 = `1/λ`、直交軸 = `1/(4λ)`（低周波で稜線を伸ばし波 train 風に）。
+ * - `phase` は進行方向の `feOffset` パン（`(phase/360)·λ` px）でスクロールを再現。
  */
-export function rippleDisplaceMapSvg(
-  radius: number,
-  amplitude: number,
-  frequency: number,
-  centerX: number,
-  centerY: number,
-  w: number,
-  h: number,
-): { uri: string; scale: number } {
-  const lw = Math.max(1, Math.round(w));
-  const lh = Math.max(1, Math.round(h));
-  const cx = clamp01(centerX) * lw;
-  const cy = clamp01(centerY) * lh;
-  const r = Math.max(1, radius);
-  const cycles = Math.max(0.1, frequency);
-  const samples = Math.min(512, Math.max(16, Math.round(cycles * 16)));
-  const stops: string[] = [];
-  for (let i = 0; i <= samples; i++) {
-    const o = i / samples;
-    const env = 1 - o;
-    const ph = 2 * Math.PI * cycles * o;
-    const rC = Math.round(clamp01(0.5 + 0.5 * env * Math.sin(ph)) * 255);
-    const gC = Math.round(clamp01(0.5 + 0.5 * env * Math.cos(ph)) * 255);
-    stops.push(`<stop offset="${(o * 100).toFixed(2)}%" stop-color="rgb(${rC},${gC},128)"/>`);
-  }
-  const svg = [
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${lw}" height="${lh}">`,
-    `<defs><radialGradient id="r" gradientUnits="userSpaceOnUse" cx="${cx}" cy="${cy}" r="${r}">`,
-    stops.join(""),
-    `</radialGradient></defs>`,
-    `<rect width="100%" height="100%" fill="url(#r)"/>`,
-    `</svg>`,
-  ].join("");
-  return { uri: svgDataUri(svg), scale: 2 * amplitude };
+export function fastWaveDisplace(opts: {
+  amplitude: number;
+  wavelength: number;
+  direction: string;
+  phaseDeg: number;
+  w: number;
+  h: number;
+  antiAlias?: boolean;
+}): string {
+  const { amplitude, wavelength, direction, phaseDeg, w, h, antiAlias = false } = opts;
+  const lambda = Math.max(1, wavelength);
+  const horizontal = direction !== "vertical";
+  const freqAlong = 1 / lambda;
+  const freqPerp = 1 / (lambda * 4);
+  const phasePan = ((((phaseDeg % 360) + 360) % 360) / 360) * lambda;
+  return turbulenceDisplace({
+    scale: 2 * Math.max(0, amplitude),
+    baseFrequencyX: horizontal ? freqAlong : freqPerp,
+    baseFrequencyY: horizontal ? freqPerp : freqAlong,
+    seed: 1,
+    numOctaves: 1,
+    type: "fractalNoise",
+    w,
+    h,
+    offsetX: horizontal ? phasePan : 0,
+    offsetY: horizontal ? 0 : phasePan,
+    antiAlias,
+  });
 }
 
-/** @deprecated use rippleDisplaceMapSvg */
-export const fastRippleDisplaceMapSvg = rippleDisplaceMapSvg;
+/**
+ * §27.5 改定4 — Fast Ripple（`feTurbulence` 近似・`feImage`/PNG なし・Web 軽量）。
+ *
+ * フル `ripple` の per-pixel PNG 放射 map も WIP radialGradient map（旧 `rippleDisplaceMapSvg`）も
+ * 捨て、`feTurbulence`（`type="fractalNoise"`・`numOctaves=1`・等方）へ置換する。同心円の見た目は
+ * 意図的に放棄し（ユーザー承認 2026-06-21）、`frequency`/`radius` からリング間隔相当の特徴サイズを
+ * 導いた等方ノイズ歪みになる。`center` は noise 場の `feOffset` パンで近似。
+ */
+export function fastRippleDisplace(opts: {
+  radius: number;
+  amplitude: number;
+  frequency: number;
+  centerX: number;
+  centerY: number;
+  w: number;
+  h: number;
+  antiAlias?: boolean;
+}): string {
+  const { radius, amplitude, frequency, centerX, centerY, w, h, antiAlias = false } = opts;
+  const r = Math.max(1, radius);
+  const freq = Math.max(0.1, frequency);
+  const bf = freq / r; // リング間隔 ≈ radius/frequency px → baseFrequency
+  return turbulenceDisplace({
+    scale: 2 * Math.max(0, amplitude),
+    baseFrequencyX: bf,
+    baseFrequencyY: bf,
+    seed: 7,
+    numOctaves: 1,
+    type: "fractalNoise",
+    w,
+    h,
+    offsetX: (clamp01(centerX) - 0.5) * Math.max(1, w),
+    offsetY: (clamp01(centerY) - 0.5) * Math.max(1, h),
+    antiAlias,
+  });
+}
 
 /** §27.5 Fast Turbulent Displace — feTurbulence 直結（octaves cap 2・G bias）。 */
 export function fastTurbulentDisplace(opts: {

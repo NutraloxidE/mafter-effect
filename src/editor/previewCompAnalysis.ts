@@ -29,6 +29,19 @@ export function compHasDisplacementEffect(comp: TimelineComposition): boolean {
   return false;
 }
 
+/** enabled **full** displacement（`wave`/`ripple`/`turbulentDisplace`）がある。Fast* は除外。 */
+export function compHasFullDisplacementEffect(comp: TimelineComposition): boolean {
+  for (const obj of comp.objects) {
+    for (const fx of obj.effects ?? []) {
+      if (!fx.enabled) continue;
+      if (DISPLACEMENT_EFFECT_TYPES.has(fx.type) && !FAST_DISPLACEMENT_EFFECT_TYPES.has(fx.type)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 /** processPixels を持つ enabled effect がある。 */
 export function compHasProcessPixelsEffect(comp: TimelineComposition): boolean {
   for (const obj of comp.objects) {
@@ -59,7 +72,8 @@ export function compHasOnlyFastDisplacement(comp: TimelineComposition): boolean 
 export function compNeedsAutoPreviewCache(comp: TimelineComposition): boolean {
   if (compRequiresPreviewBake(comp)) return true;
   if (compHasProcessPixelsEffect(comp)) return true;
-  if (compHasDisplacementEffect(comp)) return true;
+  // Fast* は live（per-frame raster ではない）ため full displacement のみ Auto Cache 対象（§27.12 改定3）。
+  if (compHasFullDisplacementEffect(comp)) return true;
   return false;
 }
 

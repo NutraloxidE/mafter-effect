@@ -10,10 +10,9 @@ import {
   displacementPadFromScale,
   DISPLACEMENT_EFFECT_TYPES,
   displaceWithMap,
-  fastRippleDisplaceMapSvg,
+  fastRippleDisplace,
   fastTurbulentDisplace,
-  rippleDisplaceMapSvg,
-  WAVE_FAST_QUALITY,
+  fastWaveDisplace,
   rippleDisplaceMap,
   rippleDisplacementSample,
   rippleMapDims,
@@ -71,6 +70,13 @@ describe("effectSvg helpers", () => {
     expect(m).toContain('id="f1"');
     expect(m).toContain('filterUnits="userSpaceOnUse"');
     expect(m).toContain('width="374"');
+  });
+
+  it("svgDisplaceFilterMarkup compFixed clamps region to layer bounds (no pad) — §27.12 改定3 Fast* live region", () => {
+    const m = svgDisplaceFilterMarkup("f1", "<feTurbulence/>", 320, 240, 50, true);
+    expect(m).toContain('x="0" y="0" width="320" height="240"');
+    // pad された幅 374 が出ない（クランプの確証）。
+    expect(m).not.toContain('width="374"');
   });
 
   it("evolutionToOffsetPx is continuous and non-zero for non-zero evolution", () => {
@@ -389,19 +395,6 @@ describe("§27.5 Fast distortion (approximate)", () => {
     expect(DISPLACEMENT_EFFECT_TYPES.has("fastTurbulentDisplace")).toBe(true);
   });
 
-  it("rippleDisplaceMapSvg returns SVG data URI not PNG", () => {
-    const { uri } = rippleDisplaceMapSvg(100, 10, 5, 0.5, 0.5, 640, 480);
-    expect(uri.startsWith("data:image/svg+xml,")).toBe(true);
-    expect(uri.includes("radialGradient")).toBe(true);
-  });
-
-  it("fastRippleDisplaceMapSvg is alias of rippleDisplaceMapSvg", () => {
-    const a = rippleDisplaceMapSvg(100, 10, 5, 0.5, 0.5, 640, 480);
-    const b = fastRippleDisplaceMapSvg(100, 10, 5, 0.5, 0.5, 640, 480);
-    expect(a.uri).toBe(b.uri);
-    expect(a.scale).toBe(b.scale);
-  });
-
   it("displaceWithMap antiAlias toggles feGaussianBlur", () => {
     const uri = "data:image/svg+xml,test";
     const on = displaceWithMap(uri, 20, 100, 100, true);
@@ -410,13 +403,52 @@ describe("§27.5 Fast distortion (approximate)", () => {
     expect(off).not.toContain("feGaussianBlur");
   });
 
-  it("fastWave uses waveDisplaceMapSvg at WAVE_FAST_QUALITY", () => {
-    const { uri } = waveDisplaceMapSvg(20, 50, "horizontal", 0, 320, 240, WAVE_FAST_QUALITY);
-    expect(uri.startsWith("data:image/svg+xml,")).toBe(true);
-    expect(uri.includes("linearGradient")).toBe(true);
-    const primitives = displaceWithMap(uri, 40, 320, 240, false);
-    expect(primitives).toContain("feImage");
-    expect(primitives).not.toContain("feTurbulence");
+  it("§27.5 改定4: fastWaveDisplace は feTurbulence 直結（feImage なし）", () => {
+    const p = fastWaveDisplace({ amplitude: 20, wavelength: 50, direction: "horizontal", phaseDeg: 0, w: 320, h: 240 });
+    expect(p).toContain("feTurbulence");
+    expect(p).toContain('type="fractalNoise"');
+    expect(p).toContain("feDisplacementMap");
+    expect(p).not.toContain("feImage");
+    expect(p).not.toContain("data:image/svg+xml");
+    // scale = 2·amplitude
+    expect(p).toContain('scale="40"');
+  });
+
+  it("§27.5 改定4: fastWave direction で baseFrequency の異方軸が入れ替わる", () => {
+    const horiz = fastWaveDisplace({ amplitude: 20, wavelength: 50, direction: "horizontal", phaseDeg: 0, w: 320, h: 240 });
+    const vert = fastWaveDisplace({ amplitude: 20, wavelength: 50, direction: "vertical", phaseDeg: 0, w: 320, h: 240 });
+    const bf = (s: string) => /baseFrequency="([\d.]+) ([\d.]+)"/.exec(s);
+    const mh = bf(horiz);
+    const mv = bf(vert);
+    expect(mh).not.toBeNull();
+    expect(mv).not.toBeNull();
+    // horizontal: 進行方向(X)が高周波。vertical: Y が高周波 → 軸が入れ替わる。
+    expect(mh![1]).toBe(mv![2]);
+    expect(mh![2]).toBe(mv![1]);
+  });
+
+  it("§27.5 改定4: fastWave phase は feOffset パンを生む", () => {
+    const p0 = fastWaveDisplace({ amplitude: 20, wavelength: 50, direction: "horizontal", phaseDeg: 0, w: 320, h: 240 });
+    const p180 = fastWaveDisplace({ amplitude: 20, wavelength: 50, direction: "horizontal", phaseDeg: 180, w: 320, h: 240 });
+    expect(p0).not.toContain("feOffset");
+    expect(p180).toContain("feOffset");
+  });
+
+  it("§27.5 改定4: fastRippleDisplace は feTurbulence 直結（feImage/PNG なし）", () => {
+    const p = fastRippleDisplace({ radius: 100, amplitude: 10, frequency: 5, centerX: 0.5, centerY: 0.5, w: 640, h: 480 });
+    expect(p).toContain("feTurbulence");
+    expect(p).toContain('type="fractalNoise"');
+    expect(p).toContain("feDisplacementMap");
+    expect(p).not.toContain("feImage");
+    expect(p).not.toContain("data:image");
+    expect(p).toContain('scale="20"');
+  });
+
+  it("§27.5 改定4: fastRipple center は feOffset パンを生む", () => {
+    const centered = fastRippleDisplace({ radius: 100, amplitude: 10, frequency: 5, centerX: 0.5, centerY: 0.5, w: 640, h: 480 });
+    const offCenter = fastRippleDisplace({ radius: 100, amplitude: 10, frequency: 5, centerX: 0.8, centerY: 0.3, w: 640, h: 480 });
+    expect(centered).not.toContain("feOffset");
+    expect(offCenter).toContain("feOffset");
   });
 
   it("fastTurbulentDisplace uses fractalNoise with G bias", () => {

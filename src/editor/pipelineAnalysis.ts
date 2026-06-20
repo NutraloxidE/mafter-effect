@@ -1,7 +1,7 @@
 // §19.5 / §27.4.1 — comp の live/raster 経路を純関数で算出（DOM/乱数なし・INV-1/7 整合）。
 
 import type { Project, SceneObject, TimelineComposition } from "../core/schema";
-import { hasEnabledDisplacement, needsSvgDisplaceCapture } from "../runtime/effectRouting";
+import { hasEnabledFullDisplacement, needsSvgDisplaceCapture } from "../runtime/effectRouting";
 import { globalPluginRegistry } from "../runtime/pluginRegistry";
 
 export type PipelineSegmentKind = "live" | "raster";
@@ -56,8 +56,9 @@ function enabledEffects(obj: SceneObject) {
   return (obj.effects ?? []).filter((e) => e.enabled);
 }
 
+/** raster を強制する displacement = **full** のみ（Fast* は live・§27.12 改定3）。 */
 function hasDisplacement(effects: { type: string; enabled: boolean }[]): boolean {
-  return hasEnabledDisplacement(effects);
+  return hasEnabledFullDisplacement(effects);
 }
 
 function hasRasterExecutionPath(effects: { type: string; enabled: boolean }[]): boolean {

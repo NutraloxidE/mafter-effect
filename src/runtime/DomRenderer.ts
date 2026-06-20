@@ -1,4 +1,4 @@
-import { DISPLACEMENT_EFFECT_TYPES, displacementPadFromScale, svgDisplaceFilterMarkup } from "./effectSvg";
+import { DISPLACEMENT_EFFECT_TYPES, svgDisplaceFilterMarkup } from "./effectSvg";
 import { needsSvgDisplaceCapture } from "./effectRouting";
 import type { CompositionMeta, Frame, HtmlComposition, RGBA, TimelineComposition } from "../core/schema";
 import type { FontOutlineCache } from "./fontOutlineCache";
@@ -86,8 +86,6 @@ export class DomRenderer implements Renderer {
 
   setPreviewRenderOptions(opts: {
     holdLastRaster?: boolean;
-    /** @deprecated Fast* distortion は常に self-capture raster。受け取るが無視。 */
-    fastDisplaceDirect?: boolean;
     forceAdjustmentRaster?: boolean;
   }): void {
     if (opts.holdLastRaster !== undefined) this.holdLastRaster = opts.holdLastRaster;
@@ -549,20 +547,15 @@ export class DomRenderer implements Renderer {
     filter.setAttribute("color-interpolation-filters", "sRGB");
     const isDisplace = primitives.includes("feDisplacementMap");
     if (isDisplace && entry.fxLayerW > 0 && entry.fxLayerH > 0) {
+      // §27.12 改定3: filter region は layer bounds (0,0,w,h) にクランプ（pad しない）。
+      // pad すると feImage map 未定義域（channel≈0）で定数変位が発生し素矩形が露出する。
+      // クランプで live CSS filter は raster（W×H クリップ）と pixel parity になる。
       filter.setAttribute("filterUnits", "userSpaceOnUse");
       filter.setAttribute("primitiveUnits", "userSpaceOnUse");
-      if (entry.fxUseBackdropDisplace) {
-        filter.setAttribute("x", "0");
-        filter.setAttribute("y", "0");
-        filter.setAttribute("width", String(entry.fxLayerW));
-        filter.setAttribute("height", String(entry.fxLayerH));
-      } else {
-        const pad = displacementPadFromScale(entry.fxMaxDisplaceScale);
-        filter.setAttribute("x", String(-pad));
-        filter.setAttribute("y", String(-pad));
-        filter.setAttribute("width", String(entry.fxLayerW + 2 * pad));
-        filter.setAttribute("height", String(entry.fxLayerH + 2 * pad));
-      }
+      filter.setAttribute("x", "0");
+      filter.setAttribute("y", "0");
+      filter.setAttribute("width", String(entry.fxLayerW));
+      filter.setAttribute("height", String(entry.fxLayerH));
     } else {
       filter.setAttribute("x", "-25%");
       filter.setAttribute("y", "-25%");

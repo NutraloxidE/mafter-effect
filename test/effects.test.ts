@@ -165,16 +165,18 @@ describe("builtinEffects apply (§27.3)", () => {
     expect(a?.kind === "svg" && b?.kind === "svg" && a.primitives !== b.primitives).toBe(true);
   });
 
-  it("fastWave returns linearGradient map with feImage", () => {
+  it("fastWave は feTurbulence 直結（feImage なし・§27.5 改定4）", () => {
     const r = FAST_WAVE_EFFECT_DEF.apply(
       { amplitude: 20, wavelength: 50, direction: "horizontal", phase: 0, antiAlias: false },
       ctx,
     );
     expect(r?.kind).toBe("svg");
     if (r?.kind === "svg") {
-      expect(r.primitives).toContain("feImage");
-      expect(r.primitives).toContain("linearGradient");
-      expect(r.primitives).not.toContain("feTurbulence");
+      expect(r.primitives).toContain("feTurbulence");
+      expect(r.primitives).toContain('type="fractalNoise"');
+      expect(r.primitives).toContain("feDisplacementMap");
+      expect(r.primitives).not.toContain("feImage");
+      expect(r.primitives).not.toContain("data:image");
     }
   });
 
@@ -195,16 +197,18 @@ describe("builtinEffects apply (§27.3)", () => {
     }
   });
 
-  it("fastRipple returns SVG radialGradient map not PNG", () => {
+  it("fastRipple は feTurbulence 直結（feImage/PNG なし・§27.5 改定4）", () => {
     const r = FAST_RIPPLE_EFFECT_DEF.apply(
       { amplitude: 10, radius: 100, frequency: 5, centerX: 0.5, centerY: 0.5, antiAlias: false },
       ctx,
     );
     expect(r?.kind).toBe("svg");
     if (r?.kind === "svg") {
-      expect(r.primitives).toContain("feImage");
-      expect(r.primitives).toContain("data:image/svg+xml");
-      expect(r.primitives).not.toContain("data:image/png");
+      expect(r.primitives).toContain("feTurbulence");
+      expect(r.primitives).toContain('type="fractalNoise"');
+      expect(r.primitives).toContain("feDisplacementMap");
+      expect(r.primitives).not.toContain("feImage");
+      expect(r.primitives).not.toContain("data:image");
     }
   });
 

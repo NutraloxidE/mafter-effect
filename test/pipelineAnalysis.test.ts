@@ -58,9 +58,27 @@ describe("layerPipelineKind", () => {
     expect(layerPipelineKind(obj)).toBe("raster");
   });
 
-  it("通常レイヤー + fastWave は raster（自己 capture）", () => {
+  it("通常レイヤー + fastWave は live（raster 無し・§27.12 改定3）", () => {
     const obj = baseObj("01A", {
       effects: [{ id: "fx1", type: "fastWave", enabled: true, props: {} }],
+    });
+    expect(layerPipelineKind(obj)).toBe("live");
+  });
+
+  it("Live調整 + fastWave は live（backdrop・§27.12 改定3）", () => {
+    const obj = baseObj("01A", {
+      isAdjustment: true,
+      adjustmentMode: "live",
+      effects: [{ id: "fx1", type: "fastWave", enabled: true, props: {} }],
+    });
+    expect(layerPipelineKind(obj)).toBe("live");
+  });
+
+  it("Live調整 + ripple(full) は raster", () => {
+    const obj = baseObj("01A", {
+      isAdjustment: true,
+      adjustmentMode: "live",
+      effects: [{ id: "fx1", type: "ripple", enabled: true, props: {} }],
     });
     expect(layerPipelineKind(obj)).toBe("raster");
   });

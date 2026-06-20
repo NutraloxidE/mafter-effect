@@ -1,11 +1,9 @@
 import type { EffectDef, EffectRenderCtx } from "./plugin";
 import { globalPluginRegistry } from "./pluginRegistry";
 import {
-  displaceWithMap,
+  fastRippleDisplace,
   fastTurbulentDisplace,
-  rippleDisplaceMapSvg,
-  WAVE_FAST_QUALITY,
-  waveDisplaceMapSvg,
+  fastWaveDisplace,
 } from "./effectSvg";
 
 function num(v: unknown, fallback: number): number {
@@ -46,18 +44,17 @@ const FAST_WAVE_EFFECT_DEF: EffectDef = {
     if (amplitude === 0) return null;
     const w = Math.max(1, ctx.width);
     const h = Math.max(1, ctx.height);
-    const { uri, scale } = waveDisplaceMapSvg(
-      amplitude,
-      Math.max(1, num(props["wavelength"], 50)),
-      str(props["direction"], "horizontal"),
-      num(props["phase"], 0),
-      w,
-      h,
-      WAVE_FAST_QUALITY,
-    );
     return {
       kind: "svg",
-      primitives: displaceWithMap(uri, scale, w, h, bool(props["antiAlias"], false)),
+      primitives: fastWaveDisplace({
+        amplitude,
+        wavelength: Math.max(1, num(props["wavelength"], 50)),
+        direction: str(props["direction"], "horizontal"),
+        phaseDeg: num(props["phase"], 0),
+        w,
+        h,
+        antiAlias: bool(props["antiAlias"], false),
+      }),
     };
   },
 };
@@ -81,18 +78,18 @@ const FAST_RIPPLE_EFFECT_DEF: EffectDef = {
     if (amplitude === 0) return null;
     const w = Math.max(1, ctx.width);
     const h = Math.max(1, ctx.height);
-    const { uri, scale } = rippleDisplaceMapSvg(
-      Math.max(1, num(props["radius"], 100)),
-      amplitude,
-      Math.max(0.1, num(props["frequency"], 5)),
-      Math.min(1, Math.max(0, num(props["centerX"], 0.5))),
-      Math.min(1, Math.max(0, num(props["centerY"], 0.5))),
-      w,
-      h,
-    );
     return {
       kind: "svg",
-      primitives: displaceWithMap(uri, scale, w, h, bool(props["antiAlias"], false)),
+      primitives: fastRippleDisplace({
+        radius: Math.max(1, num(props["radius"], 100)),
+        amplitude,
+        frequency: Math.max(0.1, num(props["frequency"], 5)),
+        centerX: Math.min(1, Math.max(0, num(props["centerX"], 0.5))),
+        centerY: Math.min(1, Math.max(0, num(props["centerY"], 0.5))),
+        w,
+        h,
+        antiAlias: bool(props["antiAlias"], false),
+      }),
     };
   },
 };

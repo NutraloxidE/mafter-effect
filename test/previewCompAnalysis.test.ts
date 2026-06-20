@@ -4,11 +4,11 @@ import { defaultTransform, staticProp } from "../src/core/props";
 import type { SceneObject, TimelineComposition } from "../src/core/schema";
 import {
   compHasDisplacementEffect,
+  compHasFullDisplacementEffect,
   compNeedsAutoPreviewCache,
   compRequiresPreviewBake,
   objectHasFastDisplacementOnly,
 } from "../src/editor/previewCompAnalysis";
-import { allowsFastDisplaceDirect } from "../src/runtime/effectRouting";
 import { effectsAreFastDisplacementOnly } from "../src/runtime/previewDisplacement";
 import { RamPreviewController } from "../src/editor/ramPreview";
 import { MemoryFs } from "../src/fs/MemoryFs";
@@ -56,7 +56,7 @@ describe("previewCompAnalysis", () => {
     expect(compRequiresPreviewBake(makeComp([waveObj]))).toBe(false);
   });
 
-  it("compNeedsAutoPreviewCache includes fast-only displacement after raster path", () => {
+  it("compNeedsAutoPreviewCache: fast-only は live なので対象外、full displacement は対象（§27.12 改定3）", () => {
     const fastObj: SceneObject = {
       id: "O1",
       name: "s",
@@ -74,8 +74,12 @@ describe("previewCompAnalysis", () => {
       ...fastObj,
       effects: [{ id: "FX2", type: "wave", enabled: true, props: { amplitude: 10 } }],
     };
+    // fast* も "displacement 系" ではある（full+fast）が…
     expect(compHasDisplacementEffect(makeComp([fastObj]))).toBe(true);
-    expect(compNeedsAutoPreviewCache(makeComp([fastObj]))).toBe(true);
+    // …full displacement のみ Auto Cache を起動する。
+    expect(compHasFullDisplacementEffect(makeComp([fastObj]))).toBe(false);
+    expect(compHasFullDisplacementEffect(makeComp([waveObj]))).toBe(true);
+    expect(compNeedsAutoPreviewCache(makeComp([fastObj]))).toBe(false);
     expect(compNeedsAutoPreviewCache(makeComp([waveObj]))).toBe(true);
     expect(compNeedsAutoPreviewCache(makeComp())).toBe(false);
   });
@@ -106,12 +110,6 @@ describe("previewCompAnalysis", () => {
       ),
     ).toBe(false);
     expect(objectHasFastDisplacementOnly([{ type: "fastRipple", enabled: true }], true)).toBe(false);
-  });
-
-  it("§27.12 fast direct path deprecated — displacement always uses capture", () => {
-    const effects = [{ type: "fastWave", enabled: true }];
-    expect(effectsAreFastDisplacementOnly(effects, false)).toBe(true);
-    expect(allowsFastDisplaceDirect()).toBe(false);
   });
 });
 
