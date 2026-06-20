@@ -78,6 +78,7 @@ export class BundlePlayer {
     this.renderer.setFontCache(this.fontCache);
     this.renderer.setImageCache(this.imageCache);
     this.renderer.setTextQuality(this.manifest.textRenderMode);
+    this.renderer.setPreviewRenderOptions({ fastDisplaceDirect: true });
 
     const { viewport, stage } = this.setupViewport(this.config.stage, comp);
     this.viewportEl = viewport;

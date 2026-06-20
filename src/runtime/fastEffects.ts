@@ -23,7 +23,7 @@ const ANTI_ALIAS_PARAM = {
   key: "antiAlias",
   label: "Anti Alias",
   kind: "bool" as const,
-  default: true,
+  default: false,
   animatable: false,
 };
 
@@ -51,7 +51,7 @@ const FAST_WAVE_EFFECT_DEF: EffectDef = {
       phaseDeg: num(props["phase"], 0),
       w,
       h,
-      antiAlias: bool(props["antiAlias"], true),
+      antiAlias: bool(props["antiAlias"], false),
     });
     return { kind: "svg", primitives };
   },
@@ -86,7 +86,7 @@ const FAST_RIPPLE_EFFECT_DEF: EffectDef = {
     );
     return {
       kind: "svg",
-      primitives: displaceWithMap(uri, scale, w, h, bool(props["antiAlias"], true)),
+      primitives: displaceWithMap(uri, scale, w, h, bool(props["antiAlias"], false)),
     };
   },
 };
@@ -121,7 +121,7 @@ const FAST_TURBULENT_DISPLACE_EFFECT_DEF: EffectDef = {
       randomSeed: Math.max(0, Math.floor(num(props["randomSeed"], 0))) % 4096,
       w,
       h,
-      antiAlias: bool(props["antiAlias"], true),
+      antiAlias: bool(props["antiAlias"], false),
     });
     return { kind: "svg", primitives };
   },

@@ -12,6 +12,7 @@ import { ColorSwatch, isRgba } from "../ColorSwatch";
 import { ScrubNumber } from "../ScrubNumber";
 import { globalPluginRegistry } from "../../runtime/pluginRegistry";
 import { groupEffectsForPicker } from "../effectCategories";
+import { BakerBadge } from "../bakerLabel";
 
 const EASING_PRESETS: { label: string; easing: Easing }[] = [
   { label: "Linear", easing: { type: "linear" } },
@@ -330,7 +331,8 @@ export function InspectorPanel() {
                     type="button"
                     onClick={() => handleAddEffect(e.type)}
                     style={{
-                      display: "block",
+                      display: "flex",
+                      alignItems: "center",
                       width: "100%",
                       background: "transparent",
                       border: "none",
@@ -344,7 +346,8 @@ export function InspectorPanel() {
                     onMouseEnter={(ev) => { ev.currentTarget.style.background = "#3a5068"; }}
                     onMouseLeave={(ev) => { ev.currentTarget.style.background = "transparent"; }}
                   >
-                    {e.label}
+                    <span>{e.label}</span>
+                    {e.previewBakeRequired && <BakerBadge />}
                   </button>
                 ))}
               </div>
@@ -377,7 +380,12 @@ export function InspectorPanel() {
               }}
             >
               <InspectorFoldout
-                label={`${effect.enabled ? "●" : "○"} ${label}`}
+                label={(
+                  <>
+                    {`${effect.enabled ? "●" : "○"} ${label}`}
+                    {def?.previewBakeRequired && <BakerBadge />}
+                  </>
+                )}
                 expanded={isExpanded(sectionKey)}
                 onToggle={() => toggleExpanded(sectionKey)}
               >
@@ -1027,7 +1035,7 @@ function InspectorFoldout({
   onToggle,
   children,
 }: {
-  label: string;
+  label: ReactNode;
   expanded: boolean;
   onToggle: () => void;
   children: ReactNode;
@@ -1053,7 +1061,7 @@ function InspectorFoldout({
         }}
       >
         <span style={{ width: 10, flexShrink: 0, color: "#aaa", fontSize: 10 }}>{expanded ? "▼" : "▶"}</span>
-        <span>{label}</span>
+        <span style={{ display: "inline-flex", alignItems: "center", flex: 1 }}>{label}</span>
       </button>
       {expanded && (
         <div style={{ padding: "6px 8px 8px", background: "#1e1e1e" }}>

@@ -339,15 +339,24 @@ export function PreviewPanel() {
     r.setHtmlPlayer(_htmlPlayer);
     r.setFontCache(fontCacheRef.current);
     r.setImageCache(imageCacheRef.current);
-    r.setFrameRenderCache(previewCacheService.getFrameRenderCache());
+    r.setFrameRenderCache(
+      effectiveCacheEnabled ? previewCacheService.getFrameRenderCache() : null,
+    );
     r.setTextQuality(textQualityRef.current);
+    r.setPreviewRenderOptions({ fastDisplaceDirect: true });
     r.mount(el, comp);
     rendererRef.current = r;
     return () => {
       r.dispose();
       rendererRef.current = null;
     };
-  }, [comp?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [comp?.id, effectiveCacheEnabled]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    rendererRef.current?.setFrameRenderCache(
+      effectiveCacheEnabled ? previewCacheService.getFrameRenderCache() : null,
+    );
+  }, [effectiveCacheEnabled]);
 
   useEffect(() => {
     if (!comp) return;
@@ -405,10 +414,10 @@ export function PreviewPanel() {
     const renderer = rendererRef.current;
     if (!renderer) return;
     renderer.setPreviewRenderOptions({
-      mode: draftPlaybackActive ? "draftPlayback" : "default",
       holdLastRaster: isPlaying && !editingLive,
+      fastDisplaceDirect: true,
     });
-  }, [draftPlaybackActive, isPlaying, editingLive]);
+  }, [isPlaying, editingLive]);
 
   // render on frame / project / draft transform (§28: scrub=live 初回、表示後キャッシュ・再訪問は cache 可)
   useEffect(() => {

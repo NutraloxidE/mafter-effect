@@ -402,10 +402,10 @@ describe("§27.5 Fast distortion (approximate)", () => {
     expect(off).not.toContain("feGaussianBlur");
   });
 
-  it("fastWaveDisplace uses single octave turbulence without bias", () => {
+  it("fastWaveDisplace uses single octave turbulence with G bias", () => {
     const s = fastWaveDisplace({ amplitude: 20, wavelength: 50, direction: "horizontal", phaseDeg: 0, w: 320, h: 240, antiAlias: false });
     expect(s).toContain('numOctaves="1"');
-    expect(s).not.toContain("feComponentTransfer");
+    expect(s).toContain("feComponentTransfer");
     expect(s).not.toContain("feImage");
   });
 

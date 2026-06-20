@@ -5,6 +5,7 @@ import { globalPluginRegistry } from "./pluginRegistry";
 const TEXT_COMPONENT_DEF: ComponentDef = {
   type: "text",
   label: "Text",
+  previewBakeRequired: false,
   params: [
     { key: "text", label: "Source Text", kind: "string", default: "Text", animatable: true },
     { key: "font", label: "Font", kind: "string", default: "sans-serif", animatable: false },
@@ -25,6 +26,7 @@ const TEXT_COMPONENT_DEF: ComponentDef = {
 const IMAGE_COMPONENT_DEF: ComponentDef = {
   type: "image",
   label: "Image",
+  previewBakeRequired: false,
   params: [
     { key: "asset", label: "Source", kind: "asset", default: "", animatable: false },
     { key: "fit", label: "Fit", kind: "enum", default: "contain", animatable: false, options: ["contain", "cover", "fill"] },

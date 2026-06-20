@@ -40,7 +40,7 @@ export class RealtimeDetector {
   }
 }
 
-/** @deprecated use compHasProcessPixelsEffect */
+/** @deprecated use compRequiresPreviewBake or compHasProcessPixelsEffect */
 export function compHasRasterEffect(comp: TimelineComposition): boolean {
   return compHasProcessPixelsEffect(comp);
 }

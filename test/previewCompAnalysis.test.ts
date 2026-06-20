@@ -55,8 +55,8 @@ describe("previewCompAnalysis", () => {
     expect(compRequiresPreviewBake(makeComp([waveObj]))).toBe(false);
   });
 
-  it("compNeedsAutoPreviewCache includes displacement", () => {
-    const waveObj: SceneObject = {
+  it("compNeedsAutoPreviewCache excludes fast-only displacement", () => {
+    const fastObj: SceneObject = {
       id: "O1",
       name: "s",
       parent: null,
@@ -69,15 +69,29 @@ describe("previewCompAnalysis", () => {
       components: [],
       effects: [{ id: "FX1", type: "fastWave", enabled: true, props: { amplitude: 10 } }],
     };
-    expect(compHasDisplacementEffect(makeComp([waveObj]))).toBe(true);
+    const waveObj: SceneObject = {
+      ...fastObj,
+      effects: [{ id: "FX2", type: "wave", enabled: true, props: { amplitude: 10 } }],
+    };
+    expect(compHasDisplacementEffect(makeComp([fastObj]))).toBe(true);
+    expect(compNeedsAutoPreviewCache(makeComp([fastObj]))).toBe(false);
     expect(compNeedsAutoPreviewCache(makeComp([waveObj]))).toBe(true);
     expect(compNeedsAutoPreviewCache(makeComp())).toBe(false);
   });
 
-  it("effectsAreFastDisplacementOnly detects fast* only", () => {
+  it("effectsAreFastDisplacementOnly detects fast* displacement only", () => {
     expect(
       effectsAreFastDisplacementOnly(
         [{ type: "fastWave", enabled: true }],
+        false,
+      ),
+    ).toBe(true);
+    expect(
+      effectsAreFastDisplacementOnly(
+        [
+          { type: "fastWave", enabled: true },
+          { type: "blur", enabled: true, props: { radius: 2 } } as { type: string; enabled: boolean },
+        ],
         false,
       ),
     ).toBe(true);
@@ -93,13 +107,13 @@ describe("previewCompAnalysis", () => {
     expect(objectHasFastDisplacementOnly([{ type: "fastRipple", enabled: true }], true)).toBe(false);
   });
 
-  it("§27.12 draft fast path is gated to draftPlayback mode (Best keeps default raster)", () => {
+  it("§27.12 fast direct path uses fastDisplaceDirect flag not draftPlayback", () => {
     const effects = [{ type: "fastWave", enabled: true }];
     expect(effectsAreFastDisplacementOnly(effects, false)).toBe(true);
-    const draftFastPath = (mode: "default" | "draftPlayback") =>
-      mode === "draftPlayback" && effectsAreFastDisplacementOnly(effects, false);
-    expect(draftFastPath("draftPlayback")).toBe(true);
-    expect(draftFastPath("default")).toBe(false);
+    const usesDirectPath = (fastDisplaceDirect: boolean) =>
+      fastDisplaceDirect && effectsAreFastDisplacementOnly(effects, false);
+    expect(usesDirectPath(true)).toBe(true);
+    expect(usesDirectPath(false)).toBe(false);
   });
 });
 

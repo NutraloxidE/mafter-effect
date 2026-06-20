@@ -25,6 +25,20 @@ import { createProject } from "../src/core/createProject";
 
 const ctx = { width: 1920, height: 1080, frame: 0 };
 
+describe("EffectDef previewBakeRequired (§27.2)", () => {
+  it("all registered builtin effects declare previewBakeRequired", () => {
+    registerBuiltinEffects();
+    for (const def of globalPluginRegistry.listEffects()) {
+      expect(typeof def.previewBakeRequired).toBe("boolean");
+    }
+    expect(PIXEL_SORTER_EFFECT_DEF.previewBakeRequired).toBe(true);
+    expect(BLUR_EFFECT_DEF.previewBakeRequired).toBe(false);
+    expect(WAVE_EFFECT_DEF.previewBakeRequired).toBe(false);
+    expect(FAST_WAVE_EFFECT_DEF.previewBakeRequired).toBe(false);
+    expect(PIXEL_SORT_LITE_EFFECT_DEF.previewBakeRequired).toBe(false);
+  });
+});
+
 describe("builtinEffects apply (§27.3)", () => {
   it("re-registers after pluginRegistry.clear() (loadPlugins 経路)", () => {
     registerBuiltinEffects();
@@ -160,7 +174,7 @@ describe("builtinEffects apply (§27.3)", () => {
     if (r?.kind === "svg") {
       expect(r.primitives).toContain("feTurbulence");
       expect(r.primitives).not.toContain("feImage");
-      expect(r.primitives).not.toContain("feComponentTransfer");
+      expect(r.primitives).toContain("feComponentTransfer");
     }
   });
 
@@ -194,7 +208,7 @@ describe("builtinEffects apply (§27.3)", () => {
     }
   });
 
-  it("fastTurbulentDisplace caps octaves at 2 and skips bias", () => {
+  it("fastTurbulentDisplace caps octaves at 2 and applies G bias", () => {
     const r = FAST_TURBULENT_DISPLACE_EFFECT_DEF.apply(
       { amount: 50, size: 100, complexity: 6, evolution: 0, offsetX: 0, offsetY: 0, randomSeed: 0, antiAlias: false },
       ctx,
@@ -202,7 +216,7 @@ describe("builtinEffects apply (§27.3)", () => {
     expect(r?.kind).toBe("svg");
     if (r?.kind === "svg") {
       expect(r.primitives).toContain('numOctaves="2"');
-      expect(r.primitives).not.toContain("feComponentTransfer");
+      expect(r.primitives).toContain("feComponentTransfer");
     }
   });
 

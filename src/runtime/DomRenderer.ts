@@ -75,16 +75,16 @@ export class DomRenderer implements Renderer {
   private frameRenderCache: FrameRenderCache | null = null;
   /** 現フレームに adjustment + displacement がある（下位 overflow 方針用） */
   private compHasAdjustmentDisplace = false;
-  /** §27.12 Draft Preview Fast Path / hold-last raster。 */
-  private previewMode: "default" | "draftPlayback" = "default";
+  /** §27.12 hold-last raster（full displacement 用）。 */
   private holdLastRaster = false;
+  private fastDisplaceDirect = false;
 
   setPreviewRenderOptions(opts: {
-    mode?: "default" | "draftPlayback";
     holdLastRaster?: boolean;
+    fastDisplaceDirect?: boolean;
   }): void {
-    if (opts.mode !== undefined) this.previewMode = opts.mode;
     if (opts.holdLastRaster !== undefined) this.holdLastRaster = opts.holdLastRaster;
+    if (opts.fastDisplaceDirect !== undefined) this.fastDisplaceDirect = opts.fastDisplaceDirect;
   }
 
   setTextQuality(mode: "draft" | "precise"): void {
@@ -413,7 +413,7 @@ export class DomRenderer implements Renderer {
       const allSvgFilters = [...preSvgFilters, ...postSvgFilters];
       if (hasDisplacementFx) {
         if (
-          this.previewMode === "draftPlayback"
+          this.fastDisplaceDirect
           && effectsAreFastDisplacementOnly(obj.effects, obj.isAdjustment)
         ) {
           this.clearRasterOverlay(entry);

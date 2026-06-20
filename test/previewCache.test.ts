@@ -9,7 +9,8 @@ import {
   loadPreviewCacheSettings,
   DEFAULT_PREVIEW_CACHE_SETTINGS,
 } from "../src/editor/previewCacheSettings";
-import { RealtimeDetector, shouldForceNonRealtime, compHasRasterEffect } from "../src/editor/realtimeDetector";
+import { RealtimeDetector, shouldForceNonRealtime } from "../src/editor/realtimeDetector";
+import { compRequiresPreviewBake } from "../src/editor/previewCompAnalysis";
 import { registerBuiltinEffects } from "../src/runtime/builtinEffects";
 import { defaultTransform, staticProp } from "../src/core/props";
 import type { Project, SceneObject, TimelineComposition } from "../src/core/schema";
@@ -152,11 +153,11 @@ describe("previewCacheSettings", () => {
   });
 });
 
-describe("comp raster hint", () => {
-  it("detects raster effects on objects", () => {
+describe("comp preview bake", () => {
+  it("compRequiresPreviewBake is true for pixelSorter only among builtins", () => {
     registerBuiltinEffects();
 
-    const obj: SceneObject = {
+    const bakeObj: SceneObject = {
       id: "O1",
       name: "solid",
       parent: null,
@@ -167,16 +168,17 @@ describe("comp raster hint", () => {
       transform: defaultTransform(),
       opacity: staticProp(1),
       components: [],
-      effects: [
-        {
-          id: "FX1",
-          type: "pixelSorter",
-          enabled: true,
-          props: {},
-        },
-      ],
+      effects: [{ id: "FX1", type: "pixelSorter", enabled: true, props: {} }],
     };
-    expect(compHasRasterEffect(makeComp([obj]))).toBe(true);
+    const blurObj: SceneObject = {
+      ...bakeObj,
+      id: "O2",
+      effects: [{ id: "FX2", type: "blur", enabled: true, props: { blurriness: 4 } }],
+    };
+    expect(compRequiresPreviewBake(makeComp([bakeObj]))).toBe(true);
+    expect(compRequiresPreviewBake(makeComp([blurObj]))).toBe(false);
+    expect(shouldForceNonRealtime("draft", "full", makeComp([bakeObj]))).toBe(true);
+    expect(shouldForceNonRealtime("draft", "full", makeComp([blurObj]))).toBe(false);
   });
 });
 

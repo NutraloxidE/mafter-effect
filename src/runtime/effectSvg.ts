@@ -385,12 +385,12 @@ export function fastWaveDisplace(opts: {
     type: "fractalNoise",
     w,
     h,
-    skipBias: true,
+    skipBias: false,
     antiAlias,
   });
 }
 
-/** §27.5 Fast Turbulent Displace — 低 octave feTurbulence 直結（bias なし）。 */
+/** §27.5 Fast Turbulent Displace — 低 octave feTurbulence 直結（G bias のみ）。 */
 export function fastTurbulentDisplace(opts: {
   amount: number;
   size: number;
@@ -431,7 +431,7 @@ export function fastTurbulentDisplace(opts: {
     offsetY,
     evolutionOffsetX: evoDx,
     evolutionOffsetY: evoDy,
-    skipBias: true,
+    skipBias: false,
     antiAlias,
   });
 }

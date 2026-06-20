@@ -77,5 +77,6 @@ alwaysApply: true
 - `project.json` は正準シリアライズ（キー順固定・id 昇順・末尾改行）を通す
 - コメントは「なぜ」が非自明な場合のみ
 - Transform 合成順: `L = T(position)·R(rotation)·S(scale)·T(-anchor)` / Euler は Z·Y·X(deg) / 原点左上 +x右 +y下 +z手前
+- §27 effect / component 登録時は `previewBakeRequired: true | false` を必ず明示（spec §27.2 INVARIANT 参照）
 
 詳細（アーキテクチャ・マイルストーン M0–M4・設計決定）は `CLAUDE.md` と `doc/mafter-effect-spec.md` を参照。

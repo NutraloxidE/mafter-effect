@@ -112,6 +112,7 @@ describe("bundleCollect", () => {
     globalPluginRegistry.registerComponent({
       type: "test-plugin-layer",
       label: "Test",
+      previewBakeRequired: false,
       params: [],
       bundleExportDefault: "bake",
       render() { /* noop */ },
@@ -145,6 +146,7 @@ describe("bundleCollect", () => {
     globalPluginRegistry.registerComponent({
       type: "test-plugin-layer",
       label: "Test",
+      previewBakeRequired: false,
       params: [],
       bundleExportDefault: "bake",
       render() { /* noop */ },

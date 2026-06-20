@@ -1593,14 +1593,14 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 
 - **使い分け**: 編集中・Web 配布・プレビュー重視 → Fast。最終仕上げ・AE 近似 → フル版 + `quality`。
 - **`quality` param は持たない**（Fast 自体が常時低品質）。
-- **INV-2**: Fast も resolved props の通常 effect。preview / export / HTML player 全経路で同一（既存 displacement raster パイプライン維持）。
-- **非目標**: AE 100% 一致、ripple 真の同心円、wave 真の正弦、重心ドリフトゼロ保証（Fast は best-effort 近似）。
+- **INV-2**: Fast も resolved props の通常 effect。`resolve()` 解決値は preview / export / HTML player 全経路で同一。**描画経路**は §27.12 参照（editor preview / bundle player = CSS filter 直適用、raster export = raster パイプライン）。
+- **非目標**: AE 100% 一致、ripple 真の同心円、wave 真の正弦。preview/bundle 直適用経路では重心ドリフトを G チャンネル bias で best-effort 抑制（§27.12）。
 
 **共通 param `antiAlias`**（3 種）:
 
 | param key | label | kind | default | animatable |
 |---|---|---|---|---|
-| `antiAlias` | Anti Alias | bool | `true` | ❌ |
+| `antiAlias` | Anti Alias | bool | `false` | ❌ |
 
 - ON: displacement map / noise の直後に `feGaussianBlur stdDeviation=1`（map 座標系・固定 1px）→ `feDisplacementMap`。
 - OFF: 生のガビガビ（最大速度）。
@@ -1613,9 +1613,9 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 | `wavelength` | Wavelength | scalar | `50` | min 1, max 500, step 0.1 | ✅ |
 | `direction` | Direction | enum | `"horizontal"` | `horizontal` / `vertical` | ❌ |
 | `phase` | Phase | scalar | `0` | 0..360, step 1 | ✅ |
-| `antiAlias` | Anti Alias | bool | `true` | — | ❌ |
+| `antiAlias` | Anti Alias | bool | `false` | — | ❌ |
 
-- `apply` → `{ kind: "svg", primitives }`。**`feTurbulence` 直結**（`numOctaves=1`, `fractalNoise`, bias 補正なし）。`wavelength`→`baseFrequency`、`phase`→`seed`（`phaseToSeed`）、`direction`→X/Y `baseFrequency` 比で横波っぽく近似。**`feImage` / PNG 生成なし**。
+- `apply` → `{ kind: "svg", primitives }`。**`feTurbulence` 直結**（`numOctaves=1`, `fractalNoise`, G チャンネル bias のみ）。`wavelength`→`baseFrequency`、`phase`→`seed`（`phaseToSeed`）、`direction`→X/Y `baseFrequency` 比で横波っぽく近似。**`feImage` / PNG 生成なし**。
 - `amplitude === 0` は `null`。
 
 ##### `fastRipple` — Fast Ripple
@@ -1627,7 +1627,7 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 | `frequency` | Frequency | scalar | `5` | min 0.1, max 50, step 0.1 | ✅ |
 | `centerX` | Center X | scalar | `0.5` | 0..1, step 0.01 | ✅ |
 | `centerY` | Center Y | scalar | `0.5` | 0..1, step 0.01 | ✅ |
-| `antiAlias` | Anti Alias | bool | `true` | — | ❌ |
+| `antiAlias` | Anti Alias | bool | `false` | — | ❌ |
 
 - `apply` → `{ kind: "svg", primitives }`。**radialGradient SVG data URI** map + `feImage` → optional blur → `feDisplacementMap`（**PNG 生成なし**）。旧 WIP 中間版（§27.3 ripple 旧 radialGradient）と同系。渦寄り・完全な放射ベクトルではない近似。
 - `amplitude === 0` は `null`。`phase` param なし（内部 sin/cos 位相固定）。
@@ -1643,9 +1643,9 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 | `offsetX` | Offset X | scalar | `0` | 任意 px, step 1 | ✅ |
 | `offsetY` | Offset Y | scalar | `0` | 任意 px, step 1 | ✅ |
 | `randomSeed` | Random Seed | scalar | `0` | 0..9999, step 1 | ❌ |
-| `antiAlias` | Anti Alias | bool | `true` | — | ❌ |
+| `antiAlias` | Anti Alias | bool | `false` | — | ❌ |
 
-- `apply` → `{ kind: "svg", primitives }`。`feTurbulence` 直結、`numOctaves = max(1, min(2, complexity))`、bias 補正なし（速度優先）。Evolution/Offset はフル版同様 `feOffset`。
+- `apply` → `{ kind: "svg", primitives }`。`feTurbulence` 直結、`numOctaves = max(1, min(2, complexity))`、G チャンネル bias のみ（速度優先・重心ドリフト低減）。Evolution/Offset はフル版同様 `feOffset`。
 - `amount === 0` は `null`。
 
 #### `linearWipe` — Linear Wipe
@@ -1940,17 +1940,20 @@ interface PreviewCacheSettings {
 
 **`shouldPreferCacheDisplay` 拡張**: `autoCacheSession === true` かつ `compNeedsAutoPreviewCache` のとき、サンプル数不足でもキャッシュ優先（L2 + displacement/bake 即時）。
 
-### §27.12 Draft Preview Fast Path（確定・2026-06）
+### §27.12 Fast Displacement Direct Path（確定・2026-06 改定）
 
-**preview 専用**の displacement 高速経路。INV-2（export 出力の正）の対象外。
+**editor preview / HTML bundle player 専用**の displacement 高速経路。raster export（§11/M3）の INV-2 正は raster パイプライン維持。
+
+**`effectsAreFastDisplacementOnly` 判定**: enabled **displacement** effect がすべて `fastWave` / `fastRipple` / `fastTurbulentDisplace` であること。`blur` / ワイプ等の非 displacement effect の併用は許可（fast path を無効化しない）。調整レイヤーは対象外。
 
 | 条件 | 経路 |
 |---|---|
-| `textQuality === "draft"` かつ `isPlaying === true` かつ enabled displacement が **`fastWave` / `fastRipple` / `fastTurbulentDisplace` のみ**（調整レイヤー除く） | raster キャプチャ省略 → `applyFilterTokens` 直適用 |
-| Best（`precise`）/ スクラブ / export / bundle player / full displacement / 調整レイヤー | 従来 raster パイプライン（§27.1） |
+| `fastDisplaceDirect === true`（PreviewPanel / BundlePlayer）かつ `effectsAreFastDisplacementOnly`（調整レイヤー除く） | raster キャプチャ省略 → `applyFilterTokens` 直適用（scrub / Best / 停止 / 再生すべて） |
+| raster export（`compFrameCapture` / exporter）/ full displacement / 調整レイヤー + displacement | 従来 raster パイプライン（§27.1） |
 
-- **許容差**: ドリフト・見た目近似（§27.5 Fast の非目標と整合）。Best で最終確認。
-- **再生 UX 補助**: `holdLastRaster` — raster 完了まで前フレームの filter/canvas を保持（エフェクトなしフラッシュ抑制）。Draft/Best 再生中に有効。
+- **許容差**: preview/bundle 直適用は見た目近似・preview↔export ピクセル差ありうる（§27.5 Fast の非目標と整合）。最終確認は raster export。
+- **`compNeedsAutoPreviewCache`**: enabled displacement が fast* のみの comp では Auto Cache を起動しない。
+- **再生 UX 補助**: `holdLastRaster` — full displacement の raster 完了まで前フレームの filter/canvas を保持。`draftPlayback` モード（RAF バイパス等）は §28.9 と独立。
 
 ---
 

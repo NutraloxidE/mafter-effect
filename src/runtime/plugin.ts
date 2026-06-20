@@ -25,6 +25,8 @@ export interface ComponentRenderContext {
 export interface ComponentDef {
   type: string;
   label: string;
+  /** §28 RAM Preview L2 — comp 内 baker 判定用。registry メタのみ。必須明示。 */
+  previewBakeRequired: boolean;
   params: ParamDescriptor[];
   render(ctx: ComponentRenderContext): void;
   /** §11.7 web bundle export での既定。未指定なら "bake"。 */
