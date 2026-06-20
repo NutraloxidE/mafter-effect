@@ -1650,8 +1650,10 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 
 - **使い分け**: 編集中・Web 配布・プレビュー重視 → Fast。最終仕上げ・AE 近似 → フル版 + `quality`。
 - **`quality` param は持たない**（Fast 自体が常時低品質）。
-- **INV-2**: Fast も resolved props の通常 effect。`resolve()` 解決値は preview / export / HTML player 全経路で同一。**描画経路**は §27.12 参照（**全経路 self-capture raster 統一**・CSS filter 直適用は廃止）。
-- **非目標**: AE 100% 一致、ripple 真の同心円、wave 真の正弦。**実体（host rect）の amplitude/amount 比例スライドを禁止**（Draft/Best/export 共通）。ink centroid: map 系（fastWave/fastRipple）は amount スイープで **≤ 2px**（comp 座標）。fastTurbulent は強い amount でエッジクリップにより centroid がわずかに動くことがある（host 安定が正準）。map 系は 0.5 中心 map + userSpace filter region。turbulent は **G bias 必須**（`skipBias: false`, `type="fractalNoise"`）。
+- **INV-2**: Fast も resolved props の通常 effect。`resolve()` 解決値は preview / export / HTML player 全経路で同一。**描画経路**は §27.12 参照（**raster 無し・live CSS filter 直適用**、filter region = layer bounds (0,0,w,h) クランプ。フル版 displacement のみ raster）。
+- **改定4（2026-06-21）— Fast 3 種すべて `feImage` 廃止 / `feTurbulence` 直結に統一**: `fastWave` / `fastRipple` はかつて linearGradient / radialGradient の `feImage`（data URI）displacement map を**毎フレーム文字列生成→ブラウザで再デコード**していた（`fastTurbulentDisplace` だけが GPU ネイティブな `feTurbulence` 直結で軽かった）。ユーザー要請（2026-06-21・「Fast Turbulent と同等の軽さ」「Fast 系は Web で動く前提」）により、`fastWave` / `fastRipple` も **`feTurbulence`（`type="fractalNoise"`・`numOctaves=1`）直結の純 SVG filter primitive へ置換**。`feImage` も PNG も生成しない。3 種すべて per-frame コストが同等（小さな primitive 文字列 + GPU ノイズ）になり、Web bundle / HTML player でも `feImage` data URI のデコードを伴わず軽量に動く。
+- **非目標（改定4）**: AE 100% 一致、ripple 真の同心円、wave 真の正弦。**`fastWave` の正弦 / `fastRipple` の同心円という見た目は意図的に放棄**し、`feTurbulence` ベースの方向性 / 等方ノイズ歪み近似とする（ユーザー承認済みトレードオフ）。`wavelength` / `frequency`・`radius` は noise の特徴サイズ（`baseFrequency`）へ、`direction` は周波数の異方軸へ、`phase` / `center` は noise 場のパン（`feOffset`）へマップ。**実体（host rect）の amplitude/amount 比例スライドを禁止**（Draft/Best/export 共通）。ink centroid は 3 種とも `feTurbulence` + bias（`skipBias: false`）で host 安定が正準（強い amount でエッジクリップにより centroid がわずかに動くことはある）。真の正弦 / 同心円が要るときは**フル版 `wave` / `ripple`**（§27.3・`feImage` / PNG map・raster）を使う。
+- **filter region は (0,0,w,h) クランプが正準（§27.12 改定3）**: live CSS filter で displacement を適用する際、filter region を pad せず layer 実寸に固定する。`feTurbulence` は全域定義（`stitchTiles="stitch"`）なので改定3 の pad 帯ドリフト（`feImage` 未定義域の定数変位）は構造的に発生しないが、クランプは raster（出力を W×H へクリップ）との pixel parity・フル版 displacement との一貫性のため維持する。
 
 **共通 param `antiAlias`**（3 種）:
 
@@ -1672,7 +1674,7 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 | `phase` | Phase | scalar | `0` | 0..360, step 1 | ✅ |
 | `antiAlias` | Anti Alias | bool | `false` | — | ❌ |
 
-- `apply` → `{ kind: "svg", primitives }`。WIP `wave` と**同一アルゴ** — `waveDisplaceMapSvg`（linearGradient 正弦 map）+ `feImage` → optional blur → `feDisplacementMap`。**固定 quality** `WAVE_FAST_QUALITY = 0.5`（param なし・full `wave` の `quality` とは独立）。PNG 生成なし。
+- `apply` → `{ kind: "svg", primitives }`。**改定4: `feTurbulence` 近似（`feImage` なし・`fastWaveDisplace`）**。`type="fractalNoise"`・`numOctaves=1`。`wavelength` → 進行方向軸の `baseFrequency = 1/λ`、直交軸は `1/(4λ)`（低周波で稜線を伸ばし波 train 風に）。`direction` でどちらの軸を進行方向にするか切替。`phase` → 進行方向の `feOffset` パン（`(phase/360)·λ` px）でスクロール再現。`scale = 2·amplitude`。正弦 map（`waveDisplaceMapSvg`）は**フル `wave` 専用**となり Fast からは不参照。
 - `amplitude === 0` は `null`。
 
 ##### `fastRipple` — Fast Ripple
@@ -1686,8 +1688,8 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 | `centerY` | Center Y | scalar | `0.5` | 0..1, step 0.01 | ✅ |
 | `antiAlias` | Anti Alias | bool | `false` | — | ❌ |
 
-- `apply` → `{ kind: "svg", primitives }`。**`rippleDisplaceMapSvg`**（WIP 中間版 radialGradient・sample 式 `min(512, max(16, round(cycles*16)))`）+ `feImage` → optional blur → `feDisplacementMap`（**PNG 生成なし**）。渦寄り・完全な放射ベクトルではない近似。
-- `amplitude === 0` は `null`。`phase` param なし（内部 sin/cos 位相固定）。
+- `apply` → `{ kind: "svg", primitives }`。**改定4: `feTurbulence` 近似（`feImage`/PNG なし・`fastRippleDisplace`）**。`type="fractalNoise"`・`numOctaves=1`・等方 `baseFrequency = frequency/radius`（リング間隔 `≈ radius/frequency` px を特徴サイズとみなす）。`centerX`/`centerY` → noise 場の `feOffset` パン（`(center−0.5)·{w,h}` px）で中心位置を近似。`scale = 2·amplitude`。`radialGradient` map（`rippleDisplaceMapSvg`）は**削除**（フル `ripple` は per-pixel PNG `rippleDisplaceMap` を継続使用）。同心円ではなく等方ノイズ歪み近似。
+- `amplitude === 0` は `null`。`phase` param なし。
 
 ##### `fastTurbulentDisplace` — Fast Turbulent Displace
 
@@ -2049,7 +2051,7 @@ interface PreviewCacheSettings {
 **`compNeedsAutoPreviewCache(comp)`** — enabled effect/component を走査し、次のいずれかが真なら `true`:
 
 1. `previewBakeRequired === true`（`compRequiresPreviewBake` と同型）
-2. displacement 系（`DISPLACEMENT_EFFECT_TYPES` に含まれる type）
+2. **full** displacement 系（`DISPLACEMENT_EFFECT_TYPES` − `FAST_DISPLACEMENT_EFFECT_TYPES`）。Fast* は live のため対象外（§27.12 改定3）
 3. `processPixels` を持つ effect（raster チェーン）
 
 **挙動**:
@@ -2061,23 +2063,32 @@ interface PreviewCacheSettings {
 
 **`shouldPreferCacheDisplay` 拡張**: `autoCacheSession === true` かつ `compNeedsAutoPreviewCache` のとき、サンプル数不足でもキャッシュ優先（L2 + displacement/bake 即時）。
 
-### §27.12 Fast* Displacement 描画経路（確定・2026-06-20 改定2）
+### §27.12 Fast* Displacement 描画経路（確定・2026-06-21 改定3）
 
-**preview / export / HTML bundle 共通** — Fast* distortion（`fastWave` / `fastRipple` / `fastTurbulentDisplace`）は **CSS `filter` 直適用を廃止**（2026-06 実体ドリフト修正）。通常レイヤーも full 版と同型の **self-capture raster**（`runDirectSvgDisplacePipeline`）へ統一し、INV-2（全経路同一 scene 解決値・同一描画パイプライン）を満たす。
+**preview / export / HTML bundle 共通** — Fast* distortion（`fastWave` / `fastRipple` / `fastTurbulentDisplace`）は **raster 無し・フォールバック無しの live CSS filter 直適用**で描く。通常レイヤーは `filter: url(#fx)`、Live 調整レイヤーは `backdrop-filter: url(#fx)`。いずれも **filter region を layer bounds (0,0,w,h) にクランプ**する（§27.5 改定3）。
 
-**経路判定 SSOT**: [src/runtime/effectRouting.ts](../src/runtime/effectRouting.ts) の `needsSvgDisplaceCapture()` / `hasEnabledDisplacement()`。DomRenderer・Pipeline 分析の双方がこれを参照する。
+> **改定理由（旧 改定2 = 全経路 raster を覆す）**: 旧版はかつての「未エフェクトの素矩形が右下に露出する」ドリフトを raster で隠していた。実機計測スパイク（`verify-fast-drift-spike.mjs`）で**真因は raster の有無ではなく filter region の pad 帯**と判明。`feImage` map は (0,0,w,h) 外で未定義 → pad 帯で channel≈0 → 定数 `−scale/2` 変位が内容を引きずる。raster は出力を W×H にクリップするので隠れていただけ。**region を (0,0,w,h) にクランプすると live CSS filter の centroid drift は raster と小数2桁まで一致**（3 effect × amount 0/50/100/155・turbulent 含む）。よって Fast* は raster コスト（per-frame capture + readback）無しで同等のドリフト無しを達成できる。フル版 displacement（`wave`/`ripple`/`turbulentDisplace`）は raster 維持。
+
+**経路判定 SSOT**: [src/runtime/effectRouting.ts](../src/runtime/effectRouting.ts) の `needsSvgDisplaceCapture()` / `hasEnabledFullDisplacement()`。capture 対象は **full displacement のみ**（Fast* は除外）。DomRenderer・Pipeline 分析の双方がこれを参照する。
 
 | 条件 | 経路 |
 |---|---|
-| enabled displacement（full + Fast*）| 通常レイヤー → `runDirectSvgDisplacePipeline` / 調整レイヤー → `runAdjustmentSvgDisplacePipeline` |
-| Raster調整 + live effect tokens（blur/tint/wipe）| comp 背面 capture（§27.4） |
-| export `auto_raster_mp4`（Live調整）| comp 背面 capture（§27.4） |
-| displacement なし・Live調整 + blur のみ | `backdrop-filter` 直適用（従来） |
+| 通常レイヤー・**Fast* のみ** | **live** `filter: url(#fx)`（region = (0,0,w,h)・raster 無し） |
+| 通常レイヤー・**full displacement 含む** | `runDirectSvgDisplacePipeline`（self-capture raster） |
+| Live 調整・**Fast* のみ** | **live** `backdrop-filter: url(#fx)`（region = (0,0,w,h)・raster 無し） |
+| Live 調整・**full displacement 含む** | `runAdjustmentSvgDisplacePipeline`（comp 背面 capture raster） |
+| Raster 調整（`adjustmentMode="raster"`）| comp 背面 capture（§27.4・明示モード。Fast* も焼く） |
+| Raster 調整 + live effect tokens（blur/tint/wipe）| comp 背面 capture（§27.4） |
+| export `auto_raster_mp4`（Live 調整 + blur 等）| comp 背面 capture（§27.4） |
+| displacement なし・Live 調整 + blur のみ | `backdrop-filter` 直適用（従来） |
 
-- **`fastDisplaceDirect`**: **廃止**（`setPreviewRenderOptions` は受け取るが無視）。PreviewPanel / BundlePlayer からの設定は不要。
-- **Pipeline UI**: 通常レイヤー + Fast* → `raster`（reason: 自己 capture・ドリフト回避）。
-- **`compNeedsAutoPreviewCache`**: fast-only comp も Auto Cache 対象（per-layer raster のため）。
-- **再生 UX 補助**: `holdLastRaster` — raster 完了まで前フレームの canvas を保持。`draftPlayback` モード（RAF バイパス等）は §28.9 と独立。
+> Fast* は raster を**強制しない**（live 完結）。Raster 調整は明示的ユーザーモードであり Fast の「フォールバック」ではない（焼く挙動を維持）。
+
+- **export/bundle 妥当性**: export は foreignObject `captureElementToCanvas` 経由だが、既存の live SVG filter 効果 `linearWipe`/`angularWipe`/`pixelSortLite`（`feImage`/`feDisplacementMap` 使用）が**同じ経路で raster 化せず export 済み**。Fast* も同じ primitives なので live のまま export に通る。bundle player は実ブラウザ compositor（preview と同条件）。export-parity は実機検証で固定（`verify-fast-export-parity.mjs`）。
+- **`fastDisplaceDirect`**: **撤去**（live が無条件・opt-in 不要。`setPreviewRenderOptions` から削除）。
+- **Pipeline UI**: 通常レイヤー + Fast* のみ → `live`。full displacement → `raster`（reason: 自己 capture・ドリフト回避）。
+- **`compNeedsAutoPreviewCache`**: fast-only comp は **Auto Cache 対象外**（live・per-frame raster ではない）。full displacement comp のみ対象。
+- **再生 UX 補助**: `holdLastRaster` — raster 完了まで前フレームの canvas を保持（full displacement / raster 調整向け）。`draftPlayback` モード（RAF バイパス等）は §28.9 と独立。
 
 ### §27.13 Live / Raster 調整レイヤー — 実装作業分解（確定 2026-06-20）
 

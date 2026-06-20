@@ -93,6 +93,39 @@
 
 ---
 
+## Issue C-3 — fastWave/fastRipple を `feImage` → `feTurbulence` 直結で軽量化（**2026-06-21・§27.5 改定4**）
+
+> 軽量化要請（「fastTurbulent と同等の軽さ」「Fast 系は Web で動く前提」）への対応。Issue C-2 で live 化した fastWave/fastRipple はまだ `feImage`（linearGradient/radialGradient の data URI）map を**毎フレーム文字列生成→ブラウザ再デコード**していて fastTurbulent（`feTurbulence` 直結）より重かった。
+
+- **置換**: `fastWaveDisplace` / `fastRippleDisplace`（`effectSvg.ts`）を新設し `feTurbulence`（`type="fractalNoise"`・`numOctaves=1`）純 SVG primitive 直結に。`feImage`/PNG/data URI を一切生成しない＝ GPU ネイティブ・fastTurbulent と同コスト・Web bundle でも軽量。
+- **トレードオフ（承認済み）**: 正弦/同心円の見た目は放棄しノイズ歪み近似。`wavelength`/`frequency`/`radius`→`baseFrequency`、`direction`→異方軸、`phase`/`center`→`feOffset` パンへマップ。真の正弦/同心円はフル `wave`/`ripple`（raster）。
+- **撤去**: 死んだ `rippleDisplaceMapSvg`/`fastRippleDisplaceMapSvg`/`WAVE_FAST_QUALITY`。
+- **検証**: `verify-fast-turbulence-web.mjs`（store 非依存・実ブラウザ filter render）で 3 種すべて変位再現・edgeStd 3.1/4.5/10.6 vs baseline 0・露出なし・errors none。`pad 帯`問題は `feTurbulence` 全域定義（`stitchTiles="stitch"`）なので構造的に無関係。
+
+---
+
+## Issue C-2 — Fast* を raster 無し live へ復帰（**真因特定・2026-06-21**）
+
+> Issue C は raster で「実体スライド」を**隠して**いた。計測スパイク（`verify-fast-drift-spike.mjs`）で真因を特定し、raster 無しの live 経路へ復帰させた（§27.12 改定3）。
+
+### 真因（Issue C の「座標系ずれ」を具体化）
+
+- `createSvgFilterElement` の非 backdrop displacement 経路が filter region を `displacementPadFromScale(scale)` で **pad** していた。
+- `feImage` map は (0,0,w,h) 外で未定義 → pad 帯で channel≈0 → 定数 `−scale/2` 変位が内容を引きずる（= 露出ドリフト）。
+- raster は出力を W×H にクリップするので pad 帯が隠れていただけ。**raster は対症療法**だった。
+
+### 修正（2026-06-21）
+
+| 項目 | 内容 |
+|------|------|
+| **方針** | filter region を **(0,0,w,h) にクランプ** → live CSS filter のドリフトが raster と pixel parity（centroid 小数2桁一致）。Fast* は **raster 無し・フォールバック無し**で live 完結 |
+| **routing** | `needsSvgDisplaceCapture()` は **full displacement のみ** capture（`hasEnabledFullDisplacement`）。Fast* は `filter` / `backdrop-filter` 直適用 |
+| **`fastDisplaceDirect`** | **撤去**（live 無条件） |
+| **Pipeline UI** | 通常レイヤー + Fast* のみ → `live` 表示 |
+| **export/bundle** | 既存 live SVG 効果（linearWipe 等）と同じ foreignObject 経路で通る。`verify-fast-export-parity.mjs` で固定 |
+
+---
+
 ## 再現手順（共通・参考）
 
 1. Solid レイヤーを追加
