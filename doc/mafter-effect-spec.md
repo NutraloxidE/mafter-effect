@@ -1048,6 +1048,7 @@ childFrame = clamp(parentFrame - layer.inPoint + trimStart, 0, childComp.duratio
 - depth ≤ 4 の再帰ネストを許可（循環参照が追加時に排除されるが念のためガード）。
 - Phase 1 制限: コンテナ内での html/plugin component は描画されない（Phase 3 で対応）。
 - 親レイヤーの `opacity`（`entry.div.opacity`）は CSS opacity の継承で自動的に子全体に乗算される。
+- **ラスター化対象 comp の例外（§28.11）**: 子コンプが `compNeedsAutoPreviewCache` を満たす（displacement/raster を含む）場合、Phase 1 のライブ再解決ではなく comp 単位ラスタ（オフスクリーンで画像化）を `<img>` として描く。これにより precomp 内の effect/raster がプレビューに反映され、かつ comp 単位でキャッシュ可能になる。
 
 ### §23.4 循環参照制御
 
@@ -1994,7 +1995,8 @@ interface PreviewCacheSettings {
 | 項目 | 内容 |
 |---|---|
 | タイムライン緑バー（ルーラー） | comp 全体キャッシュ済みフレームをルーラー上に緑表示（AE RAM Preview 相当） |
-| タイムライン緑線（レイヤーバー直上） | per-layer raster キャッシュ済み区間を**各レイヤー行のバーのすぐ上**に緑線表示（§28.10） |
+| タイムライン緑線（レイヤーバー直上） | per-layer raster キャッシュ済み区間を**各レイヤー行のバーのすぐ上**に緑線表示（§28.10）。precomp レイヤーは comp 単位キャッシュ済み区間を同様表示（§28.11） |
+| precomp comp 単位ラスターキャッシュ | comp(A) がラスター化を含むとき、comp(A) を comp 単位でラスタ化しキー `precomp:{compId}:f{childFrame}:hash{contentHash}` でキャッシュ（**content hash 基準**・§28.11）。comp(B) 編集で無効化されない |
 | ワークエリア | comp ごと localStorage（§19.3 非汚染）。`B`/`N` で in/out 設定、`[`/`]` でジャンプ。RAM build はワークエリア内のみ |
 | `FrameRenderCache` | `TieredCacheStore` 共有・レイヤー raster キー `layer:{objectId}:f{localFrame}:hash{propsHash}`（**local frame 基準**・§28.10）。DomRenderer raster パイプラインに配線 |
 | `NodeCacheFs` | 将来デスクトップ用 L2。Web では `cacheRootPath` 入力は無効（表示のみ） |
@@ -2018,6 +2020,27 @@ interface PreviewCacheSettings {
 **正準性 / INV**: INV-1/2/3/5 保持（キャッシュは描画高速化のみ、scene 解決値・export 出力に不影響）。HIT 条件が一致したときの buffer は常に正しく、最悪ケースは「ミス＝再レンダ」で誤ピクセルは生じない。
 
 **緑線 UI**: per-layer キーを prefix `layer:{objectId}:` で列挙し `localFrame` を抽出、`compFrame = localFrame + obj.inPoint` で comp 位置へ写像して `[inPoint, outPoint)` 内をレイヤーバー直上に緑表示。`fxSig` ハッシュは照合しないため内容編集直後に旧ハッシュ entry が LRU 退避されるまで僅かに over-report しうる（indicator として best-effort）。
+
+### §28.11 precomp comp 単位ラスターキャッシュ（content hash 基準・確定 2026-06-20）
+
+§28.10（per-layer）の概念を **precomp（comp(A) を comp(B) にネスト）** へ拡張する。**comp(A) がラスター化を含む**とき、comp(A) を **comp 単位**でラスタ化（オフスクリーンで画像化）してキャッシュし、**comp(B) を編集しても comp(A) の内容が変わらなければ再ラスタしない**。
+
+**前提（現状の制約）**: ネスト comp のプレビュー描画（`DomRenderer.renderNestedComp`）は §23 Phase 1 で、毎フレーム再解決し effect/raster を焼いていない。本節は対象 comp(A) を `compFrameCapture`（オフスクリーン `DomRenderer` + `captureElementToCanvas`）でラスタ化し、ネストコンテナへ `<img>` として描く経路を追加することで成立する。
+
+**対象**: comp(A) が `compNeedsAutoPreviewCache(compA)`（§28.9: `previewBakeRequired` / displacement / `processPixels` のいずれか）を満たすときのみ comp 単位ラスタ化＆キャッシュする。非該当のネスト comp は従来の Phase 1 ライブ再解決経路を維持。
+
+**キー**: `precomp:{compId}:f{childFrame}:hash{contentHash}`
+- `childFrame = compChildFrame(parentFrame, inPoint, trimStart, duration)`（§23.2）。INV-5: 整数 Frame。
+- `contentHash` = comp(A) の **正準内容ハッシュ**（`canonicalStringify` した comp(A) の objects/effects/参照アセット ID から導出。ネスト comp を含む場合は被参照 comp のハッシュも depth≤4 で畳み込む）。**`projectRevision` を含まない** → comp(B) の編集では無効化されない。
+- comp 全体 RAM Preview キャッシュ（§28.3 `comp:…:rev{projectRevision}…`）とは**別キー空間・別同一性モデル**（共存）。
+
+**comp(B) 編集での不変性**: comp(B) のみを編集しても comp(A) の objects/effects/参照アセットは不変 → `contentHash` 不変 → 同 `childFrame` で正しく HIT。comp(A) を編集すると `contentHash` が変わり該当フレームは再ラスタ。
+
+**正準性 / INV**: INV-1/2/3/5 保持。`resolve()` は不変（INV-1/2 の対象である scene 解決値に不影響）。`precompRasterService` の rasterizer は **ライブプレビュー（PreviewPanel）と RAM Preview（comp 全体キャッシュ / `ramPreview`）の両キャプチャ経路に注入**され、同一 `compFrameCapture` パイプラインで comp(A) をラスタ化するため両者は一致する。最悪ケースは「ミス＝再ラスタ」で誤ピクセルは生じない。precomp を `<img>` 化することで内部の 3D 透視/ブレンドは raster 境界で確定する（§27.4.1「precomp は確定ラスター境界」と整合）。
+
+> **follow-up（export/bundle 経路）**: ファイル export（`exporter.ts`）・bundle bake（`bundleBake.ts`）への rasterizer 注入は未配線（runtime→editor 依存を避けるため optional param で後日配線）。現状これらのネスト comp は §23 Phase-1（effect 非焼き込み）のままで、`resolve()` 出力は一致するがネスト comp 内 effect のピクセル一致は §27.3 export parity と同じく tracked follow-up。
+
+**緑線 UI**: precomp キーを prefix `precomp:{compId}:` で列挙し `childFrame` を抽出、`parentFrame = childFrame − trimStart + inPoint` で comp(B) 位置へ写像し `[inPoint, outPoint)` 内を precomp レイヤーバー直上に緑表示（§28.10 の `LayerCacheLine` を共有）。`contentHash` は照合しないため §28.10 同様わずかに over-report しうる（best-effort）。
 
 ### §28.9 Auto Preview Cache（確定・2026-06）
 
