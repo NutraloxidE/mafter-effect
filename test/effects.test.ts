@@ -165,16 +165,16 @@ describe("builtinEffects apply (§27.3)", () => {
     expect(a?.kind === "svg" && b?.kind === "svg" && a.primitives !== b.primitives).toBe(true);
   });
 
-  it("fastWave returns feTurbulence without feImage", () => {
+  it("fastWave returns linearGradient map with feImage", () => {
     const r = FAST_WAVE_EFFECT_DEF.apply(
       { amplitude: 20, wavelength: 50, direction: "horizontal", phase: 0, antiAlias: false },
       ctx,
     );
     expect(r?.kind).toBe("svg");
     if (r?.kind === "svg") {
-      expect(r.primitives).toContain("feTurbulence");
-      expect(r.primitives).not.toContain("feImage");
-      expect(r.primitives).toContain("feComponentTransfer");
+      expect(r.primitives).toContain("feImage");
+      expect(r.primitives).toContain("linearGradient");
+      expect(r.primitives).not.toContain("feTurbulence");
     }
   });
 
@@ -215,6 +215,7 @@ describe("builtinEffects apply (§27.3)", () => {
     );
     expect(r?.kind).toBe("svg");
     if (r?.kind === "svg") {
+      expect(r.primitives).toContain('type="fractalNoise"');
       expect(r.primitives).toContain('numOctaves="2"');
       expect(r.primitives).toContain("feComponentTransfer");
     }
@@ -461,6 +462,19 @@ describe("resolve effects (§27.5)", () => {
     ]), 0);
     const obj = scene.objects[0]!;
     expect(obj.isAdjustment).toBe(true);
+    expect(obj.components).toEqual([]);
+  });
+
+  it("passes isNull and skips content components", () => {
+    const scene = resolve(comp([
+      makeObject({
+        id: "null",
+        isNull: true,
+        components: [{ type: "solid", props: { color: staticProp({ r: 1, g: 0, b: 0, a: 1 }) } }],
+      }),
+    ]), 0);
+    const obj = scene.objects[0]!;
+    expect(obj.isNull).toBe(true);
     expect(obj.components).toEqual([]);
   });
 });

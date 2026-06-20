@@ -8,6 +8,7 @@ import {
   compRequiresPreviewBake,
   objectHasFastDisplacementOnly,
 } from "../src/editor/previewCompAnalysis";
+import { allowsFastDisplaceDirect } from "../src/runtime/effectRouting";
 import { effectsAreFastDisplacementOnly } from "../src/runtime/previewDisplacement";
 import { RamPreviewController } from "../src/editor/ramPreview";
 import { MemoryFs } from "../src/fs/MemoryFs";
@@ -55,7 +56,7 @@ describe("previewCompAnalysis", () => {
     expect(compRequiresPreviewBake(makeComp([waveObj]))).toBe(false);
   });
 
-  it("compNeedsAutoPreviewCache excludes fast-only displacement", () => {
+  it("compNeedsAutoPreviewCache includes fast-only displacement after raster path", () => {
     const fastObj: SceneObject = {
       id: "O1",
       name: "s",
@@ -74,7 +75,7 @@ describe("previewCompAnalysis", () => {
       effects: [{ id: "FX2", type: "wave", enabled: true, props: { amplitude: 10 } }],
     };
     expect(compHasDisplacementEffect(makeComp([fastObj]))).toBe(true);
-    expect(compNeedsAutoPreviewCache(makeComp([fastObj]))).toBe(false);
+    expect(compNeedsAutoPreviewCache(makeComp([fastObj]))).toBe(true);
     expect(compNeedsAutoPreviewCache(makeComp([waveObj]))).toBe(true);
     expect(compNeedsAutoPreviewCache(makeComp())).toBe(false);
   });
@@ -107,13 +108,10 @@ describe("previewCompAnalysis", () => {
     expect(objectHasFastDisplacementOnly([{ type: "fastRipple", enabled: true }], true)).toBe(false);
   });
 
-  it("§27.12 fast direct path uses fastDisplaceDirect flag not draftPlayback", () => {
+  it("§27.12 fast direct path deprecated — displacement always uses capture", () => {
     const effects = [{ type: "fastWave", enabled: true }];
     expect(effectsAreFastDisplacementOnly(effects, false)).toBe(true);
-    const usesDirectPath = (fastDisplaceDirect: boolean) =>
-      fastDisplaceDirect && effectsAreFastDisplacementOnly(effects, false);
-    expect(usesDirectPath(true)).toBe(true);
-    expect(usesDirectPath(false)).toBe(false);
+    expect(allowsFastDisplaceDirect()).toBe(false);
   });
 });
 

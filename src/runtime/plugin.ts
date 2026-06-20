@@ -58,6 +58,8 @@ export interface EffectDef {
   category?: string;
   /** §28 RAM Preview L2 — comp 内に enabled が1つでもあればキャッシュ優先。registry メタのみ。 */
   previewBakeRequired: boolean;
+  /** §27.2 実行経路。live = backdrop/CSS filter 直適用（軽量）、raster = canvas capture（高精度）。kind と独立軸・必須明示。 */
+  executionPath: "live" | "raster";
   params: ParamDescriptor[];
   bundleExportDefault?: "live" | "bake";
   apply(props: Record<string, unknown>, ctx: EffectRenderCtx): EffectFilter | null;

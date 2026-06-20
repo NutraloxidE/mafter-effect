@@ -5,6 +5,7 @@ export type PanelId =
   | "preview"
   | "timeline"
   | "project" // assets
+  | "pipeline"
   | "inspector"
   | "ease"
   | "log";
@@ -50,13 +51,59 @@ export function ensureEasePanelVisible(layout: LayoutNode): LayoutNode {
   };
 }
 
+/** 左カラムに pipeline パネルが見えるようレイアウトを補正する（localStorage 旧レイアウト移行用・§19.5）。 */
+export function ensurePipelinePanelVisible(layout: LayoutNode): LayoutNode {
+  if (layout.type !== "split" || layout.dir !== "row" || layout.children.length < 3) return layout;
+  const left = layout.children[0];
+  if (!left) return layout;
+
+  const pipelineVisible =
+    left.type === "split" && left.dir === "col"
+    && left.children.some((c) => c.type === "panel" && c.panel === "pipeline");
+
+  if (pipelineVisible) return layout;
+
+  if (left.type === "panel" && left.panel === "project") {
+    return {
+      ...layout,
+      children: layout.children.map((child, i) =>
+        i === 0
+          ? {
+              type: "split" as const,
+              dir: "col" as const,
+              sizes: [0.62, 0.38],
+              children: [
+                { type: "panel" as const, panel: "project" as const },
+                { type: "panel" as const, panel: "pipeline" as const },
+              ],
+            }
+          : child,
+      ),
+    };
+  }
+
+  return layout;
+}
+
+export function leftColumnLayout(): LayoutNode {
+  return {
+    type: "split",
+    dir: "col",
+    sizes: [0.62, 0.38],
+    children: [
+      { type: "panel", panel: "project" },
+      { type: "panel", panel: "pipeline" },
+    ],
+  };
+}
+
 export function defaultLayout(): LayoutNode {
   return {
     type: "split",
     dir: "row",
     sizes: [0.18, 0.62, 0.20],
     children: [
-      { type: "panel", panel: "project" },
+      leftColumnLayout(),
       {
         type: "split",
         dir: "col",

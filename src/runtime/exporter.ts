@@ -104,6 +104,9 @@ export async function exportComposition(
     const player = new HtmlCompPlayer(htmlLoader);
     const renderer = new DomRenderer();
     renderer.setHtmlPlayer(player);
+    // §27.4 auto_raster_mp4 — Live調整の backdrop-filter は foreignObject ラスタ化で消えるため、
+    // mp4/png export では Live調整も comp 背面 capture へ回して見た目を維持する。
+    renderer.setPreviewRenderOptions({ forceAdjustmentRaster: true });
     const fontCache = new FontOutlineCache();
     const imageCache = new ImageAssetCache();
     await Promise.all([

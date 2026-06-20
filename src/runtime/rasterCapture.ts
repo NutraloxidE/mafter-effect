@@ -65,20 +65,40 @@ export function svgToDataUrl(svg: string): string {
   return `data:image/svg+xml;base64,${btoa(binary)}`;
 }
 
-/** ラスタ画像に SVG filter を適用して canvas を返す（foreignObject では CSS filter が効かない経路向け）。 */
+/**
+ * ラスタ画像に filter chain を適用して canvas を返す。
+ * `filterChain` は CSS filter property の値（`blur(28px)` 等の関数 + `url(#id)` SVG 参照を
+ * スペース区切りで並べたもの）。SVG `<image>` への直接 filter 適用なので、foreignObject 経路とは
+ * 別に CSS filter 関数（blur 等）も効く。複数 filter は記述順（左→右）に合成される。
+ */
+/**
+ * `rasterizeFilteredImage` の SVG 文字列を組む純関数（テスト可能・DOM 非依存）。
+ * `filterChain` 全体（CSS filter 関数 + `url(#id)` 参照）を `<image>` の CSS filter property に通す。
+ * `filter="url(#id)"`（単一参照）へ退行すると blur 等の CSS token が落ちる（§27 Blur 回帰）。
+ */
+export function buildFilteredImageSvg(
+  dataUrl: string,
+  w: number,
+  h: number,
+  filtersMarkup: string,
+  filterChain: string,
+): string {
+  return [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">`,
+    `<defs>${filtersMarkup}</defs>`,
+    `<image href="${dataUrl}" x="0" y="0" width="${w}" height="${h}" style="filter:${filterChain}"/>`,
+    `</svg>`,
+  ].join("");
+}
+
 export async function rasterizeFilteredImage(
   dataUrl: string,
   w: number,
   h: number,
   filtersMarkup: string,
-  filterId: string,
+  filterChain: string,
 ): Promise<HTMLCanvasElement> {
-  const svgStr = [
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">`,
-    `<defs>${filtersMarkup}</defs>`,
-    `<image href="${dataUrl}" x="0" y="0" width="${w}" height="${h}" filter="url(#${filterId})"/>`,
-    `</svg>`,
-  ].join("");
+  const svgStr = buildFilteredImageSvg(dataUrl, w, h, filtersMarkup, filterChain);
   const url = svgToDataUrl(svgStr);
   const img = new Image();
   img.src = url;

@@ -1,4 +1,4 @@
-import type { Project, TimelineComposition } from "./schema";
+import type { Project, SceneObject, TimelineComposition } from "./schema";
 
 // §5.6 正準シリアライズ:
 //   - キー順固定（再帰的にキーをアルファベット昇順へ正規化 → 決定論的・安定）
@@ -16,6 +16,16 @@ function byStringKey<T extends { id: string }>(a: T, b: T): number {
 }
 
 /**
+ * §27.4 / §5.6-canon: 調整レイヤーの adjustmentMode は `"raster"` のときだけ書き、
+ * live（既定）・非調整レイヤーでは省略する（既存 project.json と byte 等価を保つ）。
+ */
+function canonicalizeObject(obj: SceneObject): SceneObject {
+  if (obj.isAdjustment === true && obj.adjustmentMode === "raster") return obj;
+  if (obj.adjustmentMode === undefined) return obj;
+  return { ...obj, adjustmentMode: undefined };
+}
+
+/**
  * 直列化前にプロジェクトを正準形へ正規化する（深いコピーを返す。入力は変更しない）。
  * 配列順を id 昇順に固定し、追加/削除/並べ替えのどれでも diff が局所化されるようにする。
  */
@@ -25,7 +35,7 @@ export function canonicalizeProject(project: Project): Project {
       if (comp.kind === "timeline") {
         const t: TimelineComposition = {
           ...comp,
-          objects: [...comp.objects].sort(byId),
+          objects: [...comp.objects].sort(byId).map(canonicalizeObject),
         };
         return t;
       }

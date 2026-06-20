@@ -36,6 +36,7 @@ export function InspectorPanel() {
   const clearPreviewOverride = useEditorStore((s) => s.clearPreviewOverride);
   const decomposeGlyphs = useEditorStore((s) => s.decomposeGlyphs);
   const addEffect = useEditorStore((s) => s.addEffect);
+  const setAdjustmentMode = useEditorStore((s) => s.setAdjustmentMode);
   const removeEffect = useEditorStore((s) => s.removeEffect);
   const reorderEffect = useEditorStore((s) => s.reorderEffect);
   const toggleEffect = useEditorStore((s) => s.toggleEffect);
@@ -190,7 +191,12 @@ export function InspectorPanel() {
       <div style={{ padding: "6px 8px 8px", fontWeight: "bold", color: "#eee", fontSize: 13 }}>
         {obj.name}
         {obj.isAdjustment && (
-          <span style={{ marginLeft: 6, fontSize: 10, color: "#c9a227", fontWeight: 600 }}>ADJ</span>
+          <span style={{ marginLeft: 6, fontSize: 10, color: "#c9a227", fontWeight: 600 }}>
+            ADJ · {(obj.adjustmentMode ?? "live") === "raster" ? "Raster" : "Live"}
+          </span>
+        )}
+        {obj.isNull && (
+          <span style={{ marginLeft: 6, fontSize: 10, color: "#e07070", fontWeight: 600 }}>NULL</span>
         )}
       </div>
 
@@ -246,6 +252,10 @@ export function InspectorPanel() {
         <InspectorFoldout label="Content" expanded={isExpanded("content")} onToggle={() => toggleExpanded("content")}>
           <div style={{ color: "#888", fontSize: 11 }}>調整レイヤー（描画なし）</div>
         </InspectorFoldout>
+      ) : obj.isNull ? (
+        <InspectorFoldout label="Content" expanded={isExpanded("content")} onToggle={() => toggleExpanded("content")}>
+          <div style={{ color: "#888", fontSize: 11 }}>Null レイヤー（描画なし）</div>
+        </InspectorFoldout>
       ) : (
         obj.components.map((comp, compIdx) => {
           if (comp.type !== "text") return null;
@@ -277,8 +287,34 @@ export function InspectorPanel() {
 
       <InspectorFoldout label="Effects" expanded={isExpanded("effects")} onToggle={() => toggleExpanded("effects")}>
         {obj.isAdjustment && (
-          <div style={{ color: "#8ab", fontSize: 10, marginBottom: 6, lineHeight: 1.4 }}>
-            調整レイヤー: CSS エフェクトは backdrop-filter、Pixel Sorter 等は下のレイヤー合成に適用されます。
+          <div style={{ marginBottom: 6 }}>
+            <div style={{ display: "flex", gap: 4, marginBottom: 4 }}>
+              {(["live", "raster"] as const).map((m) => {
+                const active = (obj.adjustmentMode ?? "live") === m;
+                return (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setAdjustmentMode(obj.id, m)}
+                    style={{
+                      ...btnStyle,
+                      flex: 1,
+                      fontSize: 10,
+                      background: active ? "#3a5068" : "#2a2a2a",
+                      color: active ? "#8cf" : "#999",
+                      border: active ? "1px solid #5a8fd0" : "1px solid #444",
+                    }}
+                  >
+                    {m === "live" ? "Live 調整" : "Raster 調整"}
+                  </button>
+                );
+              })}
+            </div>
+            <div style={{ color: "#8ab", fontSize: 10, lineHeight: 1.4 }}>
+              {(obj.adjustmentMode ?? "live") === "raster"
+                ? "Raster: 背面を canvas に焼いて effect 適用（高精度・重い。全 effect 利用可）。"
+                : "Live: backdrop-filter（軽量・web bundle 向き）。mp4/png 出力では自動 raster 化されます（重くなります）。"}
+            </div>
           </div>
         )}
         <button
@@ -312,7 +348,13 @@ export function InspectorPanel() {
               <div style={{ fontSize: 10, color: "#f88", padding: "4px 8px" }}>
                 利用可能なエフェクトがありません（プラグイン再読込を試してください）
               </div>
-            ) : groupEffectsForPicker(globalPluginRegistry.listEffects()).map(({ category, effects }) => (
+            ) : groupEffectsForPicker(
+                globalPluginRegistry.listEffects().filter(
+                  (e) =>
+                    !(obj.isAdjustment === true && (obj.adjustmentMode ?? "live") === "live")
+                    || e.executionPath === "live",
+                ),
+              ).map(({ category, effects }) => (
               <div key={category} style={{ marginBottom: 4 }}>
                 <div
                   style={{

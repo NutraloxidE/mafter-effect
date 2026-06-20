@@ -2,9 +2,10 @@ import type { EffectDef, EffectRenderCtx } from "./plugin";
 import { globalPluginRegistry } from "./pluginRegistry";
 import {
   displaceWithMap,
-  fastRippleDisplaceMapSvg,
   fastTurbulentDisplace,
-  fastWaveDisplace,
+  rippleDisplaceMapSvg,
+  WAVE_FAST_QUALITY,
+  waveDisplaceMapSvg,
 } from "./effectSvg";
 
 function num(v: unknown, fallback: number): number {
@@ -32,6 +33,7 @@ const FAST_WAVE_EFFECT_DEF: EffectDef = {
   label: "Fast Wave",
   category: "ディストーション（軽量）",
   previewBakeRequired: false,
+  executionPath: "live",
   params: [
     { key: "amplitude", label: "Amplitude", kind: "scalar", default: 20, animatable: true, min: 0, max: 500, step: 0.1 },
     { key: "wavelength", label: "Wavelength", kind: "scalar", default: 50, animatable: true, min: 1, max: 500, step: 0.1 },
@@ -44,16 +46,19 @@ const FAST_WAVE_EFFECT_DEF: EffectDef = {
     if (amplitude === 0) return null;
     const w = Math.max(1, ctx.width);
     const h = Math.max(1, ctx.height);
-    const primitives = fastWaveDisplace({
+    const { uri, scale } = waveDisplaceMapSvg(
       amplitude,
-      wavelength: Math.max(1, num(props["wavelength"], 50)),
-      direction: str(props["direction"], "horizontal"),
-      phaseDeg: num(props["phase"], 0),
+      Math.max(1, num(props["wavelength"], 50)),
+      str(props["direction"], "horizontal"),
+      num(props["phase"], 0),
       w,
       h,
-      antiAlias: bool(props["antiAlias"], false),
-    });
-    return { kind: "svg", primitives };
+      WAVE_FAST_QUALITY,
+    );
+    return {
+      kind: "svg",
+      primitives: displaceWithMap(uri, scale, w, h, bool(props["antiAlias"], false)),
+    };
   },
 };
 
@@ -62,6 +67,7 @@ const FAST_RIPPLE_EFFECT_DEF: EffectDef = {
   label: "Fast Ripple",
   category: "ディストーション（軽量）",
   previewBakeRequired: false,
+  executionPath: "live",
   params: [
     { key: "radius", label: "Radius", kind: "scalar", default: 100, animatable: true, min: 0, max: 1000, step: 0.1 },
     { key: "amplitude", label: "Amplitude", kind: "scalar", default: 10, animatable: true, min: 0, max: 200, step: 0.1 },
@@ -75,7 +81,7 @@ const FAST_RIPPLE_EFFECT_DEF: EffectDef = {
     if (amplitude === 0) return null;
     const w = Math.max(1, ctx.width);
     const h = Math.max(1, ctx.height);
-    const { uri, scale } = fastRippleDisplaceMapSvg(
+    const { uri, scale } = rippleDisplaceMapSvg(
       Math.max(1, num(props["radius"], 100)),
       amplitude,
       Math.max(0.1, num(props["frequency"], 5)),
@@ -96,6 +102,7 @@ const FAST_TURBULENT_DISPLACE_EFFECT_DEF: EffectDef = {
   label: "Fast Turbulent Displace",
   category: "ディストーション（軽量）",
   previewBakeRequired: false,
+  executionPath: "live",
   params: [
     { key: "amount", label: "Amount", kind: "scalar", default: 50, animatable: true, min: 0, max: 500, step: 0.1 },
     { key: "size", label: "Size", kind: "scalar", default: 100, animatable: true, min: 1, max: 2000, step: 0.1 },

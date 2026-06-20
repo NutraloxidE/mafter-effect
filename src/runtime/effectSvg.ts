@@ -320,13 +320,16 @@ export function rippleDisplaceMap(
   return { uri: rgbaToPngDataUri(rgba, mw, mh), scale: 2 * amplitude };
 }
 
+/** §27.5 Fast Wave — WIP wave 同型 gradient map の固定 quality（param なし）。 */
+export const WAVE_FAST_QUALITY = 0.5;
+
 /**
- * §27.5 Fast Ripple — radialGradient SVG displacement map（PNG 生成なし・旧 WIP 中間版同系）。
+ * §27.3 / §27.5 Ripple — radialGradient SVG displacement map（WIP 中間版・PNG なし）。
  *
- * 半径方向 sin/cos を載せた 1D radialGradient。真の放射ベクトルではない近似（渦寄り）だが
- * per-pixel PNG より軽い。samples は粗め（最大 32）で map 文字列も小さく保つ。
+ * 半径方向 sin/cos を載せた 1D radialGradient。真の放射ベクトルではない近似（渦寄り）。
+ * full `ripple` の per-pixel PNG より軽い。Fast ripple は本関数をそのまま使用。
  */
-export function fastRippleDisplaceMapSvg(
+export function rippleDisplaceMapSvg(
   radius: number,
   amplitude: number,
   frequency: number,
@@ -341,7 +344,7 @@ export function fastRippleDisplaceMapSvg(
   const cy = clamp01(centerY) * lh;
   const r = Math.max(1, radius);
   const cycles = Math.max(0.1, frequency);
-  const samples = Math.min(32, Math.max(8, Math.round(cycles * 4)));
+  const samples = Math.min(512, Math.max(16, Math.round(cycles * 16)));
   const stops: string[] = [];
   for (let i = 0; i <= samples; i++) {
     const o = i / samples;
@@ -362,35 +365,10 @@ export function fastRippleDisplaceMapSvg(
   return { uri: svgDataUri(svg), scale: 2 * amplitude };
 }
 
-/** §27.5 Fast Wave — feTurbulence 直結近似（feImage/PNG なし）。 */
-export function fastWaveDisplace(opts: {
-  amplitude: number;
-  wavelength: number;
-  direction: string;
-  phaseDeg: number;
-  w: number;
-  h: number;
-  antiAlias?: boolean;
-}): string {
-  const { amplitude, wavelength, direction, phaseDeg, w, h, antiAlias = false } = opts;
-  const freq = wavelengthToFrequency(wavelength);
-  const horizontal = direction !== "vertical";
-  const f = freq;
-  return turbulenceDisplace({
-    scale: amplitude,
-    baseFrequencyX: horizontal ? f : f * 0.25,
-    baseFrequencyY: horizontal ? f * 0.25 : f,
-    seed: phaseToSeed(phaseDeg),
-    numOctaves: 1,
-    type: "fractalNoise",
-    w,
-    h,
-    skipBias: false,
-    antiAlias,
-  });
-}
+/** @deprecated use rippleDisplaceMapSvg */
+export const fastRippleDisplaceMapSvg = rippleDisplaceMapSvg;
 
-/** §27.5 Fast Turbulent Displace — 低 octave feTurbulence 直結（G bias のみ）。 */
+/** §27.5 Fast Turbulent Displace — feTurbulence 直結（octaves cap 2・G bias）。 */
 export function fastTurbulentDisplace(opts: {
   amount: number;
   size: number;

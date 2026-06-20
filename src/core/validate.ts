@@ -72,6 +72,29 @@ function validateTimeline(
   const byId = new Map<string, SceneObject>();
   for (const obj of comp.objects) byId.set(obj.id, obj);
 
+  for (const obj of comp.objects) {
+    if (obj.isNull === true && obj.isAdjustment === true) {
+      warnings.push(
+        `comp ${comp.id}: object ${obj.id} has both isNull and isAdjustment; treating as Null (clearing isAdjustment)`,
+      );
+      obj.isAdjustment = undefined;
+    }
+    // §27.4: adjustmentMode は調整レイヤーのみ有効。不正値・非調整は live 扱い（undefined）にする。
+    if (obj.adjustmentMode !== undefined) {
+      if (obj.isAdjustment !== true) {
+        warnings.push(
+          `comp ${comp.id}: object ${obj.id} has adjustmentMode without isAdjustment; clearing`,
+        );
+        obj.adjustmentMode = undefined;
+      } else if (obj.adjustmentMode !== "live" && obj.adjustmentMode !== "raster") {
+        warnings.push(
+          `comp ${comp.id}: object ${obj.id} has invalid adjustmentMode ${String(obj.adjustmentMode)}; treating as live`,
+        );
+        obj.adjustmentMode = undefined;
+      }
+    }
+  }
+
   // 存在しない parent → root 化 + warn。
   for (const obj of comp.objects) {
     if (obj.parent !== null && !byId.has(obj.parent)) {

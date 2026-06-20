@@ -103,6 +103,8 @@ export interface SceneObject {
   components: Component[];
   effects?: EffectInstance[]; // 省略/[] = なし。配列順 = 適用順
   isAdjustment?: boolean; // true = 調整レイヤー（§27.4）
+  adjustmentMode?: "live" | "raster"; // §27.4 省略=live（backdrop-filter）。isAdjustment 時のみ有効
+  isNull?: boolean; // true = Null レイヤー（§30）
 }
 
 // §5.6 Composition / Project

@@ -59,7 +59,7 @@ export function compHasOnlyFastDisplacement(comp: TimelineComposition): boolean 
 export function compNeedsAutoPreviewCache(comp: TimelineComposition): boolean {
   if (compRequiresPreviewBake(comp)) return true;
   if (compHasProcessPixelsEffect(comp)) return true;
-  if (compHasDisplacementEffect(comp) && !compHasOnlyFastDisplacement(comp)) return true;
+  if (compHasDisplacementEffect(comp)) return true;
   return false;
 }
 

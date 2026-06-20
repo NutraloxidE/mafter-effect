@@ -30,7 +30,10 @@ import type {
 import { sampleAny, sampleScalar, sampleVec3 } from "../../runtime/interpolate";
 import { globalPluginRegistry } from "../../runtime/pluginRegistry";
 import { previewCacheService } from "../previewCacheService";
+import { framesToSegments } from "../cacheSegments";
 import { loadWorkArea } from "../workAreaStorage";
+import { isValidParent, listParentCandidates } from "../parentLink";
+import { buildReparentPatch } from "../reparent";
 
 // §21.1 SMPTE タイムコード（non-drop）。frame は正準・整数（INV-5）、これは派生表示のみ。
 function framesToTimecode(frame: Frame, fps: number): string {
@@ -45,7 +48,7 @@ function framesToTimecode(frame: Frame, fps: number): string {
 }
 
 // トラックのラベル列幅（左パネル）。グラフ領域はこれを引いた残り。
-const LABEL_W = 270;
+const LABEL_W = 310;
 
 type TransformVecKey = "anchor" | "position" | "rotation" | "scale";
 
@@ -105,6 +108,7 @@ export function TimelinePanel() {
   const addSolid = useEditorStore((s) => s.addSolid);
   const addText = useEditorStore((s) => s.addText);
   const addAdjustmentLayer = useEditorStore((s) => s.addAdjustmentLayer);
+  const addNullLayer = useEditorStore((s) => s.addNullLayer);
   const removeObject = useEditorStore((s) => s.removeObject);
   const selectObjects = useEditorStore((s) => s.selectObjects);
   const updateObjects = useEditorStore((s) => s.updateObjects);
@@ -131,9 +135,14 @@ export function TimelinePanel() {
     [comp, duration, workAreaRevision],
   );
   const [cachedFrames, setCachedFrames] = useState<Set<number>>(() => new Set());
+  const [cachedLayerFrames, setCachedLayerFrames] = useState<Map<string, Set<number>>>(() => new Map());
 
   useEffect(() => {
     return previewCacheService.subscribe(setCachedFrames);
+  }, [compId, workAreaRevision]);
+
+  useEffect(() => {
+    return previewCacheService.subscribeLayerFrames(setCachedLayerFrames);
   }, [compId, workAreaRevision]);
   // P1-5: タイムラインは zOrder 降順で表示（最前面=最上段, AE 準拠）。配列順ではなく描画順に並べる。
   const objects = [...(comp?.objects ?? [])].sort((a, b) => b.zOrder - a.zOrder);
@@ -636,6 +645,30 @@ export function TimelinePanel() {
     updateObject(objId, patch, label);
   };
 
+  const handleSetParent = (sourceObjId: string, newParentId: string | null) => {
+    if (!comp) return;
+    const targetIds = selectedIds.includes(sourceObjId) ? selectedIds : [sourceObjId];
+    const patches: { id: string; patch: Partial<SceneObject> }[] = [];
+    let rejected = 0;
+    for (const id of targetIds) {
+      const obj = comp.objects.find((o) => o.id === id);
+      if (!obj) continue;
+      if (!isValidParent(comp.objects, id, newParentId)) {
+        rejected += 1;
+        continue;
+      }
+      const patch = buildReparentPatch(comp, obj, newParentId, frame);
+      if (!patch) continue;
+      patches.push({ id, patch });
+    }
+    if (patches.length > 0) {
+      updateObjects(patches, "Set parent");
+    }
+    if (rejected > 0) {
+      flashStatus("Cannot set parent: would create cycle");
+    }
+  };
+
   // P0-3: KF 右クリックでコンテキストメニュー。
   const handleKfRightClick = (key: string, x: number, y: number) => {
     if (!selectedKfs.has(key)) setSelectedKfKeys([key]);
@@ -931,6 +964,7 @@ export function TimelinePanel() {
         <button onClick={() => { const id = addSolid(); if (id) selectObjects([id]); }} disabled={!comp} style={btnStyle}>+ Solid</button>
         <button onClick={() => { const id = addText(); if (id) selectObjects([id]); }} disabled={!comp} style={btnStyle}>+ Text</button>
         <button onClick={() => { const id = addAdjustmentLayer(); if (id) selectObjects([id]); }} disabled={!comp} style={{ ...btnStyle, color: "#c9a227" }} title="調整レイヤーを追加">+ Adj</button>
+        <button onClick={() => { const id = addNullLayer(); if (id) selectObjects([id]); }} disabled={!comp} style={{ ...btnStyle, color: "#e07070" }} title="Null レイヤーを追加">+ Null</button>
         <div style={{ flex: 1 }} />
         {/* P1-8: スナップトグル */}
         <button
@@ -1008,6 +1042,7 @@ export function TimelinePanel() {
             barDrag={barDrag && barDrag.ids.has(obj.id) ? { mode: barDrag.mode, delta: barDrag.delta } : null}
             graphMode={graphMode}
             viewRange={viewRange}
+            cachedLocalFrames={cachedLayerFrames.get(obj.id)}
             onSetProp={setPropByPath}
             beginKfDrag={beginKfDrag}
             beginLayerBarDrag={beginLayerBarDrag}
@@ -1016,6 +1051,8 @@ export function TimelinePanel() {
             onSelectLayer={(e) => handleLayerSelect(obj.id, e)}
             onRemove={() => removeObject(obj.id)}
             onUpdate={updateObject}
+            onSetParent={handleSetParent}
+            allObjects={objects}
             onPreviewPatch={(id, patch) => setPreviewOverride({ objectId: id, patch })}
             frameToPercent={frameToPercent}
             sourceExtent={project ? getLayerSourceExtent(obj, project, fps) : null}
@@ -1296,26 +1333,7 @@ function PreviewCacheBar({
   frameToPercent: (f: number) => number;
 }) {
   if (cachedFrames.size === 0) return null;
-  const segments: { left: number; width: number }[] = [];
-  const sorted = [...cachedFrames].filter((f) => f >= viewRange.start && f < viewRange.end).sort((a, b) => a - b);
-  let runStart: number | null = null;
-  let prev = -2;
-  for (const f of sorted) {
-    if (runStart === null || f !== prev + 1) {
-      if (runStart !== null) {
-        const left = frameToPercent(runStart);
-        const right = frameToPercent(prev + 1);
-        segments.push({ left, width: Math.max(0.2, right - left) });
-      }
-      runStart = f;
-    }
-    prev = f;
-  }
-  if (runStart !== null) {
-    const left = frameToPercent(runStart);
-    const right = frameToPercent(prev + 1);
-    segments.push({ left, width: Math.max(0.2, right - left) });
-  }
+  const segments = framesToSegments(cachedFrames, viewRange, frameToPercent);
   return (
     <>
       {segments.map((seg, i) => (
@@ -1327,6 +1345,52 @@ function PreviewCacheBar({
             width: `${seg.width}%`,
             bottom: 0,
             height: 4,
+            background: "#3a8f3a",
+            pointerEvents: "none",
+            zIndex: 2,
+          }}
+        />
+      ))}
+    </>
+  );
+}
+
+/**
+ * §28.10: レイヤーバー直上の per-layer 緑線。local frame を inPoint で comp 位置へ写像し、
+ * [inPoint, outPoint) 内をバーのすぐ上（top:1, 高さ 2px）に緑表示。
+ */
+function LayerCacheLine({
+  localFrames,
+  inPoint,
+  outPoint,
+  viewRange,
+  frameToPercent,
+}: {
+  localFrames: Set<number> | undefined;
+  inPoint: number;
+  outPoint: number;
+  viewRange: { start: number; end: number };
+  frameToPercent: (f: number) => number;
+}) {
+  if (!localFrames || localFrames.size === 0) return null;
+  const compFrames: number[] = [];
+  for (const lf of localFrames) {
+    const cf = lf + inPoint;
+    if (cf >= inPoint && cf < outPoint) compFrames.push(cf);
+  }
+  if (compFrames.length === 0) return null;
+  const segments = framesToSegments(compFrames, viewRange, frameToPercent);
+  return (
+    <>
+      {segments.map((seg, i) => (
+        <div
+          key={i}
+          style={{
+            position: "absolute",
+            left: `${seg.left}%`,
+            width: `${seg.width}%`,
+            top: 1,
+            height: 2,
             background: "#3a8f3a",
             pointerEvents: "none",
             zIndex: 2,
@@ -1422,6 +1486,7 @@ interface LayerRowProps {
   barDrag: { mode: "in" | "out" | "move"; delta: number } | null;
   graphMode: boolean;
   viewRange: { start: number; end: number };
+  cachedLocalFrames: Set<number> | undefined;
   onSetProp: (objId: string, path: PropPath, next: AnimatedProp<unknown>, label: string) => void;
   beginKfDrag: (objId: string, path: PropPath, frame: number, e: React.MouseEvent) => void;
   beginLayerBarDrag: (objId: string, mode: "in" | "out" | "move", e: React.MouseEvent) => void;
@@ -1430,6 +1495,8 @@ interface LayerRowProps {
   onSelectLayer: (e: React.MouseEvent) => void;
   onRemove: () => void;
   onUpdate: (id: string, patch: Partial<SceneObject>, label?: string) => void;
+  onSetParent: (sourceObjId: string, newParentId: string | null) => void;
+  allObjects: SceneObject[];
   onPreviewPatch?: (id: string, patch: Partial<SceneObject>) => void;
   frameToPercent: (f: number) => number;
   sourceExtent: LayerSourceExtent | null;
@@ -1439,8 +1506,52 @@ interface LayerRowProps {
   onLayerDragEnd: () => void;
 }
 
+function ParentSelect({
+  obj,
+  candidates,
+  onChange,
+}: {
+  obj: SceneObject;
+  candidates: SceneObject[];
+  onChange: (parentId: string | null) => void;
+}) {
+  const currentName = obj.parent
+    ? candidates.find((c) => c.id === obj.parent)?.name ?? obj.parent.slice(0, 6)
+    : "None";
+  return (
+    <select
+      value={obj.parent ?? ""}
+      title={`Parent: ${currentName}`}
+      onClick={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
+      onChange={(e) => {
+        e.stopPropagation();
+        const v = e.target.value;
+        onChange(v === "" ? null : v);
+      }}
+      style={{
+        flexShrink: 0,
+        width: 64,
+        maxWidth: 64,
+        fontSize: 10,
+        padding: "0 2px",
+        background: "#2a2a2a",
+        color: "#aaa",
+        border: "1px solid #444",
+        borderRadius: 2,
+        cursor: "pointer",
+      }}
+    >
+      <option value="">None</option>
+      {candidates.map((c) => (
+        <option key={c.id} value={c.id}>{c.name}</option>
+      ))}
+    </select>
+  );
+}
+
 function LayerRow(props: LayerRowProps) {
-  const { obj, index, frame, selected, expandMode, selectedKfs, kfDrag, isDropTarget, barDrag, graphMode, viewRange, sourceExtent, onSetProp, beginKfDrag, beginLayerBarDrag, onKfRightClick, onToggleExpand, onSelectLayer, onRemove, onUpdate, onPreviewPatch, frameToPercent, onLayerDragStart, onLayerDragOver, onLayerDrop, onLayerDragEnd } = props;
+  const { obj, index, frame, selected, expandMode, selectedKfs, kfDrag, isDropTarget, barDrag, graphMode, viewRange, cachedLocalFrames, sourceExtent, onSetProp, beginKfDrag, beginLayerBarDrag, onKfRightClick, onToggleExpand, onSelectLayer, onRemove, onUpdate, onSetParent, allObjects, onPreviewPatch, frameToPercent, onLayerDragStart, onLayerDragOver, onLayerDrop, onLayerDragEnd } = props;
   // P1-6: バードラッグのプレビューはパネル管理の barDrag から導出（複数選択を一括移動するため）。
   const dDelta = barDrag ? barDrag.delta : 0;
   const inPoint = barDrag && barDrag.mode !== "out" ? obj.inPoint + dDelta : obj.inPoint;
@@ -1501,9 +1612,19 @@ function LayerRow(props: LayerRowProps) {
           <span style={{ flex: 1, color: selected ? "#7fb8f0" : "#bbb", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {obj.name}
             {obj.isAdjustment && (
-              <span style={{ marginLeft: 4, fontSize: 9, color: "#c9a227", fontWeight: 600 }}>ADJ</span>
+              <span style={{ marginLeft: 4, fontSize: 9, color: "#c9a227", fontWeight: 600 }}>
+                {(obj.adjustmentMode ?? "live") === "raster" ? "ADJ·R" : "ADJ·L"}
+              </span>
+            )}
+            {obj.isNull && (
+              <span style={{ marginLeft: 4, fontSize: 9, color: "#e07070", fontWeight: 600 }}>NULL</span>
             )}
           </span>
+          <ParentSelect
+            obj={obj}
+            candidates={listParentCandidates(allObjects, obj.id)}
+            onChange={(parentId) => onSetParent(obj.id, parentId)}
+          />
           <button onClick={(e) => { e.stopPropagation(); onRemove(); }} style={{ ...iconBtn, color: "#f44" }} title="レイヤーを削除">×</button>
         </div>
         {/* graph column: layer bar */}
@@ -1526,6 +1647,13 @@ function LayerRow(props: LayerRowProps) {
             onIn={(e) => beginLayerBarDrag(obj.id, "in", e)}
             onOut={(e) => beginLayerBarDrag(obj.id, "out", e)}
             onMove={(e) => beginLayerBarDrag(obj.id, "move", e)}
+          />
+          <LayerCacheLine
+            localFrames={cachedLocalFrames}
+            inPoint={inPoint}
+            outPoint={outPoint}
+            viewRange={viewRange}
+            frameToPercent={frameToPercent}
           />
           <PlayheadTick frame={frame} frameToPercent={frameToPercent} />
         </div>

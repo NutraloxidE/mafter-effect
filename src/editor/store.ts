@@ -200,7 +200,11 @@ export interface EditorStore {
   reorderEffect: (objId: string, effectId: string, dir: "up" | "down") => void;
   toggleEffect: (objId: string, effectId: string) => void;
   addAdjustmentLayer: (name?: string) => string | null;
+  addLiveAdjustmentLayer: (name?: string) => string | null;
+  addRasterAdjustmentLayer: (name?: string) => string | null;
+  setAdjustmentMode: (objId: string, mode: "live" | "raster") => void;
   toggleAdjustment: (objId: string) => void;
+  addNullLayer: (name?: string) => string | null;
 }
 
 export const useEditorStore = create<EditorStore>((set, get) => ({
@@ -917,7 +921,10 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     }, "Toggle effect");
   },
 
-  addAdjustmentLayer: (name) => {
+  // 旧 API: live 別名（§27.4・後方互換）
+  addAdjustmentLayer: (name) => get().addLiveAdjustmentLayer(name),
+
+  addLiveAdjustmentLayer: (name) => {
     const id = newObjectId();
     const p = get().project;
     const comp = p?.compositions.find((c) => c.id === get().currentCompId) as TimelineComposition | undefined;
@@ -934,9 +941,42 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       opacity: staticProp(1),
       components: [],
       isAdjustment: true,
+      // adjustmentMode 省略 = live（canonical で省略・byte 等価）
     };
     cmdAddObject(get(), obj);
     return id;
+  },
+
+  addRasterAdjustmentLayer: (name) => {
+    const id = newObjectId();
+    const p = get().project;
+    const comp = p?.compositions.find((c) => c.id === get().currentCompId) as TimelineComposition | undefined;
+    const duration = comp?.duration ?? 150;
+    const obj: SceneObject = {
+      id,
+      name: name ?? "Adjustment (Raster)",
+      parent: null,
+      zOrder: nextZOrder(comp),
+      enabled: true,
+      inPoint: 0,
+      outPoint: duration,
+      transform: defaultTransform(),
+      opacity: staticProp(1),
+      components: [],
+      isAdjustment: true,
+      adjustmentMode: "raster",
+    };
+    cmdAddObject(get(), obj);
+    return id;
+  },
+
+  setAdjustmentMode: (objId, mode) => {
+    const comp = currentTimelineComp(get().project, get().currentCompId);
+    const obj = comp?.objects.find((o) => o.id === objId);
+    if (!obj || !obj.isAdjustment) return;
+    get().updateObject(objId, {
+      adjustmentMode: mode === "raster" ? "raster" : undefined,
+    }, mode === "raster" ? "Raster 調整に変更" : "Live 調整に変更");
   },
 
   toggleAdjustment: (objId) => {
@@ -946,8 +986,35 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const next = !obj.isAdjustment;
     get().updateObject(objId, {
       isAdjustment: next ? true : undefined,
+      isNull: next ? undefined : obj.isNull,
       components: next ? [] : obj.components,
     }, next ? "Make adjustment layer" : "Make normal layer");
+  },
+
+  addNullLayer: (name) => {
+    const id = newObjectId();
+    const p = get().project;
+    const comp = p?.compositions.find((c) => c.id === get().currentCompId) as TimelineComposition | undefined;
+    const duration = comp?.duration ?? 150;
+    const transform = defaultTransform();
+    if (comp) {
+      transform.position = staticProp(vec3(comp.width / 2, comp.height / 2, 0));
+    }
+    const obj: SceneObject = {
+      id,
+      name: name ?? defaultNullLayerName(comp),
+      parent: null,
+      zOrder: nextZOrder(comp),
+      enabled: true,
+      inPoint: 0,
+      outPoint: duration,
+      transform,
+      opacity: staticProp(1),
+      components: [],
+      isNull: true,
+    };
+    cmdAddObject(get(), obj);
+    return id;
   },
 }));
 
@@ -967,6 +1034,12 @@ if (typeof window !== "undefined") {
 function nextZOrder(comp: TimelineComposition | undefined): number {
   if (!comp || comp.objects.length === 0) return 1;
   return Math.max(...comp.objects.map((o) => o.zOrder)) + 1;
+}
+
+function defaultNullLayerName(comp: TimelineComposition | undefined): string {
+  if (!comp) return "Null";
+  const count = comp.objects.filter((o) => o.isNull === true).length;
+  return count === 0 ? "Null" : `Null ${count + 1}`;
 }
 
 function defaultEffectProps(def: EffectDef): Record<string, AnimatedProp<unknown> | unknown> {

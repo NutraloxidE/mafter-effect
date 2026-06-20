@@ -8,6 +8,7 @@ function mockEffect(type: string, category?: string): EffectDef {
     label: type,
     category,
     previewBakeRequired: false,
+    executionPath: "live",
     params: [],
     apply: () => null,
   };

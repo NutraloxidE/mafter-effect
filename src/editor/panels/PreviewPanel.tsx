@@ -343,7 +343,7 @@ export function PreviewPanel() {
       effectiveCacheEnabled ? previewCacheService.getFrameRenderCache() : null,
     );
     r.setTextQuality(textQualityRef.current);
-    r.setPreviewRenderOptions({ fastDisplaceDirect: true });
+    r.setPreviewRenderOptions({});
     r.mount(el, comp);
     rendererRef.current = r;
     return () => {
@@ -415,7 +415,6 @@ export function PreviewPanel() {
     if (!renderer) return;
     renderer.setPreviewRenderOptions({
       holdLastRaster: isPlaying && !editingLive,
-      fastDisplaceDirect: true,
     });
   }, [isPlaying, editingLive]);
 

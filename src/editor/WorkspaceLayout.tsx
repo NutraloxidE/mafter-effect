@@ -4,6 +4,7 @@ import { EasePanel } from "./panels/EasePanel";
 import { InspectorPanel } from "./panels/InspectorPanel";
 import { PreviewPanel } from "./panels/PreviewPanel";
 import { ProjectPanel } from "./panels/ProjectPanel";
+import { PipelinePanel } from "./panels/PipelinePanel";
 import { TimelinePanel } from "./panels/TimelinePanel";
 
 interface WorkspaceLayoutProps {
@@ -227,6 +228,12 @@ function PanelHost({ id }: { id: PanelId }) {
       return (
         <div style={style}>
           <ProjectPanel />
+        </div>
+      );
+    case "pipeline":
+      return (
+        <div style={style}>
+          <PipelinePanel />
         </div>
       );
     case "inspector":

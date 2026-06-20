@@ -12,7 +12,8 @@ import {
   displaceWithMap,
   fastRippleDisplaceMapSvg,
   fastTurbulentDisplace,
-  fastWaveDisplace,
+  rippleDisplaceMapSvg,
+  WAVE_FAST_QUALITY,
   rippleDisplaceMap,
   rippleDisplacementSample,
   rippleMapDims,
@@ -388,10 +389,17 @@ describe("§27.5 Fast distortion (approximate)", () => {
     expect(DISPLACEMENT_EFFECT_TYPES.has("fastTurbulentDisplace")).toBe(true);
   });
 
-  it("fastRippleDisplaceMapSvg returns SVG data URI not PNG", () => {
-    const { uri } = fastRippleDisplaceMapSvg(100, 10, 5, 0.5, 0.5, 640, 480);
+  it("rippleDisplaceMapSvg returns SVG data URI not PNG", () => {
+    const { uri } = rippleDisplaceMapSvg(100, 10, 5, 0.5, 0.5, 640, 480);
     expect(uri.startsWith("data:image/svg+xml,")).toBe(true);
     expect(uri.includes("radialGradient")).toBe(true);
+  });
+
+  it("fastRippleDisplaceMapSvg is alias of rippleDisplaceMapSvg", () => {
+    const a = rippleDisplaceMapSvg(100, 10, 5, 0.5, 0.5, 640, 480);
+    const b = fastRippleDisplaceMapSvg(100, 10, 5, 0.5, 0.5, 640, 480);
+    expect(a.uri).toBe(b.uri);
+    expect(a.scale).toBe(b.scale);
   });
 
   it("displaceWithMap antiAlias toggles feGaussianBlur", () => {
@@ -402,21 +410,26 @@ describe("§27.5 Fast distortion (approximate)", () => {
     expect(off).not.toContain("feGaussianBlur");
   });
 
-  it("fastWaveDisplace uses single octave turbulence with G bias", () => {
-    const s = fastWaveDisplace({ amplitude: 20, wavelength: 50, direction: "horizontal", phaseDeg: 0, w: 320, h: 240, antiAlias: false });
-    expect(s).toContain('numOctaves="1"');
-    expect(s).toContain("feComponentTransfer");
-    expect(s).not.toContain("feImage");
+  it("fastWave uses waveDisplaceMapSvg at WAVE_FAST_QUALITY", () => {
+    const { uri } = waveDisplaceMapSvg(20, 50, "horizontal", 0, 320, 240, WAVE_FAST_QUALITY);
+    expect(uri.startsWith("data:image/svg+xml,")).toBe(true);
+    expect(uri.includes("linearGradient")).toBe(true);
+    const primitives = displaceWithMap(uri, 40, 320, 240, false);
+    expect(primitives).toContain("feImage");
+    expect(primitives).not.toContain("feTurbulence");
   });
 
-  it("fastTurbulentDisplace caps octaves and supports antiAlias", () => {
+  it("fastTurbulentDisplace uses fractalNoise with G bias", () => {
     const off = fastTurbulentDisplace({
       amount: 50, size: 100, complexity: 6, evolution: 0, offsetX: 0, offsetY: 0, randomSeed: 0, w: 320, h: 240, antiAlias: false,
     });
     const on = fastTurbulentDisplace({
       amount: 50, size: 100, complexity: 6, evolution: 0, offsetX: 0, offsetY: 0, randomSeed: 0, w: 320, h: 240, antiAlias: true,
     });
+    expect(off).toContain('type="fractalNoise"');
     expect(off).toContain('numOctaves="2"');
+    expect(off).toContain(`intercept="${FRACTAL_NOISE_G_BIAS_INTERCEPT}"`);
+    expect(off).toContain("feComponentTransfer");
     expect(on).toContain("feGaussianBlur");
     expect(off).not.toContain("feGaussianBlur");
   });

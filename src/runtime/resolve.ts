@@ -173,7 +173,8 @@ export function resolve(
       worldTransform: worldOf(obj.id),
       zOrder: obj.zOrder,
       opacity: scalarProp(obj.opacity, frame, obj.id),
-      components: obj.isAdjustment
+      inPoint: obj.inPoint,
+      components: obj.isAdjustment || obj.isNull
         ? []
         : obj.components.map((c) => resolveComponent(c, frame, obj.id, obj.inPoint)),
     };
@@ -181,6 +182,8 @@ export function resolve(
       resolved.effects = obj.effects.map((e) => resolveEffect(e, frame, obj.id));
     }
     if (obj.isAdjustment) resolved.isAdjustment = true;
+    if (obj.isAdjustment && obj.adjustmentMode) resolved.adjustmentMode = obj.adjustmentMode;
+    if (obj.isNull) resolved.isNull = true;
     objects.push(resolved);
   }
 

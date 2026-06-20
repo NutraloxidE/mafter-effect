@@ -1,4 +1,4 @@
-import type { ObjectId } from "../core/schema";
+import type { Frame, ObjectId } from "../core/schema";
 import type { Mat4 } from "./mat4";
 
 // §8 resolve() の出力。レンダラはこれだけを受け取る (INV-3)。フラット・兄弟・ネストしない。
@@ -20,9 +20,12 @@ export interface ResolvedObject {
   worldTransform: Mat4; // parent チェーンを畳んだ world 行列（§6.3）。ネストしない
   zOrder: number; // 描画順
   opacity: number; // per-object。親から継承しない
+  inPoint: Frame; // この comp 内での表示開始（§28.10 per-layer cache の local frame 算出用 passthrough）
   components: ResolvedComponent[];
   effects?: ResolvedEffect[];
   isAdjustment?: boolean;
+  adjustmentMode?: "live" | "raster";
+  isNull?: boolean;
 }
 
 export interface ResolvedScene {

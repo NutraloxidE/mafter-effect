@@ -1,5 +1,5 @@
 import { DISPLACEMENT_EFFECT_TYPES, displacementPadFromScale, svgDisplaceFilterMarkup } from "./effectSvg";
-import { effectsAreFastDisplacementOnly } from "./previewDisplacement";
+import { needsSvgDisplaceCapture } from "./effectRouting";
 import type { CompositionMeta, Frame, HtmlComposition, RGBA, TimelineComposition } from "../core/schema";
 import type { FontOutlineCache } from "./fontOutlineCache";
 import type { ImageAssetCache } from "./imageAssetCache";
@@ -77,14 +77,18 @@ export class DomRenderer implements Renderer {
   private compHasAdjustmentDisplace = false;
   /** §27.12 hold-last raster（full displacement 用）。 */
   private holdLastRaster = false;
-  private fastDisplaceDirect = false;
+  /** §27.4 auto_raster_mp4 — mp4/png export 時に Live調整も comp 背面 capture へ回す
+   *  （backdrop-filter は foreignObject ラスタ化で消えるため）。web bundle/preview では false。 */
+  private forceAdjustmentRaster = false;
 
   setPreviewRenderOptions(opts: {
     holdLastRaster?: boolean;
+    /** @deprecated Fast* distortion は常に self-capture raster。受け取るが無視。 */
     fastDisplaceDirect?: boolean;
+    forceAdjustmentRaster?: boolean;
   }): void {
     if (opts.holdLastRaster !== undefined) this.holdLastRaster = opts.holdLastRaster;
-    if (opts.fastDisplaceDirect !== undefined) this.fastDisplaceDirect = opts.fastDisplaceDirect;
+    if (opts.forceAdjustmentRaster !== undefined) this.forceAdjustmentRaster = opts.forceAdjustmentRaster;
   }
 
   setTextQuality(mode: "draft" | "precise"): void {
@@ -146,6 +150,7 @@ export class DomRenderer implements Renderer {
 
     const seen = new Set<string>();
     for (const obj of scene.objects) {
+      if (obj.isNull) continue;
       seen.add(obj.id);
       let entry = this.entries.get(obj.id);
       if (!entry) {
@@ -411,16 +416,17 @@ export class DomRenderer implements Renderer {
     if (rasterChain.length === 0) {
       const allTokens = [...preTokens, ...postTokens];
       const allSvgFilters = [...preSvgFilters, ...postSvgFilters];
-      if (hasDisplacementFx) {
-        if (
-          this.fastDisplaceDirect
-          && effectsAreFastDisplacementOnly(obj.effects, obj.isAdjustment)
-        ) {
-          this.clearRasterOverlay(entry);
-          if (obj.isAdjustment) this.restoreAdjustmentSuppression(obj.id);
-          this.applyFilterTokens(entry, obj, allTokens, allSvgFilters);
-          return;
-        }
+      // §27.4: Raster調整は live effect（blur/tint/wipe）も backdrop-filter ではなく
+      // comp 背面 capture で焼く。export（forceAdjustmentRaster）では Live調整も同様に raster 化
+      // （auto_raster_mp4）。通常レイヤーは従来どおり（displacement のみ capture）。
+      const needsCapture = needsSvgDisplaceCapture({
+        isAdjustment: obj.isAdjustment,
+        adjustmentMode: obj.adjustmentMode,
+        forceAdjustmentRaster: this.forceAdjustmentRaster,
+        effects: obj.effects,
+        hasLiveFilterTokens: allTokens.length > 0,
+      });
+      if (needsCapture) {
         const filterStr = allTokens.join(" ");
         const rasterRunKey = `${fxSig}|f${frame}`;
         entry.rasterRunKey = rasterRunKey;
@@ -582,7 +588,9 @@ export class DomRenderer implements Renderer {
 
     try {
       const propsHash = entry.fxSig;
-      const cacheKey = { objectId: obj.id, frame: ctx.frame, propsHash };
+      // §28.10: layer-local frame をキーにすることで、レイヤーのスライド（move）で
+      // comp フレームがずれても内容不変なら再ラスタせず再利用する。
+      const cacheKey = { objectId: obj.id, frame: Math.max(0, ctx.frame - obj.inPoint), propsHash };
       const cached = await this.frameRenderCache?.get(cacheKey);
       if (cached?.data) {
         this.presentRasterCanvas(entry, cached.data, w, h);
@@ -670,7 +678,9 @@ export class DomRenderer implements Renderer {
 
     try {
       const propsHash = entry.fxSig;
-      const cacheKey = { objectId: obj.id, frame: ctx.frame, propsHash };
+      // §28.10: layer-local frame をキーにすることで、レイヤーのスライド（move）で
+      // comp フレームがずれても内容不変なら再ラスタせず再利用する。
+      const cacheKey = { objectId: obj.id, frame: Math.max(0, ctx.frame - obj.inPoint), propsHash };
       const cached = await this.frameRenderCache?.get(cacheKey);
       if (cached?.data) {
         restoreCaptureVisibility();
@@ -718,7 +728,7 @@ export class DomRenderer implements Renderer {
     buffer: { data: Uint8ClampedArray; width: number; height: number },
     w: number,
     h: number,
-    _filterStr: string,
+    filterStr: string,
     svgFilters: { id: string; primitives: string }[],
     filterEntry: Pick<ObjectEntry, "fxLayerW" | "fxLayerH" | "fxMaxDisplaceScale" | "fxUseBackdropDisplace">,
   ): Promise<{ data: Uint8ClampedArray; width: number; height: number }> {
@@ -740,8 +750,9 @@ export class DomRenderer implements Renderer {
         return `<filter id="${id}" color-interpolation-filters="sRGB" x="-25%" y="-25%" width="150%" height="150%">${primitives}</filter>`;
       })
       .join("");
-    const filterId = svgFilters[0]?.id ?? "fx";
-    const out = await rasterizeFilteredImage(dataUrl, w, h, filtersMarkup, filterId);
+    // filterStr は CSS token（blur 等）と url(#svg) 参照を順序通り含む完全 chain。
+    // url(#svg) は filtersMarkup の SVG <filter> を参照する。
+    const out = await rasterizeFilteredImage(dataUrl, w, h, filtersMarkup, filterStr);
     return canvasToRasterBuffer(out);
   }
 
@@ -844,7 +855,9 @@ export class DomRenderer implements Renderer {
     entry.rasterInFlightKey = rasterRunKey;
     try {
       const propsHash = entry.fxSig;
-      const cacheKey = { objectId: obj.id, frame: ctx.frame, propsHash };
+      // §28.10: layer-local frame をキーにすることで、レイヤーのスライド（move）で
+      // comp フレームがずれても内容不変なら再ラスタせず再利用する。
+      const cacheKey = { objectId: obj.id, frame: Math.max(0, ctx.frame - obj.inPoint), propsHash };
       const cached = await this.frameRenderCache?.get(cacheKey);
       if (cached?.data) {
         this.presentRasterCanvas(entry, cached.data, w, h);
@@ -927,7 +940,9 @@ export class DomRenderer implements Renderer {
 
     try {
       const propsHash = entry.fxSig;
-      const cacheKey = { objectId: obj.id, frame: ctx.frame, propsHash };
+      // §28.10: layer-local frame をキーにすることで、レイヤーのスライド（move）で
+      // comp フレームがずれても内容不変なら再ラスタせず再利用する。
+      const cacheKey = { objectId: obj.id, frame: Math.max(0, ctx.frame - obj.inPoint), propsHash };
       const cached = await this.frameRenderCache?.get(cacheKey);
       if (cached?.data) {
         restoreCaptureVisibility();
