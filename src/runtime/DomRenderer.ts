@@ -9,6 +9,7 @@ import { globalPluginRegistry } from "./pluginRegistry";
 import type { Renderer } from "./renderer";
 import type { ResolvedComponent, ResolvedEffect, ResolvedObject, ResolvedScene } from "./resolved";
 import { compChildFrame, isCompNestDepthAllowed } from "./compLayer";
+import type { NestedCompRasterizer } from "./compFrameCapture";
 import { resolve } from "./resolve";
 import { applyTextEl, rgbaCss } from "./textRender";
 import { captureElementToCanvas, rasterizeFilteredImage } from "./rasterCapture";
@@ -73,6 +74,8 @@ export class DomRenderer implements Renderer {
   private fontCache: FontOutlineCache | null = null;
   private imageCache: ImageAssetCache | null = null;
   private frameRenderCache: FrameRenderCache | null = null;
+  /** §28.11 ネスト comp の comp 単位ラスタライザ（注入式・optional） */
+  private nestedCompRasterizer: NestedCompRasterizer | null = null;
   /** 現フレームに adjustment + displacement がある（下位 overflow 方針用） */
   private compHasAdjustmentDisplace = false;
   /** §27.12 hold-last raster（full displacement 用）。 */
@@ -105,6 +108,11 @@ export class DomRenderer implements Renderer {
 
   setFrameRenderCache(cache: FrameRenderCache | null): void {
     this.frameRenderCache = cache;
+  }
+
+  /** §28.11 — ラスター化対象のネスト comp を comp 単位画像で描く rasterizer を注入。 */
+  setNestedCompRasterizer(rasterizer: NestedCompRasterizer | null): void {
+    this.nestedCompRasterizer = rasterizer;
   }
 
   setHtmlPlayer(player: HtmlCompPlayer | null): void {
@@ -999,6 +1007,13 @@ export class DomRenderer implements Renderer {
   // depth で無限ループを防ぐ（循環参照が挿入時に阻止されるが念のため）。
   private renderNestedComp(container: HTMLElement, childComp: TimelineComposition, childFrame: Frame, depth: number): void {
     if (!isCompNestDepthAllowed(depth)) return;
+
+    // §28.11 — ラスター化対象のネスト comp は comp 単位画像（blob URL）で描く。
+    if (this.nestedCompRasterizer?.isRasterized(childComp.id)) {
+      this.renderNestedCompRaster(container, childComp, childFrame);
+      return;
+    }
+
     const childScene = resolve(childComp, childFrame);
     container.style.cssText = `position:absolute;top:0;left:0;width:${childComp.width}px;height:${childComp.height}px;overflow:hidden;transform-style:preserve-3d`;
     if (childComp.background) container.style.background = rgbaCss(childComp.background);
@@ -1031,6 +1046,34 @@ export class DomRenderer implements Renderer {
       }
       container.appendChild(div);
     }
+  }
+
+  // §28.11 — ネスト comp を comp 単位画像で描画。単一 <img> を再利用し、新フレームの
+  // raster を非同期取得して swap する。取得待ちの間は直前の画像を保持（ちらつき回避）。
+  private renderNestedCompRaster(container: HTMLElement, childComp: TimelineComposition, childFrame: Frame): void {
+    container.style.cssText = `position:absolute;top:0;left:0;width:${childComp.width}px;height:${childComp.height}px;overflow:hidden`;
+    if (childComp.background) container.style.background = rgbaCss(childComp.background);
+    else container.style.background = "";
+
+    let img = container.firstElementChild as HTMLImageElement | null;
+    if (!img || img.tagName !== "IMG" || img.dataset["precompRaster"] !== "1") {
+      container.innerHTML = "";
+      img = document.createElement("img");
+      img.dataset["precompRaster"] = "1";
+      img.style.cssText = "position:absolute;top:0;left:0;width:100%;height:100%;object-fit:fill;";
+      container.appendChild(img);
+    }
+    const reqImg = img;
+    // 最新リクエストのみ反映するためのトークン（dataset 経由・古い結果は破棄）。
+    reqImg.dataset["reqFrame"] = String(childFrame);
+    const rasterizer = this.nestedCompRasterizer;
+    if (!rasterizer) return;
+    void rasterizer.getRaster(childComp.id, childFrame).then((url) => {
+      if (!url) return;
+      // 取得中に別フレームが要求されていたら破棄。
+      if (reqImg.dataset["reqFrame"] !== String(childFrame)) return;
+      if (reqImg.src !== url) reqImg.src = url;
+    });
   }
 }
 

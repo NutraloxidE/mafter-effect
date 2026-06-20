@@ -32,6 +32,7 @@ import {
   type PreviewCacheDisplayStatus,
 } from "../ramPreview";
 import { previewCacheService } from "../previewCacheService";
+import { precompRasterService } from "../precompRasterService";
 import { compNeedsAutoPreviewCache } from "../previewCompAnalysis";
 import { runPreviewFrameClock, runPreviewPlaybackLoop } from "../previewPlaybackLoop";
 import { loadWorkArea } from "../workAreaStorage";
@@ -317,6 +318,22 @@ export function PreviewPanel() {
     });
   }, [project, comp, projectRevision, effectiveTextQuality, viewerSettings.resolutionProxy, proxyScale, workArea]);
 
+  // §28.11 precomp comp 単位ラスターキャッシュ — 共有 store を使うよう設定。
+  useEffect(() => {
+    const store = previewCacheService.getStore();
+    if (!project || !store) {
+      precompRasterService.configure(null);
+      return;
+    }
+    precompRasterService.configure({
+      project,
+      fs: _previewFs,
+      store,
+      quality: effectiveTextQuality,
+      proxyScale,
+    });
+  }, [project, effectiveTextQuality, proxyScale, effectiveCacheEnabled]);
+
   useEffect(() => {
     const tick = () => {
       setCacheStatus(previewCacheService.getController()?.getDisplayStatus(isPlaying) ?? { kind: "idle" });
@@ -342,6 +359,9 @@ export function PreviewPanel() {
     r.setFrameRenderCache(
       effectiveCacheEnabled ? previewCacheService.getFrameRenderCache() : null,
     );
+    r.setNestedCompRasterizer(
+      effectiveCacheEnabled ? precompRasterService.rasterizer : null,
+    );
     r.setTextQuality(textQualityRef.current);
     r.setPreviewRenderOptions({});
     r.mount(el, comp);
@@ -355,6 +375,9 @@ export function PreviewPanel() {
   useEffect(() => {
     rendererRef.current?.setFrameRenderCache(
       effectiveCacheEnabled ? previewCacheService.getFrameRenderCache() : null,
+    );
+    rendererRef.current?.setNestedCompRasterizer(
+      effectiveCacheEnabled ? precompRasterService.rasterizer : null,
     );
   }, [effectiveCacheEnabled]);
 

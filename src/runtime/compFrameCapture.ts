@@ -22,6 +22,16 @@ export interface CompFrameCaptureContext {
   dispose: () => void;
 }
 
+/**
+ * §28.11 — ラスター化対象のネスト comp を comp 単位で画像化する rasterizer。
+ * DomRenderer がネスト comp 描画時に参照する。`isRasterized` が真の comp は Phase-1
+ * のライブ再解決ではなく `getRaster` の画像（blob URL）で描く。
+ */
+export interface NestedCompRasterizer {
+  isRasterized(compId: string): boolean;
+  getRaster(compId: string, childFrame: number): Promise<string | null>;
+}
+
 export interface CompFrameCaptureOptions {
   textQuality: "draft" | "precise";
   proxyScale?: number;
@@ -53,6 +63,7 @@ export async function createCompFrameCaptureContext(
   compId: string,
   fs: FileSystem,
   options: CompFrameCaptureOptions,
+  nestedCompRasterizer?: NestedCompRasterizer,
 ): Promise<CompFrameCaptureContext> {
   const comp = project.compositions.find((c) => c.id === compId);
   if (!comp || comp.kind !== "timeline") {
@@ -93,6 +104,7 @@ export async function createCompFrameCaptureContext(
   renderer.resize(nw, nh);
   renderer.setHtmlComps(new Map(htmlComps.map((c) => [c.id, c])));
   renderer.setTimelineComps(new Map(timelineComps.map((c) => [c.id, c])));
+  if (nestedCompRasterizer) renderer.setNestedCompRasterizer(nestedCompRasterizer);
 
   let evaluator: ExpressionEvaluator | undefined;
   await Promise.all([

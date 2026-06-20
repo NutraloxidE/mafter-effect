@@ -16,10 +16,13 @@ import type { WorkArea } from "./workAreaStorage";
 import { TieredFrameRenderCache } from "../runtime/tieredFrameRenderCache";
 import type { FrameRenderCache } from "../runtime/frameRenderCache";
 import { LAYER_FRAME_CACHE_PREFIX, parseLayerFrameKey } from "../cache/layerFrameKey";
+import { PRECOMP_FRAME_CACHE_PREFIX, parsePrecompFrameKey } from "../cache/precompFrameKey";
 
 type CachedFramesListener = (frames: Set<number>) => void;
 /** objectId → そのレイヤーのキャッシュ済み local frame 集合（§28.10）。 */
 type CachedLayerFramesListener = (layers: Map<string, Set<number>>) => void;
+/** compId → その comp のキャッシュ済み childFrame 集合（§28.11 precomp）。 */
+type CachedPrecompFramesListener = (comps: Map<string, Set<number>>) => void;
 
 /** §28 Preview + Timeline 共有のキャッシュサービス。 */
 class PreviewCacheService {
@@ -28,6 +31,7 @@ class PreviewCacheService {
   private frameRenderCache: FrameRenderCache | null = null;
   private listeners = new Set<CachedFramesListener>();
   private layerListeners = new Set<CachedLayerFramesListener>();
+  private precompListeners = new Set<CachedPrecompFramesListener>();
   private pollId: number | null = null;
 
   init(fs: FileSystem, settings: PreviewCacheSettings = loadPreviewCacheSettings()): void {
@@ -105,6 +109,31 @@ class PreviewCacheService {
     return result;
   }
 
+  /** §28.11: precomp キャッシュ済み childFrame マップを購読。 */
+  subscribePrecompFrames(listener: CachedPrecompFramesListener): () => void {
+    this.precompListeners.add(listener);
+    void this.notifyCachedPrecompFrames();
+    return () => this.precompListeners.delete(listener);
+  }
+
+  /** §28.11: compId → キャッシュ済み childFrame 集合。 */
+  async listCachedPrecompFrames(): Promise<Map<string, Set<number>>> {
+    const result = new Map<string, Set<number>>();
+    if (!this.store) return result;
+    const keys = await this.store.listKeys(PRECOMP_FRAME_CACHE_PREFIX);
+    for (const key of keys) {
+      const parsed = parsePrecompFrameKey(key);
+      if (!parsed) continue;
+      let set = result.get(parsed.compId);
+      if (!set) {
+        set = new Set<number>();
+        result.set(parsed.compId, set);
+      }
+      set.add(parsed.childFrame);
+    }
+    return result;
+  }
+
   async listCachedFrames(): Promise<Set<number>> {
     if (!this.store || !this.controller) return new Set();
     const prefix = this.controller.getCompCachePrefix();
@@ -123,6 +152,7 @@ class PreviewCacheService {
     this.pollId = window.setInterval(() => {
       void this.notifyCachedFrames();
       void this.notifyCachedLayerFrames();
+      void this.notifyCachedPrecompFrames();
     }, 400);
   }
 
@@ -137,6 +167,12 @@ class PreviewCacheService {
     for (const l of this.layerListeners) l(layers);
   }
 
+  private async notifyCachedPrecompFrames(): Promise<void> {
+    if (this.precompListeners.size === 0) return;
+    const comps = await this.listCachedPrecompFrames();
+    for (const l of this.precompListeners) l(comps);
+  }
+
   dispose(): void {
     if (this.pollId !== null) window.clearInterval(this.pollId);
     this.pollId = null;
@@ -146,6 +182,7 @@ class PreviewCacheService {
     this.frameRenderCache = null;
     this.listeners.clear();
     this.layerListeners.clear();
+    this.precompListeners.clear();
   }
 }
 

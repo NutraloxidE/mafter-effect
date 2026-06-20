@@ -15,6 +15,7 @@ import {
   shouldForceNonRealtime,
 } from "./realtimeDetector";
 import { compNeedsAutoPreviewCache } from "./previewCompAnalysis";
+import { precompRasterService } from "./precompRasterService";
 import type { PreviewCacheSettings } from "./previewCacheSettings";
 import type { WorkArea } from "./workAreaStorage";
 
@@ -347,6 +348,8 @@ export class RamPreviewController {
       this.config.comp.id,
       this.fs,
       { textQuality: this.config.quality, proxyScale: this.config.proxyScale, proxyMaxDim },
+      // §28.11 — comp 全体キャッシュもライブと同じ rasterizer でネスト comp を焼き、一致させる。
+      precompRasterService.rasterizer,
     );
     this.captureCtxKey = key;
     return this.captureCtx;

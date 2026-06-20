@@ -31,6 +31,7 @@ import { sampleAny, sampleScalar, sampleVec3 } from "../../runtime/interpolate";
 import { globalPluginRegistry } from "../../runtime/pluginRegistry";
 import { previewCacheService } from "../previewCacheService";
 import { framesToSegments } from "../cacheSegments";
+import { precompChildToParentFrame } from "../../cache/precompFrameKey";
 import { loadWorkArea } from "../workAreaStorage";
 import { isValidParent, listParentCandidates } from "../parentLink";
 import { buildReparentPatch } from "../reparent";
@@ -136,6 +137,7 @@ export function TimelinePanel() {
   );
   const [cachedFrames, setCachedFrames] = useState<Set<number>>(() => new Set());
   const [cachedLayerFrames, setCachedLayerFrames] = useState<Map<string, Set<number>>>(() => new Map());
+  const [cachedPrecompFrames, setCachedPrecompFrames] = useState<Map<string, Set<number>>>(() => new Map());
 
   useEffect(() => {
     return previewCacheService.subscribe(setCachedFrames);
@@ -143,6 +145,10 @@ export function TimelinePanel() {
 
   useEffect(() => {
     return previewCacheService.subscribeLayerFrames(setCachedLayerFrames);
+  }, [compId, workAreaRevision]);
+
+  useEffect(() => {
+    return previewCacheService.subscribePrecompFrames(setCachedPrecompFrames);
   }, [compId, workAreaRevision]);
   // P1-5: タイムラインは zOrder 降順で表示（最前面=最上段, AE 準拠）。配列順ではなく描画順に並べる。
   const objects = [...(comp?.objects ?? [])].sort((a, b) => b.zOrder - a.zOrder);
@@ -1043,6 +1049,7 @@ export function TimelinePanel() {
             graphMode={graphMode}
             viewRange={viewRange}
             cachedLocalFrames={cachedLayerFrames.get(obj.id)}
+            cachedPrecompFrames={cachedPrecompFrames}
             onSetProp={setPropByPath}
             beginKfDrag={beginKfDrag}
             beginLayerBarDrag={beginLayerBarDrag}
@@ -1360,22 +1367,25 @@ function PreviewCacheBar({
  * [inPoint, outPoint) 内をバーのすぐ上（top:1, 高さ 2px）に緑表示。
  */
 function LayerCacheLine({
-  localFrames,
+  frames,
+  mapToComp,
   inPoint,
   outPoint,
   viewRange,
   frameToPercent,
 }: {
-  localFrames: Set<number> | undefined;
+  frames: Set<number> | undefined;
+  /** キャッシュキーのフレーム（local/child）→ comp(B) フレームへの写像（§28.10/§28.11）。 */
+  mapToComp: (f: number) => number;
   inPoint: number;
   outPoint: number;
   viewRange: { start: number; end: number };
   frameToPercent: (f: number) => number;
 }) {
-  if (!localFrames || localFrames.size === 0) return null;
+  if (!frames || frames.size === 0) return null;
   const compFrames: number[] = [];
-  for (const lf of localFrames) {
-    const cf = lf + inPoint;
+  for (const f of frames) {
+    const cf = mapToComp(f);
     if (cf >= inPoint && cf < outPoint) compFrames.push(cf);
   }
   if (compFrames.length === 0) return null;
@@ -1487,6 +1497,7 @@ interface LayerRowProps {
   graphMode: boolean;
   viewRange: { start: number; end: number };
   cachedLocalFrames: Set<number> | undefined;
+  cachedPrecompFrames: Map<string, Set<number>>;
   onSetProp: (objId: string, path: PropPath, next: AnimatedProp<unknown>, label: string) => void;
   beginKfDrag: (objId: string, path: PropPath, frame: number, e: React.MouseEvent) => void;
   beginLayerBarDrag: (objId: string, mode: "in" | "out" | "move", e: React.MouseEvent) => void;
@@ -1551,7 +1562,7 @@ function ParentSelect({
 }
 
 function LayerRow(props: LayerRowProps) {
-  const { obj, index, frame, selected, expandMode, selectedKfs, kfDrag, isDropTarget, barDrag, graphMode, viewRange, cachedLocalFrames, sourceExtent, onSetProp, beginKfDrag, beginLayerBarDrag, onKfRightClick, onToggleExpand, onSelectLayer, onRemove, onUpdate, onSetParent, allObjects, onPreviewPatch, frameToPercent, onLayerDragStart, onLayerDragOver, onLayerDrop, onLayerDragEnd } = props;
+  const { obj, index, frame, selected, expandMode, selectedKfs, kfDrag, isDropTarget, barDrag, graphMode, viewRange, cachedLocalFrames, cachedPrecompFrames, sourceExtent, onSetProp, beginKfDrag, beginLayerBarDrag, onKfRightClick, onToggleExpand, onSelectLayer, onRemove, onUpdate, onSetParent, allObjects, onPreviewPatch, frameToPercent, onLayerDragStart, onLayerDragOver, onLayerDrop, onLayerDragEnd } = props;
   // P1-6: バードラッグのプレビューはパネル管理の barDrag から導出（複数選択を一括移動するため）。
   const dDelta = barDrag ? barDrag.delta : 0;
   const inPoint = barDrag && barDrag.mode !== "out" ? obj.inPoint + dDelta : obj.inPoint;
@@ -1560,6 +1571,16 @@ function LayerRow(props: LayerRowProps) {
   const trimStart = sourceExtent
     ? (barDrag && barDrag.mode === "in" ? Math.max(0, sourceExtent.trimStart + dDelta) : sourceExtent.trimStart)
     : 0;
+
+  // §28.11: precomp（comp component）レイヤーの comp 単位キャッシュ緑線用。
+  const precompCacheInfo = (() => {
+    const cc = obj.components.find((c) => c.type === "comp");
+    if (!cc) return null;
+    const cid = cc.props["compId"];
+    if (typeof cid !== "string" || cid === "") return null;
+    const ts = cc.props["trimStart"];
+    return { compId: cid, trimStart: typeof ts === "number" ? ts : 0 };
+  })();
 
   const rowBg = selected ? "#2a3a4a" : "transparent";
 
@@ -1649,12 +1670,23 @@ function LayerRow(props: LayerRowProps) {
             onMove={(e) => beginLayerBarDrag(obj.id, "move", e)}
           />
           <LayerCacheLine
-            localFrames={cachedLocalFrames}
+            frames={cachedLocalFrames}
+            mapToComp={(f) => f + inPoint}
             inPoint={inPoint}
             outPoint={outPoint}
             viewRange={viewRange}
             frameToPercent={frameToPercent}
           />
+          {precompCacheInfo && (
+            <LayerCacheLine
+              frames={cachedPrecompFrames.get(precompCacheInfo.compId)}
+              mapToComp={(f) => precompChildToParentFrame(f, precompCacheInfo.trimStart, inPoint)}
+              inPoint={inPoint}
+              outPoint={outPoint}
+              viewRange={viewRange}
+              frameToPercent={frameToPercent}
+            />
+          )}
           <PlayheadTick frame={frame} frameToPercent={frameToPercent} />
         </div>
       </div>
