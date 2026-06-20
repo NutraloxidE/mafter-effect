@@ -234,6 +234,10 @@ export function getLayerLocalBounds(
   project: Project,
   boundsCtx?: LayerBoundsContext,
 ): LocalBounds {
+  if (obj.isNull) {
+    return { minX: -50, minY: -50, maxX: 50, maxY: 50 };
+  }
+
   let minX = 0;
   let minY = 0;
   let maxX = 100;

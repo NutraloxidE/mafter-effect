@@ -10,6 +10,7 @@ import {
   compToObjectLocal,
   compensatePositionForAnchor,
   compWithTransformOverride,
+  compWithObjectPatch,
   computeWorldTransforms,
   getLayerLocalBounds,
   mergeObjectPreviewOverride,
@@ -106,6 +107,18 @@ export function PreviewViewerOverlay({
     [selectedObject, previewOverride],
   );
 
+  /** ドラッグ/スクラブ中の transform を反映した comp（DomRenderer の renderComp と同型）。 */
+  const overlayComp = useMemo(() => {
+    let c = comp;
+    if (previewOverride) {
+      c = compWithObjectPatch(c, previewOverride.objectId, previewOverride.patch);
+    }
+    if (draftTransform && selectedObject) {
+      c = compWithTransformOverride(c, selectedObject.id, draftTransform);
+    }
+    return c;
+  }, [comp, draftTransform, previewOverride, selectedObject]);
+
   const activeTransform = draftTransform ?? effectiveObject?.transform ?? null;
   const activeResolved = activeTransform
     ? resolveTransformAtFrame(activeTransform, frame)
@@ -115,6 +128,35 @@ export function PreviewViewerOverlay({
     () => ({ textQuality, getFont, getImageSize }),
     [textQuality, getFont, getImageSize],
   );
+
+  const nullWireframes = useMemo(() => {
+    const worlds = computeWorldTransforms(overlayComp, frame, resolveCtx);
+    const items: {
+      id: string;
+      corners: Vec3[];
+      crossH: [Vec3, Vec3];
+      crossV: [Vec3, Vec3];
+    }[] = [];
+    for (const obj of overlayComp.objects) {
+      if (!obj.isNull || !obj.enabled || frame < obj.inPoint || frame >= obj.outPoint) continue;
+      const world = worlds.get(obj.id);
+      if (!world) continue;
+      const bounds = getLayerLocalBounds(obj, frame, project, boundsCtx);
+      items.push({
+        id: obj.id,
+        corners: projectBoundsToComp(bounds, world),
+        crossH: [
+          transformPoint(world, { x: bounds.minX, y: 0, z: 0 }),
+          transformPoint(world, { x: bounds.maxX, y: 0, z: 0 }),
+        ],
+        crossV: [
+          transformPoint(world, { x: 0, y: bounds.minY, z: 0 }),
+          transformPoint(world, { x: 0, y: bounds.maxY, z: 0 }),
+        ],
+      });
+    }
+    return items;
+  }, [boundsCtx, frame, overlayComp, project, resolveCtx]);
 
   const selectionAabb = computeSelectionAabb(
     effectiveObject,
@@ -349,6 +391,34 @@ export function PreviewViewerOverlay({
           ))}
         </g>
       )}
+
+      {nullWireframes.map(({ id, corners, crossH, crossV }) => {
+        const selected = selectedObject?.id === id;
+        const stroke = selected ? "#ff8888" : "#e0707099";
+        const strokeWidth = selected ? 2 : 1;
+        const points = corners.map((c) => `${c.x},${c.y}`).join(" ");
+        return (
+          <g key={`null-${id}`}>
+            <polygon points={points} fill="none" stroke={stroke} strokeWidth={strokeWidth} />
+            <line
+              x1={crossH[0].x}
+              y1={crossH[0].y}
+              x2={crossH[1].x}
+              y2={crossH[1].y}
+              stroke={stroke}
+              strokeWidth={strokeWidth}
+            />
+            <line
+              x1={crossV[0].x}
+              y1={crossV[0].y}
+              x2={crossV[1].x}
+              y2={crossV[1].y}
+              stroke={stroke}
+              strokeWidth={strokeWidth}
+            />
+          </g>
+        );
+      })}
 
       {selectionAabb && effectiveObject && activeResolved && (
         <SelectionHandles
