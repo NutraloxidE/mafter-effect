@@ -992,6 +992,8 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const comp = currentTimelineComp(get().project, get().currentCompId);
     const obj = comp?.objects.find((o) => o.id === objId);
     if (!obj) return;
+    // §30.1: Null と Adjustment は排他。Null レイヤーは調整レイヤーにできない。
+    if (obj.isNull) return;
     const next = !obj.isAdjustment;
     get().updateObject(objId, {
       isAdjustment: next ? true : undefined,

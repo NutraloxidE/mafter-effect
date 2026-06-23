@@ -1009,8 +1009,12 @@ AE の「Parent & Link」相当。**スキーマ不変** — 既存 `SceneObject
 
 - 確定は `updateObjects` 経由 **1 command / 1 undo**（§21.5）。
 - **複数選択**: プルダウン操作行が選択集合に含まれるとき、**選択中の全レイヤー**に同一 `parent` を適用。含まれないときは操作行のみ。
-- **world 保持（AE 準拠）**: 親変更時、**現フレーム**の world transform を維持するよう `transform`（position / rotation / scale）を補正。`anchor` は維持。編集時のみ行列計算（INV-1）。
-- **animated**: §21.2 規約 — KF あり Vec3 チャンネルは現 frame に KF 更新、static は `value` 更新。
+- **world 保持（AE 準拠）**: 親変更時、world transform を維持するよう `transform`（position / rotation / scale）を補正。`anchor` は維持。編集時のみ行列計算（INV-1）。
+- **animated（全 KF 補正・確定）**: KF あり Vec3 チャンネルは **現フレームだけでなく全 KF を各 frame で補正**する。各 KF frame `f` で `L_new(f) = invert(W_parentNew(f)) · W_childOld(f)` を decompose し、その frame の KF 値へ上書き（**KF 位置と easing は保持**、value のみ差し替え）。
+  - **static 親（Null の常態 = 定数オフセット）** → 全フレーム厳密に world 保持（KF 間の補間結果も一致）。
+  - **animated 親** → 各 KF frame では厳密保持・KF 間は近似（KF 表現の本質的限界・AE 同様）。
+  - KF が無い（static）チャンネルは現フレームの decompose で `value` を更新。
+  - ⚠ 旧実装は**現フレームの 1 KF のみ**補正していたため、KF 付きレイヤーを親付けすると他フレームで座標がずれるバグがあった（2026-06 修正）。`computeWorldTransforms` は対象 frame 集合（全 KF frame ∪ 現フレーム）に 1 回ずつ呼ぶ。
 - 無効操作（循環・存在しない id）は UI で reject + ステータスフィードバック。project.json には書かない。
 
 #### §21.8.3 実装タッチポイント
@@ -2271,6 +2275,7 @@ interface SceneObject {
 ```
 
 - **相互排他**: `isNull === true` と `isAdjustment === true` は同時不可。load 時 warn + store 作成時ガード。
+  - **`toggleAdjustment(objId)` ガード**: 対象が `isNull` なら **no-op**（Null を調整レイヤーに変えない）。排他をストア操作でも担保する（2026-06 補記）。
 - **content**: Null 作成時 `components: []` 固定。component を持たない。
 - **Effects**: 許可（AE 同様。可視コンテンツがないため実質 noop。UI 制限なし）。
 
