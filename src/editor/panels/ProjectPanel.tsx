@@ -37,6 +37,7 @@ export function ProjectPanel() {
   const imageInput = useRef<HTMLInputElement>(null);
 
   const [showExport, setShowExport] = useState(false);
+  const [showNewConfirm, setShowNewConfirm] = useState(false);
   const [renamingId, setRenamingId] = useState<string | null>(null);
 
   // pluginsVersion が変化したら registry から最新の component 一覧を取得
@@ -48,6 +49,21 @@ export function ProjectPanel() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a"); a.href = url; a.download = "mafter-project.zip"; a.click();
     URL.revokeObjectURL(url);
+  };
+
+  // §20.4b: 新規プロジェクト時の保存確認ダイアログの 3 ボタン挙動。
+  const onNewSaveThenCreate = async () => {
+    // web 版: zip ダウンロードで保存。
+    // TODO(desktop): デスクトップ版では OS のファイルダイアログで保存先を指定して
+    //   書き出す（File System Access API / Electron）。現状は web と同じ zip 経路に
+    //   フォールバックする（§20.4b）。
+    await onExportZip();
+    newProject();
+    setShowNewConfirm(false);
+  };
+  const onNewDiscardThenCreate = () => {
+    newProject();
+    setShowNewConfirm(false);
   };
 
   const onImportZip = async (file: File) => {
@@ -85,7 +101,7 @@ export function ProjectPanel() {
           {project?.meta.name ?? "No project"}
         </div>
         <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-          <button onClick={newProject} style={btnStyle}>New</button>
+          <button onClick={() => setShowNewConfirm(true)} style={btnStyle}>New</button>
           <button onClick={() => void saveToFs()} style={btnStyle}>Save</button>
           <button onClick={() => void loadFromFs()} style={btnStyle}>Reload</button>
           <button onClick={() => void onExportZip()} style={btnStyle}>⬇ zip</button>
@@ -267,9 +283,72 @@ export function ProjectPanel() {
           onClose={() => setShowExport(false)}
         />
       )}
+
+      {/* §20.4b: 新規プロジェクト保存確認ダイアログ */}
+      {showNewConfirm && (
+        <NewProjectConfirm
+          projectName={project?.meta.name ?? "Untitled"}
+          onSave={() => { void onNewSaveThenCreate(); }}
+          onDiscard={onNewDiscardThenCreate}
+          onCancel={() => setShowNewConfirm(false)}
+        />
+      )}
     </div>
   );
 }
+
+// §20.4b: New 押下時の「保存しますか？」モーダル。ExportDialog と同じ overlay スタイル。
+function NewProjectConfirm({
+  projectName, onSave, onDiscard, onCancel,
+}: {
+  projectName: string;
+  onSave: () => void;
+  onDiscard: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div
+      style={confirmOverlay}
+      onClick={onCancel}
+      onKeyDown={(e) => { if (e.key === "Escape") onCancel(); }}
+    >
+      <div style={confirmDialog} onClick={(e) => e.stopPropagation()}>
+        <div style={{ fontWeight: "bold", fontSize: 13, color: "#ddd", marginBottom: 8 }}>
+          新規プロジェクト
+        </div>
+        <div style={{ color: "#bbb", lineHeight: 1.6, marginBottom: 16 }}>
+          現在のプロジェクト「{projectName}」を保存しますか？<br />
+          保存しない変更は失われます。
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <button onClick={onSave} style={confirmPrimaryBtn} autoFocus>はい（保存）</button>
+          <button onClick={onDiscard} style={confirmBtn}>いいえ</button>
+          <button onClick={onCancel} style={confirmBtn}>キャンセル</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const confirmOverlay: React.CSSProperties = {
+  position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", display: "flex",
+  alignItems: "center", justifyContent: "center", zIndex: 9999,
+};
+
+const confirmDialog: React.CSSProperties = {
+  background: "#1e1e1e", border: "1px solid #444", borderRadius: 6,
+  padding: 16, width: 340, maxWidth: "90vw", color: "#ccc", fontSize: 12,
+  boxShadow: "0 8px 32px rgba(0,0,0,.6)",
+};
+
+const confirmBtn: React.CSSProperties = {
+  background: "#2a2a2a", border: "1px solid #444", color: "#bbb",
+  borderRadius: 3, padding: "5px 12px", cursor: "pointer", fontSize: 11,
+};
+
+const confirmPrimaryBtn: React.CSSProperties = {
+  ...confirmBtn, background: "#2a4a3a", color: "#8da", borderColor: "#4a7a5a",
+};
 
 function SectionHeader({ label, children }: { label: string; children?: React.ReactNode }) {
   return (
