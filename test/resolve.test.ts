@@ -203,4 +203,76 @@ describe("resolve — camera (§6.5)", () => {
     const origin = transformPoint(scene.camera!.viewMatrix, vec3(0, 0, 0));
     expect(origin.z).toBeCloseTo(-500, 6);
   });
+
+  it("derives fov from zoom(px): fov = 2·atan((h/2)/zoom) (§6.5b)", () => {
+    // h=1080, zoom = 540/tan(25°) → fov = 50°
+    const zoom = 540 / Math.tan((25 * Math.PI) / 180);
+    const cam = atPos("cam", vec3(0, 0, 500), {
+      components: [{ type: "camera", props: { cameraType: "one-node", zoom } }],
+    });
+    const scene = resolve(comp([cam], { activeCamera: "cam" }), 0);
+    expect(scene.camera!.fov).toBeCloseTo(50, 4);
+  });
+
+  it("two-node camera looks at pointOfInterest (target in front, z<0) (§6.5b)", () => {
+    const cam = atPos("cam", vec3(0, 0, 500), {
+      components: [
+        { type: "camera", props: { cameraType: "two-node", pointOfInterest: vec3(0, 0, 0), zoom: 1000 } },
+      ],
+    });
+    const scene = resolve(comp([cam], { activeCamera: "cam" }), 0);
+    // POI (origin) sits in front of the camera → view-space z negative.
+    const poiInView = transformPoint(scene.camera!.viewMatrix, vec3(0, 0, 0));
+    expect(poiInView.z).toBeLessThan(0);
+    expect(poiInView.x).toBeCloseTo(0, 4);
+    expect(poiInView.y).toBeCloseTo(0, 4);
+  });
+
+  it("straight-down two-node view == one-node invert(translate(eye)): no X/Y mirror (§6.5b)", () => {
+    // camera directly in front of POI along +z → must match the one-node convention (translate(-eye)).
+    const cam = atPos("cam", vec3(960, 540, 1158), {
+      components: [
+        { type: "camera", props: { cameraType: "two-node", pointOfInterest: vec3(960, 540, 0), zoom: 1158 } },
+      ],
+    });
+    const scene = resolve(comp([cam], { activeCamera: "cam" }), 0);
+    const v = scene.camera!.viewMatrix;
+    // a point to the right of POI maps to view +x (NOT mirrored to -x).
+    const right = transformPoint(v, vec3(960 + 100, 540, 0));
+    expect(right.x).toBeCloseTo(100, 3);
+    // a point below POI (world +y) maps to view +y (no flip).
+    const below = transformPoint(v, vec3(960, 540 + 100, 0));
+    expect(below.y).toBeCloseTo(100, 3);
+  });
+});
+
+describe("resolve — 3D mode resolution (§5.4b)", () => {
+  it("threeD!=true → no mode3d (flat 2D)", () => {
+    const scene = resolve(comp([makeObject({ id: "a" })]), 0);
+    expect(scene.objects[0]!.threeD).toBeUndefined();
+    expect(scene.objects[0]!.mode3d).toBeUndefined();
+  });
+
+  it("auto follows comp.renderer3d: classic→dom, advanced→raster3d", () => {
+    const classic = resolve(comp([makeObject({ id: "a", threeD: true })], { renderer3d: "classic" }), 0);
+    expect(classic.objects[0]!.mode3d).toBe("dom");
+    const advanced = resolve(comp([makeObject({ id: "a", threeD: true })], { renderer3d: "advanced" }), 0);
+    expect(advanced.objects[0]!.mode3d).toBe("raster3d");
+    // default (no renderer3d) = classic
+    const def = resolve(comp([makeObject({ id: "a", threeD: true })]), 0);
+    expect(def.objects[0]!.mode3d).toBe("dom");
+  });
+
+  it("explicit threeDMode overrides comp renderer3d", () => {
+    const overrideRaster = resolve(
+      comp([makeObject({ id: "a", threeD: true, threeDMode: "raster3d" })], { renderer3d: "classic" }),
+      0,
+    );
+    expect(overrideRaster.objects[0]!.mode3d).toBe("raster3d");
+    const overrideDom = resolve(
+      comp([makeObject({ id: "a", threeD: true, threeDMode: "dom" })], { renderer3d: "advanced" }),
+      0,
+    );
+    expect(overrideDom.objects[0]!.mode3d).toBe("dom");
+  });
 });

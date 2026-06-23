@@ -13,6 +13,7 @@ import {
   type PropPath,
 } from "../keyframeEdit";
 import { currentTimelineComp, setKeyframe, useEditorStore } from "../store";
+import { isRgba } from "../ColorSwatch";
 import { getLayerSourceExtent, shiftFootageSourceOffset, type LayerSourceExtent } from "../layerSourceOffset";
 import { DRAG_MIME } from "./ProjectPanel";
 import { ScrubNumber } from "../ScrubNumber";
@@ -110,6 +111,9 @@ export function TimelinePanel() {
   const addText = useEditorStore((s) => s.addText);
   const addAdjustmentLayer = useEditorStore((s) => s.addAdjustmentLayer);
   const addNullLayer = useEditorStore((s) => s.addNullLayer);
+  const addCamera = useEditorStore((s) => s.addCamera);
+  const setActiveCamera = useEditorStore((s) => s.setActiveCamera);
+  const setCompRenderer3d = useEditorStore((s) => s.setCompRenderer3d);
   const removeObject = useEditorStore((s) => s.removeObject);
   const selectObjects = useEditorStore((s) => s.selectObjects);
   const updateObjects = useEditorStore((s) => s.updateObjects);
@@ -971,6 +975,31 @@ export function TimelinePanel() {
         <button onClick={() => { const id = addText(); if (id) selectObjects([id]); }} disabled={!comp} style={btnStyle}>+ Text</button>
         <button onClick={() => { const id = addAdjustmentLayer(); if (id) selectObjects([id]); }} disabled={!comp} style={{ ...btnStyle, color: "#c9a227" }} title="調整レイヤーを追加">+ Adj</button>
         <button onClick={() => { const id = addNullLayer(); if (id) selectObjects([id]); }} disabled={!comp} style={{ ...btnStyle, color: "#e07070" }} title="Null レイヤーを追加">+ Null</button>
+        <button onClick={() => { const id = addCamera(); if (id) selectObjects([id]); }} disabled={!comp} style={{ ...btnStyle, color: "#7fb8f0" }} title="カメラを追加（§6.5b）">+ Cam</button>
+        {comp && (
+          <>
+            <select
+              value={comp.activeCamera ?? ""}
+              onChange={(e) => setActiveCamera(e.target.value === "" ? null : e.target.value)}
+              title="アクティブカメラ（§6.5）"
+              style={{ ...btnStyle, fontSize: 10, padding: "1px 4px", color: "#7fb8f0" }}
+            >
+              <option value="">No Camera</option>
+              {objects.filter((o) => o.components.some((c) => c.type === "camera")).map((o) => (
+                <option key={o.id} value={o.id}>{o.name}</option>
+              ))}
+            </select>
+            <select
+              value={comp.renderer3d ?? "classic"}
+              onChange={(e) => setCompRenderer3d(e.target.value as "classic" | "advanced")}
+              title="3D レンダラー（§5.4b）— classic=DOM疑似3D / advanced=raster3d(GL, Phase2)"
+              style={{ ...btnStyle, fontSize: 10, padding: "1px 4px", color: "#7fd0a8" }}
+            >
+              <option value="classic">3D: Classic</option>
+              <option value="advanced">3D: Advanced</option>
+            </select>
+          </>
+        )}
         <div style={{ flex: 1 }} />
         {/* P1-8: スナップトグル */}
         <button
@@ -1060,6 +1089,7 @@ export function TimelinePanel() {
             onUpdate={updateObject}
             onSetParent={handleSetParent}
             allObjects={objects}
+            activeCameraId={comp?.activeCamera ?? null}
             onPreviewPatch={(id, patch) => setPreviewOverride({ objectId: id, patch })}
             frameToPercent={frameToPercent}
             sourceExtent={project ? getLayerSourceExtent(obj, project, fps) : null}
@@ -1508,6 +1538,7 @@ interface LayerRowProps {
   onUpdate: (id: string, patch: Partial<SceneObject>, label?: string) => void;
   onSetParent: (sourceObjId: string, newParentId: string | null) => void;
   allObjects: SceneObject[];
+  activeCameraId: string | null;
   onPreviewPatch?: (id: string, patch: Partial<SceneObject>) => void;
   frameToPercent: (f: number) => number;
   sourceExtent: LayerSourceExtent | null;
@@ -1562,7 +1593,7 @@ function ParentSelect({
 }
 
 function LayerRow(props: LayerRowProps) {
-  const { obj, index, frame, selected, expandMode, selectedKfs, kfDrag, isDropTarget, barDrag, graphMode, viewRange, cachedLocalFrames, cachedPrecompFrames, sourceExtent, onSetProp, beginKfDrag, beginLayerBarDrag, onKfRightClick, onToggleExpand, onSelectLayer, onRemove, onUpdate, onSetParent, allObjects, onPreviewPatch, frameToPercent, onLayerDragStart, onLayerDragOver, onLayerDrop, onLayerDragEnd } = props;
+  const { obj, index, frame, selected, expandMode, selectedKfs, kfDrag, isDropTarget, barDrag, graphMode, viewRange, cachedLocalFrames, cachedPrecompFrames, sourceExtent, onSetProp, beginKfDrag, beginLayerBarDrag, onKfRightClick, onToggleExpand, onSelectLayer, onRemove, onUpdate, onSetParent, allObjects, activeCameraId, onPreviewPatch, frameToPercent, onLayerDragStart, onLayerDragOver, onLayerDrop, onLayerDragEnd } = props;
   // P1-6: バードラッグのプレビューはパネル管理の barDrag から導出（複数選択を一括移動するため）。
   const dDelta = barDrag ? barDrag.delta : 0;
   const inPoint = barDrag && barDrag.mode !== "out" ? obj.inPoint + dDelta : obj.inPoint;
@@ -1630,6 +1661,16 @@ function LayerRow(props: LayerRowProps) {
           >
             {obj.enabled ? "👁" : "—"}
           </button>
+          {!obj.components.some((c) => c.type === "camera") && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onUpdate(obj.id, { threeD: obj.threeD ? undefined : true }, obj.threeD ? "Disable 3D layer" : "Enable 3D layer"); }}
+              style={{ ...iconBtn, fontSize: 9, fontWeight: 700, opacity: obj.threeD ? 1 : 0.4, color: obj.threeD ? "#7fd0a8" : "#888" }}
+              title="3D レイヤー切替（§5.4b）"
+            >
+              3D
+            </button>
+          )}
+          <SolidColorChip obj={obj} frame={frame} onUpdate={onUpdate} onPreviewPatch={onPreviewPatch} />
           <span style={{ flex: 1, color: selected ? "#7fb8f0" : "#bbb", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {obj.name}
             {obj.isAdjustment && (
@@ -1639,6 +1680,16 @@ function LayerRow(props: LayerRowProps) {
             )}
             {obj.isNull && (
               <span style={{ marginLeft: 4, fontSize: 9, color: "#e07070", fontWeight: 600 }}>NULL</span>
+            )}
+            {obj.threeD && (
+              <span style={{ marginLeft: 4, fontSize: 9, color: "#7fd0a8", fontWeight: 600 }}>
+                {obj.threeDMode === "raster3d" ? "3D·RAS" : obj.threeDMode === "dom" ? "3D·DOM" : "3D"}
+              </span>
+            )}
+            {obj.components.some((c) => c.type === "camera") && (
+              <span style={{ marginLeft: 4, fontSize: 9, color: "#7fb8f0", fontWeight: 600 }}>
+                {activeCameraId === obj.id ? "CAM●" : "CAM"}
+              </span>
             )}
           </span>
           <ParentSelect
@@ -1771,6 +1822,109 @@ function LayerRow(props: LayerRowProps) {
         </div>
       )}
     </div>
+  );
+}
+
+// §31.2 Solid レイヤー行のカラースウォッチチップ。クリックでネイティブピッカー。
+// RGB のみクイック変更（alpha は Inspector の ColorSwatch に委ねる）。
+function rgbToHex(c: RGBA): string {
+  const h = (n: number) => Math.round(Math.min(1, Math.max(0, n)) * 255).toString(16).padStart(2, "0");
+  return `#${h(c.r)}${h(c.g)}${h(c.b)}`;
+}
+function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex);
+  if (!m) return null;
+  const n = parseInt(m[1]!, 16);
+  return { r: ((n >> 16) & 255) / 255, g: ((n >> 8) & 255) / 255, b: (n & 255) / 255 };
+}
+
+function SolidColorChip({
+  obj, frame, onUpdate, onPreviewPatch,
+}: {
+  obj: SceneObject;
+  frame: number;
+  onUpdate: (id: string, patch: Partial<SceneObject>, label?: string) => void;
+  onPreviewPatch?: (id: string, patch: Partial<SceneObject>) => void;
+}) {
+  const compIdx = obj.components.findIndex((c) => c.type === "solid");
+  if (compIdx < 0 || obj.isNull || obj.isAdjustment) return null;
+  const colorProp = obj.components[compIdx]!.props["color"];
+  if (!isAnimatedProp(colorProp)) return null;
+  const sampled = sampleAny(colorProp, frame);
+  const cur: RGBA = isRgba(sampled) ? sampled : { r: 0.5, g: 0.5, b: 0.9, a: 1 };
+  return (
+    <SolidColorChipInner
+      objId={obj.id}
+      components={obj.components}
+      compIdx={compIdx}
+      colorProp={colorProp as AnimatedProp<RGBA>}
+      frame={frame}
+      cur={cur}
+      onUpdate={onUpdate}
+      onPreviewPatch={onPreviewPatch}
+    />
+  );
+}
+
+function SolidColorChipInner({
+  objId, components, compIdx, colorProp, frame, cur, onUpdate, onPreviewPatch,
+}: {
+  objId: string;
+  components: Component[];
+  compIdx: number;
+  colorProp: AnimatedProp<RGBA>;
+  frame: number;
+  cur: RGBA;
+  onUpdate: (id: string, patch: Partial<SceneObject>, label?: string) => void;
+  onPreviewPatch?: (id: string, patch: Partial<SceneObject>) => void;
+}) {
+  const curHex = rgbToHex(cur);
+  // ピッカー操作中は preview のみ更新（obj は未変更）。controlled な value が
+  // スナップバックしないよう draft をローカルに持つ（ColorSwatch と同型）。
+  const [draft, setDraft] = useState(curHex);
+  const editingRef = useRef(false);
+  const baseRef = useRef(curHex);
+
+  useEffect(() => {
+    if (!editingRef.current) {
+      setDraft(curHex);
+      baseRef.current = curHex;
+    }
+  }, [curHex]);
+
+  const buildComponents = (hex: string): Component[] => {
+    const rgb = hexToRgb(hex);
+    if (!rgb) return components;
+    const next: RGBA = { ...rgb, a: cur.a };
+    return components.map((c, i) => {
+      if (i !== compIdx) return c;
+      const nextColor = colorProp.keyframes.length > 0
+        ? setKeyframe(colorProp, frame, next)
+        : { ...colorProp, value: next };
+      return { ...c, props: { ...c.props, color: nextColor } };
+    });
+  };
+
+  return (
+    <input
+      type="color"
+      value={draft}
+      onClick={(e) => e.stopPropagation()}
+      onChange={(e) => {
+        editingRef.current = true;
+        setDraft(e.target.value);
+        onPreviewPatch?.(objId, { components: buildComponents(e.target.value) });
+      }}
+      onBlur={() => {
+        editingRef.current = false;
+        if (draft !== baseRef.current) {
+          onUpdate(objId, { components: buildComponents(draft) }, "Edit solid color");
+          baseRef.current = draft;
+        }
+      }}
+      title="ソリッドの色"
+      style={{ width: 16, height: 16, padding: 0, border: "1px solid #555", background: "transparent", cursor: "pointer", flexShrink: 0, borderRadius: 2 }}
+    />
   );
 }
 

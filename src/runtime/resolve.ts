@@ -10,7 +10,7 @@ import type {
   Vec3,
 } from "../core/schema";
 import { sampleAny, sampleScalar, sampleVec3 } from "./interpolate";
-import { identity, invert, localMatrix, multiply, type Mat4 } from "./mat4";
+import { identity, invert, localMatrix, lookAt, multiply, type Mat4 } from "./mat4";
 import type { ResolvedComponent, ResolvedEffect, ResolvedObject, ResolvedScene } from "./resolved";
 
 // §6.3 / §8 resolve(comp, frame): 純関数 (INV-1)。
@@ -131,6 +131,38 @@ function isVisible(obj: SceneObject, frame: Frame): boolean {
   return obj.enabled && frame >= obj.inPoint && frame < obj.outPoint;
 }
 
+function isVec3ish(v: unknown): v is Vec3 {
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    typeof (v as Vec3).x === "number" &&
+    typeof (v as Vec3).y === "number" &&
+    typeof (v as Vec3).z === "number"
+  );
+}
+
+/** §6.5b カメラ垂直画角[deg]。zoom(px) を優先、無ければ旧 fov、既定 50。 */
+function cameraFovDeg(cameraComp: Component, frame: Frame, height: number): number {
+  const zoom = sampleAny(cameraComp.props.zoom, frame);
+  if (typeof zoom === "number" && zoom > 0) {
+    return (2 * Math.atan(height / 2 / zoom) * 180) / Math.PI;
+  }
+  const fov = sampleAny(cameraComp.props.fov, frame);
+  return typeof fov === "number" ? fov : 50;
+}
+
+/** §5.4b 実効描画経路を解決（threeD 時のみ）。 */
+function effective3dMode(
+  obj: SceneObject,
+  renderer3d: "classic" | "advanced",
+): "dom" | "raster3d" | undefined {
+  if (obj.threeD !== true) return undefined;
+  const mode = obj.threeDMode ?? "auto";
+  if (mode === "dom") return "dom";
+  if (mode === "raster3d") return "raster3d";
+  return renderer3d === "advanced" ? "raster3d" : "dom"; // auto
+}
+
 export function resolve(
   comp: TimelineComposition,
   frame: Frame,
@@ -165,6 +197,7 @@ export function resolve(
     return world;
   };
 
+  const renderer3d = comp.renderer3d ?? "classic";
   const objects: ResolvedObject[] = [];
   for (const obj of comp.objects) {
     if (!isVisible(obj, frame)) continue;
@@ -184,6 +217,11 @@ export function resolve(
     if (obj.isAdjustment) resolved.isAdjustment = true;
     if (obj.isAdjustment && obj.adjustmentMode) resolved.adjustmentMode = obj.adjustmentMode;
     if (obj.isNull) resolved.isNull = true;
+    const mode3d = effective3dMode(obj, renderer3d); // §5.4b
+    if (mode3d) {
+      resolved.threeD = true;
+      resolved.mode3d = mode3d;
+    }
     objects.push(resolved);
   }
 
@@ -198,14 +236,24 @@ export function resolve(
     objects,
   };
 
-  // active camera: viewMatrix = world の逆（§6.5）。
+  // active camera（§6.5 / §6.5b）。one-node: view = world の逆。two-node: lookAt で注視点を向く。
   if (comp.activeCamera && byId.has(comp.activeCamera)) {
     const camObj = byId.get(comp.activeCamera)!;
-    const view = invert(worldOf(camObj.id));
+    const camWorld = worldOf(camObj.id);
+    const cameraComp = camObj.components.find((c) => c.type === "camera");
+    const camType = cameraComp ? sampleAny(cameraComp.props.cameraType, frame) : undefined;
+    let view: Mat4 | null;
+    if (camType === "two-node" && cameraComp) {
+      const eye: Vec3 = { x: camWorld[12], y: camWorld[13], z: camWorld[14] };
+      const poiRaw = sampleAny(cameraComp.props.pointOfInterest, frame);
+      const poi = isVec3ish(poiRaw) ? poiRaw : { x: 0, y: 0, z: 0 };
+      // up=+y: 真下視で view = invert(translate(eye))（= one-node 規約）に一致し、X 反転しない。
+      view = lookAt(eye, poi, { x: 0, y: 1, z: 0 });
+    } else {
+      view = invert(camWorld);
+    }
     if (view) {
-      const cameraComp = camObj.components.find((c) => c.type === "camera");
-      const fovRaw = cameraComp ? sampleAny(cameraComp.props.fov, frame) : undefined;
-      const fov = typeof fovRaw === "number" ? fovRaw : 50;
+      const fov = cameraComp ? cameraFovDeg(cameraComp, frame, comp.height) : 50;
       scene.camera = { fov, viewMatrix: view };
     }
   }

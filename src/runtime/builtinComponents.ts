@@ -34,8 +34,28 @@ const IMAGE_COMPONENT_DEF: ComponentDef = {
   render() { /* DomRenderer */ },
 };
 
+/**
+ * §6.5b カメラ（AE 準拠）。render は no-op — resolve() が props を読んで scene.camera を供給する。
+ * 可変は zoom(px)。fov = 2·atan((compHeight/2)/zoom)。two-node は pointOfInterest を向く。
+ */
+const CAMERA_COMPONENT_DEF: ComponentDef = {
+  type: "camera",
+  label: "Camera",
+  previewBakeRequired: false,
+  params: [
+    { key: "cameraType", label: "Type", kind: "enum", default: "two-node", animatable: false, options: ["one-node", "two-node"] },
+    { key: "pointOfInterest", label: "Point of Interest", kind: "vec3", default: { x: 0, y: 0, z: 0 }, animatable: true },
+    { key: "zoom", label: "Zoom", kind: "scalar", default: 1158, animatable: true, min: 1 },
+    { key: "filmSize", label: "Film Size (mm)", kind: "scalar", default: 36, animatable: false, min: 1 },
+    { key: "near", label: "Near", kind: "scalar", default: 1, animatable: false, min: 0.001 },
+    { key: "far", label: "Far", kind: "scalar", default: 10000, animatable: false, min: 1 },
+  ],
+  render() { /* resolve() が scene.camera を供給。描画要素は持たない */ },
+};
+
 /** registry.clear() 後も再登録できる（loadPlugins 経路）。 */
 export function registerBuiltinComponents(): void {
   globalPluginRegistry.registerComponent(TEXT_COMPONENT_DEF);
   globalPluginRegistry.registerComponent(IMAGE_COMPONENT_DEF);
+  globalPluginRegistry.registerComponent(CAMERA_COMPONENT_DEF);
 }

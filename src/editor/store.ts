@@ -12,7 +12,9 @@ import type {
   HtmlComposition,
   Keyframe,
   Project,
+  Renderer3d,
   SceneObject,
+  ThreeDMode,
   TimelineComposition,
   Vec3,
 } from "../core/schema";
@@ -205,6 +207,13 @@ export interface EditorStore {
   setAdjustmentMode: (objId: string, mode: "live" | "raster") => void;
   toggleAdjustment: (objId: string) => void;
   addNullLayer: (name?: string) => string | null;
+
+  // §5.4b / §6.5 3D レイヤー & カメラ
+  addCamera: (name?: string) => string | null;
+  setActiveCamera: (objId: string | null) => void;
+  setThreeD: (objId: string, enabled: boolean) => void;
+  setThreeDMode: (objId: string, mode: ThreeDMode) => void;
+  setCompRenderer3d: (mode: Renderer3d) => void;
 }
 
 export const useEditorStore = create<EditorStore>((set, get) => ({
@@ -1016,6 +1025,102 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     cmdAddObject(get(), obj);
     return id;
   },
+
+  // §6.5b カメラ（AE 準拠・two-node 既定）。comp 中央を注視し、自然なパースになる距離に置く。
+  addCamera: (name) => {
+    const id = newObjectId();
+    const p = get().project;
+    const comp = p?.compositions.find((c) => c.id === get().currentCompId) as TimelineComposition | undefined;
+    if (!p || !comp) return null;
+    const duration = comp.duration;
+    const cx = comp.width / 2;
+    const cy = comp.height / 2;
+    // 既定 fov 50° に対応する zoom(px) = (h/2)/tan(25°)。その距離に前置きすると content が等倍に見える。
+    const zoom = comp.height / 2 / Math.tan((25 * Math.PI) / 180);
+    const transform = defaultTransform();
+    transform.position = staticProp(vec3(cx, cy, zoom)); // comp 中央の正面（+z は視点側）
+    const camName = name ?? defaultCameraName(comp);
+    const obj: SceneObject = {
+      id,
+      name: camName,
+      parent: null,
+      zOrder: nextZOrder(comp),
+      enabled: true,
+      inPoint: 0,
+      outPoint: duration,
+      transform,
+      opacity: staticProp(1),
+      components: [
+        {
+          type: "camera",
+          props: {
+            cameraType: "two-node",
+            pointOfInterest: staticProp(vec3(cx, cy, 0)),
+            zoom: staticProp(zoom),
+            filmSize: 36,
+            near: 1,
+            far: 10000,
+          },
+        },
+      ],
+    };
+    // オブジェクト追加と activeCamera 設定を 1 コマンドにまとめる。
+    const before = get().project!;
+    const withObj: Project = {
+      ...before,
+      compositions: before.compositions.map((c) =>
+        c.id === comp.id && c.kind === "timeline"
+          ? { ...c, objects: [...c.objects, obj], activeCamera: id }
+          : c,
+      ),
+    };
+    get().applyCommand({ label: "Add Camera", before, after: withObj });
+    return id;
+  },
+
+  setActiveCamera: (objId) => {
+    const before = get().project;
+    if (!before) return;
+    const compId = get().currentCompId;
+    const after: Project = {
+      ...before,
+      compositions: before.compositions.map((c) =>
+        c.id === compId && c.kind === "timeline"
+          ? { ...c, activeCamera: objId ?? undefined }
+          : c,
+      ),
+    };
+    get().applyCommand({ label: objId ? "Set Active Camera" : "Clear Active Camera", before, after });
+  },
+
+  setThreeD: (objId, enabled) => {
+    const comp = currentTimelineComp(get().project, get().currentCompId);
+    const obj = comp?.objects.find((o) => o.id === objId);
+    if (!obj) return;
+    get().updateObject(objId, { threeD: enabled ? true : undefined }, enabled ? "Enable 3D layer" : "Disable 3D layer");
+  },
+
+  setThreeDMode: (objId, mode) => {
+    const comp = currentTimelineComp(get().project, get().currentCompId);
+    const obj = comp?.objects.find((o) => o.id === objId);
+    if (!obj) return;
+    get().updateObject(objId, { threeDMode: mode === "auto" ? undefined : mode }, `3D mode: ${mode}`);
+  },
+
+  setCompRenderer3d: (mode) => {
+    const before = get().project;
+    if (!before) return;
+    const compId = get().currentCompId;
+    const after: Project = {
+      ...before,
+      compositions: before.compositions.map((c) =>
+        c.id === compId && c.kind === "timeline"
+          ? { ...c, renderer3d: mode === "classic" ? undefined : mode }
+          : c,
+      ),
+    };
+    get().applyCommand({ label: `3D Renderer: ${mode}`, before, after });
+  },
 }));
 
 declare global {
@@ -1040,6 +1145,12 @@ function defaultNullLayerName(comp: TimelineComposition | undefined): string {
   if (!comp) return "Null";
   const count = comp.objects.filter((o) => o.isNull === true).length;
   return count === 0 ? "Null" : `Null ${count + 1}`;
+}
+
+function defaultCameraName(comp: TimelineComposition | undefined): string {
+  if (!comp) return "Camera 1";
+  const count = comp.objects.filter((o) => o.components.some((c) => c.type === "camera")).length;
+  return `Camera ${count + 1}`;
 }
 
 function defaultEffectProps(def: EffectDef): Record<string, AnimatedProp<unknown> | unknown> {

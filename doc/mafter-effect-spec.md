@@ -185,6 +185,29 @@ interface SceneObject {
 > - 整合性は **load 時 1 パス検証**: 存在しない `parent` id → root 扱い + warn、循環（A→B→A）→ プロジェクトエラー。
 > - DomRenderer は **ネストしない**。`resolve()` が parent チェーンを畳んで各オブジェクトに **world transform を焼き込み**、全オブジェクトを 1 つの root の**兄弟**として `transform: matrix3d(world)` + per-object `opacity` で並べ、`zOrder` を DOM/z-index 順、root に `preserve-3d` をかける。これで zOrder⊥parent / opacity 非継承（CSS opacity は子に合成されない）/ 3D は z 深度でブラウザが合成、が同時に成立する。transform 数学が全部 `resolve()`（純関数）に寄るので §14 の WASM 化にも有利。これはレンダラ実装詳細でありデータは無傷（INV-3）。
 
+### §5.4b 3D レイヤー（additive スキーマ・確定）
+
+> AE の per-layer「3D レイヤー」スイッチ + comp 単位「3D レンダラー」に準拠。**どれも optional**、値があるときだけ直列化（既存 project.json は byte 等価のまま・INV-4）。
+
+```ts
+interface SceneObject {
+  // ...既存フィールド...
+  threeD?: boolean;                          // true = 3D 空間に配置（AE の 3D レイヤースイッチ）。省略/false = 平面 2D
+  threeDMode?: "auto" | "dom" | "raster3d";  // 描画経路。省略 = "auto"（comp.renderer3d に従う）
+}
+
+interface TimelineComposition {
+  // ...既存フィールド...
+  renderer3d?: "classic" | "advanced";       // comp の 3D レンダラー。省略 = "classic"
+}
+```
+
+- **実効モード解決**（`resolve()` で確定し `ResolvedObject` に焼く・INV-3）: `threeD!==true` → 平面 2D。`threeDMode==="auto"` → `renderer3d==="advanced" ? "raster3d" : "dom"`。それ以外は上書き値。
+- **`dom`（≈ AE Classic 3D）**: CSS `preserve-3d` のネイティブ経路。ベクター鮮鋭・**ライブ HTML**・編集可能。レイヤー境界の交差はペインター級（相互貫通不可）。
+- **`raster3d`（≈ AE Advanced / CINEMA 4D）**: レイヤーをラスタライズし comp 共有の WebGL シーン（Three.js）にテクスチャ板として投入。同シーン内の他 raster3d 層・`scene3d` メッシュと per-pixel で本物の深度交差。代償＝静止テクスチャ化（ライブ HTML 不可）。実装は §6.5 / Phase 2（将来 §16）。
+- **既定運用**: comp 既定 classic（全部 dom/ライブ）→ 真の交差が必要な層だけ `threeDMode="raster3d"` に上書きし、ライブ性の損失を最小化する。
+- **エクスポート**（INV-2）: scene 解決値は全経路一致（ラスタ忠実度差は許容）。平面 2D 層 = foreignObject、3D 層（dom/raster3d いずれの解決でも）= 書き出し時に GL ラスタ→`readPixels` でブラウザ内取り込み（決定論）。Playwright ヘッドレスは将来 Node CLI（§16）オプション。
+
 ### §5.5 Component（タグ付き union + プラグイン拡張）
 
 ```ts
@@ -218,9 +241,11 @@ interface ParamDescriptor {
 | `html`      | HTML Composition（Model A, §7）     | `compId: CompId`, + comp が宣言した params |
 | `video`     | 動画アセット（best-effort, §11.4）   | `asset: AssetId`, `fit`, `trimStart: Frame` |
 | `audio`     | 音声アセット（最小, §11.5）          | `asset: AssetId`, `gain`, `trimStart: Frame` |
-| `camera`    | カメラ（comp に最大 1 つ active）   | `fov`, （Transform で位置/向き）      |
+| `camera`    | カメラ（comp に最大 1 つ active, §6.5） | `cameraType`, `pointOfInterest`, `zoom`, `focalLength`, `filmSize`, `near`, `far`（被写界深度は将来）, Transform で位置/向き |
 
 plugin はここに新しい type を追加できる（§12）。
+
+> **`camera` パラメータ（AE 準拠・段階導入, §6.5）**: `cameraType: "one-node" | "two-node"`（新規作成は **two-node 既定**）。`pointOfInterest: AnimatedProp<Vec3>`（two-node 時、常にこの注視点を向く＝auto-orient）。タイムライン可変は `zoom`(px)、設定値 `focalLength`(mm) / `filmSize` は zoom と相互導出（§6.5）。`near`/`far` はクリップ面。被写界深度（`depthOfField`/`focusDistance`/`aperture`/`blurLevel`）は将来（§6.5 / Phase 3）。one-node はカメラ Transform の rotation/Orientation で向きを決める。後方互換: 旧 `fov` のみのカメラは one-node・`zoom` を `fov` から導出して扱う。
 
 > **決定（覆し可）**: `video` と `audio` を MVP に入れた（音楽 MV 用途を想定）。ただし `video` は決定論シーク制約があり browser は best-effort（§11.4）。`audio` は最小（gain 静的・mix なし・export で mux、§11.5）。`compRef`（comp ネスト＝precomp）は曖昧さが大きいため **MVP から外し §16 将来**へ（プリコンポは時間マッピング/collapse 仕様が要るため）。
 
@@ -278,6 +303,7 @@ interface TimelineComposition extends CompositionMeta {
   kind: "timeline";
   objects: SceneObject[];   // flat list, id 昇順で直列化。ツリーは parent から導出（§5.4-note）
   activeCamera?: ObjectId;
+  renderer3d?: "classic" | "advanced";  // 3D レンダラー。省略 = "classic"（§5.4b / §6.5）
 }
 
 // html comp: compositions/<id>/ の index.html/style.css/script.js を指す
@@ -356,10 +382,24 @@ L = T(position) · R(rotation) · S(scale) · T(-anchor)
 - **端の外挿**: 最初の KF より前は最初の値、最後の KF より後は最後の値で **hold**（clamp）。
 
 ### §6.5 3D / Camera（確定）
-- MVP の DOM レンダラは root に `transform-style: preserve-3d`。3D の前後関係はブラウザが z 深度で合成。
-- **active camera あり**: `perspective = (compHeight/2) / tan(fov/2)` [px] を root に設定し、camera の world 変換の**逆**をシーン root に前掛けする（= ビュー変換）。`perspective-origin` は comp 中央。
+- DOM レンダラは root に `transform-style: preserve-3d`。dom モード 3D の前後関係はブラウザが z 深度で合成（§5.4b）。
+- **active camera あり**: `perspective = (compHeight/2) / tan(fov/2)` [px] と `perspective-origin: 50% 50%` を **root に設定**する。**ビュー変換（camera world の逆）は root には掛けず、各 3D レイヤーの行列に焼く（per-object）**。理由 = CSS `perspective` は**その要素の子孫**の 3D 変換にのみ効くため、view を root（perspective と同一要素）に置くとカメラ Z が平面適用され dolly/zoom が効かない（実測確定・§6.5b）。
+  - 3D レイヤー（`threeD=true`）の DOM 変換 = **`translate(cx, cy, P) · view · worldTransform`**（`P=perspective=zoom`、`cx,cy=comp 中央`）。`translate(cx,cy,P)` は XY 再センタリング＋深度補正で、既定カメラ（cameraZ=zoom=P）を等倍 neutral にする。dolly: `scale=P/(cameraZ−z)`、zoom: `scale=P/cameraZ`。
+  - **2D レイヤー（`threeD≠true`）はカメラ免除**: 素の `worldTransform`（premultiply しない）。z=0 のため root perspective を受けず平面描画＝AE 同様「2D 層はカメラを無視」（§5.4b）。
+  - 正準 `viewMatrix`（`scene.camera.viewMatrix`）は純粋なまま（INV-3）。`translate(cx,cy,P)` は CSS リグ固有の renderer 詳細で、将来 GL は projection 行列が深度補正を担う。
 - **active camera なし**: `perspective` を設定しない（**正射影**）。z は描画順の tie-break と将来の被写界深度のためだけに保持され、見た目の遠近は付かない。
 - Blender camera import（将来）は、この `camera` オブジェクトの keyframe を埋めるだけで済む（IO plugin、§12/§16）。
+
+#### §6.5b カメラモデル（AE 準拠・確定）
+- **ワンノード / ツーノード**（`cameraType`）:
+  - `one-node`: 向きはカメラ Transform の rotation/Orientation。view = invert(camera world)。
+  - `two-node`: 常に `pointOfInterest`（comp/world 空間の注視点）を向く（auto-orient）。view = `lookAt(eye, pointOfInterest, up)`（[mat4.lookAt]）。`eye` = カメラ world 位置、`up = (0,1,0)`（真下視で view が one-node の `invert(translate(eye))` と一致し X/Y 反転しない）。新規作成の既定。
+- **fov の導出**: タイムライン可変プロパティは `zoom`(px)。`fov_vertical = 2·atan((compHeight/2) / zoom)`。Camera Settings の `focalLength`(mm)/`filmSize`(mm) は `zoom = focalLength · (compHeight / filmSize)` で相互導出（AE と同式）。旧 `fov` のみのカメラは `zoom = (compHeight/2)/tan(fov/2)` で後方互換。
+- **projection 行列**（§8 / WebGL 経路）: `perspective(fov_vertical, width/height, near, far)`（[mat4.perspective]、NDC z∈[-1,1]、Three.js 互換）。dom モードは CSS perspective で等価表現。
+- **dom / raster3d とカメラ共有**（§5.4b）: dom（CSS preserve-3d）と raster3d（共有 WebGL シーン）は**同一カメラ**を共有する。view は両経路で一致、projection は GL 経路が上式、dom 経路は CSS perspective。これにより dom の cube と raster3d の cube が画面上で一致する。
+- **境界制約**: 共有 WebGL シーンは 1 枚の `<canvas>`（= z スタック上の 1 要素）。dom 層 ↔ GL 層の交差はペインター級のまま、GL 層（raster3d）同士・GL 内メッシュは per-pixel で真の交差（§5.4b）。
+- **2D 免除（確定・実装済み）**: per-object 方式により、3D レイヤー（`threeD=true`）のみカメラ/dolly/zoom に応答し、2D レイヤーは画面に固定（AE 準拠）。Phase 1.1 で実測確定（dolly 半距離→2.0倍/倍距離→0.5倍、zoom 望遠2倍/広角0.5倍、2D 不動）。two-stratum 分離は不要だった（per-object 焼き込みで特異点が出ないため）。
+- **被写界深度**（Phase 3）: `focusDistance`/`aperture`(F値)/`blurLevel`。GL bokeh パスが主、dom 経路は per-layer blur 近似。
 
 ---
 
@@ -1297,7 +1337,7 @@ registerComponent({
 | フィールド | UI | KF |
 |---|---|---|
 | Source Text | 複数行 textarea | ◇（hold） |
-| Font | テキスト入力（将来: assets フォントのセレクト, §11.6） | — |
+| Font | **ドロップダウン（一般 web フォント）＋「Custom…」で任意 family 入力**（§26.3.1）。将来: assets フォントのセレクト, §11.6 | — |
 | Size | ScrubNumber | ◇ |
 | Fill / Stroke 色 | **カラースウォッチ + ピッカー**（新規 UI） | ◇ |
 | Align | 3 ボタン（L/C/R） | — |
@@ -1309,6 +1349,15 @@ registerComponent({
 - 各 animatable フィールドは既存 PropRow と同じ **ストップウォッチ（◇）で keyframe 化**でき、書き込みは command 経由（undo 可・§17）。値・KF 書き込みは既存 `updateObject` / `setKeyframe` 経路を流用し、`components[i].props[key]` を更新する（[store.ts](../src/editor/store.ts) のパターン）。
 - **カラーピッカーは新規コンポーネント**（現状エディタに無い）。最小実装は `<input type="color">` + alpha スライダで可。
 - **編集中フォールバック（§26.4 連動）**: Source Text の textarea / 数値・色フィールドに**フォーカスがある間はプレビューを軽量モードに自動降格**し、blur で元の品質へ戻す（タイプごとの SVG 再生成を避ける）。
+
+#### §26.3.1 Font ドロップダウン（確定）
+
+`font` は引き続き **`kind: "string"` の静的プロパティ**（§26.1・スキーマ不変）。UI のみ自由入力テキストボックスから**プルダウン＋カスタム入力**へ置換する。
+
+- **候補リスト（`WEB_SAFE_FONTS`）**: 一般的なブラウザで追加インストール無しに開ける family。CSS 総称（`sans-serif` / `serif` / `monospace` / `cursive` / `system-ui`）＋クロスプラットフォームで概ね利用可能な定番（`Arial`, `Helvetica`, `Times New Roman`, `Georgia`, `Courier New`, `Verdana`, `Trebuchet MS`, `Tahoma`, `Impact`, `Comic Sans MS`）。各 option の表示テキスト自体をそのフォントで描く（`style.fontFamily`）ことで見本になる。
+- **Custom… エスケープハッチ**: プルダウン末尾に `Custom…` を置き、選ぶとテキスト入力欄を出して任意の family 名（assets フォント §11.6 / システム固有フォント）を直接入力できる。現状値が候補リストに無ければ自動的に Custom 入力としてプリフィルする（既存プロジェクトの非標準 family を壊さない）。
+- 書き込みは他の静的プロパティと同様 `writeStatic("font", value)` 経由（`components[i].props.font` を更新、undo 可）。`addText` の既定（`font="sans-serif"`）も候補リストに含まれる。
+- リストは `src/editor/fontList.ts` 等の単一定数として持ち、Inspector が参照する。**描画経路（DomRenderer / SVG）には影響しない**（family 文字列をそのまま `font-family` に渡す既存挙動を維持）。
 
 ### §26.4 プレビュー品質モード（軽量 / 厳密）— 確定
 
@@ -1654,6 +1703,10 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 - **改定4（2026-06-21）— Fast 3 種すべて `feImage` 廃止 / `feTurbulence` 直結に統一**: `fastWave` / `fastRipple` はかつて linearGradient / radialGradient の `feImage`（data URI）displacement map を**毎フレーム文字列生成→ブラウザで再デコード**していた（`fastTurbulentDisplace` だけが GPU ネイティブな `feTurbulence` 直結で軽かった）。ユーザー要請（2026-06-21・「Fast Turbulent と同等の軽さ」「Fast 系は Web で動く前提」）により、`fastWave` / `fastRipple` も **`feTurbulence`（`type="fractalNoise"`・`numOctaves=1`）直結の純 SVG filter primitive へ置換**。`feImage` も PNG も生成しない。3 種すべて per-frame コストが同等（小さな primitive 文字列 + GPU ノイズ）になり、Web bundle / HTML player でも `feImage` data URI のデコードを伴わず軽量に動く。
 - **非目標（改定4）**: AE 100% 一致、ripple 真の同心円、wave 真の正弦。**`fastWave` の正弦 / `fastRipple` の同心円という見た目は意図的に放棄**し、`feTurbulence` ベースの方向性 / 等方ノイズ歪み近似とする（ユーザー承認済みトレードオフ）。`wavelength` / `frequency`・`radius` は noise の特徴サイズ（`baseFrequency`）へ、`direction` は周波数の異方軸へ、`phase` / `center` は noise 場のパン（`feOffset`）へマップ。**実体（host rect）の amplitude/amount 比例スライドを禁止**（Draft/Best/export 共通）。ink centroid は 3 種とも `feTurbulence` + bias（`skipBias: false`）で host 安定が正準（強い amount でエッジクリップにより centroid がわずかに動くことはある）。真の正弦 / 同心円が要るときは**フル版 `wave` / `ripple`**（§27.3・`feImage` / PNG map・raster）を使う。
 - **filter region は (0,0,w,h) クランプが正準（§27.12 改定3）**: live CSS filter で displacement を適用する際、filter region を pad せず layer 実寸に固定する。`feTurbulence` は全域定義（`stitchTiles="stitch"`）なので改定3 の pad 帯ドリフト（`feImage` 未定義域の定数変位）は構造的に発生しないが、クランプは raster（出力を W×H へクリップ）との pixel parity・フル版 displacement との一貫性のため維持する。
+- **改定5（2026-06-21）— Fast 3 種の「見た目の動き」を滑らかに（内部既定・パラメータ不変）**: 改定4 で `feTurbulence` 直結にして軽くなったが、単一オクターブ noise を全帯域のまま `feDisplacementMap` に通すためエッジ変位が粒状で、動きがカクついて見えた。ユーザー要請（2026-06-21・「軽量化を維持したまま見た目の動きを滑らかに」「制御面 A＝内部既定・パラメータ追加なし」）により、**effect params を一切変えず builder 内部だけ**で 3 点を改善する。**`feImage` 復活なし・軽量維持・INV-2 維持（emit primitives は全経路同一）・§5/INV/直列化 不変**。
+  - **(1) feature-size 比例の map smoothing を常時適用**: noise map（`feTurbulence` 出力）の直後に `feGaussianBlur` を常時かけ、`stdDeviation = clamp(FAST_SMOOTH_FRACTION · 特徴サイズ, 0.75, ~12)` px とする（特徴サイズ＝`fastWave`: `λ` / `fastRipple`: `radius/frequency` / `fastTurbulentDisplace`: `size`）。高周波スペックルを均して「流れる」歪みにする。既定で flowing になり、`antiAlias` は **追加の増分**（`+1px`）として存続。blur は変位の山をわずかに均すため fraction は控えめにし、実機 verify で効果が消えない（edgeStd > baseline+2）範囲に保つ。
+  - **(2) `fastWave` phase の段差ジャンプ解消**: phase の `feOffset` パンを `% 360` で折り返すと 1 周ごとに ~λ の段差ジャンプが出ていた。phase パンを **連続値 `(phaseDeg/360)·λ`（折返しなし・単調）** にして跳躍を消す。`fastWave` の `feTurbulence` は **`stitchTiles` を外し座標安定な無限ノイズ場**とするため、パンに合わせて生成域を広げてもノイズ値が変化せず（boiling せず）連続的に流れる。（`feOffset` は有限ラスタを平行移動するだけで wrap しないため、タイル周期化では seamless にできない。座標安定場＋生成域拡張が正しい解。）
+  - **(3) パン露出ポップの解消**: `feOffset` 後にラグ側へ未定義域（channel≈0＝定数変位）が出て素エッジが歪んで露出するのを、`feTurbulence` の **生成領域**（primitive の x/y/width/height）を maxPan ぶん対称拡張して `feOffset` 後も layer (0,0,w,h) を被覆して防ぐ。`fastWave` は per-frame の `|pan|` ぶん拡張（stitch off で boiling せず）、`fastRipple` は center 範囲 `0.5·{w,h}` を**定数 pad**（生成域一定・stitch 維持）。`fastTurbulentDisplace` は **既存の region/pan を維持（blur のみ追加）** し、検証済みの ink centroid（≤2px）を保全する（evolution は元々連続パンで跳ばない）。**filter region 自体は改定3 のまま (0,0,w,h) クランプ**（出力に素矩形露出なし）。
 
 **共通 param `antiAlias`**（3 種）:
 
@@ -1661,8 +1714,8 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 |---|---|---|---|---|
 | `antiAlias` | Anti Alias | bool | `false` | ❌ |
 
-- ON: displacement map / noise の直後に `feGaussianBlur stdDeviation=1`（map 座標系・固定 1px）→ `feDisplacementMap`。
-- OFF: 生のガビガビ（最大速度）。
+- 改定5: Fast 3 種は **既定で feature-size 比例の map smoothing（§27.5 改定5 (1)）が常時 ON**。`antiAlias` はそれに **+1px** を足す追加の増分（より滑らか）。`stdDeviation` 合計 = `smoothPx + (antiAlias ? 1 : 0)`、`>0` のとき noise / map 直後に `feGaussianBlur` 1 回 → `feDisplacementMap`。
+- （フル版 displacement で本 param を使う場合は従来どおり ON で固定 1px）。
 
 ##### `fastWave` — Fast Wave
 
@@ -1674,7 +1727,7 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 | `phase` | Phase | scalar | `0` | 0..360, step 1 | ✅ |
 | `antiAlias` | Anti Alias | bool | `false` | — | ❌ |
 
-- `apply` → `{ kind: "svg", primitives }`。**改定4: `feTurbulence` 近似（`feImage` なし・`fastWaveDisplace`）**。`type="fractalNoise"`・`numOctaves=1`。`wavelength` → 進行方向軸の `baseFrequency = 1/λ`、直交軸は `1/(4λ)`（低周波で稜線を伸ばし波 train 風に）。`direction` でどちらの軸を進行方向にするか切替。`phase` → 進行方向の `feOffset` パン（`(phase/360)·λ` px）でスクロール再現。`scale = 2·amplitude`。正弦 map（`waveDisplaceMapSvg`）は**フル `wave` 専用**となり Fast からは不参照。
+- `apply` → `{ kind: "svg", primitives }`。**改定4: `feTurbulence` 近似（`feImage` なし・`fastWaveDisplace`）**。`type="fractalNoise"`・`numOctaves=1`。`wavelength` → 進行方向軸の `baseFrequency = 1/λ`、直交軸は `1/(4λ)`（低周波で稜線を伸ばし波 train 風に）。`direction` でどちらの軸を進行方向にするか切替。`phase` → 進行方向の `feOffset` パン（`(phase/360)·λ` px）でスクロール再現。`scale = 2·amplitude`。正弦 map（`waveDisplaceMapSvg`）は**フル `wave` 専用**となり Fast からは不参照。**改定5: noise map に feature-size 比例 blur（`stdDev ≈ FAST_SMOOTH_FRACTION·λ`）を常時適用。phase パンは連続値 `(phase/360)·λ`（`% 360` 折返し撤廃で段差解消）、`stitchTiles` を外した座標安定場とし生成域を `|pan|` ぶん対称拡張して露出ポップを防ぐ。**
 - `amplitude === 0` は `null`。
 
 ##### `fastRipple` — Fast Ripple
@@ -1688,7 +1741,7 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 | `centerY` | Center Y | scalar | `0.5` | 0..1, step 0.01 | ✅ |
 | `antiAlias` | Anti Alias | bool | `false` | — | ❌ |
 
-- `apply` → `{ kind: "svg", primitives }`。**改定4: `feTurbulence` 近似（`feImage`/PNG なし・`fastRippleDisplace`）**。`type="fractalNoise"`・`numOctaves=1`・等方 `baseFrequency = frequency/radius`（リング間隔 `≈ radius/frequency` px を特徴サイズとみなす）。`centerX`/`centerY` → noise 場の `feOffset` パン（`(center−0.5)·{w,h}` px）で中心位置を近似。`scale = 2·amplitude`。`radialGradient` map（`rippleDisplaceMapSvg`）は**削除**（フル `ripple` は per-pixel PNG `rippleDisplaceMap` を継続使用）。同心円ではなく等方ノイズ歪み近似。
+- `apply` → `{ kind: "svg", primitives }`。**改定4: `feTurbulence` 近似（`feImage`/PNG なし・`fastRippleDisplace`）**。`type="fractalNoise"`・`numOctaves=1`・等方 `baseFrequency = frequency/radius`（リング間隔 `≈ radius/frequency` px を特徴サイズとみなす）。`centerX`/`centerY` → noise 場の `feOffset` パン（`(center−0.5)·{w,h}` px）で中心位置を近似。`scale = 2·amplitude`。`radialGradient` map（`rippleDisplaceMapSvg`）は**削除**（フル `ripple` は per-pixel PNG `rippleDisplaceMap` を継続使用）。同心円ではなく等方ノイズ歪み近似。**改定5: noise map に feature-size 比例 blur（`stdDev ≈ FAST_SMOOTH_FRACTION·(radius/frequency)`）を常時適用し、center パン量 `|center−0.5|·{w,h}` を `feTurbulence` 生成域の maxPan として拡張し露出ポップを防ぐ。**
 - `amplitude === 0` は `null`。`phase` param なし。
 
 ##### `fastTurbulentDisplace` — Fast Turbulent Displace
@@ -1704,7 +1757,7 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 | `randomSeed` | Random Seed | scalar | `0` | 0..9999, step 1 | ❌ |
 | `antiAlias` | Anti Alias | bool | `false` | — | ❌ |
 
-- `apply` → `{ kind: "svg", primitives }`。`feTurbulence` 直結、`type="fractalNoise"`（WIP の `turbulence` 型は CSS filter 直適用 path で centroid ≤2px を満たせないため Fast は fractalNoise + G bias を採用）、`numOctaves = max(1, min(2, complexity))`。Evolution/Offset は WIP / フル版同様 `feOffset`。
+- `apply` → `{ kind: "svg", primitives }`。`feTurbulence` 直結、`type="fractalNoise"`（WIP の `turbulence` 型は CSS filter 直適用 path で centroid ≤2px を満たせないため Fast は fractalNoise + G bias を採用）、`numOctaves = max(1, min(2, complexity))`。Evolution/Offset は WIP / フル版同様 `feOffset`。**改定5: noise map に feature-size 比例 blur（`stdDev ≈ FAST_SMOOTH_FRACTION·size`）を常時適用（既存の region/stitch/pan は維持し検証済み centroid ≤2px を保全。evolution は従来どおり連続パンで跳躍なし）。**
 - preview/bundle 直適用 path の受け入れ条件: amount 5/20/50/100 スイープで ink centroid delta **≤ 2px**（comp 座標）。
 - `amount === 0` は `null`。
 
@@ -2246,3 +2299,44 @@ interface SceneObject {
 - [src/runtime/DomRenderer.ts](../src/runtime/DomRenderer.ts): isNull → DOM スキップ
 - [src/editor/store.ts](../src/editor/store.ts): `addNullLayer`
 - [src/editor/panels/TimelinePanel.tsx](../src/editor/panels/TimelinePanel.tsx) / Inspector / PreviewViewerOverlay
+
+---
+
+## §31 Solid レイヤー編集（色）— UI 層・additive
+
+`solid` component は `color: AnimatedProp<RGBA>` / `size: AnimatedProp<vec3>` を持つ（§5.5 表）が、編集 UI が無く色を変更できなかった（Inspector は `text` 以外の component を `null` 描画し、Timeline は展開時の KF 行でしか色を出さない）。本節は **solid の色をインスペクターとタイムラインの両方から選択できる**ようにする。**スキーマ不変**（既存 `color` プロパティを既存 UI 部品で編集するだけ）。
+
+### §31.1 Inspector — Solid セクション（確定）
+
+選択オブジェクトが `solid` component を持つとき、Inspector（[InspectorPanel.tsx](../src/editor/panels/InspectorPanel.tsx)）に **"Solid" セクション**を表示する（現状 `comp.type !== "text"` で握り潰しているのを solid 対応に拡張）。
+
+| フィールド | UI | KF |
+|---|---|---|
+| Fill（`color`） | カラースウォッチ + ピッカー（§26.3 と同一 `ColorSwatch`） | ◇ |
+
+- `color` は **animatable**。既存 `ColorSwatch` + ストップウォッチ（◇）で keyframe 化でき、書き込みは `updateObject` / `setKeyframe` 経由（undo 可・§17）、`components[i].props.color` を更新する（Text の Fill 行と同型）。
+- `size` 等の他プロパティは本節スコープ外（既存どおり Timeline の数値編集に委ねる。将来拡張可）。
+
+### §31.2 Timeline — レイヤー行のカラースウォッチ（確定）
+
+solid レイヤーの **Timeline 行ラベル列**（[TimelinePanel.tsx](../src/editor/panels/TimelinePanel.tsx) の `LayerRow`）に、現在色を示す**小さなスウォッチチップ**を表示する。クリックすると `<input type="color">` のネイティブピッカーが開き、選択で `color` を更新する。
+
+- スウォッチは **現フレームでサンプルした `color`** を表示（KF があればその時点の補間色。`sampleAny`）。
+- 確定書き込みは `onUpdate(obj.id, { components })` 経由（undo 可）。`color` に KF があれば現フレームへ `setKeyframe`、無ければ base `value` を更新する（Inspector と同じ分岐）。
+- 表示条件: `obj.components` に `type === "solid"` があるレイヤーのみ。`isNull` / `isAdjustment` には出さない。
+- アルファ編集は Inspector の `ColorSwatch` に委ねる（Timeline チップは RGB のクイック変更＝AE のレイヤー色相当の手早さを優先）。
+
+### §31.3 受け入れ条件
+
+- [ ] solid を選択 → Inspector に "Solid" セクションと Fill スウォッチが出て色を変更できる（undo 可）
+- [ ] Timeline の solid 行ラベルに色チップが出て、クリック→ピッカーで色を変更できる（undo 可）
+- [ ] `color` の◇でキーフレーム化し、Inspector / Timeline 双方が現フレーム色を反映する
+- [ ] 既存 project.json byte 等価 roundtrip（スキーマ・直列化不変）
+- [ ] text / image / null / adjustment レイヤーにはチップ・Solid セクションが出ない（回帰なし）
+
+### §31.4 実装タッチポイント
+
+- [src/editor/panels/InspectorPanel.tsx](../src/editor/panels/InspectorPanel.tsx): `solid` 用 content セクション（`SolidComponentFields`）
+- [src/editor/panels/TimelinePanel.tsx](../src/editor/panels/TimelinePanel.tsx): `LayerRow` ラベル列にスウォッチチップ
+- [src/editor/ColorSwatch.tsx](../src/editor/ColorSwatch.tsx): 既存部品を再利用（新規部品なし）
+- [src/editor/fontList.ts](../src/editor/fontList.ts): §26.3.1 Font 候補リスト（新規・Inspector 参照）

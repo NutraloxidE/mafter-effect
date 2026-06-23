@@ -4,11 +4,18 @@ import {
   identity,
   invert,
   localMatrix,
+  lookAt,
   multiply,
+  orthographic,
+  perspective,
   rotationZ,
   scaling,
   transformPoint,
   translation,
+  vecCross,
+  vecDot,
+  vecLength,
+  vecNormalize,
 } from "../src/runtime/mat4";
 import { vec3 } from "../src/core/props";
 
@@ -82,6 +89,72 @@ describe("decomposeTrs", () => {
     const m = localMatrix(vec3(0, 0, 0), vec3(30, 40, 0), vec3(0, 0, 45), vec3(2, 2, 1));
     const d = decomposeTrs(m);
     expectVecClose(transformPoint(m, vec3(0, 0, 0)), d.position);
+  });
+});
+
+describe("vec3 ops", () => {
+  it("cross product is right-handed", () => {
+    expectVecClose(vecCross(vec3(1, 0, 0), vec3(0, 1, 0)), vec3(0, 0, 1));
+    expectVecClose(vecCross(vec3(0, 1, 0), vec3(0, 0, 1)), vec3(1, 0, 0));
+  });
+
+  it("dot and length", () => {
+    expect(vecDot(vec3(1, 2, 3), vec3(4, 5, 6))).toBeCloseTo(32, 6);
+    expect(vecLength(vec3(3, 4, 0))).toBeCloseTo(5, 6);
+  });
+
+  it("normalize yields unit length, zero stays zero", () => {
+    expect(vecLength(vecNormalize(vec3(0, 0, 5)))).toBeCloseTo(1, 6);
+    expectVecClose(vecNormalize(vec3(0, 0, 0)), vec3(0, 0, 0));
+  });
+});
+
+describe("lookAt — RH view matrix (camera looks down -z)", () => {
+  it("maps eye to origin", () => {
+    const view = lookAt(vec3(0, 0, 10), vec3(0, 0, 0), vec3(0, 1, 0));
+    expectVecClose(transformPoint(view, vec3(0, 0, 10)), vec3(0, 0, 0));
+  });
+
+  it("target sits in front of camera along -z", () => {
+    const view = lookAt(vec3(0, 0, 10), vec3(0, 0, 0), vec3(0, 1, 0));
+    // origin is 10 units in front → view-space z = -10.
+    expectVecClose(transformPoint(view, vec3(0, 0, 0)), vec3(0, 0, -10));
+  });
+
+  it("eye≈center degenerates to pure translation", () => {
+    const view = lookAt(vec3(5, 6, 7), vec3(5, 6, 7), vec3(0, 1, 0));
+    expectVecClose(transformPoint(view, vec3(5, 6, 7)), vec3(0, 0, 0));
+  });
+});
+
+describe("perspective — RH projection (NDC z∈[-1,1])", () => {
+  it("matches gl-matrix formula entries", () => {
+    const fov = 60;
+    const aspect = 16 / 9;
+    const near = 1;
+    const far = 100;
+    const f = 1 / Math.tan((fov * Math.PI) / 360);
+    const p = perspective(fov, aspect, near, far);
+    expect(p[0]).toBeCloseTo(f / aspect, 6);
+    expect(p[5]).toBeCloseTo(f, 6);
+    expect(p[10]).toBeCloseTo((far + near) / (near - far), 6);
+    expect(p[11]).toBeCloseTo(-1, 6);
+    expect(p[14]).toBeCloseTo((2 * far * near) / (near - far), 6);
+  });
+
+  it("near/far plane points map to NDC z = -1 / +1", () => {
+    const p = perspective(60, 1, 1, 100);
+    // point on -z axis at z=-near → NDC z = -1; at z=-far → +1.
+    expectVecClose(transformPoint(p, vec3(0, 0, -1)), vec3(0, 0, -1));
+    expectVecClose(transformPoint(p, vec3(0, 0, -100)), vec3(0, 0, 1));
+  });
+});
+
+describe("orthographic — maps box to NDC", () => {
+  it("corners map to NDC cube", () => {
+    const o = orthographic(-2, 2, -2, 2, 1, 100);
+    expectVecClose(transformPoint(o, vec3(2, 2, -1)), vec3(1, 1, -1));
+    expectVecClose(transformPoint(o, vec3(-2, -2, -100)), vec3(-1, -1, 1));
   });
 });
 

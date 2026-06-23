@@ -26,6 +26,8 @@ export interface ResolvedObject {
   isAdjustment?: boolean;
   adjustmentMode?: "live" | "raster";
   isNull?: boolean;
+  threeD?: boolean; // §5.4b 3D 空間に配置
+  mode3d?: "dom" | "raster3d"; // §5.4b 実効描画経路（threeD 時のみ）。resolve で確定
 }
 
 export interface ResolvedScene {

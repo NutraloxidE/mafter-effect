@@ -105,7 +105,14 @@ export interface SceneObject {
   isAdjustment?: boolean; // true = 調整レイヤー（§27.4）
   adjustmentMode?: "live" | "raster"; // §27.4 省略=live（backdrop-filter）。isAdjustment 時のみ有効
   isNull?: boolean; // true = Null レイヤー（§30）
+  threeD?: boolean; // §5.4b true = 3D 空間に配置（AE の 3D レイヤースイッチ）。省略/false = 平面 2D
+  threeDMode?: ThreeDMode; // §5.4b 描画経路。省略 = "auto"（comp.renderer3d に従う）
 }
+
+// §5.4b 3D レイヤー描画経路。"auto" は comp.renderer3d に従う。
+export type ThreeDMode = "auto" | "dom" | "raster3d";
+// §5.4b comp の 3D レンダラー。"classic"≈dom / "advanced"≈raster3d。
+export type Renderer3d = "classic" | "advanced";
 
 // §5.6 Composition / Project
 export type CompKind = "timeline" | "html";
@@ -125,6 +132,7 @@ export interface TimelineComposition extends CompositionMeta {
   kind: "timeline";
   objects: SceneObject[]; // flat list, id 昇順で直列化（§5.4-note）
   activeCamera?: ObjectId;
+  renderer3d?: Renderer3d; // §5.4b 3D レンダラー。省略 = "classic"
 }
 
 export interface HtmlComposition extends CompositionMeta {

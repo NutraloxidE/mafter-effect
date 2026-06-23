@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { sampleAny, sampleScalar, sampleVec3 } from "../../runtime/interpolate";
-import type { AnimatedProp, Component, Easing, EffectInstance, ParamDescriptor, RGBA, SceneObject, Transform, Vec3 } from "../../core/schema";
+import type { AnimatedProp, Component, Easing, EffectInstance, ParamDescriptor, RGBA, SceneObject, ThreeDMode, Transform, Vec3 } from "../../core/schema";
 import {
   currentTimelineComp,
   propVec3ToDisplay,
@@ -9,6 +9,7 @@ import {
 } from "../store";
 import { staticProp } from "../../core/props";
 import { ColorSwatch, isRgba } from "../ColorSwatch";
+import { WEB_SAFE_FONTS, isKnownFont } from "../fontList";
 import { ScrubNumber } from "../ScrubNumber";
 import { globalPluginRegistry } from "../../runtime/pluginRegistry";
 import { groupEffectsForPicker } from "../effectCategories";
@@ -37,6 +38,9 @@ export function InspectorPanel() {
   const decomposeGlyphs = useEditorStore((s) => s.decomposeGlyphs);
   const addEffect = useEditorStore((s) => s.addEffect);
   const setAdjustmentMode = useEditorStore((s) => s.setAdjustmentMode);
+  const setThreeD = useEditorStore((s) => s.setThreeD);
+  const setThreeDMode = useEditorStore((s) => s.setThreeDMode);
+  const setActiveCamera = useEditorStore((s) => s.setActiveCamera);
   const removeEffect = useEditorStore((s) => s.removeEffect);
   const reorderEffect = useEditorStore((s) => s.reorderEffect);
   const toggleEffect = useEditorStore((s) => s.toggleEffect);
@@ -164,6 +168,33 @@ export function InspectorPanel() {
     }
   };
 
+  // §5.4b/§6.5b 3D & カメラ
+  const camIdx = obj.components.findIndex((c) => c.type === "camera");
+  const isCameraLayer = camIdx >= 0;
+  const camComp = isCameraLayer ? obj.components[camIdx] : undefined;
+  const effectiveAutoMode = comp?.renderer3d === "advanced" ? "raster3d" : "dom";
+  const readCamNum = (key: string, def: number): number => {
+    const raw = camComp?.props[key];
+    if (typeof raw === "number") return raw;
+    if (raw && typeof raw === "object" && "value" in raw && typeof (raw as { value: unknown }).value === "number") {
+      return (raw as { value: number }).value;
+    }
+    return def;
+  };
+  const readCamType = (): "one-node" | "two-node" =>
+    camComp?.props["cameraType"] === "one-node" ? "one-node" : "two-node";
+  const readCamPoi = (): Vec3 => {
+    const raw = camComp?.props["pointOfInterest"];
+    const v = raw && typeof raw === "object" && "value" in raw ? (raw as { value: unknown }).value : raw;
+    if (v && typeof v === "object" && typeof (v as Vec3).x === "number") return v as Vec3;
+    return { x: 0, y: 0, z: 0 };
+  };
+  const setCamProp = (key: string, value: unknown, label: string) => {
+    if (camIdx < 0) return;
+    const next = obj.components.map((c, i) => (i === camIdx ? { ...c, props: { ...c.props, [key]: value } } : c));
+    updateObject(obj.id, { components: next }, label);
+  };
+
   const foldoutKey = (section: string) => `${obj.id}:${section}`;
   const isExpanded = (section: string) => expanded[foldoutKey(section)] ?? true;
   const toggleExpanded = (section: string) => {
@@ -248,6 +279,81 @@ export function InspectorPanel() {
         </Row>
       </InspectorFoldout>
 
+      {isCameraLayer ? (
+        <InspectorFoldout label="Camera" expanded={isExpanded("camera")} onToggle={() => toggleExpanded("camera")}>
+          <Row label="Type">
+            <select
+              value={readCamType()}
+              onChange={(e) => setCamProp("cameraType", e.target.value, "Set camera type")}
+              style={selectStyle}
+            >
+              <option value="two-node">Two-Node</option>
+              <option value="one-node">One-Node</option>
+            </select>
+          </Row>
+          <Row label="Zoom (px)">
+            <ScrubNumber
+              value={readCamNum("zoom", 1158)}
+              onCommit={(v) => setCamProp("zoom", staticProp(Math.max(1, v)), "Set camera zoom")}
+              min={1}
+              step={1}
+              style={numInputStyle}
+            />
+          </Row>
+          {readCamType() === "two-node" && (
+            <Row label="Point of Interest">
+              {(["x", "y", "z"] as const).map((axis) => (
+                <ScrubNumber
+                  key={axis}
+                  value={readCamPoi()[axis]}
+                  onCommit={(v) => setCamProp("pointOfInterest", staticProp({ ...readCamPoi(), [axis]: v }), "Set point of interest")}
+                  step={1}
+                  style={numInputStyle}
+                />
+              ))}
+            </Row>
+          )}
+          <Row label="Near / Far">
+            <ScrubNumber value={readCamNum("near", 1)} onCommit={(v) => setCamProp("near", Math.max(0.001, v), "Set near")} min={0.001} step={1} style={numInputStyle} />
+            <ScrubNumber value={readCamNum("far", 10000)} onCommit={(v) => setCamProp("far", Math.max(1, v), "Set far")} min={1} step={10} style={numInputStyle} />
+          </Row>
+          <Row label="Active">
+            <button
+              type="button"
+              onClick={() => setActiveCamera(comp?.activeCamera === obj.id ? null : obj.id)}
+              style={{ ...btnStyle, background: comp?.activeCamera === obj.id ? "#2f4a68" : "#2a2a2a", color: comp?.activeCamera === obj.id ? "#9fc8f0" : "#ccc" }}
+            >
+              {comp?.activeCamera === obj.id ? "Active ●" : "Set Active"}
+            </button>
+          </Row>
+        </InspectorFoldout>
+      ) : !obj.isNull ? (
+        <InspectorFoldout label="3D" expanded={isExpanded("threeD")} onToggle={() => toggleExpanded("threeD")}>
+          <Row label="3D Layer">
+            <button
+              type="button"
+              onClick={() => setThreeD(obj.id, !obj.threeD)}
+              style={{ ...btnStyle, background: obj.threeD ? "#2f5a44" : "#2a2a2a", color: obj.threeD ? "#9fe8c4" : "#ccc" }}
+            >
+              {obj.threeD ? "ON" : "OFF"}
+            </button>
+          </Row>
+          {obj.threeD && (
+            <Row label="Render Mode">
+              <select
+                value={obj.threeDMode ?? "auto"}
+                onChange={(e) => setThreeDMode(obj.id, e.target.value as ThreeDMode)}
+                style={selectStyle}
+              >
+                <option value="auto">Auto ({effectiveAutoMode})</option>
+                <option value="dom">DOM (Classic)</option>
+                <option value="raster3d">Raster3D (Advanced)</option>
+              </select>
+            </Row>
+          )}
+        </InspectorFoldout>
+      ) : null}
+
       {obj.isAdjustment ? (
         <InspectorFoldout label="Content" expanded={isExpanded("content")} onToggle={() => toggleExpanded("content")}>
           <div style={{ color: "#888", fontSize: 11 }}>調整レイヤー（描画なし）</div>
@@ -258,7 +364,7 @@ export function InspectorPanel() {
         </InspectorFoldout>
       ) : (
         obj.components.map((comp, compIdx) => {
-          if (comp.type !== "text") return null;
+          if (comp.type !== "text" && comp.type !== "solid") return null;
           const label = globalPluginRegistry.getComponentDef(comp.type)?.label ?? comp.type;
           const sectionKey = `component:${compIdx}:${comp.type}`;
           return (
@@ -268,18 +374,30 @@ export function InspectorPanel() {
               expanded={isExpanded(sectionKey)}
               onToggle={() => toggleExpanded(sectionKey)}
             >
-              <TextComponentFields
-                obj={obj}
-                compIdx={compIdx}
-                frame={frame}
-                updateObject={updateObject}
-                previewPatch={previewPatch}
-                onEditFocus={() => setPreviewQualityEditing(true)}
-                onEditBlur={() => setPreviewQualityEditing(false)}
-                onClearPreview={() => clearPreviewOverride()}
-                onDecomposeNull={() => decomposeGlyphs(obj.id, "keyframesOnNull")}
-                onDecomposeChild={() => decomposeGlyphs(obj.id, "keyframesOnChild")}
-              />
+              {comp.type === "text" ? (
+                <TextComponentFields
+                  obj={obj}
+                  compIdx={compIdx}
+                  frame={frame}
+                  updateObject={updateObject}
+                  previewPatch={previewPatch}
+                  onEditFocus={() => setPreviewQualityEditing(true)}
+                  onEditBlur={() => setPreviewQualityEditing(false)}
+                  onClearPreview={() => clearPreviewOverride()}
+                  onDecomposeNull={() => decomposeGlyphs(obj.id, "keyframesOnNull")}
+                  onDecomposeChild={() => decomposeGlyphs(obj.id, "keyframesOnChild")}
+                />
+              ) : (
+                <SolidComponentFields
+                  obj={obj}
+                  compIdx={compIdx}
+                  frame={frame}
+                  updateObject={updateObject}
+                  previewPatch={previewPatch}
+                  onEditFocus={() => setPreviewQualityEditing(true)}
+                  onEditBlur={() => setPreviewQualityEditing(false)}
+                />
+              )}
             </InspectorFoldout>
           );
         })
@@ -772,12 +890,11 @@ function TextComponentFields({
         </Row>
       )}
       <Row label="Font">
-        <input
-          value={font}
-          onChange={(e) => writeStatic("font", e.target.value, "Edit font")}
-          onFocus={onEditFocus}
-          onBlur={onEditBlur}
-          style={{ ...textInputStyle, flex: 1 }}
+        <FontField
+          font={font}
+          onChange={(v) => writeStatic("font", v, "Edit font")}
+          onEditFocus={onEditFocus}
+          onEditBlur={onEditBlur}
         />
       </Row>
       {isAnimated(sizeProp) && (
@@ -948,6 +1065,141 @@ function TextComponentFields({
         </button>
       </div>
     </>
+  );
+}
+
+/** §31.1 Solid content — Fill 色のみ。Text の Fill 行と同型（ColorSwatch + ◇）。 */
+function SolidComponentFields({
+  obj,
+  compIdx,
+  frame,
+  updateObject,
+  previewPatch,
+  onEditFocus,
+  onEditBlur,
+}: {
+  obj: SceneObject;
+  compIdx: number;
+  frame: number;
+  updateObject: (id: string, patch: Partial<SceneObject>, label?: string) => void;
+  previewPatch: (patch: Partial<SceneObject>) => void;
+  onEditFocus: () => void;
+  onEditBlur: () => void;
+}) {
+  const comp = obj.components[compIdx];
+  if (!comp || comp.type !== "solid") return null;
+  const props = comp.props;
+
+  const writeComponents = (nextProps: Component["props"], label: string) => {
+    const nextComponents = obj.components.map((c, i) =>
+      i === compIdx ? { ...c, props: nextProps } : c,
+    );
+    updateObject(obj.id, { components: nextComponents }, label);
+  };
+
+  const previewComponents = (nextProps: Component["props"]) => {
+    previewPatch({
+      components: obj.components.map((c, i) =>
+        i === compIdx ? { ...c, props: nextProps } : c,
+      ),
+    });
+  };
+
+  const writeAnim = <T,>(key: string, next: AnimatedProp<T>, label: string) => {
+    writeComponents({ ...props, [key]: next }, label);
+  };
+  const previewAnim = <T,>(key: string, next: AnimatedProp<T>) => {
+    previewComponents({ ...props, [key]: next });
+  };
+  const toggleKf = (key: string, prop: AnimatedProp<unknown>) => {
+    if (prop.keyframes.length > 0) writeAnim(key, { value: prop.value, keyframes: [] }, `Disable ${key} keyframes`);
+    else writeAnim(key, setKeyframe(prop, frame, prop.value, { type: "hold" }), `Enable ${key} keyframes`);
+  };
+
+  const colorProp = props["color"];
+  const colorVal = isAnimated(colorProp) && isRgba(sampleAny(colorProp, frame))
+    ? (sampleAny(colorProp, frame) as RGBA) : { r: 0.5, g: 0.5, b: 0.9, a: 1 };
+
+  if (!isAnimated(colorProp)) {
+    return <div style={{ color: "#888", fontSize: 11 }}>色プロパティがありません</div>;
+  }
+
+  return (
+    <div style={{ display: "flex", alignItems: "flex-start", gap: 4 }}>
+      <Stopwatch active={colorProp.keyframes.length > 0} onClick={() => toggleKf("color", colorProp)} />
+      <div style={{ flex: 1 }}>
+        <ColorSwatch
+          label="Fill"
+          value={colorVal}
+          onCommit={(v) => {
+            if (colorProp.keyframes.length > 0) writeAnim("color", setKeyframe(colorProp as AnimatedProp<RGBA>, frame, v), "Edit solid color");
+            else writeAnim("color", { ...colorProp, value: v }, "Edit solid color");
+          }}
+          onLiveChange={(v) => {
+            if (colorProp.keyframes.length > 0) previewAnim("color", setKeyframe(colorProp as AnimatedProp<RGBA>, frame, v));
+            else previewAnim("color", { ...colorProp, value: v });
+          }}
+          onFocus={onEditFocus}
+          onBlur={onEditBlur}
+        />
+      </div>
+    </div>
+  );
+}
+
+/** §26.3.1 Font — 一般 web フォントのプルダウン + 「Custom…」で任意 family 入力。 */
+function FontField({
+  font,
+  onChange,
+  onEditFocus,
+  onEditBlur,
+}: {
+  font: string;
+  onChange: (value: string) => void;
+  onEditFocus: () => void;
+  onEditBlur: () => void;
+}) {
+  const known = isKnownFont(font);
+  const [customMode, setCustomMode] = useState(!known);
+
+  // 外部から font が変わり既知値になったら custom を解除（KF やプリセット適用に追従）。
+  useEffect(() => {
+    if (isKnownFont(font)) setCustomMode(false);
+  }, [font]);
+
+  const selectVal = customMode || !known ? "__custom__" : font;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4, flex: 1 }}>
+      <select
+        value={selectVal}
+        onChange={(e) => {
+          const v = e.target.value;
+          if (v === "__custom__") {
+            setCustomMode(true);
+          } else {
+            setCustomMode(false);
+            onChange(v);
+          }
+        }}
+        style={selectStyle}
+      >
+        {WEB_SAFE_FONTS.map((f) => (
+          <option key={f.value} value={f.value} style={{ fontFamily: f.value }}>{f.label}</option>
+        ))}
+        <option value="__custom__">Custom…</option>
+      </select>
+      {(customMode || !known) && (
+        <input
+          value={font}
+          placeholder="font-family (例: 'My Font', sans-serif)"
+          onChange={(e) => onChange(e.target.value)}
+          onFocus={onEditFocus}
+          onBlur={onEditBlur}
+          style={{ ...textInputStyle, flex: 1 }}
+        />
+      )}
+    </div>
   );
 }
 

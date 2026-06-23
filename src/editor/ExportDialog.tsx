@@ -20,6 +20,8 @@ const fs = new IndexedDbFs("mafter-effect-fs");
 export function ExportDialog({ project, compId, onClose }: Props) {
   const comp = project.compositions.find((c) => c.id === compId);
   const tl = comp?.kind === "timeline" ? comp : null;
+  // §5.4b: 3D 配置レイヤーを含むコンプは、Phase1 では書き出しが平面化され得る（正準3D書き出し=GL readPixels は Phase2）。
+  const has3DLayers = (tl?.objects ?? []).some((o) => o.threeD === true);
 
   const [format, setFormat] = useState<ExportConfig["format"]>("mp4");
   const [startFrame, setStartFrame] = useState(0);
@@ -202,6 +204,11 @@ export function ExportDialog({ project, compId, onClose }: Props) {
         )}
 
         {/* Warnings */}
+        {has3DLayers && (
+          <div style={{ fontSize: 11, color: "#fc8", marginBottom: 10, background: "#2a2415", padding: "6px 8px", borderRadius: 3, lineHeight: 1.5 }}>
+            ⚠ 3D レイヤーを含みます（§5.4b）。Phase1 ではプレビューは正しく 3D 表示されますが、書き出しは foreignObject 制約で平面化される場合があります。正準な 3D 書き出し（GL readPixels）は Phase 2 で対応します。
+          </div>
+        )}
         <div style={{ fontSize: 10, color: "#666", marginBottom: 10, lineHeight: 1.5 }}>
           ⚠ best-effort: CSS 3D preserve-3d / cross-origin images may differ from preview.<br />
           §26: 厳密モードは asset フォント取り込みで最も正確。system フォントは SVG text 近似。<br />

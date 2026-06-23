@@ -16,13 +16,22 @@ function byStringKey<T extends { id: string }>(a: T, b: T): number {
 }
 
 /**
- * §27.4 / §5.6-canon: 調整レイヤーの adjustmentMode は `"raster"` のときだけ書き、
- * live（既定）・非調整レイヤーでは省略する（既存 project.json と byte 等価を保つ）。
+ * §27.4 / §5.4b / §5.6-canon: 既定値のフィールドは省略して既存 project.json と byte 等価を保つ。
+ * - adjustmentMode は `"raster"` のときだけ書く（live 既定・非調整レイヤーでは省略）。
+ * - threeD は true のときだけ書く（false/省略は平面 2D）。
+ * - threeDMode は dom/raster3d のときだけ書く（"auto" 既定は省略）。
  */
 function canonicalizeObject(obj: SceneObject): SceneObject {
-  if (obj.isAdjustment === true && obj.adjustmentMode === "raster") return obj;
-  if (obj.adjustmentMode === undefined) return obj;
-  return { ...obj, adjustmentMode: undefined };
+  let out = obj;
+  const strip = (patch: Partial<SceneObject>) => {
+    out = { ...out, ...patch };
+  };
+  if (!(obj.isAdjustment === true && obj.adjustmentMode === "raster") && obj.adjustmentMode !== undefined) {
+    strip({ adjustmentMode: undefined });
+  }
+  if (obj.threeD !== true && obj.threeD !== undefined) strip({ threeD: undefined });
+  if (obj.threeDMode === "auto") strip({ threeDMode: undefined });
+  return out;
 }
 
 /**
@@ -37,6 +46,8 @@ export function canonicalizeProject(project: Project): Project {
           ...comp,
           objects: [...comp.objects].sort(byId).map(canonicalizeObject),
         };
+        // §5.4b: renderer3d は "advanced" のときだけ書く（"classic" 既定は省略）。
+        if (t.renderer3d === "classic") t.renderer3d = undefined;
         return t;
       }
       return { ...comp };

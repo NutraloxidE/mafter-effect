@@ -138,6 +138,107 @@ export function decomposeTrs(m: Mat4): { position: Vec3; rotation: Vec3; scale: 
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Vec3 ヘルパ（camera lookAt / 法線計算用）。INV-1: 純粋・副作用なし。
+// ─────────────────────────────────────────────────────────────────────────
+export function vecSub(a: Vec3, b: Vec3): Vec3 {
+  return { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z };
+}
+
+export function vecAdd(a: Vec3, b: Vec3): Vec3 {
+  return { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z };
+}
+
+export function vecScale(a: Vec3, s: number): Vec3 {
+  return { x: a.x * s, y: a.y * s, z: a.z * s };
+}
+
+export function vecDot(a: Vec3, b: Vec3): number {
+  return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+export function vecCross(a: Vec3, b: Vec3): Vec3 {
+  return {
+    x: a.y * b.z - a.z * b.y,
+    y: a.z * b.x - a.x * b.z,
+    z: a.x * b.y - a.y * b.x,
+  };
+}
+
+export function vecLength(a: Vec3): number {
+  return Math.hypot(a.x, a.y, a.z);
+}
+
+/** 正規化。長さ≈0 のときは {0,0,0}。 */
+export function vecNormalize(a: Vec3): Vec3 {
+  const len = vecLength(a);
+  return len > 1e-10 ? { x: a.x / len, y: a.y / len, z: a.z / len } : { x: 0, y: 0, z: 0 };
+}
+
+/**
+ * 右手系ビュー行列（camera が center を向く）。gl-matrix と同じ規約・column-major。
+ * カメラは -z 方向を見る（zaxis = normalize(eye-center)）。Three.js / WebGL と互換。
+ * ツーノードカメラ（§6.5）の view = lookAt(position, pointOfInterest, up)。
+ */
+export function lookAt(eye: Vec3, center: Vec3, up: Vec3): Mat4 {
+  const z = vecNormalize(vecSub(eye, center)); // 後方（カメラ→視点の逆）
+  // eye≈center の退化時は単位回転＋平行移動で代替。
+  if (vecLength(vecSub(eye, center)) < 1e-10) {
+    return translation(-eye.x, -eye.y, -eye.z);
+  }
+  let x = vecCross(up, z); // 右
+  if (vecLength(x) < 1e-10) {
+    // up が z と平行: up を僅かに傾けて再計算。
+    x = vecCross({ x: up.x + 1e-4, y: up.y, z: up.z }, z);
+  }
+  x = vecNormalize(x);
+  const y = vecCross(z, x); // 上（既に正規）
+  // column-major: 各列は基底ベクトル、平行移動は -dot(axis, eye)。
+  return [
+    x.x, y.x, z.x, 0,
+    x.y, y.y, z.y, 0,
+    x.z, y.z, z.z, 0,
+    -vecDot(x, eye), -vecDot(y, eye), -vecDot(z, eye), 1,
+  ];
+}
+
+/**
+ * 右手系透視投影行列（NDC z∈[-1,1], OpenGL/Three.js 規約）。column-major。
+ * fovDeg = 垂直画角（度）。aspect = width/height。§6.5/§8。
+ */
+export function perspective(fovDeg: number, aspect: number, near: number, far: number): Mat4 {
+  const f = 1 / Math.tan((fovDeg * DEG2RAD) / 2);
+  const nf = 1 / (near - far);
+  return [
+    f / aspect, 0, 0, 0,
+    0, f, 0, 0,
+    0, 0, (far + near) * nf, -1,
+    0, 0, 2 * far * near * nf, 0,
+  ];
+}
+
+/**
+ * 正射影行列（NDC z∈[-1,1]）。column-major。gl-matrix ortho 互換。
+ */
+export function orthographic(
+  left: number,
+  right: number,
+  bottom: number,
+  top: number,
+  near: number,
+  far: number,
+): Mat4 {
+  const lr = 1 / (left - right);
+  const bt = 1 / (bottom - top);
+  const nf = 1 / (near - far);
+  return [
+    -2 * lr, 0, 0, 0,
+    0, -2 * bt, 0, 0,
+    0, 0, 2 * nf, 0,
+    (left + right) * lr, (top + bottom) * bt, (far + near) * nf, 1,
+  ];
+}
+
 /** 点 p（同次 w=1）に行列を適用する。 */
 export function transformPoint(m: Mat4, p: Vec3): Vec3 {
   const x = m[0] * p.x + m[4] * p.y + m[8] * p.z + m[12];

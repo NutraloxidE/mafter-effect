@@ -16,6 +16,7 @@ import { captureElementToCanvas, rasterizeFilteredImage } from "./rasterCapture"
 import { canvasToRasterBuffer, rasterBufferToCanvas } from "./pixelSort";
 import { processRasterChainAsync } from "./rasterProcessAsync";
 import type { EffectFilter } from "./plugin";
+import { multiply, translation, type Mat4 } from "./mat4";
 
 // §8 DomRenderer — フラット matrix3d レンダラ。
 // 各 ResolvedObject を root の兄弟 div として並べる。ネストしない。
@@ -78,6 +79,8 @@ export class DomRenderer implements Renderer {
   private nestedCompRasterizer: NestedCompRasterizer | null = null;
   /** 現フレームに adjustment + displacement がある（下位 overflow 方針用） */
   private compHasAdjustmentDisplace = false;
+  /** §6.5b per-object カメラ前置行列 = translate(cx,cy,P)·view。3D 層にのみ掛ける。null = カメラなし。 */
+  private cameraPre: Mat4 | null = null;
   /** §27.12 hold-last raster（full displacement 用）。 */
   private holdLastRaster = false;
   /** §27.4 auto_raster_mp4 — mp4/png export 時に Live調整も comp 背面 capture へ回す
@@ -143,15 +146,23 @@ export class DomRenderer implements Renderer {
         (o.effects ?? []).some((e) => e.enabled && DISPLACEMENT_EFFECT_TYPES.has(e.type)),
     );
 
-    // camera / perspective (§6.5)
+    // camera / perspective (§6.5 / §6.5b)
     if (scene.camera) {
       const perspective = scene.height / 2 / Math.tan((scene.camera.fov * Math.PI) / 360);
       this.root.style.perspective = `${perspective}px`;
       this.root.style.perspectiveOrigin = "50% 50%";
-      this.root.style.transform = mat4ToCss(scene.camera.viewMatrix);
+      // §6.5b CSS リグ: perspective は子孫の 3D 変換にしか効かないため view を root に置くと
+      // カメラ Z が平面適用され dolly/zoom が効かない。view は各 3D オブジェクトに焼く。
+      this.root.style.transform = "";
+      // pre = translate(cx, cy, P) · view。cx,cy=XY 再センタリング、P=深度補正（既定 cameraZ=P で等倍）。
+      this.cameraPre = multiply(
+        translation(scene.width / 2, scene.height / 2, perspective),
+        scene.camera.viewMatrix,
+      );
     } else {
       this.root.style.perspective = "";
       this.root.style.transform = "";
+      this.cameraPre = null;
     }
 
     const seen = new Set<string>();
@@ -227,7 +238,12 @@ export class DomRenderer implements Renderer {
   }
 
   private applyObject(entry: ObjectEntry, obj: ResolvedObject, frame: Frame): void {
-    entry.div.style.transform = mat4ToCss(obj.worldTransform);
+    // §6.5b/§5.4b 3D 層（threeD）のみカメラ view を per-object で焼く（root perspective を受けて
+    // dolly/zoom が効く）。2D 層は素の worldTransform = カメラ免除（AE 準拠, z=0 で perspective 無歪み）。
+    const xform = this.cameraPre && obj.threeD === true
+      ? multiply(this.cameraPre, obj.worldTransform)
+      : obj.worldTransform;
+    entry.div.style.transform = mat4ToCss(xform);
     entry.div.style.opacity = String(obj.opacity);
     entry.div.style.zIndex = String(Math.round(obj.zOrder * BASE_Z));
 
