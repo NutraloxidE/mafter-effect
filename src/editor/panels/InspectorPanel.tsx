@@ -10,7 +10,7 @@ import {
 } from "../store";
 import { staticProp } from "../../core/props";
 import { ColorSwatch, isRgba } from "../ColorSwatch";
-import { WEB_SAFE_FONTS, isKnownFont } from "../fontList";
+import { BUNDLED_FONTS, WEB_SAFE_FONTS, isKnownFont } from "../fontList";
 import { ScrubNumber } from "../ScrubNumber";
 import { globalPluginRegistry } from "../../runtime/pluginRegistry";
 import { groupEffectsForPicker } from "../effectCategories";
@@ -299,6 +299,17 @@ export function InspectorPanel() {
             step={0.01}
             style={numInputStyle}
           />
+        </Row>
+        <Row label="Blend Mode">
+          <select
+            value={obj.blendMode ?? "normal"}
+            onChange={(e) => setBlendMode(obj.id, e.target.value as BlendMode)}
+            style={selectStyle}
+          >
+            {BLEND_MODES.map((m) => (
+              <option key={m} value={m}>{BLEND_MODE_LABELS[m]}</option>
+            ))}
+          </select>
         </Row>
       </InspectorFoldout>
 
@@ -1207,9 +1218,16 @@ function FontField({
         }}
         style={selectStyle}
       >
-        {WEB_SAFE_FONTS.map((f) => (
-          <option key={f.value} value={f.value} style={{ fontFamily: f.value }}>{f.label}</option>
-        ))}
+        <optgroup label="Bundled">
+          {BUNDLED_FONTS.map((f) => (
+            <option key={f.value} value={f.value} style={{ fontFamily: f.value }}>{f.label}</option>
+          ))}
+        </optgroup>
+        <optgroup label="Web safe">
+          {WEB_SAFE_FONTS.map((f) => (
+            <option key={f.value} value={f.value} style={{ fontFamily: f.value }}>{f.label}</option>
+          ))}
+        </optgroup>
         <option value="__custom__">Custom…</option>
       </select>
       {(customMode || !known) && (

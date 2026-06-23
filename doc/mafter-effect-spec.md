@@ -1543,6 +1543,19 @@ registerComponent({
 - 書き込みは他の静的プロパティと同様 `writeStatic("font", value)` 経由（`components[i].props.font` を更新、undo 可）。`addText` の既定（`font="sans-serif"`）も候補リストに含まれる。
 - リストは `src/editor/fontList.ts` 等の単一定数として持ち、Inspector が参照する。**描画経路（DomRenderer / SVG）には影響しない**（family 文字列をそのまま `font-family` に渡す既存挙動を維持）。
 
+#### §26.3.2 ビルトイン同梱フォント（Noto Sans / Noto Sans JP）— 確定
+
+システム依存の Web セーフフォント（§26.3.1）は環境ごとに有無・字形が変わり、**preview と export の一致（INV-2）を保証できない**。これを解消するため、アプリに**実フォントファイルを同梱**して環境非依存で使える family を提供する。
+
+- **同梱対象**: `Noto Sans`（ラテン）と `Noto Sans JP`（日本語グリフを含む）。各 **3 ウェイト = Regular(400) / Medium(500) / Bold(700)**。実体は `public/fonts/*.ttf`（完全版 TTF、サブセットしない）。
+- **登録の単一情報源**: `src/runtime/builtinFonts.ts` に `BUILTIN_FONTS`（family・label・weights→ファイル名）を定義。`registerBuiltinFonts(baseUrl)` が family×weight 分の `@font-face`（`src: url(<baseUrl>/<file>) format('truetype')`、`font-display: swap`）を 1 つの `<style>` として `document.head` に注入する（冪等）。ブラウザはグリフ使用時のみ遅延ロードするため、起動コストは増えない。
+- **適用範囲（INV-2 を満たすための配線）**:
+  - **エディタ + ブラウザ export**: `main.tsx` 起動時に `registerBuiltinFonts("/fonts")` を 1 回呼ぶ。WebCodecs / PNG 連番 export は**同一 document 内**で走るため、これだけで preview と export が同じ実フォントを使う。
+  - **Web Bundle（§11.7）**: bundle は file:// 自己完結のため、使用された built-in family×weight の TTF を zip に同梱し、`BundleManifest.builtinFonts: { family, weight, path }[]` に列挙する。`BundlePlayer` が `FontFace(family, url(path), { weight })` で登録する。未使用ウェイトは同梱しない（サイズ最適化）。
+- **ウェイトの扱い**: `font` は family 文字列のみを持つ既存仕様を維持し（スキーマ不変・§26.1）、太さは既存の静的プロパティ `weight`（§26.1）で選ぶ。`@font-face` を 400/500/700 で宣言してあるため、`weight` 値に応じて CSS が対応するフェイスを選択する（draft の DOM / precise の SVG `<text>` 双方で `font-weight` として反映）。
+- **outline（§26.4.1）との関係**: built-in フォントは `@font-face` で document に実ロードされるため、precise モードの **SVG `<text>` フォールバックでも正確に描画**でき、export と一致する。opentype による per-glyph アウトライン化は将来の最適化（必須ではない）。
+- Inspector のドロップダウンでは Web セーフ群と分けて先頭の optgroup（"Bundled"）に出す。`isKnownFont` は built-in family も既知として扱い、Custom 入力に誤って落とさない。
+
 ### §26.4 プレビュー品質モード（軽量 / 厳密）— 確定
 
 プレビューに**グローバル 1 ボタン**（AE の Draft/Best 相当）を置き、レンダリング品質を切り替える。粒度はグローバルのみ（レイヤー個別フラグは将来）。

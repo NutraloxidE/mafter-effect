@@ -7,7 +7,13 @@ import type { ExportConfig, Project, TimelineComposition } from "../core/schema"
 import type { FileSystem } from "../fs/FileSystem";
 import { applyBundleBake } from "./bundleBake";
 import { collectBundleDependencies } from "./bundleCollect";
-import type { BundleManifest } from "./bundleTypes";
+import {
+  BUILTIN_FONT_DIR,
+  findBuiltinFontByFamily,
+  fontUsesFamily,
+  nearestBuiltinWeight,
+} from "./builtinFonts";
+import type { BundleBuiltinFont, BundleManifest } from "./bundleTypes";
 import type { ProgressCallback } from "./exporter";
 
 export interface BundleExportResult {
@@ -123,6 +129,49 @@ async function collectTextAndBinary(
   return { textFiles, binaries, blobs };
 }
 
+function staticPropValue(raw: unknown): unknown {
+  if (raw && typeof raw === "object" && "value" in raw && "keyframes" in raw) {
+    return (raw as { value: unknown }).value;
+  }
+  return raw;
+}
+
+/** §26.3.2 project 内の text レイヤーが使う built-in family×weight を列挙する。 */
+function collectBuiltinFontUsage(project: Project): BundleBuiltinFont[] {
+  const seen = new Map<string, BundleBuiltinFont>();
+  for (const comp of project.compositions) {
+    if (comp.kind !== "timeline") continue;
+    for (const obj of comp.objects) {
+      for (const c of obj.components) {
+        if (c.type !== "text") continue;
+        const font = staticPropValue(c.props["font"]);
+        if (typeof font !== "string") continue;
+        const family = font.split(",")[0]?.trim().replace(/^['"]|['"]$/g, "") ?? "";
+        const def = fontUsesFamily(font, family) ? findBuiltinFontByFamily(family) : undefined;
+        if (!def) continue;
+        const wRaw = staticPropValue(c.props["weight"]);
+        const weight = Number(wRaw);
+        const w = nearestBuiltinWeight(def, Number.isFinite(weight) ? weight : 400);
+        const path = `${BUILTIN_FONT_DIR}/${w.file}`;
+        if (!seen.has(path)) {
+          seen.set(path, { family: def.family, weight: w.weight, path });
+        }
+      }
+    }
+  }
+  return [...seen.values()];
+}
+
+async function fetchBuiltinFontBytes(path: string): Promise<Uint8Array | null> {
+  try {
+    const resp = await fetch(`/${path}`);
+    if (!resp.ok) return null;
+    return new Uint8Array(await resp.arrayBuffer());
+  } catch {
+    return null;
+  }
+}
+
 export async function exportBundle(
   project: Project,
   compId: string,
@@ -159,6 +208,17 @@ export async function exportBundle(
 
   const collected = await collectTextAndBinary(fs, deps.textPaths, deps.binaryPaths, deps.livePluginIds);
 
+  // §26.3.2 使用された built-in フォントを public/fonts から取得し zip 同梱する。
+  const builtinFontUse = collectBuiltinFontUsage(bundleProject);
+  const builtinFontBytes = new Map<string, Uint8Array>();
+  const builtinFonts: BundleBuiltinFont[] = [];
+  for (const f of builtinFontUse) {
+    const bytes = await fetchBuiltinFontBytes(f.path);
+    if (!bytes) continue;
+    builtinFontBytes.set(f.path, bytes);
+    builtinFonts.push(f);
+  }
+
   const manifest: BundleManifest = {
     compId,
     fps: config.fps,
@@ -169,6 +229,7 @@ export async function exportBundle(
     project: bundleProject,
     textFiles: collected.textFiles,
     blobs: collected.blobs,
+    builtinFonts,
   };
 
   const manifestJson = JSON.stringify(manifest).replace(/</g, "\\u003c");
@@ -190,6 +251,9 @@ export async function exportBundle(
     zip.file(path, data, { date: fixedDate });
   }
   for (const [path, data] of bakeResult.binaryFiles) {
+    zip.file(path, data, { date: fixedDate });
+  }
+  for (const [path, data] of builtinFontBytes) {
     zip.file(path, data, { date: fixedDate });
   }
 

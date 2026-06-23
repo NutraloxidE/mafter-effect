@@ -73,6 +73,7 @@ export class BundlePlayer {
     await this.fontCache.loadFromProject(project, this.fs);
     this.imageCache.registerProjectUrls(project, urlForPath);
     await this.loadBundleFonts(project, urlForPath);
+    await this.loadBuiltinFonts(urlForPath);
 
     this.renderer.setHtmlPlayer(this.htmlPlayer);
     this.renderer.setFontCache(this.fontCache);
@@ -136,6 +137,21 @@ export class BundlePlayer {
           : asset.path.split("/").pop()?.replace(/\.[^.]+$/, "") ?? asset.id;
       try {
         const face = new FontFace(family, `url(${urlForPath(asset.path)})`);
+        await face.load();
+        document.fonts.add(face);
+      } catch {
+        /* skip */
+      }
+    }
+  }
+
+  /** §26.3.2 zip 同梱の built-in フォントを family×weight で登録する。 */
+  private async loadBuiltinFonts(urlForPath: (path: string) => string): Promise<void> {
+    for (const f of this.manifest.builtinFonts ?? []) {
+      try {
+        const face = new FontFace(f.family, `url(${urlForPath(f.path)})`, {
+          weight: String(f.weight),
+        });
         await face.load();
         document.fonts.add(face);
       } catch {

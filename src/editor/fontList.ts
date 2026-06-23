@@ -2,10 +2,18 @@
 // value は font-family にそのまま渡す文字列（フォールバック付きスタック）。stored `font` 文字列と
 // 完全一致したとき選択状態になる。既存挙動どおり描画経路はこの文字列をそのまま使う。
 
+import { BUILTIN_FONTS } from "../runtime/builtinFonts";
+
 export interface FontOption {
   label: string;
   value: string;
 }
+
+// §26.3.2 同梱フォント。value はスタック先頭が built-in family（CSS は @font-face を選ぶ）。
+export const BUNDLED_FONTS: FontOption[] = BUILTIN_FONTS.map((f) => ({
+  label: f.label,
+  value: `'${f.family}', sans-serif`,
+}));
 
 export const WEB_SAFE_FONTS: FontOption[] = [
   { label: "System Sans", value: "sans-serif" },
@@ -27,5 +35,8 @@ export const WEB_SAFE_FONTS: FontOption[] = [
 
 /** stored font 文字列が候補リストに存在するか。Custom 判定に使う。 */
 export function isKnownFont(font: string): boolean {
-  return WEB_SAFE_FONTS.some((f) => f.value === font);
+  return (
+    BUNDLED_FONTS.some((f) => f.value === font) ||
+    WEB_SAFE_FONTS.some((f) => f.value === font)
+  );
 }
