@@ -11,6 +11,7 @@ import type {
   Frame,
   HtmlComposition,
   Keyframe,
+  LabelIndex,
   Project,
   Renderer3d,
   SceneObject,
@@ -167,6 +168,10 @@ export interface EditorStore {
   addTimelineComp: (name?: string) => string | null;
   removeComposition: (id: string) => void;
   renameComposition: (id: string, name: string) => void;
+  // §21.9 レイヤー名リネーム
+  renameObject: (id: string, name: string) => void;
+  // §21.10 ラベル色
+  setLayerLabelIndex: (ids: string[], index: LabelIndex | undefined) => void;
 
   // 高レベル編集（→ commands.ts 経由でスタックに積む）
   addObject: (obj: SceneObject) => void;
@@ -487,6 +492,32 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       compositions: before.compositions.map((c) => (c.id === id ? { ...c, name } : c)),
     };
     get().applyCommand({ label: "Rename Composition", before, after });
+  },
+
+  renameObject: (id, name) => {
+    const before = get().project;
+    if (!before) return;
+    const compId = get().currentCompId;
+    const after: Project = {
+      ...before,
+      compositions: before.compositions.map((c) => {
+        if (c.kind !== "timeline" || c.id !== compId) return c;
+        return {
+          ...c,
+          objects: c.objects.map((o) => (o.id === id ? { ...o, name } : o)),
+        };
+      }),
+    };
+    get().applyCommand({ label: "Rename layer", before, after });
+  },
+
+  setLayerLabelIndex: (ids, index) => {
+    if (ids.length === 0) return;
+    const patch: Partial<SceneObject> = { labelIndex: index };
+    get().updateObjects(
+      ids.map((id) => ({ id, patch })),
+      index === undefined ? "Clear layer label" : "Set layer label",
+    );
   },
 
   addObject: (obj) => cmdAddObject(get(), obj),

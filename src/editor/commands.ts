@@ -1,5 +1,7 @@
 import { newObjectId } from "../core/ids";
 import type { Frame, Project, SceneObject, TimelineComposition } from "../core/schema";
+import { duplicateObjectsWithRemap } from "./duplicateObjects";
+import { defaultLabelIndexForObject } from "./layerLabels";
 import { shiftFootageSourceOffset } from "./layerSourceOffset";
 import type { EditorStore } from "./store";
 
@@ -79,8 +81,11 @@ export function cmdAddObject(
 ): void {
   const before = store.project;
   if (!before) return;
-  const after = withCompObjects(before, store.currentCompId, (objs) => [...objs, obj]);
-  store.applyCommand({ label: `Add ${obj.components[0]?.type ?? "object"}`, before, after });
+  const toAdd: SceneObject = obj.labelIndex === undefined
+    ? { ...obj, labelIndex: defaultLabelIndexForObject(obj) }
+    : obj;
+  const after = withCompObjects(before, store.currentCompId, (objs) => [...objs, toAdd]);
+  store.applyCommand({ label: `Add ${toAdd.components[0]?.type ?? "object"}`, before, after });
 }
 
 export function cmdRemoveObject(
@@ -147,11 +152,11 @@ export function cmdDuplicateObjects(
 ): string[] {
   const before = store.project;
   if (!before || objects.length === 0) return [];
-  const copies: SceneObject[] = objects.map((o) => ({
-    ...o,
-    id: newObjectId(),
-    zOrder: o.zOrder + 0.5,
-  }));
+  const comp = before.compositions.find(
+    (c) => c.id === store.currentCompId && c.kind === "timeline",
+  ) as TimelineComposition | undefined;
+  const existingIds = new Set(comp?.objects.map((o) => o.id) ?? []);
+  const copies = duplicateObjectsWithRemap(objects, existingIds);
   const after = withCompObjects(before, store.currentCompId, (objs) => [...objs, ...copies]);
   store.applyCommand({ label: "Duplicate", before, after });
   return copies.map((c) => c.id);

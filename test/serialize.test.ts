@@ -3,6 +3,7 @@ import { createProject } from "../src/core/createProject";
 import { defaultTransform, staticProp } from "../src/core/props";
 import {
   canonicalStringify,
+  canonicalizeProject,
   serializeProject,
 } from "../src/core/serialize";
 import type { Project, SceneObject, TimelineComposition } from "../src/core/schema";
@@ -64,5 +65,24 @@ describe("serializeProject", () => {
     );
     expect(text.endsWith("\n")).toBe(true);
     expect(text.endsWith("\n\n")).toBe(false);
+  });
+
+  it("serializes labelIndex when in range and strips invalid values", () => {
+    const base = createProject({ now: "2026-01-01T00:00:00.000Z" });
+    const p: Project = structuredClone(base);
+    const o = obj("01A");
+    o.labelIndex = 3;
+    timeline(p).objects = [o];
+    expect(serializeProject(p)).toContain('"labelIndex": 3');
+
+    const bad: Project = structuredClone(p);
+    timeline(bad).objects[0] = { ...o, labelIndex: 99 as SceneObject["labelIndex"] };
+    const canon = canonicalizeProject(bad);
+    const tcomp = canon.compositions[0];
+    expect(tcomp?.kind).toBe("timeline");
+    if (tcomp?.kind === "timeline") {
+      expect(tcomp.objects[0]?.labelIndex).toBeUndefined();
+    }
+    expect(serializeProject(canon)).not.toContain("labelIndex");
   });
 });

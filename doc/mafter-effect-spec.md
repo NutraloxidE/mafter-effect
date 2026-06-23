@@ -167,7 +167,7 @@ interface Transform {
 
 interface SceneObject {
   id: ObjectId;
-  name: string;                  // 表示専用
+  name: string;                  // 表示専用・ユーザー編集可（参照は ULID、INV-6 不変）
   parent: ObjectId | null;       // transform 継承のみ。描画順とは無関係
   zOrder: number;                // comp 内グローバル描画順。fractional（小→奥）。§5.4-note 参照
   enabled: boolean;
@@ -176,6 +176,7 @@ interface SceneObject {
   transform: Transform;
   opacity: AnimatedProp<number>; // 0..1, 全 Object 共通
   components: Component[];
+  labelIndex?: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16; // §5.4c ラベル色。省略 = 無色
 }
 ```
 
@@ -207,6 +208,21 @@ interface TimelineComposition {
 - **`raster3d`（≈ AE Advanced / CINEMA 4D）**: レイヤーをラスタライズし comp 共有の WebGL シーン（Three.js）にテクスチャ板として投入。同シーン内の他 raster3d 層・`scene3d` メッシュと per-pixel で本物の深度交差。代償＝静止テクスチャ化（ライブ HTML 不可）。実装は §6.5 / Phase 2（将来 §16）。
 - **既定運用**: comp 既定 classic（全部 dom/ライブ）→ 真の交差が必要な層だけ `threeDMode="raster3d"` に上書きし、ライブ性の損失を最小化する。
 - **エクスポート**（INV-2）: scene 解決値は全経路一致（ラスタ忠実度差は許容）。平面 2D 層 = foreignObject、3D 層（dom/raster3d いずれの解決でも）= 書き出し時に GL ラスタ→`readPixels` でブラウザ内取り込み（決定論）。Playwright ヘッドレスは将来 Node CLI（§16）オプション。
+
+### §5.4c レイヤーラベル色（additive スキーマ・確定）
+
+> AE のレイヤーラベル色に準拠。**エディタ UI のみ** — `resolve()` / export / preview には影響しない（INV-1〜3 不変）。
+
+```ts
+type LabelIndex = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16;
+
+interface SceneObject {
+  // ...既存フィールド...
+  labelIndex?: LabelIndex;  // 省略 = 無色（既定グレー行）
+}
+```
+
+- 直列化: `labelIndex` は **0–16 のときのみ**書く。範囲外は strip。UI は [src/editor/layerLabels.ts](../src/editor/layerLabels.ts) のパレット（AE 16 色 + index 16 = 旧 LayerBar ベージュ `#b89b6a`、§21.10）。
 
 ### §5.5 Component（タグ付き union + プラグイン拡張）
 
@@ -952,7 +968,7 @@ AE タイムラインの機能を **Tier A〜D** に分け、本リビジョン�
 | Tier | 内容 | スキーマ影響 | 区分 |
 |---|---|---|---|
 | **A** | プロパティツリー展開 / per-property ストップウォッチ＋値編集 / KF 行 / レイヤーバーの drag（in/out トリム・スライド）/ 時間ルーラー＋SMPTE タイムコード / レイヤー番号 | **なし**（既存スキーマで成立） | **本リビジョン** |
-| **B** | ラベル色 / solo / lock / shy / **親とリンク(parent) ドロップダウン UI（§21.8 部分実装済み）** | additive（`SceneObject` にフラグ追加） | 将来（優先度高） |
+| **B** | **ラベル色（§21.10 部分実装済み）** / solo / lock / shy / **親とリンク(parent) ドロップダウン UI（§21.8 部分実装済み）** | additive（`SceneObject` にフラグ追加） | 将来（優先度高） |
 | **C** | ブレンドモード / トラックマット | renderer(INV-3)＋export 経路拡張 | 将来（優先度高） |
 | **D** | モーションブラー / フレームブレンド / 3D レイヤー / 調整レイヤー | 大規模・決定論モデル評価要 | 将来 |
 
@@ -1025,6 +1041,15 @@ AE 同様、KF 行をまたいで複数キーフレームを選択し、まと�
 - **アクティブ comp 切替**時に展開状態をすべてクリアする。
 - 入力欄（input/textarea/contentEditable）フォーカス中は U/UU を無視する。
 
+### §21.7 Duplicate / Split / コピペ（確定・Tier A 拡張）
+
+**スキーマ・直列化への影響なし**。`Duplicate`（Ctrl+D）・`Split Layer`（Ctrl+Shift+D）・レイヤー/KF コピペ（Ctrl+C/X/V）は Timeline パネル + command 層で実装する。
+
+- **Duplicate / Paste（レイヤー）**: 複製対象に新 ULID を振り `zOrder + 0.5` で挿入する（既存規約）。**複製セット内の `parent` 参照は旧 ID → 新 ID にリマップ**する（Null 親子をまとめてコピペしても階層が維持される）。複製セット外で comp 内に残る parent（子だけコピーした場合の既存 Null 等）は **ID を維持**。存在しない parent（カット後ペースト等で dangling になった参照）は **`null`（root）に正規化**する（load 時 validate と同趣旨）。
+- **Paste 時間シフト**: クリップボード内の最も早い `inPoint` が現フレーム（再生ヘッド）に来るよう、全レイヤーの `inPoint`/`outPoint` とキーフレーム frame を同じ Δ で平行移動する（footage 源オフセットは変えない）。
+- **KF コピペ**: KF 選択中は KF を、それ以外はレイヤーをクリップボード対象とする（AE 同様）。KF ペーストは現フレーム基準でオフセット。
+- **実装**: [src/editor/duplicateObjects.ts](../src/editor/duplicateObjects.ts)（parent リマップ）/ [src/editor/commands.ts](../src/editor/commands.ts) `cmdDuplicateObjects` / [src/editor/panels/TimelinePanel.tsx](../src/editor/panels/TimelinePanel.tsx) クリップボード。
+
 ### §21.8 Parent リンク UI（Tier B 部分実装・確定）
 
 AE の「Parent & Link」相当。**スキーマ不変** — 既存 `SceneObject.parent: ObjectId | null`（§5.4）を Timeline から編集する UI 層のみ。
@@ -1052,6 +1077,71 @@ AE の「Parent & Link」相当。**スキーマ不変** — 既存 `SceneObject
 - [src/editor/parentLink.ts](../src/editor/parentLink.ts): 候補列挙・循環検証
 - [src/editor/reparent.ts](../src/editor/reparent.ts): world 保持 reparent patch
 - [src/editor/panels/TimelinePanel.tsx](../src/editor/panels/TimelinePanel.tsx): ParentSelect UI
+
+### §21.9 レイヤー名リネーム（確定・Tier A）
+
+**スキーマ不変** — 既存 `SceneObject.name`（§5.4）を Timeline / Inspector から編集する UI 層のみ。
+
+- Timeline `LayerRow` のレイヤー名を **ダブルクリック → インライン編集**（§20.2 `renameComposition` と同パターン）。
+- Inspector ヘッダでも編集可。
+- `Enter` 確定 / `Escape` キャンセル / blur 確定。空文字（trim 後）は拒否（変更しない）。
+- store: `renameObject(id, name)` — `renameComposition` と対称（§20.2）。command 経由で undo 可能（§17）。
+
+```ts
+renameObject(id: ObjectId, name: string): void  // 表示名変更（INV-6: 参照は id なので安全）
+```
+
+### §21.10 ラベル色 UI（Tier B 部分実装・確定）
+
+AE のレイヤーラベル色相当。**additive スキーマ** — `SceneObject.labelIndex`（§5.4c）。**`resolve()` / export / preview には影響しない**（エディタ UI のみ、INV-1〜3 不変）。
+
+#### §21.10.1 データモデル
+
+```ts
+/** ラベル色インデックス 0–16（0–15 = AE、16 = ベージュ）。省略 = 無色（既定グレー行）。 */
+labelIndex?: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16;
+```
+
+- 直列化: `labelIndex` は **0–16 のときのみ** `project.json` に書く。`undefined` はキー省略（§5.6 正準化）。
+- パレット: AE 16 色（0–15）+ **index 16 = ベージュ**（ラベル色導入前の LayerBar 既定 `#b89b6a`）。
+- 17 色パレットは [src/editor/layerLabels.ts](../src/editor/layerLabels.ts) の `LAYER_LABEL_COLORS` 定数。
+
+#### §21.10.2 UI 規約
+
+- 各行左端に **12px の色ストリップ** を表示。`labelIndex` 省略時は**中立グレー**（種別既定には戻さない）。
+- 色ストリップクリック → **17 色 + 「なし」** のパレットポップアップ。
+- **タイムライン `LayerBar`（in/out バー）と `SourceGhostBars`** も `labelIndex` の色に連動する（選択時は明度アップ＋白枠で区別。固定の青/茶色は廃止）。
+- **複数レイヤー選択時**: パレット選択で選択中全レイヤーに同一 `labelIndex` を適用（`updateObjects` 1 command / 1 undo）。
+- Solid の塗り色チップ（§31）は **コンテンツ色**（`components[].props.color`）であり、ラベル色とは別物。ツールチップで区別する。
+- キーボード `0`–`9` ショートカットは将来（本リビジョンではパレット UI のみ）。
+
+#### §21.10.2b 種別既定ラベル色（確定）
+
+新規レイヤー追加時（`cmdAddObject`）、`labelIndex` 未指定なら種別既定を **書き込む**（`project.json` に保存）。既存レイヤーのマイグレーションはしない。
+
+| 種別 | 判定 | index |
+|---|---|---|
+| Solid | `components` に `solid` | 0（赤） |
+| Text | `text` | 1（黄） |
+| Footage | `image` / `audio` / `video` | 2（Aqua） |
+| Camera | `camera` | 7（青） |
+| Null | `isNull` | 4（ラベンダー） |
+| Adjustment | `isAdjustment` | 5（オレンジ） |
+| HTML / Precomp | `html` / `comp` | 9（紫） |
+| Plugin / その他 | fallback | 14（Sandstone） |
+
+実装: [src/editor/layerLabels.ts](../src/editor/layerLabels.ts) の `defaultLabelIndexForObject`。
+
+パレット「なし」: `labelIndex` を `undefined` にし、UI は**中立グレー**（種別既定色には戻らない）。
+
+#### §21.10.3 store 操作
+
+```ts
+setLayerLabelIndex(ids: ObjectId[], index: LabelIndex | undefined): void
+```
+
+- `index === undefined` でラベル色をクリア（「なし」→ 中立グレー表示）。
+- command 経由で undo 可能（§17）。
 
 ---
 

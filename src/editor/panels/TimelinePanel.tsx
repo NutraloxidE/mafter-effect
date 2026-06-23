@@ -17,11 +17,13 @@ import { isRgba } from "../ColorSwatch";
 import { getLayerSourceExtent, shiftFootageSourceOffset, type LayerSourceExtent } from "../layerSourceOffset";
 import { DRAG_MIME } from "./ProjectPanel";
 import { ScrubNumber } from "../ScrubNumber";
+import { labelBarColor, labelColorTitle, labelRowTint, LAYER_LABEL_COLORS, timelineBarFill } from "../layerLabels";
 import type {
   AnimatedProp,
   Component,
   Easing,
   Frame,
+  LabelIndex,
   ParamKind,
   RGBA,
   SceneObject,
@@ -110,6 +112,8 @@ export function TimelinePanel() {
   const selectedIds = useEditorStore((s) => s.selectedObjectIds);
   const setFrame = useEditorStore((s) => s.setFrame);
   const updateObject = useEditorStore((s) => s.updateObject);
+  const renameObject = useEditorStore((s) => s.renameObject);
+  const setLayerLabelIndex = useEditorStore((s) => s.setLayerLabelIndex);
   const addSolid = useEditorStore((s) => s.addSolid);
   const addText = useEditorStore((s) => s.addText);
   const addAdjustmentLayer = useEditorStore((s) => s.addAdjustmentLayer);
@@ -1103,6 +1107,9 @@ export function TimelinePanel() {
             onSelectLayer={(e) => handleLayerSelect(obj.id, e)}
             onRemove={() => removeObject(obj.id)}
             onUpdate={updateObject}
+            onRename={(name) => renameObject(obj.id, name)}
+            labelTargetIds={selectedIds.includes(obj.id) && selectedIds.length > 1 ? selectedIds : [obj.id]}
+            onSetLabelIndex={setLayerLabelIndex}
             onSetParent={handleSetParent}
             allObjects={objects}
             activeCameraId={comp?.activeCamera ?? null}
@@ -1665,6 +1672,9 @@ interface LayerRowProps {
   onSelectLayer: (e: React.MouseEvent) => void;
   onRemove: () => void;
   onUpdate: (id: string, patch: Partial<SceneObject>, label?: string) => void;
+  onRename: (name: string) => void;
+  labelTargetIds: string[];
+  onSetLabelIndex: (ids: string[], index: LabelIndex | undefined) => void;
   onSetParent: (sourceObjId: string, newParentId: string | null) => void;
   allObjects: SceneObject[];
   activeCameraId: string | null;
@@ -1679,6 +1689,136 @@ interface LayerRowProps {
   onLayerDragOver: () => void;
   onLayerDrop: () => void;
   onLayerDragEnd: () => void;
+}
+
+function LabelColorPalette({
+  anchorEl,
+  current,
+  onSelect,
+  onClose,
+}: {
+  anchorEl: HTMLElement;
+  current: LabelIndex | undefined;
+  onSelect: (index: LabelIndex | undefined) => void;
+  onClose: () => void;
+}) {
+  const paletteRef = useRef<HTMLDivElement>(null);
+  const rect = anchorEl.getBoundingClientRect();
+
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (paletteRef.current?.contains(t) || anchorEl.contains(t)) return;
+      onClose();
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [anchorEl, onClose]);
+
+  return (
+    <div
+      ref={paletteRef}
+      style={{
+        position: "fixed",
+        left: rect.left,
+        top: rect.bottom + 2,
+        zIndex: 10000,
+        display: "grid",
+        gridTemplateColumns: "repeat(8, 18px)",
+        gap: 3,
+        padding: 6,
+        background: "#2a2a2a",
+        border: "1px solid #555",
+        borderRadius: 4,
+        boxShadow: "0 4px 12px rgba(0,0,0,0.5)",
+      }}
+      onClick={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
+    >
+      <button
+        type="button"
+        title="ラベル色なし"
+        onClick={() => { onSelect(undefined); onClose(); }}
+        style={{
+          width: 18,
+          height: 18,
+          padding: 0,
+          border: current === undefined ? "2px solid #fff" : "1px solid #666",
+          borderRadius: 2,
+          background: "#3a3a3a",
+          cursor: "pointer",
+          fontSize: 8,
+          color: "#aaa",
+        }}
+      >
+        —
+      </button>
+      {LAYER_LABEL_COLORS.map((color, i) => (
+        <button
+          key={i}
+          type="button"
+          title={labelColorTitle(i)}
+          onClick={() => { onSelect(i as LabelIndex); onClose(); }}
+          style={{
+            width: 18,
+            height: 18,
+            padding: 0,
+            border: current === i ? "2px solid #fff" : "1px solid #444",
+            borderRadius: 2,
+            background: color,
+            cursor: "pointer",
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
+function LabelColorBar({
+  labelIndex,
+  onPick,
+}: {
+  labelIndex: LabelIndex | undefined;
+  onPick: (index: LabelIndex | undefined) => void;
+}) {
+  const barRef = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+  const hasLabel = labelIndex !== undefined;
+
+  return (
+    <>
+      <button
+        ref={barRef}
+        type="button"
+        title="レイヤーラベル色（組織用。Solid の塗り色とは別）"
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+        onMouseDown={(e) => e.stopPropagation()}
+        style={{
+          flexShrink: 0,
+          width: 12,
+          alignSelf: "stretch",
+          margin: 0,
+          padding: 0,
+          border: "none",
+          borderRight: `1px solid ${hasLabel ? labelBarColor(labelIndex) : "#555"}`,
+          boxShadow: hasLabel ? "inset 0 0 0 1px rgba(0,0,0,0.35)" : "inset 0 0 0 1px #666",
+          background: labelBarColor(labelIndex),
+          cursor: "pointer",
+        }}
+      />
+      {open && barRef.current && (
+        <LabelColorPalette
+          anchorEl={barRef.current}
+          current={labelIndex}
+          onSelect={onPick}
+          onClose={() => setOpen(false)}
+        />
+      )}
+    </>
+  );
 }
 
 function ParentSelect({
@@ -1726,7 +1866,8 @@ function ParentSelect({
 }
 
 function LayerRow(props: LayerRowProps) {
-  const { obj, index, frame, selected, expandMode, selectedKfs, kfDrag, isDropTarget, barDrag, graphMode, viewRange, cachedLocalFrames, cachedPrecompFrames, sourceExtent, audio, waveformMode, fps, getFs, onSetProp, beginKfDrag, beginLayerBarDrag, onKfRightClick, onToggleExpand, onSelectLayer, onRemove, onUpdate, onSetParent, allObjects, activeCameraId, onPreviewPatch, frameToPercent, onLayerDragStart, onLayerDragOver, onLayerDrop, onLayerDragEnd } = props;
+  const { obj, index, frame, selected, expandMode, selectedKfs, kfDrag, isDropTarget, barDrag, graphMode, viewRange, cachedLocalFrames, cachedPrecompFrames, sourceExtent, audio, waveformMode, fps, getFs, onSetProp, beginKfDrag, beginLayerBarDrag, onKfRightClick, onToggleExpand, onSelectLayer, onRemove, onUpdate, onRename, labelTargetIds, onSetLabelIndex, onSetParent, allObjects, activeCameraId, onPreviewPatch, frameToPercent, onLayerDragStart, onLayerDragOver, onLayerDrop, onLayerDragEnd } = props;
+  const [renaming, setRenaming] = useState(false);
   // P1-6: バードラッグのプレビューはパネル管理の barDrag から導出（複数選択を一括移動するため）。
   const dDelta = barDrag ? barDrag.delta : 0;
   const inPoint = barDrag && barDrag.mode !== "out" ? obj.inPoint + dDelta : obj.inPoint;
@@ -1746,7 +1887,14 @@ function LayerRow(props: LayerRowProps) {
     return { compId: cid, trimStart: typeof ts === "number" ? ts : 0 };
   })();
 
-  const rowBg = selected ? "#2a3a4a" : "transparent";
+  const rowBg = labelRowTint(obj.labelIndex, selected) ?? (selected ? "#2a3a4a" : "transparent");
+  const barFill = timelineBarFill(obj.labelIndex, selected);
+
+  const commitRename = (raw: string) => {
+    setRenaming(false);
+    const trimmed = raw.trim();
+    if (trimmed && trimmed !== obj.name) onRename(trimmed);
+  };
 
   return (
     <div
@@ -1764,11 +1912,18 @@ function LayerRow(props: LayerRowProps) {
     >
       {/* layer header row */}
       <div style={{ display: "flex", alignItems: "stretch", background: rowBg }}>
-        {/* label column（幅は LABEL_W 固定。ドラッグハンドルは内側に入れてグラフ列原点をずらさない） */}
+        {/* label column（幅は LABEL_W 固定。左端ストリップ = ラベル色） */}
         <div
-          style={{ width: LABEL_W, boxSizing: "border-box", flexShrink: 0, display: "flex", alignItems: "center", gap: 4, padding: "3px 6px", cursor: "pointer", borderRight: "1px solid #2a2a2a" }}
-          onClick={onSelectLayer}
+          style={{ width: LABEL_W, boxSizing: "border-box", flexShrink: 0, display: "flex", alignItems: "stretch", borderRight: "1px solid #2a2a2a" }}
         >
+          <LabelColorBar
+            labelIndex={obj.labelIndex}
+            onPick={(index) => onSetLabelIndex(labelTargetIds, index)}
+          />
+          <div
+            style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 4, padding: "3px 6px 3px 4px", cursor: "pointer" }}
+            onClick={onSelectLayer}
+          >
           {/* P1-5: ドラッグハンドル */}
           <span
             draggable
@@ -1804,7 +1959,35 @@ function LayerRow(props: LayerRowProps) {
             </button>
           )}
           <SolidColorChip obj={obj} frame={frame} onUpdate={onUpdate} onPreviewPatch={onPreviewPatch} />
-          <span style={{ flex: 1, color: selected ? "#7fb8f0" : "#bbb", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {renaming ? (
+            <input
+              autoFocus
+              defaultValue={obj.name}
+              onClick={(e) => e.stopPropagation()}
+              onBlur={(e) => commitRename(e.currentTarget.value)}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                if (e.key === "Enter") commitRename(e.currentTarget.value);
+                if (e.key === "Escape") setRenaming(false);
+              }}
+              style={{
+                flex: 1,
+                minWidth: 0,
+                background: "#2a2a2a",
+                border: "1px solid #4a8acf",
+                color: "#fff",
+                borderRadius: 3,
+                padding: "1px 4px",
+                fontSize: 11,
+                userSelect: "text",
+              }}
+            />
+          ) : (
+          <span
+            style={{ flex: 1, color: selected ? "#7fb8f0" : "#bbb", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+            onDoubleClick={(e) => { e.stopPropagation(); setRenaming(true); }}
+            title="ダブルクリックで名前を変更"
+          >
             {obj.name}
             {obj.isAdjustment && (
               <span style={{ marginLeft: 4, fontSize: 9, color: "#c9a227", fontWeight: 600 }}>
@@ -1825,12 +2008,14 @@ function LayerRow(props: LayerRowProps) {
               </span>
             )}
           </span>
+          )}
           <ParentSelect
             obj={obj}
             candidates={listParentCandidates(allObjects, obj.id)}
             onChange={(parentId) => onSetParent(obj.id, parentId)}
           />
           <button onClick={(e) => { e.stopPropagation(); onRemove(); }} style={{ ...iconBtn, color: "#f44" }} title="レイヤーを削除">×</button>
+          </div>
         </div>
         {/* graph column: layer bar */}
         <div style={{ position: "relative", flex: 1, minHeight: 22, overflow: "hidden" }} onClick={onSelectLayer}>
@@ -1841,13 +2026,14 @@ function LayerRow(props: LayerRowProps) {
               trimStart={trimStart}
               sourceDuration={sourceExtent.sourceDuration}
               frameToPercent={frameToPercent}
-              tint={selected ? "#5a8fd0" : "#b89b6a"}
+              tint={barFill}
             />
           )}
           <LayerBar
             inPoint={inPoint}
             outPoint={outPoint}
             selected={selected}
+            fillColor={barFill}
             frameToPercent={frameToPercent}
             onIn={(e) => beginLayerBarDrag(obj.id, "in", e)}
             onOut={(e) => beginLayerBarDrag(obj.id, "out", e)}
@@ -2115,9 +2301,9 @@ function SourceGhostBars({
 }
 
 function LayerBar({
-  inPoint, outPoint, selected, frameToPercent, onIn, onOut, onMove,
+  inPoint, outPoint, selected, fillColor, frameToPercent, onIn, onOut, onMove,
 }: {
-  inPoint: number; outPoint: number; selected: boolean;
+  inPoint: number; outPoint: number; selected: boolean; fillColor: string;
   frameToPercent: (f: number) => number;
   onIn: (e: React.MouseEvent) => void; onOut: (e: React.MouseEvent) => void; onMove: (e: React.MouseEvent) => void;
 }) {
@@ -2131,12 +2317,14 @@ function LayerBar({
         width: `${width}%`,
         top: 4,
         height: 14,
-        background: selected ? "#5a8fd0" : "#b89b6a",
+        background: fillColor,
         borderRadius: 2,
         cursor: "grab",
         display: "flex",
         alignItems: "stretch",
         zIndex: 1,
+        outline: selected ? "1px solid rgba(255,255,255,0.75)" : "none",
+        outlineOffset: -1,
       }}
       onMouseDown={onMove}
       title="ドラッグで移動 / 端をドラッグでトリム"

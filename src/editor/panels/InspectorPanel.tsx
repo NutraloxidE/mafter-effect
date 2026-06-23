@@ -219,8 +219,8 @@ export function InspectorPanel() {
 
   return (
     <div ref={panelScrollRef} style={{ fontSize: 12, color: "#ccc", padding: 4, overflow: "auto", height: "100%", background: "#1c1c1c" }}>
-      <div style={{ padding: "6px 8px 8px", fontWeight: "bold", color: "#eee", fontSize: 13 }}>
-        {obj.name}
+      <div style={{ padding: "6px 8px 8px", fontWeight: "bold", color: "#eee", fontSize: 13, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+        <LayerNameHeader objId={obj.id} name={obj.name} />
         {obj.isAdjustment && (
           <span style={{ marginLeft: 6, fontSize: 10, color: "#c9a227", fontWeight: 600 }}>
             ADJ · {(obj.adjustmentMode ?? "live") === "raster" ? "Raster" : "Live"}
@@ -1466,3 +1466,45 @@ const selectStyle: React.CSSProperties = {
   ...textInputStyle,
   flex: 1,
 };
+
+function LayerNameHeader({ objId, name }: { objId: string; name: string }) {
+  const renameObject = useEditorStore((s) => s.renameObject);
+  const [draft, setDraft] = useState(name);
+  useEffect(() => setDraft(name), [objId, name]);
+
+  const commit = () => {
+    const trimmed = draft.trim();
+    if (trimmed && trimmed !== name) renameObject(objId, trimmed);
+    else setDraft(name);
+  };
+
+  return (
+    <input
+      value={draft}
+      title="レイヤー名"
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={(e) => {
+        e.currentTarget.style.borderColor = "transparent";
+        e.currentTarget.style.background = "transparent";
+        commit();
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") { e.currentTarget.blur(); }
+        if (e.key === "Escape") { setDraft(name); e.currentTarget.blur(); }
+      }}
+      style={{
+        flex: 1,
+        minWidth: 80,
+        background: "transparent",
+        border: "1px solid transparent",
+        borderRadius: 3,
+        color: "#eee",
+        fontWeight: "bold",
+        fontSize: 13,
+        padding: "2px 4px",
+        userSelect: "text",
+      }}
+      onFocus={(e) => { e.currentTarget.style.borderColor = "#4a8acf"; e.currentTarget.style.background = "#2a2a2a"; }}
+    />
+  );
+}

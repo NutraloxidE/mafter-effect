@@ -31,6 +31,9 @@ function canonicalizeObject(obj: SceneObject): SceneObject {
   }
   if (obj.threeD !== true && obj.threeD !== undefined) strip({ threeD: undefined });
   if (obj.threeDMode === "auto") strip({ threeDMode: undefined });
+  if (obj.labelIndex !== undefined && (obj.labelIndex < 0 || obj.labelIndex > 16)) {
+    strip({ labelIndex: undefined });
+  }
   return out;
 }
 
