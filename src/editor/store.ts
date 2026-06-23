@@ -6,6 +6,7 @@ import { defaultTransform, staticProp, vec3 } from "../core/props";
 import type {
   AnimatedProp,
   AssetEntry,
+  BlendMode,
   Easing,
   EffectInstance,
   Frame,
@@ -237,6 +238,9 @@ export interface EditorStore {
   setThreeD: (objId: string, enabled: boolean) => void;
   setThreeDMode: (objId: string, mode: ThreeDMode) => void;
   setCompRenderer3d: (mode: Renderer3d) => void;
+
+  // §5.4d 描画モード
+  setBlendMode: (objId: string, mode: BlendMode) => void;
 }
 
 export const useEditorStore = create<EditorStore>((set, get) => ({
@@ -1230,6 +1234,14 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const obj = comp?.objects.find((o) => o.id === objId);
     if (!obj) return;
     get().updateObject(objId, { threeDMode: mode === "auto" ? undefined : mode }, `3D mode: ${mode}`);
+  },
+
+  // §5.4d: normal は undefined にして直列化省略（byte 等価）。
+  setBlendMode: (objId, mode) => {
+    const comp = currentTimelineComp(get().project, get().currentCompId);
+    const obj = comp?.objects.find((o) => o.id === objId);
+    if (!obj) return;
+    get().updateObject(objId, { blendMode: mode === "normal" ? undefined : mode }, `Blend mode: ${mode}`);
   },
 
   setCompRenderer3d: (mode) => {

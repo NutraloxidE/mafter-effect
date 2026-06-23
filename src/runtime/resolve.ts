@@ -206,6 +206,7 @@ export function resolve(
       worldTransform: worldOf(obj.id),
       zOrder: obj.zOrder,
       opacity: scalarProp(obj.opacity, frame, obj.id),
+      blendMode: obj.blendMode ?? "normal",
       inPoint: obj.inPoint,
       components: obj.isAdjustment || obj.isNull
         ? []

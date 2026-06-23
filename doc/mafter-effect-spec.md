@@ -1259,6 +1259,20 @@ childFrame = clamp(parentFrame - layer.inPoint + trimStart, 0, childComp.duratio
 - 親レイヤーの `opacity`（`entry.div.opacity`）は CSS opacity の継承で自動的に子全体に乗算される。
 - **ラスター化対象 comp の例外（§28.11）**: 子コンプが `compNeedsAutoPreviewCache` を満たす（displacement/raster を含む）場合、Phase 1 のライブ再解決ではなく comp 単位ラスタ（オフスクリーンで画像化）を `<img>` として描く。これにより precomp 内の effect/raster がプレビューに反映され、かつ comp 単位でキャッシュ可能になる。
 
+### §23.3a ネスト内の blendMode / live effect（Phase 1.5・ラスター無し・AE non-collapse 準拠）
+
+ネスト comp 内の各オブジェクトに設定された **描画モード（`blendMode`）** と **live filter 系 effect** を、ライブ再解決経路（`renderNestedComp`）でも適用する。トップレベル描画（`applyObject` → `applyBlendMode` / `applyEffects`）と挙動を揃え、precomp の中身が「ブレンド・エフェクトが効いた状態」で外側 comp に現れるようにする。**ラスター化を一切伴わない**（純 CSS / SVG filter）。
+
+- **blendMode**: 各内側 div に §5.4d と同じ方式を適用（16種は `mix-blend-mode`、`ditherDissolve` は `mask-image` ディザ）。トップレベルと共有する純関数ヘルパ `setBlendModeStyle(el, blend, opacity)` を用いる。
+- **isolation 境界（AE collapse OFF = non-collapse 固定）**: ネスト comp コンテナに `isolation:isolate` を付与する。これにより**内部レイヤーのブレンドは precomp 内（自分の背景・下位レイヤー）で閉じ**、precomp 全体が1ユニットとして外側 comp に合成される。AE の既定（collapse transformations OFF）と一致し、`isolation` グループがネイティブに1枚へ合成するため**ラスター無しで AE と同じ結果**が出る。collapse ON（内部ブレンドが外側背面へ貫通）は将来。
+- **live filter 系 effect のみ**: `EffectDef.apply()` が返す `css` / `svg` ピースのみ内側 div の `filter` に適用する。`kind:"raster"` のピース、および **full displacement**（`wave`/`ripple`/`turbulentDisplace`）は raster 経路を要するため**ライブ経路では適用しない**（それらを含む comp は §28.11 の comp 単位ラスタ経路に乗せて反映する）。`Fast*` displacement は region クランプ済みの live filter なので適用対象。
+- **export 整合（INV-2）**: コンテナを `isolation:isolate` にすることで、export の Canvas 合成（`exporter.ts` `getCompositeLayers`＝トップレベル entry 列挙）でも、コンテナ div を1枚 capture する際に内部ブレンドがネイティブに焼かれ、preview と一致する。
+
+> **注意点（既知の制約・追って対応）**
+> - **full displacement / raster 系 effect は live 非対応**: ネスト内の `wave`/`ripple`/`turbulentDisplace` や `processPixels` 系は §28.11 の comp 単位ラスタ経路に依存する（ブレンドモード自体は全てラスタ無し）。
+> - **3D（preserve-3d）× mix-blend-mode**: CSS 仕様上、`mix-blend-mode` は 3D 描画文脈を flatten する。ネスト内に 3D レイヤー＋ブレンドが混在すると AE と差が出る場合がある（エッジケース・別途検討）。
+> - **Fast\* displacement の region**: ライブ再解決は毎フレーム DOM を再構築するため、内側 div の実測サイズが取れないフレームでは SVG filter region クランプが甘くなる可能性がある（blur/色補正等の通常 filter には影響なし）。
+
 ### §23.4 循環参照制御
 
 - `store.addCompLayer(compId)` において BFS で循環を検出し、循環が生じる場合は追加を拒否する（`null` 返却）。
@@ -1271,7 +1285,8 @@ childFrame = clamp(parentFrame - layer.inPoint + trimStart, 0, childComp.duratio
 | 配置方法 | Project パネル → Timeline DnD | 同じ（DnD のみ） |
 | time mapping | 1:1（デフォルト） | 1:1（trimStart オフセットのみ） |
 | time remapping | AnimatedProp として設定可 | Phase 2 以降 |
-| collapse / non-collapse | 2 モード切替 | 常に non-collapse 相当 |
+| collapse / non-collapse | 2 モード切替 | 常に non-collapse 相当（`isolation:isolate`・§23.3a） |
+| nested 内のブレンド/エフェクト | precomp 内で合成 → 1枚で配置 | live filter + blendMode を内部適用（ラスタ無し・§23.3a）。full displacement/raster 系は §28.11 ラスタ経路 |
 | precomp opacity | レイヤー全体で適用 | 同じ（CSS opacity 継承） |
 | 循環参照 | UI 拒否 | 追加時に BFS 検出・拒否 |
 | nested html/plugin comp | 専用レンダラ | Phase 3 以降 |

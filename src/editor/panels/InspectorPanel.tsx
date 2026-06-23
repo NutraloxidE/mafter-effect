@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { sampleAny, sampleScalar, sampleVec3 } from "../../runtime/interpolate";
-import type { AnimatedProp, Component, Easing, EffectInstance, ParamDescriptor, RGBA, SceneObject, ThreeDMode, Transform, Vec3 } from "../../core/schema";
+import type { AnimatedProp, BlendMode, Component, Easing, EffectInstance, ParamDescriptor, RGBA, SceneObject, ThreeDMode, Transform, Vec3 } from "../../core/schema";
+import { BLEND_MODES } from "../../core/schema";
 import {
   currentTimelineComp,
   propVec3ToDisplay,
@@ -24,6 +25,27 @@ const EASING_PRESETS: { label: string; easing: Easing }[] = [
   { label: "Hold", easing: { type: "hold" } },
 ];
 
+// §5.4d ブレンドモードの表示名（AE 風）。
+const BLEND_MODE_LABELS: Record<BlendMode, string> = {
+  normal: "Normal",
+  multiply: "Multiply",
+  screen: "Screen",
+  overlay: "Overlay",
+  darken: "Darken",
+  lighten: "Lighten",
+  "color-dodge": "Color Dodge",
+  "color-burn": "Color Burn",
+  "hard-light": "Hard Light",
+  "soft-light": "Soft Light",
+  difference: "Difference",
+  exclusion: "Exclusion",
+  hue: "Hue",
+  saturation: "Saturation",
+  color: "Color",
+  luminosity: "Luminosity",
+  ditherDissolve: "Dither Dissolve",
+};
+
 export function InspectorPanel() {
   const project = useEditorStore((s) => s.project);
   const compId = useEditorStore((s) => s.currentCompId);
@@ -40,6 +62,7 @@ export function InspectorPanel() {
   const setAdjustmentMode = useEditorStore((s) => s.setAdjustmentMode);
   const setThreeD = useEditorStore((s) => s.setThreeD);
   const setThreeDMode = useEditorStore((s) => s.setThreeDMode);
+  const setBlendMode = useEditorStore((s) => s.setBlendMode);
   const setActiveCamera = useEditorStore((s) => s.setActiveCamera);
   const removeEffect = useEditorStore((s) => s.removeEffect);
   const reorderEffect = useEditorStore((s) => s.reorderEffect);

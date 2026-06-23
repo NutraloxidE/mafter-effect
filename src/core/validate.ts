@@ -1,5 +1,5 @@
 import type { Project, SceneObject, TimelineComposition } from "./schema";
-import { CURRENT_SCHEMA_VERSION } from "./schema";
+import { BLEND_MODES, CURRENT_SCHEMA_VERSION } from "./schema";
 
 export interface ValidationResult {
   project: Project; // 正規化後（不正 parent を root 化した結果など）
@@ -78,6 +78,13 @@ function validateTimeline(
         `comp ${comp.id}: object ${obj.id} has both isNull and isAdjustment; treating as Null (clearing isAdjustment)`,
       );
       obj.isAdjustment = undefined;
+    }
+    // §5.4d: 不明な blendMode は normal 扱い（undefined）にする。
+    if (obj.blendMode !== undefined && !BLEND_MODES.includes(obj.blendMode)) {
+      warnings.push(
+        `comp ${comp.id}: object ${obj.id} has unknown blendMode ${String(obj.blendMode)}; treating as normal`,
+      );
+      obj.blendMode = undefined;
     }
     // §27.4: adjustmentMode は調整レイヤーのみ有効。不正値・非調整は live 扱い（undefined）にする。
     if (obj.adjustmentMode !== undefined) {

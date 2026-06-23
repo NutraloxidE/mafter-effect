@@ -1,4 +1,4 @@
-import { DISPLACEMENT_EFFECT_TYPES, svgDisplaceFilterMarkup } from "./effectSvg";
+import { DISPLACEMENT_EFFECT_TYPES, FAST_DISPLACEMENT_EFFECT_TYPES, svgDisplaceFilterMarkup } from "./effectSvg";
 import { needsSvgDisplaceCapture } from "./effectRouting";
 import type { CompositionMeta, Frame, HtmlComposition, RGBA, TimelineComposition } from "../core/schema";
 import type { FontOutlineCache } from "./fontOutlineCache";
@@ -16,6 +16,9 @@ import { captureElementToCanvas, rasterizeFilteredImage } from "./rasterCapture"
 import { canvasToRasterBuffer, rasterBufferToCanvas } from "./pixelSort";
 import { processRasterChainAsync } from "./rasterProcessAsync";
 import type { EffectFilter } from "./plugin";
+import type { BlendMode } from "../core/schema";
+import { isCssBlendMode } from "./blendCompose";
+import { ditherTileDataUrl } from "./ditherMask";
 import { multiply, translation, type Mat4 } from "./mat4";
 
 // §8 DomRenderer — フラット matrix3d レンダラ。
@@ -31,6 +34,32 @@ import { multiply, translation, type Mat4 } from "./mat4";
 // component の型シグネチャが変わったときだけ作り直す。
 
 const BASE_Z = 10; // z-index はこの値を起点に zOrder*BASE_Z で割り当てる
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+/**
+ * §5.4d 描画モードを div の style に反映する（トップレベル・ネスト comp 共用の純ヘルパ）。
+ * - 16種: `mix-blend-mode`（normal はクリア）。ラスター化ゼロのネイティブ合成。
+ * - ditherDissolve: `mask-image` に Bayer ディザを敷き、opacity を閾値へ回す（div α は 1 固定・AE 準拠）。
+ */
+function setBlendModeStyle(el: HTMLElement, blend: BlendMode, opacity: number): void {
+  const s = el.style;
+  if (blend === "ditherDissolve") {
+    s.mixBlendMode = "";
+    s.opacity = "1";
+    const url = ditherTileDataUrl(opacity);
+    const ref = url ? `url(${url})` : "";
+    s.setProperty("mask-image", ref);
+    s.setProperty("-webkit-mask-image", ref);
+    s.setProperty("mask-repeat", "repeat");
+    s.setProperty("-webkit-mask-repeat", "repeat");
+  } else {
+    // dither マスクをクリア（前フレームが dither だった場合の残留防止）。
+    s.setProperty("mask-image", "");
+    s.setProperty("-webkit-mask-image", "");
+    s.mixBlendMode = isCssBlendMode(blend) ? blend : "";
+  }
+}
 
 interface ObjectEntry {
   div: HTMLDivElement;
@@ -51,6 +80,8 @@ interface ObjectEntry {
   fxMaxDisplaceScale: number;
   /** adjustment + displacement → backdrop-filter 経路 */
   fxUseBackdropDisplace: boolean;
+  /** §5.4d 現フレームの描画モード（capture コンポジタが参照） */
+  blendMode: BlendMode;
 }
 
 interface RasterWorkItem {
@@ -194,6 +225,7 @@ export class DomRenderer implements Renderer {
           fxLayerH: 0,
           fxMaxDisplaceScale: 0,
           fxUseBackdropDisplace: false,
+          blendMode: "normal",
         };
         this.entries.set(obj.id, entry);
       }
@@ -246,6 +278,9 @@ export class DomRenderer implements Renderer {
     entry.div.style.transform = mat4ToCss(xform);
     entry.div.style.opacity = String(obj.opacity);
     entry.div.style.zIndex = String(Math.round(obj.zOrder * BASE_Z));
+
+    // §5.4d 描画モード。毎フレーム明示設定/クリア（前フレームの残留を防ぐ）。
+    this.applyBlendMode(entry, obj.blendMode, obj.opacity);
 
     if (obj.isAdjustment) {
       const w = this.currentComp?.width ?? 0;
@@ -346,6 +381,36 @@ export class DomRenderer implements Renderer {
     // effects は子要素のサイズ確定後に適用する（マスク/displacement map を
     // レイヤーの実寸に合わせるため offsetWidth/Height を測る・§27.1）。
     this.applyEffects(entry, obj, frame);
+  }
+
+  /**
+   * §5.4d 描画モードを CSS に反映する。
+   * - 16 種: `mix-blend-mode`（normal はクリア）。ラスター化ゼロのネイティブ合成。
+   * - ditherDissolve: `mask-image` に Bayer ディザを敷き、opacity をディザ閾値へ回す
+   *   （div α は 1 に固定・AE 準拠）。
+   */
+  private applyBlendMode(entry: ObjectEntry, blend: BlendMode, opacity: number): void {
+    entry.blendMode = blend;
+    setBlendModeStyle(entry.div, blend, opacity);
+  }
+
+  /** §5.4d capture — comp 内に CSS mix-blend を持つレイヤーがあるか（Canvas 合成要否判定）。 */
+  hasCssBlendLayers(): boolean {
+    for (const entry of this.entries.values()) {
+      if (isCssBlendMode(entry.blendMode)) return true;
+    }
+    return false;
+  }
+
+  /** §5.4d capture — z 順（昇順）のレイヤー div と描画モードを返す。Canvas 合成用。 */
+  getCompositeLayers(): { div: HTMLElement; blendMode: BlendMode }[] {
+    const layers = [...this.entries.values()].map((e) => ({
+      div: e.div as HTMLElement,
+      blendMode: e.blendMode,
+      z: Number(e.div.style.zIndex) || 0,
+    }));
+    layers.sort((a, b) => a.z - b.z);
+    return layers.map(({ div, blendMode }) => ({ div, blendMode }));
   }
 
   /** §27.1/§27.4 — effects を filter / backdrop-filter / raster として適用。 */
@@ -1024,7 +1089,9 @@ export class DomRenderer implements Renderer {
     }
 
     const childScene = resolve(childComp, childFrame);
-    container.style.cssText = `position:absolute;top:0;left:0;width:${childComp.width}px;height:${childComp.height}px;overflow:hidden;transform-style:preserve-3d`;
+    // §23.3a: isolation:isolate で内部ブレンドを precomp 内に閉じる（AE collapse OFF 相当）。
+    // これで mix-blend-mode が外側へ漏れず、export の単一 capture でも内部ブレンドがネイティブに焼ける。
+    container.style.cssText = `position:absolute;top:0;left:0;width:${childComp.width}px;height:${childComp.height}px;overflow:hidden;transform-style:preserve-3d;isolation:isolate`;
     if (childComp.background) container.style.background = rgbaCss(childComp.background);
     else container.style.background = "";
 
@@ -1054,7 +1121,60 @@ export class DomRenderer implements Renderer {
         div.appendChild(el);
       }
       container.appendChild(div);
+      // §23.3a: トップレベルと挙動を揃える（ラスタ無し・append 後に実測サイズで filter region 決定）。
+      setBlendModeStyle(div, obj.blendMode, obj.opacity);
+      this.applyNestedLiveEffects(div, obj, childFrame);
     }
+  }
+
+  /**
+   * §23.3a — ネスト comp 内オブジェクトに live filter 系 effect を適用する（ラスタ無し）。
+   * `EffectDef.apply()` の css/svg ピースのみ。`kind:"raster"` と full displacement
+   * （wave/ripple/turbulentDisplace）は raster 経路を要するため live では適用しない
+   * （それらは §28.11 の comp 単位ラスタ経路で反映される）。
+   */
+  private applyNestedLiveEffects(div: HTMLElement, obj: ResolvedObject, frame: Frame): void {
+    const effects = obj.effects ?? [];
+    if (effects.length === 0) return;
+    const w = Math.max(1, Math.round(div.offsetWidth || 0));
+    const h = Math.max(1, Math.round(div.offsetHeight || 0));
+    const ctx = { width: w, height: h, frame };
+    const tokens: string[] = [];
+    const svgFilters: { id: string; primitives: string }[] = [];
+    let i = 0;
+    for (const effect of effects) {
+      if (!effect.enabled) continue;
+      // full displacement は raster 必須（§27.12）→ live では skip。Fast* は region クランプ済みで適用可。
+      if (
+        DISPLACEMENT_EFFECT_TYPES.has(effect.type) &&
+        !FAST_DISPLACEMENT_EFFECT_TYPES.has(effect.type)
+      ) {
+        continue;
+      }
+      const def = globalPluginRegistry.getEffectDef(effect.type);
+      if (!def) continue;
+      const piece = def.apply(effect.props, ctx);
+      if (!piece || piece.kind === "raster") continue; // raster 系は live 不可
+      this.pushFilterPiece(piece, tokens, svgFilters, `nfx-${obj.id}-${i++}`);
+    }
+    if (tokens.length === 0) return;
+    div.style.filter = tokens.join(" ");
+    if (svgFilters.length === 0) return;
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("aria-hidden", "true");
+    svg.style.cssText = "position:absolute;width:0;height:0;overflow:hidden;pointer-events:none";
+    const defs = document.createElementNS(SVG_NS, "defs");
+    const filterEntry: Pick<ObjectEntry, "fxLayerW" | "fxLayerH" | "fxMaxDisplaceScale" | "fxUseBackdropDisplace"> = {
+      fxLayerW: w,
+      fxLayerH: h,
+      fxMaxDisplaceScale: 0,
+      fxUseBackdropDisplace: false,
+    };
+    for (const { id, primitives } of svgFilters) {
+      defs.appendChild(this.createSvgFilterElement(id, primitives, filterEntry));
+    }
+    svg.appendChild(defs);
+    div.insertBefore(svg, div.firstChild);
   }
 
   // §28.11 — ネスト comp を comp 単位画像で描画。単一 <img> を再利用し、新フレームの

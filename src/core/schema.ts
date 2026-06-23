@@ -108,10 +108,50 @@ export interface SceneObject {
   threeD?: boolean; // §5.4b true = 3D 空間に配置（AE の 3D レイヤースイッチ）。省略/false = 平面 2D
   threeDMode?: ThreeDMode; // §5.4b 描画経路。省略 = "auto"（comp.renderer3d に従う）
   labelIndex?: LabelIndex; // §5.4c AE ラベル色。省略 = 無色（エディタ UI のみ）
+  blendMode?: BlendMode; // §5.4d 描画モード。省略 = "normal"
 }
 
 // §5.4b 3D レイヤー描画経路。"auto" は comp.renderer3d に従う。
 export type ThreeDMode = "auto" | "dom" | "raster3d";
+// §5.4d 描画モード / ブレンドモード。CSS が直接持つ 16 種（normal 含む）＋ ditherDissolve。
+export type BlendMode =
+  | "normal"
+  | "multiply"
+  | "screen"
+  | "overlay"
+  | "darken"
+  | "lighten"
+  | "color-dodge"
+  | "color-burn"
+  | "hard-light"
+  | "soft-light"
+  | "difference"
+  | "exclusion"
+  | "hue"
+  | "saturation"
+  | "color"
+  | "luminosity"
+  | "ditherDissolve";
+// 許可値（validate / UI 用）。順序は UI ドロップダウンの並びも兼ねる。
+export const BLEND_MODES: readonly BlendMode[] = [
+  "normal",
+  "multiply",
+  "screen",
+  "overlay",
+  "darken",
+  "lighten",
+  "color-dodge",
+  "color-burn",
+  "hard-light",
+  "soft-light",
+  "difference",
+  "exclusion",
+  "hue",
+  "saturation",
+  "color",
+  "luminosity",
+  "ditherDissolve",
+];
 // §5.4c AE ラベル色インデックス 0–15。
 export type LabelIndex = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16;
 // §5.4b comp の 3D レンダラー。"classic"≈dom / "advanced"≈raster3d。
