@@ -45,6 +45,18 @@ import {
 } from "./commands";
 import { buildGlyphDecomposeObjects, createCanvasMeasureContext, type GlyphDecomposeMode } from "./glyphDecompose";
 import { loadWorkArea, saveWorkArea } from "./workAreaStorage";
+import { WAVEFORM_MODES, type WaveformMode } from "../audio/waveform";
+import { probeAudioMeta, evictAudioBuffer } from "./audioBufferCache";
+import { globalWaveformCache } from "../fs/WaveformCacheDb";
+
+const WAVEFORM_MODE_KEY = "mafter:waveformMode";
+function loadWaveformMode(): WaveformMode {
+  try {
+    const v = localStorage.getItem(WAVEFORM_MODE_KEY);
+    if (v && (WAVEFORM_MODES as readonly string[]).includes(v)) return v as WaveformMode;
+  } catch { /* ignore */ }
+  return "transient";
+}
 
 /** スクラブ/カラーピッカー中に Preview へだけ反映する一時 patch。 */
 export interface PreviewOverride {
@@ -108,6 +120,10 @@ export interface EditorStore {
   previewQualityEditing: boolean;
   setPreviewQuality: (mode: "draft" | "precise") => void;
   setPreviewQualityEditing: (editing: boolean) => void;
+
+  // §11.5.1 タイムライン波形表示モード（グローバル・非直列化）
+  waveformMode: WaveformMode;
+  setWaveformMode: (mode: WaveformMode) => void;
   decomposeGlyphs: (objectId: string, mode?: GlyphDecomposeMode) => void;
 
   // Undo/Redo スタック（セッション内のみ, §17）
@@ -186,6 +202,8 @@ export interface EditorStore {
   importImageAsset: (file: File) => Promise<string | null>;
   // image component を持つ SceneObject を追加する
   addImageLayer: (assetId: string, name?: string) => string | null;
+  // §20.1 Footage 削除（audio/image。参照レイヤーもまとめて削除・undo 可）
+  removeAsset: (assetId: string) => void;
 
   // M4: plugin ロード・管理
   loadPlugins: () => Promise<void>;
@@ -225,6 +243,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   isPlaying: false,
   previewQuality: "draft",
   previewQualityEditing: false,
+  waveformMode: loadWaveformMode(),
   pluginsVersion: 0,
   undoStack: emptyStack(),
   projectRevision: 0,
@@ -322,6 +341,11 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
   setPreviewQuality: (mode) => set({ previewQuality: mode }),
   setPreviewQualityEditing: (editing) => set({ previewQualityEditing: editing }),
+
+  setWaveformMode: (mode) => {
+    try { localStorage.setItem(WAVEFORM_MODE_KEY, mode); } catch { /* ignore */ }
+    set({ waveformMode: mode });
+  },
 
   setPreviewOverride: (override) => set({ previewOverride: override }),
   clearPreviewOverride: () => set({ previewOverride: null }),
@@ -673,8 +697,17 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const ext = file.name.split(".").pop() ?? "audio";
     const assetPath = `${DIR_ASSETS}/${id}.${ext}`;
     const buf = await file.arrayBuffer();
-    await fs.write(assetPath, new Uint8Array(buf));
-    const asset: AssetEntry = { id, path: assetPath, kind: "audio" };
+    const bytes = new Uint8Array(buf);
+    await fs.write(assetPath, bytes);
+    // §11.5: import 時に 1 回だけ decode して尺(秒)を meta に焼く（波形マッピング用）+ プリロード。
+    let meta: Record<string, unknown> = {};
+    try {
+      const probe = await probeAudioMeta(id, async () => bytes);
+      if (probe) meta = { duration: probe.duration, sampleRate: probe.sampleRate, channels: probe.channels };
+    } catch {
+      /* meta optional — 失敗時は尺フォールバック */
+    }
+    const asset: AssetEntry = { id, path: assetPath, kind: "audio", meta };
     const after: Project = {
       ...before,
       assets: [...before.assets, asset].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
@@ -751,6 +784,54 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     };
     cmdAddObject(get(), obj);
     return id;
+  },
+
+  removeAsset: (assetId) => {
+    const before = get().project;
+    if (!before) return;
+    const asset = before.assets.find((a) => a.id === assetId);
+    if (!asset || (asset.kind !== "audio" && asset.kind !== "image")) return;
+
+    const removedLayerIds = new Set<string>();
+    const compositions = before.compositions.map((c) => {
+      if (c.kind !== "timeline") return c;
+      const objects = c.objects.filter((o) => {
+        const uses = o.components.some(
+          (cmp) =>
+            (cmp.type === "audio" || cmp.type === "image" || cmp.type === "video") &&
+            cmp.props["asset"] === assetId,
+        );
+        if (uses) removedLayerIds.add(o.id);
+        return !uses;
+      });
+      return objects.length === c.objects.length ? c : { ...c, objects };
+    });
+
+    const after: Project = {
+      ...before,
+      compositions,
+      assets: before.assets.filter((a) => a.id !== assetId),
+    };
+    get().applyCommand({ label: "Remove Footage", before, after });
+
+    if (removedLayerIds.size > 0) {
+      set((s) => ({
+        selectedObjectIds: s.selectedObjectIds.filter((id) => !removedLayerIds.has(id)),
+      }));
+    }
+
+    const assetPath = asset.path;
+    void (async () => {
+      try {
+        await fs.delete(assetPath);
+      } catch {
+        /* 掃除失敗は無視 */
+      }
+      if (asset.kind === "audio") {
+        evictAudioBuffer(assetId);
+        globalWaveformCache.evict(assetId);
+      }
+    })();
   },
 
   // M4: plugin ロード —————————————————————————————————————————————

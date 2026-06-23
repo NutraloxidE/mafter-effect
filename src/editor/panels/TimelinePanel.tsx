@@ -36,6 +36,9 @@ import { precompChildToParentFrame } from "../../cache/precompFrameKey";
 import { loadWorkArea } from "../workAreaStorage";
 import { isValidParent, listParentCandidates } from "../parentLink";
 import { buildReparentPatch } from "../reparent";
+import { loadAudioBuffer, peekAudioBuffer } from "../audioBufferCache";
+import { computePeaksForFrameRange, type WaveformMode } from "../../audio/waveform";
+import type { FileSystem } from "../../fs/FileSystem";
 
 // §21.1 SMPTE タイムコード（non-drop）。frame は正準・整数（INV-5）、これは派生表示のみ。
 function framesToTimecode(frame: Frame, fps: number): string {
@@ -127,6 +130,9 @@ export function TimelinePanel() {
   const importImageAsset = useEditorStore((s) => s.importImageAsset);
   const addPluginObject = useEditorStore((s) => s.addPluginObject);
   const addCompLayer = useEditorStore((s) => s.addCompLayer);
+  const waveformMode = useEditorStore((s) => s.waveformMode);
+  const setWaveformMode = useEditorStore((s) => s.setWaveformMode);
+  const getFs = useEditorStore((s) => s.getFs);
   // P0-2: 再生制御はストアで共有
   const isPlaying = useEditorStore((s) => s.isPlaying);
   const togglePlay = useEditorStore((s) => s.togglePlay);
@@ -1013,6 +1019,16 @@ export function TimelinePanel() {
           style={{ ...btnStyle, fontSize: 10, padding: "1px 5px", background: graphMode ? "#3a4a5a" : "#333", color: graphMode ? "#8cf" : "#ccc" }}
           title={`グラフエディタ ${graphMode ? "ON" : "OFF"} — 値カーブを編集（展開中のプロパティ）`}
         >📈</button>
+        {/* §11.5.1 波形表示モード（raw → donshari → transient を循環） */}
+        <button
+          onClick={() => {
+            const order: WaveformMode[] = ["raw", "donshari", "transient"];
+            const next = order[(order.indexOf(waveformMode) + 1) % order.length] ?? "transient";
+            setWaveformMode(next);
+          }}
+          style={{ ...btnStyle, fontSize: 10, padding: "1px 5px", color: "#9cc8ff" }}
+          title={`波形表示モード: ${waveformMode}（クリックで切替: raw→donshari→transient）`}
+        >〰 {waveformMode === "raw" ? "RAW" : waveformMode === "donshari" ? "DON" : "TRN"}</button>
         {/* P0-1: ズームリセット */}
         <button
           onClick={() => setViewRange({ start: 0, end: duration })}
@@ -1093,6 +1109,10 @@ export function TimelinePanel() {
             onPreviewPatch={(id, patch) => setPreviewOverride({ objectId: id, patch })}
             frameToPercent={frameToPercent}
             sourceExtent={project ? getLayerSourceExtent(obj, project, fps) : null}
+            audio={project ? getAudioLayerInfo(obj, project, getLayerSourceExtent(obj, project, fps)) : null}
+            waveformMode={waveformMode}
+            fps={fps}
+            getFs={getFs}
             onLayerDragStart={() => {
               layerDragIdRef.current = obj.id;
               layerDragRef.current = { dragIdx: i, dropIdx: i };
@@ -1441,6 +1461,115 @@ function LayerCacheLine({
   );
 }
 
+interface AudioLayerDisplayInfo {
+  assetId: string;
+  path: string;
+  sourceDurationFrames: number;
+}
+
+/** audio component を持つレイヤーの波形表示情報。なければ null。 */
+function getAudioLayerInfo(obj: SceneObject, project: { assets: { id: string; path: string }[] }, sourceExtent: LayerSourceExtent | null): AudioLayerDisplayInfo | null {
+  const cmp = obj.components.find((c) => c.type === "audio");
+  if (!cmp) return null;
+  const assetId = cmp.props["asset"];
+  if (typeof assetId !== "string") return null;
+  const asset = project.assets.find((a) => a.id === assetId);
+  if (!asset) return null;
+  const sourceDurationFrames = sourceExtent?.sourceDuration ?? Math.max(1, obj.outPoint - obj.inPoint);
+  return { assetId, path: asset.path, sourceDurationFrames };
+}
+
+/**
+ * §11.5.1 — オーディオレイヤーバー上の波形描画（Canvas）。
+ * source の [trimStart, trimStart+可視尺) を [inPoint, outPoint) のバー範囲へマッピングする。
+ */
+function WaveformOverlay({ audio, mode, fps, getFs, inPoint, outPoint, trimStart, frameToPercent, selected }: {
+  audio: AudioLayerDisplayInfo;
+  mode: WaveformMode;
+  fps: number;
+  getFs: () => FileSystem;
+  inPoint: number;
+  outPoint: number;
+  trimStart: number;
+  frameToPercent: (f: number) => number;
+  selected: boolean;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [audioData, setAudioData] = useState<{ channels: Float32Array[]; sampleRate: number } | null>(null);
+
+  useEffect(() => {
+    const have = peekAudioBuffer(audio.assetId);
+    if (have) {
+      const channels: Float32Array[] = [];
+      for (let ch = 0; ch < have.numberOfChannels; ch++) channels.push(have.getChannelData(ch));
+      setAudioData({ channels, sampleRate: have.sampleRate });
+      return;
+    }
+    let cancelled = false;
+    void loadAudioBuffer(audio.assetId, () => getFs().read(audio.path))
+      .then((buf) => {
+        if (cancelled || !buf) return;
+        const channels: Float32Array[] = [];
+        for (let ch = 0; ch < buf.numberOfChannels; ch++) channels.push(buf.getChannelData(ch));
+        setAudioData({ channels, sampleRate: buf.sampleRate });
+      })
+      .catch(() => { /* decode 失敗時は無描画 */ });
+    return () => { cancelled = true; };
+  }, [audio.assetId, audio.path, getFs]);
+
+  useEffect(() => {
+    const cv = canvasRef.current;
+    if (!cv || !audioData) return;
+    const W = cv.clientWidth, H = cv.clientHeight;
+    if (W === 0 || H === 0) return;
+    const dpr = window.devicePixelRatio || 1;
+    cv.width = Math.round(W * dpr);
+    cv.height = Math.round(H * dpr);
+    const ctx = cv.getContext("2d");
+    if (!ctx) return;
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, W, H);
+    const visDur = Math.max(1, outPoint - inPoint);
+    const leftPx = (frameToPercent(inPoint) / 100) * W;
+    const rightPx = (frameToPercent(outPoint) / 100) * W;
+    const barW = rightPx - leftPx;
+    if (barW <= 0) return;
+    const srcStart = trimStart;
+    const srcEnd = trimStart + visDur;
+    const bucketCount = Math.max(1, Math.ceil(barW));
+    const peaks = computePeaksForFrameRange(
+      audioData.channels,
+      audioData.sampleRate,
+      fps,
+      mode,
+      srcStart,
+      srcEnd,
+      bucketCount,
+    );
+    const mid = H / 2;
+    const amp = H / 2 - 1;
+    ctx.fillStyle = selected ? "#9cc8ff" : "#6f9fd0";
+    const x0 = Math.max(0, Math.floor(leftPx));
+    const x1 = Math.min(W, Math.ceil(rightPx));
+    for (let x = x0; x < x1; x++) {
+      const frac = (x - leftPx) / barW;
+      let b = Math.floor(frac * bucketCount);
+      if (b < 0) b = 0;
+      if (b >= bucketCount) b = bucketCount - 1;
+      const yTop = mid - (peaks[b * 2 + 1] ?? 0) * amp;
+      const yBot = mid - (peaks[b * 2] ?? 0) * amp;
+      ctx.fillRect(x, yTop, 1, Math.max(1, yBot - yTop));
+    }
+  }, [audioData, inPoint, outPoint, trimStart, frameToPercent, selected, fps, mode]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      style={{ position: "absolute", left: 0, top: 0, width: "100%", height: "100%", pointerEvents: "none", zIndex: 1 }}
+    />
+  );
+}
+
 function Ruler({ viewRange, duration, fps, frameToPercent }: {
   viewRange: { start: number; end: number };
   duration: number;
@@ -1542,6 +1671,10 @@ interface LayerRowProps {
   onPreviewPatch?: (id: string, patch: Partial<SceneObject>) => void;
   frameToPercent: (f: number) => number;
   sourceExtent: LayerSourceExtent | null;
+  audio: AudioLayerDisplayInfo | null;
+  waveformMode: WaveformMode;
+  fps: number;
+  getFs: () => FileSystem;
   onLayerDragStart: () => void;
   onLayerDragOver: () => void;
   onLayerDrop: () => void;
@@ -1593,7 +1726,7 @@ function ParentSelect({
 }
 
 function LayerRow(props: LayerRowProps) {
-  const { obj, index, frame, selected, expandMode, selectedKfs, kfDrag, isDropTarget, barDrag, graphMode, viewRange, cachedLocalFrames, cachedPrecompFrames, sourceExtent, onSetProp, beginKfDrag, beginLayerBarDrag, onKfRightClick, onToggleExpand, onSelectLayer, onRemove, onUpdate, onSetParent, allObjects, activeCameraId, onPreviewPatch, frameToPercent, onLayerDragStart, onLayerDragOver, onLayerDrop, onLayerDragEnd } = props;
+  const { obj, index, frame, selected, expandMode, selectedKfs, kfDrag, isDropTarget, barDrag, graphMode, viewRange, cachedLocalFrames, cachedPrecompFrames, sourceExtent, audio, waveformMode, fps, getFs, onSetProp, beginKfDrag, beginLayerBarDrag, onKfRightClick, onToggleExpand, onSelectLayer, onRemove, onUpdate, onSetParent, allObjects, activeCameraId, onPreviewPatch, frameToPercent, onLayerDragStart, onLayerDragOver, onLayerDrop, onLayerDragEnd } = props;
   // P1-6: バードラッグのプレビューはパネル管理の barDrag から導出（複数選択を一括移動するため）。
   const dDelta = barDrag ? barDrag.delta : 0;
   const inPoint = barDrag && barDrag.mode !== "out" ? obj.inPoint + dDelta : obj.inPoint;
@@ -1720,6 +1853,19 @@ function LayerRow(props: LayerRowProps) {
             onOut={(e) => beginLayerBarDrag(obj.id, "out", e)}
             onMove={(e) => beginLayerBarDrag(obj.id, "move", e)}
           />
+          {audio && (
+            <WaveformOverlay
+              audio={audio}
+              mode={waveformMode}
+              fps={fps}
+              getFs={getFs}
+              inPoint={inPoint}
+              outPoint={outPoint}
+              trimStart={trimStart}
+              frameToPercent={frameToPercent}
+              selected={selected}
+            />
+          )}
           <LayerCacheLine
             frames={cachedLocalFrames}
             mapToComp={(f) => f + inPoint}

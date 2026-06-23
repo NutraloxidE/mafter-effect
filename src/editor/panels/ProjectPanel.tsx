@@ -4,7 +4,7 @@ import { useEditorStore } from "../store";
 import { IndexedDbFs } from "../../fs/IndexedDbFs";
 import { exportZip, importZip } from "../../fs/zip";
 import { globalPluginRegistry } from "../../runtime/pluginRegistry";
-import type { CompositionMeta } from "../../core/schema";
+import type { CompositionMeta, Project } from "../../core/schema";
 
 const fs = new IndexedDbFs("mafter-effect-fs");
 
@@ -23,6 +23,7 @@ export function ProjectPanel() {
   const addAudioLayer = useEditorStore((s) => s.addAudioLayer);
   const importImageAsset = useEditorStore((s) => s.importImageAsset);
   const addImageLayer = useEditorStore((s) => s.addImageLayer);
+  const removeAsset = useEditorStore((s) => s.removeAsset);
   const selectObjects = useEditorStore((s) => s.selectObjects);
   const newProject = useEditorStore((s) => s.newProject);
   const loadFromFs = useEditorStore((s) => s.loadFromFs);
@@ -39,6 +40,7 @@ export function ProjectPanel() {
   const [showExport, setShowExport] = useState(false);
   const [showNewConfirm, setShowNewConfirm] = useState(false);
   const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [deleteAssetId, setDeleteAssetId] = useState<string | null>(null);
 
   // pluginsVersion が変化したら registry から最新の component 一覧を取得
   const registeredComponents = pluginsVersion >= 0 ? globalPluginRegistry.getComponentDefs() : [];
@@ -92,6 +94,10 @@ export function ProjectPanel() {
   const timelineComps = comps.filter((c) => c.kind === "timeline");
   const htmlComps = comps.filter((c) => c.kind === "html");
   const assets = project?.assets ?? [];
+  const deleteAsset = deleteAssetId ? assets.find((a) => a.id === deleteAssetId) : undefined;
+  const deleteAssetRefCount = deleteAssetId && project
+    ? countAssetReferences(project, deleteAssetId)
+    : 0;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "#1c1c1c", color: "#ccc", fontSize: 12, userSelect: "none" }}>
@@ -222,6 +228,13 @@ export function ProjectPanel() {
               {a.path.split("/").pop() ?? a.id}
             </span>
             <span style={{ color: "#555", fontSize: 10 }}>{a.kind}</span>
+            {isFootage && (
+              <button
+                onClick={(e) => { e.stopPropagation(); setDeleteAssetId(a.id); }}
+                style={{ ...miniBtn, padding: "0 4px", color: "#f44", border: "none" }}
+                title="Footage を削除"
+              >×</button>
+            )}
           </div>
           );
         })}
@@ -293,6 +306,66 @@ export function ProjectPanel() {
           onCancel={() => setShowNewConfirm(false)}
         />
       )}
+
+      {deleteAsset && (
+        <DeleteFootageConfirm
+          name={deleteAsset.path.split("/").pop() ?? deleteAsset.id}
+          refCount={deleteAssetRefCount}
+          onConfirm={() => { removeAsset(deleteAsset.id); setDeleteAssetId(null); }}
+          onCancel={() => setDeleteAssetId(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function countAssetReferences(project: Project, assetId: string): number {
+  let count = 0;
+  for (const comp of project.compositions) {
+    if (comp.kind !== "timeline") continue;
+    for (const obj of comp.objects) {
+      if (obj.components.some(
+        (cmp) =>
+          (cmp.type === "audio" || cmp.type === "image" || cmp.type === "video") &&
+          cmp.props["asset"] === assetId,
+      )) count++;
+    }
+  }
+  return count;
+}
+
+function DeleteFootageConfirm({
+  name, refCount, onConfirm, onCancel,
+}: {
+  name: string;
+  refCount: number;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div
+      style={confirmOverlay}
+      onClick={onCancel}
+      onKeyDown={(e) => { if (e.key === "Escape") onCancel(); }}
+    >
+      <div style={confirmDialog} onClick={(e) => e.stopPropagation()}>
+        <div style={{ fontWeight: "bold", fontSize: 13, color: "#ddd", marginBottom: 8 }}>
+          Footage を削除
+        </div>
+        <div style={{ color: "#bbb", lineHeight: 1.6, marginBottom: 16 }}>
+          「{name}」をプロジェクトから削除しますか？
+          {refCount > 0 && (
+            <>
+              <br />
+              この素材は {refCount} レイヤーで使用中です。削除するとレイヤーも削除されます。
+            </>
+          )}
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <button onClick={onConfirm} style={confirmDangerBtn} autoFocus>削除</button>
+          <button onClick={onCancel} style={confirmBtn}>キャンセル</button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -348,6 +421,10 @@ const confirmBtn: React.CSSProperties = {
 
 const confirmPrimaryBtn: React.CSSProperties = {
   ...confirmBtn, background: "#2a4a3a", color: "#8da", borderColor: "#4a7a5a",
+};
+
+const confirmDangerBtn: React.CSSProperties = {
+  ...confirmBtn, background: "#4a2a2a", color: "#faa", borderColor: "#7a4a4a",
 };
 
 function SectionHeader({ label, children }: { label: string; children?: React.ReactNode }) {

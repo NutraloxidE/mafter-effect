@@ -604,9 +604,23 @@ interface ExportConfig {
 ### §11.5 audio コンポーネント（MVP / 最小）
 
 - `audio` は `asset(audio)` + `gain`（**静的, 0..1**）+ `trimStart`。タイムライン配置（inPoint/outPoint）で再生区間が決まる。
-- **preview**: playhead に追従して `AudioContext` で再生（スクラブ時は鳴らさなくてよい）。
-- **export**: §11.2 のとおり mux。
-- mixing graph / エフェクト / **keyframed gain** / 波形表示は §16 将来。
+- **preview（音声マスタークロック）**: 再生中はオーディオレイヤーが 1 つでもあれば `AudioContext.currentTime` を**マスタークロック**とし、`currentFrame = rangeStart + floor((ctx.currentTime − t0) · fps)` を毎 rAF で算出して `resolve`/描画する（§11.7 と同型・INV-8）。各レイヤーは `inPoint`/`outPoint`/`trimStart`/`gain` に従って `AudioBufferSourceNode` をスケジュールする。**スクラブ時・停止時は無音**。`AudioContext` の resume はユーザージェスチャ（再生ボタン）で行う。オーディオが無ければ従来の rAF 経過時間クロックを使う。
+- **プリロード（再生レイテンシ回避・非直列化）**: decode 済み `AudioBuffer` は **assetId をキーに共有メモリキャッシュ**へ常駐させる。編集中 comp に音声レイヤーがあれば事前に decode しておき、再生ボタンで decode 待ちなく即発音する。波形抽出（§11.5.1）・再生・duration メタ取得は**同一バッファを共有**し、大きなソースを多重 decode しない。
+- **asset.duration メタ**: 音声 import 時に 1 回 decode して尺（秒）を `asset.meta`（`duration`/`sampleRate`/`channels`）に記録する。`AssetEntry.meta` は既存の任意フィールド（image と同様）で **§5 スキーマ非変更**。波形のソース尺マッピング（§11.5.1・§21.3）はこの値を使う。未記録時のみ尺をレイヤー長へフォールバックする。
+- **export**: §11.2 のとおり mux（決定論・`OfflineAudioContext`）。
+- mixing graph / エフェクト / **keyframed gain** / video 内蔵音声同期は §16 将来。
+
+#### §11.5.1 タイムライン波形表示（編集補助・非直列化）
+
+オーディオレイヤーのタイムラインバー上に**波形**を描画して頭出し・尺合わせを助ける。波形は**表示専用の派生物**であり、`resolve()` にも `project.json` にも一切影響しない（§5 スキーマ非変更）。
+
+- **ピーク抽出**: `asset` の音声 bytes を `decodeAudioData` し、**レイヤーバー上の可視ソース区間**（`[trimStart, trimStart+可視尺)`）を**バー幅（ピクセル数）**で min/max ピーク化する。曲全体を固定バケット数に圧縮してから写像するとズーム時に解像度が破綻するため、decode 済みバッファから可視区間を直接サンプリングする。DSP は決定論（`OfflineAudioContext`・seeded helper のみ、INV-1 と同じ純粋性方針）。
+- **表示モード（グローバル・UI-only state、既定 `transient`）**: 海苔波形でも編集しやすくするための加工。
+  - `raw`: 無加工ピーク。
+  - `donshari`: `OfflineAudioContext` の biquad（lowshelf 低域 + highshelf 高域ブースト）を通してからピーク化。キック/ハイのアタックが立つ。
+  - `transient`: エンベロープフォロワ（fast attack / slow release の差分）でトランジェントを過剰強調したピーク。
+- **キャッシュ**: decode 済み `AudioBuffer` は §11.5 の共有メモリキャッシュに常駐（波形・再生・メタで共有）。全曲 4096 バケットのピーク列は **L2 IndexedDB**（`assetId · mode · bucketCount`）に任意保存できるが、**描画の正準経路は可視区間の直接ピーク計算**（上記）。`project.json` には保存しない（直列化形式・INV 非変更）。
+- バーへのマッピングは footage の `trimStart` に従い左端トリムに追従する。可視区間 `[trimStart, trimStart+可視尺)` をバー幅ピクセル数のバケットへ 1:1 写像する（ズームでバーが広がるほど解像度が上がる）。
 
 ### §11.6 フォント（確定）
 
@@ -744,7 +758,9 @@ SSoT 違反を避けるため、scope と正準性を分離する:
 | Blender Camera / Depth Import（IO plugin） | 将来 |
 | Particle / Advanced Effects / 分散レンダリング / AI 編集支援 | 将来 |
 | comp/plugin JS のハードサンドボックス / CSP | 将来（セキュリティ硬化） |
-| keyframed gain / audio mixing / 波形表示 / video 内蔵音声同期 | 将来 |
+| keyframed gain / audio mixing / video 内蔵音声同期 | 将来 |
+| タイムライン波形表示（raw/donshari/transient, §11.5.1） | **実装済み（編集補助・非直列化）** |
+| エディタプレビューの音声再生（マスタークロック, §11.5） | **実装済み** |
 | OPFS アセット格納 / time remap / per-axis easing・expression | 将来 |
 | グラフエディタ Phase 2（per-axis 値カーブ, §22.0） | 将来（additive スキーマ） |
 | グラフエディタ Phase 3（空間モーションパス / 速度グラフ, §22.0） | 将来（additive スキーマ + resolve 拡張） |
@@ -856,6 +872,7 @@ type LayoutNode =
 - **`+ Composition`**: 新規 timeline comp を作成（既定 1920×1080 @30fps / 5s, name `Comp N`）して即アクティブにする。
 - **`+ HTML Comp`**: 既存どおり html comp を作成（FS スターター生成）。
 - **コンポのリネーム / 削除**を提供する（§20.2）。
+- **Footage（audio / image）の削除**を提供する（§20.2b）。使用中の場合は確認ダイアログを出し、素材と参照レイヤーを 1 command（undo 可）で削除する。
 
 ### §20.2 コンポジションの作成・切替・削除（store 操作）
 
@@ -874,6 +891,19 @@ setCurrentComp(id): void                // 既存。アクティブ comp を切�
 - 削除対象が `currentCompId` なら、`currentCompId` を `rootComposition`（張り替え後）に移す。
 - html comp 削除時は `compositions/<id>/` 配下の FS ファイルも削除する（best-effort）。
 - **ダングリング参照の方針（MVP）**: 削除した html comp を `compId` 参照している `html` コンポーネント（他 comp 上のインスタンス）は**カスケード削除しない**。参照先不在は DomRenderer / HtmlCompPlayer 側で「何も描かない」で安全に縮退する（§7 の throw→silent と同方針）。整合性の自動掃除は §16 将来。
+
+### §20.2b Footage 削除（store 操作・確定 2026-06-24）
+
+```ts
+removeAsset(assetId): void   // audio / image の Footage を削除（undo 可）
+```
+
+**削除の不変条件（確定）:**
+- 対象は `project.assets` の `kind === "audio" | "image"` のみ（video / font / other は将来）。
+- **参照レイヤーのカスケード削除**: 全 timeline comp を走査し、`audio` / `image` / `video` コンポーネントの `props.asset` が一致する `SceneObject` をまとめて削除する（1 command = 1 undo）。
+- 使用中の場合は Project パネルで確認ダイアログを表示する（レイヤー数を明示）。
+- FS の `assets/` ファイルは best-effort で削除する。audio の場合は decode バッファ・波形キャッシュも evict する。
+- 削除したレイヤーが選択中なら選択を解除する。
 
 ### §20.3 アクティブコンポジションの明示（確定）
 

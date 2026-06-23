@@ -1,0 +1,183 @@
+// §11.5 — エディタプレビューの音声マスタークロック。
+// 音声があれば AudioContext.currentTime を基準に currentFrame を算出し（INV-8）、
+// 各オーディオレイヤーを inPoint/outPoint/trimStart/gain に従って AudioBufferSourceNode で鳴らす。
+// scene 解決値には一切影響しない（描画フレームの timing のみを音に合わせる）。
+
+import type { FileSystem } from "../fs/FileSystem";
+import type { Frame, Project, TimelineComposition } from "../core/schema";
+import { loadAudioBuffer, peekAudioBuffer } from "./audioBufferCache";
+
+interface PreparedLayer {
+  buffer: AudioBuffer;
+  inPoint: Frame;
+  outPoint: Frame;
+  trimStart: Frame;
+  gain: number;
+}
+
+export interface PreviewAudioClockOptions {
+  fps: number;
+  loopStart: Frame;
+  loopEnd: Frame;
+  loop: boolean;
+  initialFrame: Frame;
+  onFrameChange: (frame: number) => void;
+  onPlaybackEnd: () => void;
+  /** Draft 再生時のみ渡す。直接 render する。未指定なら frame 変更だけ（React effect が描画）。 */
+  renderFrame?: (frame: number) => void | Promise<void>;
+}
+
+/** comp 内の audio コンポーネントを集めてデコードする。1 つも無ければ null。 */
+export async function prepareAudioLayers(
+  project: Project,
+  comp: TimelineComposition,
+  fs: FileSystem,
+): Promise<PreparedLayer[]> {
+  const layers: PreparedLayer[] = [];
+  for (const obj of comp.objects) {
+    if (!obj.enabled) continue;
+    const cmp = obj.components.find((c) => c.type === "audio");
+    if (!cmp) continue;
+    const assetId = cmp.props["asset"];
+    if (typeof assetId !== "string") continue;
+    const asset = project.assets.find((a) => a.id === assetId);
+    if (!asset) continue;
+    // プリロード済みの共有バッファを使う（再生レイテンシ回避）。未デコードならここで decode。
+    const buffer = peekAudioBuffer(assetId) ?? (await loadAudioBuffer(assetId, () => fs.read(asset.path)));
+    if (!buffer) continue;
+    layers.push({
+      buffer,
+      inPoint: obj.inPoint,
+      outPoint: obj.outPoint,
+      trimStart: typeof cmp.props["trimStart"] === "number" ? (cmp.props["trimStart"] as number) : 0,
+      gain: typeof cmp.props["gain"] === "number" ? (cmp.props["gain"] as number) : 1,
+    });
+  }
+  return layers;
+}
+
+/**
+ * 音声マスタークロックの再生制御。
+ * - new → start() で AudioContext.resume + デコード + スケジュール + rAF ループ開始。
+ * - stop() で全ノード停止・rAF 解除（同期）。
+ * 音声レイヤーが 0 の場合 start() は false を返し、呼び出し側は通常の rAF クロックへフォールバックする。
+ */
+export class PreviewAudioClock {
+  private ctx: AudioContext | null = null;
+  private layers: PreparedLayer[] = [];
+  private nodes: { src: AudioBufferSourceNode; gain: GainNode }[] = [];
+  private playing = false;
+  private rafId: number | null = null;
+  private originCtxTime = 0;
+  private originFrame = 0;
+
+  constructor(
+    private readonly project: Project,
+    private readonly comp: TimelineComposition,
+    private readonly fs: FileSystem,
+    private readonly opts: PreviewAudioClockOptions,
+  ) {}
+
+  async start(): Promise<boolean> {
+    const Ctor = window.AudioContext;
+    if (!Ctor) return false;
+    const ctx = new Ctor();
+    this.ctx = ctx;
+    try {
+      await ctx.resume();
+    } catch {
+      /* ジェスチャ無しでも一応続行 */
+    }
+    this.layers = await prepareAudioLayers(this.project, this.comp, this.fs);
+    if (this.layers.length === 0) {
+      void ctx.close();
+      this.ctx = null;
+      return false;
+    }
+    this.playing = true;
+    this.schedule(this.opts.initialFrame);
+    this.rafId = requestAnimationFrame(this.tick);
+    return true;
+  }
+
+  /** fromFrame から各レイヤーをスケジュールする（loop wrap 時も再呼び出し）。 */
+  private schedule(fromFrame: number): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    this.stopNodes();
+    const lookahead = 0.04; // 数十 ms 先から鳴らしてグリッチを避ける
+    this.originCtxTime = ctx.currentTime + lookahead;
+    this.originFrame = fromFrame;
+    const fps = this.opts.fps;
+    for (const layer of this.layers) {
+      // ソース内の読み出し開始位置: trimStart + （既に再生済みの分）。
+      const alreadyElapsed = Math.max(0, (fromFrame - layer.inPoint) / fps);
+      const offsetSec = layer.trimStart / fps + alreadyElapsed;
+      if (offsetSec >= layer.buffer.duration) continue;
+      const startAtFrame = Math.max(layer.inPoint, fromFrame);
+      const whenSec = this.originCtxTime + (startAtFrame - fromFrame) / fps;
+      const playableByOut = (layer.outPoint - startAtFrame) / fps;
+      const playableByBuffer = layer.buffer.duration - offsetSec;
+      const durSec = Math.min(playableByOut, playableByBuffer);
+      if (durSec <= 0) continue;
+      const src = ctx.createBufferSource();
+      src.buffer = layer.buffer;
+      const gainNode = ctx.createGain();
+      gainNode.gain.value = Math.max(0, Math.min(1, layer.gain));
+      src.connect(gainNode);
+      gainNode.connect(ctx.destination);
+      src.start(whenSec, offsetSec, durSec);
+      this.nodes.push({ src, gain: gainNode });
+    }
+  }
+
+  private tick = (): void => {
+    if (!this.playing || !this.ctx) return;
+    const elapsedSec = this.ctx.currentTime - this.originCtxTime;
+    const frame = this.originFrame + Math.floor(elapsedSec * this.opts.fps);
+    const { loopStart, loopEnd, loop } = this.opts;
+    const lastFrame = Math.max(loopStart, loopEnd - 1);
+
+    if (frame >= lastFrame) {
+      if (loop) {
+        this.opts.onFrameChange(lastFrame);
+        void this.opts.renderFrame?.(lastFrame);
+        this.schedule(loopStart);
+        this.opts.onFrameChange(loopStart);
+        void this.opts.renderFrame?.(loopStart);
+        this.rafId = requestAnimationFrame(this.tick);
+        return;
+      }
+      this.playing = false;
+      this.stopNodes();
+      this.opts.onFrameChange(lastFrame);
+      const done = this.opts.onPlaybackEnd;
+      void Promise.resolve(this.opts.renderFrame?.(lastFrame)).finally(() => done());
+      return;
+    }
+
+    const clamped = Math.max(loopStart, frame);
+    this.opts.onFrameChange(clamped);
+    void this.opts.renderFrame?.(clamped);
+    this.rafId = requestAnimationFrame(this.tick);
+  };
+
+  private stopNodes(): void {
+    for (const { src } of this.nodes) {
+      try { src.stop(); } catch { /* already stopped */ }
+      src.disconnect();
+    }
+    this.nodes = [];
+  }
+
+  stop(): void {
+    this.playing = false;
+    if (this.rafId !== null) cancelAnimationFrame(this.rafId);
+    this.rafId = null;
+    this.stopNodes();
+    if (this.ctx) {
+      void this.ctx.close();
+      this.ctx = null;
+    }
+  }
+}

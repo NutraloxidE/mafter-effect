@@ -35,6 +35,9 @@ import { previewCacheService } from "../previewCacheService";
 import { precompRasterService } from "../precompRasterService";
 import { compNeedsAutoPreviewCache } from "../previewCompAnalysis";
 import { runPreviewFrameClock, runPreviewPlaybackLoop } from "../previewPlaybackLoop";
+import { PreviewAudioClock } from "../previewAudioClock";
+import { hasAudioLayers } from "../../player/BundleAudioClock";
+import { loadAudioBuffer, peekAudioBuffer } from "../audioBufferCache";
 import { loadWorkArea } from "../workAreaStorage";
 import { currentTimelineComp, selectedObjects, useEditorStore } from "../store";
 import type { HtmlComposition, TimelineComposition, Transform } from "../../core/schema";
@@ -505,13 +508,37 @@ export function PreviewPanel() {
     draftPlayback: draftPlaybackActive,
   };
 
-  // §25.6 / §28 / §27.12 再生ループ（Draft=直接 render、Best=frame clock + React effect）
+  // §25.6 / §28 / §27.12 / §11.5 再生ループ。
+  // 音声レイヤーがあれば AudioContext をマスタークロックにして音と frame を同期させる（無ければ従来 rAF）。
+  // Draft=直接 render、Best=frame clock + React effect。
   useEffect(() => {
     if (!isPlaying || !comp) return;
 
     const cfg = playbackConfigRef.current;
-    if (cfg.draftPlayback) {
-      return runPreviewPlaybackLoop({
+    const renderFrame = cfg.draftPlayback
+      ? (f: number) => {
+          const gen = ++draftPlaybackRenderGenRef.current;
+          return performPreviewRender(f, gen);
+        }
+      : undefined;
+
+    const startRafClock = () => {
+      if (cfg.draftPlayback) {
+        return runPreviewPlaybackLoop({
+          fps: cfg.fps,
+          loopStart: cfg.loopStart,
+          loopEnd: cfg.loopEnd,
+          loop: cfg.loop,
+          initialFrame: frameRef.current,
+          onFrameChange: (f) => setFrame(f),
+          onPlaybackEnd: () => setPlaying(false),
+          renderFrame: (f) => {
+            const gen = ++draftPlaybackRenderGenRef.current;
+            return performPreviewRender(f, gen);
+          },
+        });
+      }
+      return runPreviewFrameClock({
         fps: cfg.fps,
         loopStart: cfg.loopStart,
         loopEnd: cfg.loopEnd,
@@ -519,14 +546,17 @@ export function PreviewPanel() {
         initialFrame: frameRef.current,
         onFrameChange: (f) => setFrame(f),
         onPlaybackEnd: () => setPlaying(false),
-        renderFrame: (f) => {
-          const gen = ++draftPlaybackRenderGenRef.current;
-          return performPreviewRender(f, gen);
-        },
       });
+    };
+
+    if (!project || !hasAudioLayers(project, comp)) {
+      return startRafClock();
     }
 
-    return runPreviewFrameClock({
+    // 音声あり: AudioContext マスタークロック。decode は非同期なので、成功するまで stop ハンドルを保持。
+    let cancelled = false;
+    let fallbackStop: (() => void) | null = null;
+    const clock = new PreviewAudioClock(project, comp, _previewFs, {
       fps: cfg.fps,
       loopStart: cfg.loopStart,
       loopEnd: cfg.loopEnd,
@@ -534,8 +564,34 @@ export function PreviewPanel() {
       initialFrame: frameRef.current,
       onFrameChange: (f) => setFrame(f),
       onPlaybackEnd: () => setPlaying(false),
+      renderFrame,
     });
-  }, [isPlaying, comp?.id, draftPlaybackActive, setFrame, setPlaying, performPreviewRender]);
+    void clock.start().then((ok) => {
+      if (cancelled) { clock.stop(); return; }
+      if (!ok) fallbackStop = startRafClock(); // decode 全失敗 → 無音 rAF
+    });
+
+    return () => {
+      cancelled = true;
+      clock.stop();
+      fallbackStop?.();
+    };
+  }, [isPlaying, comp?.id, draftPlaybackActive, setFrame, setPlaying, performPreviewRender, project]);
+
+  // §11.5: 編集中 comp に音声レイヤーがあれば decode 済みバッファをメモリ常駐させ、
+  // 再生ボタンを押した瞬間に decode 待ちなく発音できるようにする（プリロード）。
+  useEffect(() => {
+    if (!project || !comp) return;
+    for (const obj of comp.objects) {
+      if (!obj.enabled) continue;
+      const cmp = obj.components.find((c) => c.type === "audio");
+      const assetId = cmp?.props["asset"];
+      if (typeof assetId !== "string" || peekAudioBuffer(assetId)) continue;
+      const asset = project.assets.find((a) => a.id === assetId);
+      if (!asset) continue;
+      void loadAudioBuffer(assetId, () => _previewFs.read(asset.path)).catch(() => { /* 失敗は再生時に再試行 */ });
+    }
+  }, [project, comp?.id, comp?.objects]);
 
   // §25.2 解像度プロキシ: DomRenderer のラスタ解像度のみ変更（INV-2 scene 値不変）
   useEffect(() => {
