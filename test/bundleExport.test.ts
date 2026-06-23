@@ -158,6 +158,46 @@ describe("bundleCollect", () => {
     expect(targets[0]?.objectId).toBe("01OBJ00000000000000000003");
   });
 
+  it("camera layer is a builtin → never bundle-baked (§6.5b)", () => {
+    registerBuiltinComponents();
+    expect(componentNeedsBake({ type: "camera", props: { zoom: { value: 1158, keyframes: [] } } })).toBe(false);
+  });
+
+  it("camera + effect-only adjustment layers produce no bake targets (regression)", () => {
+    // ユーザー報告: built-in live エフェクト(blur/fastTurbulent)+カメラのみのコンプが
+    // Static HTML 書き出しで「plugin / bake レイヤ 1 件」になっていた（= camera 誤判定）。
+    registerBuiltinComponents();
+    const tf = () => ({
+      anchor: { value: { x: 0, y: 0, z: 0 }, keyframes: [] },
+      position: { value: { x: 0, y: 0, z: 0 }, keyframes: [] },
+      rotation: { value: { x: 0, y: 0, z: 0 }, keyframes: [] },
+      scale: { value: { x: 1, y: 1, z: 1 }, keyframes: [] },
+    });
+    const project = minimalProject([
+      {
+        id: "01OBJADJ0000000000000000001",
+        name: "Adjustment",
+        parent: null, zOrder: 1, enabled: true, inPoint: 0, outPoint: 90,
+        transform: tf(), opacity: { value: 1, keyframes: [] },
+        components: [],
+        isAdjustment: true,
+        effects: [
+          { id: "fx1", type: "blur", enabled: true, props: { blurriness: { value: 41.8, keyframes: [] } } },
+          { id: "fx2", type: "fastTurbulentDisplace", enabled: true, props: { amount: { value: 68.2, keyframes: [] } } },
+        ],
+      },
+      {
+        id: "01OBJCAM0000000000000000001",
+        name: "Camera 1",
+        parent: null, zOrder: 2, enabled: true, inPoint: 0, outPoint: 90,
+        transform: tf(), opacity: { value: 1, keyframes: [] },
+        components: [{ type: "camera", props: { cameraType: "two-node", zoom: { value: 1158, keyframes: [] } } }],
+      },
+    ]);
+    const deps = collectBundleDependencies(project, "01COMPROOT0000000000000001");
+    expect(findBakeTargets(project, deps.timelineCompIds)).toHaveLength(0);
+  });
+
   it("canonicalBundleProject sorts compositions by id", () => {
     const p = minimalProject([]);
     const c = canonicalBundleProject(p);

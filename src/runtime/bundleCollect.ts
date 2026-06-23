@@ -31,6 +31,7 @@ const BUILTIN_COMPONENT_TYPES = new Set([
   "comp",
   "audio",
   "video",
+  "camera", // §6.5b 非描画（transform/メタのみ）。bundle で bake してはいけない
 ]);
 
 function isTimelineComp(c: Composition | undefined): c is TimelineComposition {
