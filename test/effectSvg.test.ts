@@ -455,14 +455,60 @@ describe("§27.5 Fast distortion (approximate)", () => {
     const off = fastTurbulentDisplace({
       amount: 50, size: 100, complexity: 6, evolution: 0, offsetX: 0, offsetY: 0, randomSeed: 0, w: 320, h: 240, antiAlias: false,
     });
-    const on = fastTurbulentDisplace({
-      amount: 50, size: 100, complexity: 6, evolution: 0, offsetX: 0, offsetY: 0, randomSeed: 0, w: 320, h: 240, antiAlias: true,
-    });
     expect(off).toContain('type="fractalNoise"');
     expect(off).toContain('numOctaves="2"');
     expect(off).toContain(`intercept="${FRACTAL_NOISE_G_BIAS_INTERCEPT}"`);
     expect(off).toContain("feComponentTransfer");
-    expect(on).toContain("feGaussianBlur");
-    expect(off).not.toContain("feGaussianBlur");
+    // 改定5: fastTurbulent は既存 region/stitch/pan を維持（map smoothing のみ追加）。
+    expect(off).toContain('stitchTiles="stitch"');
+    expect(off).toContain('width="320"'); // regionPad なし（生成域 = layer 実寸）
+  });
+
+  // ── §27.5 改定5: 見た目の動きを滑らかに（map smoothing 常時・phase 連続・regionPad） ──
+
+  it("§27.5 改定5: Fast 3 種は antiAlias なしでも map smoothing(feGaussianBlur) を含む", () => {
+    const wave = fastWaveDisplace({ amplitude: 20, wavelength: 50, direction: "horizontal", phaseDeg: 0, w: 320, h: 240 });
+    const ripple = fastRippleDisplace({ radius: 100, amplitude: 10, frequency: 5, centerX: 0.5, centerY: 0.5, w: 640, h: 480 });
+    const turb = fastTurbulentDisplace({ amount: 50, size: 100, complexity: 2, evolution: 0, offsetX: 0, offsetY: 0, randomSeed: 0, w: 320, h: 240 });
+    for (const p of [wave, ripple, turb]) {
+      expect(p).toContain("feGaussianBlur");
+      // 軽量維持の回帰ガード: feImage / data URI を一切含まない。
+      expect(p).not.toContain("feImage");
+      expect(p).not.toContain("data:image");
+    }
+  });
+
+  it("§27.5 改定5: fastWave は stitch を外した座標安定場（stitchTiles なし）", () => {
+    const p = fastWaveDisplace({ amplitude: 20, wavelength: 50, direction: "horizontal", phaseDeg: 90, w: 320, h: 240 });
+    expect(p).not.toContain("stitchTiles");
+  });
+
+  it("§27.5 改定5: fastWave phase パンに合わせ feTurbulence 生成域が対称拡張する", () => {
+    // phaseDeg=180 → pan=(180/360)*50=25px → padX=27 → feTurbulence x="-27"。
+    const p = fastWaveDisplace({ amplitude: 20, wavelength: 50, direction: "horizontal", phaseDeg: 180, w: 320, h: 240 });
+    const m = /<feTurbulence[^>]*\bx="(-?\d+)"[^>]*\bwidth="(\d+)"/.exec(p);
+    expect(m).not.toBeNull();
+    expect(Number(m![1])).toBeLessThan(0); // 左へ拡張
+    expect(Number(m![2])).toBeGreaterThan(320); // layer より広い
+  });
+
+  it("§27.5 改定5: fastWave phase は連続パン（旧 %360 折返しの段差ジャンプなし）", () => {
+    const dxOf = (deg: number) => {
+      const m = /<feOffset[^>]*\bdx="(-?[\d.]+)"/.exec(
+        fastWaveDisplace({ amplitude: 20, wavelength: 50, direction: "horizontal", phaseDeg: deg, w: 320, h: 240 }),
+      );
+      return m ? Number(m[1]) : 0;
+    };
+    // 旧実装は 350°→370° で pan が ~λ 跳んだ。連続パンなら差は 1 周期分(λ)未満の小さな増分。
+    const jump = Math.abs(dxOf(370) - dxOf(350));
+    expect(jump).toBeLessThan(50 / 2);
+  });
+
+  it("§27.5 改定5: fastRipple は生成域を定数 pad 拡張し stitch を維持する", () => {
+    const p = fastRippleDisplace({ radius: 100, amplitude: 10, frequency: 5, centerX: 0.5, centerY: 0.5, w: 640, h: 480 });
+    expect(p).toContain('stitchTiles="stitch"');
+    const m = /<feTurbulence[^>]*\bwidth="(\d+)"/.exec(p);
+    expect(m).not.toBeNull();
+    expect(Number(m![1])).toBeGreaterThan(640); // 0.5·w pad で layer より広い
   });
 });

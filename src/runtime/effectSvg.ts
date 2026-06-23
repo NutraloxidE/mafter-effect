@@ -59,6 +59,22 @@ export const FAST_DISPLACEMENT_EFFECT_TYPES = new Set([
 /** §27.5 Fast displacement — optional map blur stdDeviation (px, userSpace). */
 export const FAST_DISPLACE_AA_STD_DEV = 1;
 
+/**
+ * §27.5 改定5 — Fast displacement の常時 map smoothing 量。
+ * 特徴サイズ（wave: λ / ripple: radius/frequency / turbulent: size）に比例した
+ * feGaussianBlur stdDeviation を [FAST_SMOOTH_MIN, FAST_SMOOTH_MAX]px に clamp して使う。
+ * 大きすぎると変位の山が均されて効果が消えるため控えめ（0.12）。
+ */
+export const FAST_SMOOTH_FRACTION = 0.06;
+export const FAST_SMOOTH_MIN = 0.75;
+export const FAST_SMOOTH_MAX = 6;
+
+/** 特徴サイズ → 常時 map smoothing 用 stdDeviation(px)。 */
+export function fastSmoothPx(featurePx: number): number {
+  const v = FAST_SMOOTH_FRACTION * Math.max(0, featurePx);
+  return Math.min(FAST_SMOOTH_MAX, Math.max(FAST_SMOOTH_MIN, v));
+}
+
 /** type=turbulence の R/G 正バイアスを 0.5 中心へ寄せる（Amount 比例ドリフト低減）。 */
 export const TURBULENCE_CHANNEL_BIAS_INTERCEPT = -0.15;
 /** fractalNoise G チャンネル（Y 変位）— comp 全画面キャプチャ residual 低減。 */
@@ -100,6 +116,13 @@ export function turbulenceDisplace(opts: {
   /** §27.5 — skip feComponentTransfer bias (Fast 近似・速度優先) */
   skipBias?: boolean;
   antiAlias?: boolean;
+  /** §27.5 改定5 — noise map に常時かける feGaussianBlur stdDeviation (px・antiAlias と加算)。 */
+  smoothPx?: number;
+  /** §27.5 改定5 — feTurbulence 生成域を ±pad 対称拡張し feOffset パン後も layer を被覆。 */
+  regionPadX?: number;
+  regionPadY?: number;
+  /** §27.5 改定5 — stitchTiles の有無。false で座標安定場（生成域変化で boiling しない）。 */
+  stitch?: boolean;
 }): string {
   const {
     scale,
@@ -116,16 +139,27 @@ export function turbulenceDisplace(opts: {
     evolutionOffsetY = 0,
     skipBias = false,
     antiAlias = false,
+    smoothPx = 0,
+    regionPadX = 0,
+    regionPadY = 0,
+    stitch = true,
   } = opts;
   const bx = Math.max(0.0001, baseFrequencyX);
   const by = Math.max(0.0001, baseFrequencyY);
   const s = Math.max(0, Math.floor(seed)) % 4096;
   const lw = Math.max(1, w);
   const lh = Math.max(1, h);
+  const padX = Math.max(0, Math.ceil(regionPadX));
+  const padY = Math.max(0, Math.ceil(regionPadY));
+  const tx = -padX;
+  const ty = -padY;
+  const tw = lw + 2 * padX;
+  const th = lh + 2 * padY;
   const dx = offsetX + evolutionOffsetX;
   const dy = offsetY + evolutionOffsetY;
+  const stitchAttr = stitch ? ` stitchTiles="stitch"` : "";
   const parts = [
-    `<feTurbulence type="${type}" baseFrequency="${bx} ${by}" numOctaves="${numOctaves}" seed="${s}" stitchTiles="stitch" x="0" y="0" width="${lw}" height="${lh}" result="noiseRaw"/>`,
+    `<feTurbulence type="${type}" baseFrequency="${bx} ${by}" numOctaves="${numOctaves}" seed="${s}"${stitchAttr} x="${tx}" y="${ty}" width="${tw}" height="${th}" result="noiseRaw"/>`,
   ];
   let noiseIn = "noiseRaw";
   if (!skipBias) {
@@ -142,8 +176,9 @@ export function turbulenceDisplace(opts: {
     noiseIn = "noise";
   }
   let dispIn = noiseIn;
-  if (antiAlias) {
-    parts.push(displaceMapBlur(noiseIn, "noiseAA", FAST_DISPLACE_AA_STD_DEV));
+  const blurStd = Math.max(0, smoothPx) + (antiAlias ? FAST_DISPLACE_AA_STD_DEV : 0);
+  if (blurStd > 0) {
+    parts.push(displaceMapBlur(noiseIn, "noiseAA", blurStd));
     dispIn = "noiseAA";
   }
   parts.push(
@@ -344,7 +379,11 @@ export function fastWaveDisplace(opts: {
   const horizontal = direction !== "vertical";
   const freqAlong = 1 / lambda;
   const freqPerp = 1 / (lambda * 4);
-  const phasePan = ((((phaseDeg % 360) + 360) % 360) / 360) * lambda;
+  // 改定5: phase は連続パン（% 360 折返しなし）で段差ジャンプを解消。
+  const phasePan = (phaseDeg / 360) * lambda;
+  // 改定5: stitch を外した座標安定場とし、生成域を |pan| ぶん対称拡張して露出を防ぐ
+  //（pan で生成域が変化しても noise 値が変わらず boiling しない）。
+  const pad = Math.abs(phasePan) + 2;
   return turbulenceDisplace({
     scale: 2 * Math.max(0, amplitude),
     baseFrequencyX: horizontal ? freqAlong : freqPerp,
@@ -356,6 +395,10 @@ export function fastWaveDisplace(opts: {
     h,
     offsetX: horizontal ? phasePan : 0,
     offsetY: horizontal ? 0 : phasePan,
+    smoothPx: fastSmoothPx(lambda),
+    regionPadX: horizontal ? pad : 0,
+    regionPadY: horizontal ? 0 : pad,
+    stitch: false,
     antiAlias,
   });
 }
@@ -382,6 +425,9 @@ export function fastRippleDisplace(opts: {
   const r = Math.max(1, radius);
   const freq = Math.max(0.1, frequency);
   const bf = freq / r; // リング間隔 ≈ radius/frequency px → baseFrequency
+  const lw = Math.max(1, w);
+  const lh = Math.max(1, h);
+  // 改定5: center パンは ±0.5·{w,h} に収まるので定数 pad で被覆（生成域一定・stitch 維持で boiling なし）。
   return turbulenceDisplace({
     scale: 2 * Math.max(0, amplitude),
     baseFrequencyX: bf,
@@ -391,8 +437,11 @@ export function fastRippleDisplace(opts: {
     type: "fractalNoise",
     w,
     h,
-    offsetX: (clamp01(centerX) - 0.5) * Math.max(1, w),
-    offsetY: (clamp01(centerY) - 0.5) * Math.max(1, h),
+    offsetX: (clamp01(centerX) - 0.5) * lw,
+    offsetY: (clamp01(centerY) - 0.5) * lh,
+    smoothPx: fastSmoothPx(r / freq),
+    regionPadX: 0.5 * lw + 2,
+    regionPadY: 0.5 * lh + 2,
     antiAlias,
   });
 }
@@ -439,6 +488,8 @@ export function fastTurbulentDisplace(opts: {
     evolutionOffsetX: evoDx,
     evolutionOffsetY: evoDy,
     skipBias: false,
+    // 改定5: 既存の region/stitch/pan は維持し検証済み centroid を保全。map smoothing のみ追加。
+    smoothPx: fastSmoothPx(size),
     antiAlias,
   });
 }

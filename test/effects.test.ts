@@ -180,7 +180,7 @@ describe("builtinEffects apply (§27.3)", () => {
     }
   });
 
-  it("fastWave antiAlias adds feGaussianBlur", () => {
+  it("fastWave は map smoothing を常時含み antiAlias で blur が増える（§27.5 改定5）", () => {
     const on = FAST_WAVE_EFFECT_DEF.apply(
       { amplitude: 20, wavelength: 50, direction: "horizontal", phase: 0, antiAlias: true },
       ctx,
@@ -192,8 +192,12 @@ describe("builtinEffects apply (§27.3)", () => {
     expect(on?.kind).toBe("svg");
     expect(off?.kind).toBe("svg");
     if (on?.kind === "svg" && off?.kind === "svg") {
+      // 改定5: antiAlias なしでも feature-size 比例の map smoothing が常時 ON。
+      expect(off.primitives).toContain("feGaussianBlur");
       expect(on.primitives).toContain("feGaussianBlur");
-      expect(off.primitives).not.toContain("feGaussianBlur");
+      const std = (s: string) => Number(/stdDeviation="([\d.]+)"/.exec(s)?.[1] ?? "0");
+      // antiAlias は +1px の追加増分。
+      expect(std(on.primitives)).toBeGreaterThan(std(off.primitives));
     }
   });
 

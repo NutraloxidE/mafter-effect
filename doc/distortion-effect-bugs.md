@@ -93,6 +93,17 @@
 
 ---
 
+## Issue C-4 — Fast 3 種の「見た目の動き」を滑らかに（**2026-06-21・§27.5 改定5**）
+
+> 改定4 で `feTurbulence` 直結にして軽くなったが、単一オクターブ noise を全帯域のまま `feDisplacementMap` に通すためエッジ変位が粒状で動きがカクついた。ユーザー要請（「軽量化を維持したまま見た目の動きを滑らかに」・制御面 A＝内部既定/パラメータ追加なし）への対応。**`feImage` 復活なし・軽量維持・effect params/§5/INV/直列化 不変・INV-2 維持**。builder 内部のみ変更。
+
+- **(1) map smoothing 常時 ON**: noise map 直後に feature-size 比例 `feGaussianBlur`（`stdDev = clamp(FAST_SMOOTH_FRACTION·特徴サイズ, 0.75, ~12)`。特徴＝wave: λ / ripple: radius/frequency / turbulent: size）。高周波スペックルを均し flowing に。`antiAlias` は +1px の追加増分として存続。
+- **(2) fastWave phase の seamless loop**: `% 360` 折返しの ~λ ジャンプを、pan 軸 tile=λ + `stitchTiles` の周期化で解消。
+- **(3) パン露出ポップ解消（全 3 種）**: `feOffset` で有限 noise ラスタをパンした際のラグ側未定義域（定数変位＝素エッジ露出）を、`feTurbulence` 生成域を maxPan 拡張して被覆。filter region は改定3 の (0,0,w,h) クランプ維持。
+- **検証**: `verify-fast-turbulence-web.mjs` をアニメ sweep（phase/center/evolution 0→360）に拡張し、各フレームで露出ポップ無し・隣接フレーム差分スパイク無し・blur 後も edgeStd>baseline+2・`feImage` 不使用を機械確認。
+
+---
+
 ## Issue C-3 — fastWave/fastRipple を `feImage` → `feTurbulence` 直結で軽量化（**2026-06-21・§27.5 改定4**）
 
 > 軽量化要請（「fastTurbulent と同等の軽さ」「Fast 系は Web で動く前提」）への対応。Issue C-2 で live 化した fastWave/fastRipple はまだ `feImage`（linearGradient/radialGradient の data URI）map を**毎フレーム文字列生成→ブラウザ再デコード**していて fastTurbulent（`feTurbulence` 直結）より重かった。
