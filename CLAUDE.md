@@ -165,6 +165,15 @@ W_child = W_parent · L_child
 - テストは INV-1〜INV-6 の検証を優先する。
 - `project.json` の読み書きは必ず正準シリアライズ（キー順固定・id ソート・末尾改行）を通す。
 
+### Store 投影と FS 正本の整合（zip / export 配線で必須）
+
+Zustand ストアは **IndexedDbFs の投影**（§17）。UI はストア、zip・bundle 書き出しは **FS を直接読む**。新機能で「保存」「ダウンロード」「書き出し」を足すときは次を守る:
+
+1. **FS を読む前に必ず `await saveToFs()` / `saveProject` でストア→FS をフラッシュする**（`applyCommand` 内の `void saveProject` は非同期・失敗も握りつぶすため、export 経路では不十分）。
+2. **`newProject` などメモリだけ切り替える操作**は FS も同期する（旧 `project.json`・`assets/*` が残ると zip が UI と無関係な内容になる）。新規プロジェクト時は FS を掃除してから正準 `project.json` を書く。
+3. **エディタから FS に触るときは `store.getFs()` を使う**。パネルごとに `new IndexedDbFs("mafter-effect-fs")` を重複生成しない（同一 DB 名でも別インスタンス＋フラッシュ漏れで「保存したのに古い zip」が起きる）。
+4. **serialize 失敗は export でユーザーに見せる**（黙って古い FS を zip すると「ボタンが壊れた」ように見える）。
+
 ---
 
 ## 参照

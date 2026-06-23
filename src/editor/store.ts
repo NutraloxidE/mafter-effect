@@ -268,6 +268,17 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       projectRevision: 0,
       previewOverride: null,
     });
+    // メモリだけ切り替えて FS が旧プロジェクトのまま残ると zip が古い内容を書き出す（§20.4b 回帰）。
+    void (async () => {
+      try {
+        for (const path of await fs.list("")) {
+          await fs.delete(path);
+        }
+        await saveProject(fs, p);
+      } catch {
+        /* best-effort */
+      }
+    })();
   },
 
   loadFromFs: async () => {

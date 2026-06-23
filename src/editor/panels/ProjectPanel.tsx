@@ -1,12 +1,9 @@
 import { useRef, useState } from "react";
 import { ExportDialog } from "../ExportDialog";
 import { useEditorStore } from "../store";
-import { IndexedDbFs } from "../../fs/IndexedDbFs";
-import { exportZip, importZip } from "../../fs/zip";
+import { exportZip, importZip, type ZipExportProgress } from "../../fs/zip";
 import { globalPluginRegistry } from "../../runtime/pluginRegistry";
 import type { CompositionMeta, Project } from "../../core/schema";
-
-const fs = new IndexedDbFs("mafter-effect-fs");
 
 // Project パネル → Timeline パネル D&D 用 MIME 型。両ファイルで共通文字列を使う。
 export const DRAG_MIME = "application/x-mafter-item";
@@ -28,6 +25,7 @@ export function ProjectPanel() {
   const newProject = useEditorStore((s) => s.newProject);
   const loadFromFs = useEditorStore((s) => s.loadFromFs);
   const saveToFs = useEditorStore((s) => s.saveToFs);
+  const getFs = useEditorStore((s) => s.getFs);
   const installSamplePlugin = useEditorStore((s) => s.installSamplePlugin);
   const togglePlugin = useEditorStore((s) => s.togglePlugin);
   const addPluginObject = useEditorStore((s) => s.addPluginObject);
@@ -41,16 +39,49 @@ export function ProjectPanel() {
   const [showNewConfirm, setShowNewConfirm] = useState(false);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [deleteAssetId, setDeleteAssetId] = useState<string | null>(null);
+  const [zipError, setZipError] = useState<string | null>(null);
+  const [zipBusy, setZipBusy] = useState(false);
+  const [zipStatus, setZipStatus] = useState<string | null>(null);
 
-  // pluginsVersion が変化したら registry から最新の component 一覧を取得
   const registeredComponents = pluginsVersion >= 0 ? globalPluginRegistry.getComponentDefs() : [];
 
+  const formatZipProgress = (p: ZipExportProgress): string => {
+    switch (p.phase) {
+      case "list":
+        return `ファイル一覧を取得中 (${p.total} 件)…`;
+      case "read":
+        return `ファイルを読み込み中 (${p.current}/${p.total})…`;
+      case "pack":
+        return `ZIP を圧縮中 (${p.message})…`;
+    }
+  };
+
   const onExportZip = async () => {
-    const bytes = await exportZip(fs);
-    const blob = new Blob([bytes as unknown as BlobPart], { type: "application/zip" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a"); a.href = url; a.download = "mafter-project.zip"; a.click();
-    URL.revokeObjectURL(url);
+    if (zipBusy) return;
+    setZipError(null);
+    setZipBusy(true);
+    setZipStatus("プロジェクトを保存中…");
+    try {
+      await saveToFs();
+      const bytes = await exportZip(getFs(), "", (p) => {
+        setZipStatus(formatZipProgress(p));
+      });
+      const blob = new Blob([bytes as unknown as BlobPart], { type: "application/zip" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "mafter-project.zip";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setZipError(msg);
+    } finally {
+      setZipBusy(false);
+      setZipStatus(null);
+    }
   };
 
   // §20.4b: 新規プロジェクト時の保存確認ダイアログの 3 ボタン挙動。
@@ -70,7 +101,7 @@ export function ProjectPanel() {
 
   const onImportZip = async (file: File) => {
     const buf = await file.arrayBuffer();
-    await importZip(fs, buf);
+    await importZip(getFs(), buf);
     await loadFromFs();
   };
 
@@ -107,11 +138,23 @@ export function ProjectPanel() {
           {project?.meta.name ?? "No project"}
         </div>
         <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-          <button onClick={() => setShowNewConfirm(true)} style={btnStyle}>New</button>
-          <button onClick={() => void saveToFs()} style={btnStyle}>Save</button>
-          <button onClick={() => void loadFromFs()} style={btnStyle}>Reload</button>
-          <button onClick={() => void onExportZip()} style={btnStyle}>⬇ zip</button>
-          <button onClick={() => fileInput.current?.click()} style={btnStyle}>⬆ zip</button>
+          <button onClick={() => setShowNewConfirm(true)} disabled={zipBusy} style={btnStyleDisabled(zipBusy)}>New</button>
+          <button onClick={() => void saveToFs()} disabled={zipBusy} style={btnStyleDisabled(zipBusy)}>Save</button>
+          <button onClick={() => void loadFromFs()} disabled={zipBusy} style={btnStyleDisabled(zipBusy)}>Reload</button>
+          <button onClick={() => void onExportZip()} disabled={zipBusy} style={btnStyleDisabled(zipBusy)}>
+            {zipBusy ? "⬇ 準備中…" : "⬇ zip"}
+          </button>
+          {zipBusy && zipStatus && (
+            <span style={{ color: "#c9a227", fontSize: 10, width: "100%" }}>
+              {zipStatus}
+            </span>
+          )}
+          {zipError && (
+            <span style={{ color: "#f88", fontSize: 10, width: "100%" }} title={zipError}>
+              zip 失敗: {zipError}
+            </span>
+          )}
+          <button onClick={() => fileInput.current?.click()} disabled={zipBusy} style={btnStyleDisabled(zipBusy)}>⬆ zip</button>
           <input ref={fileInput} type="file" accept=".zip" style={{ display: "none" }}
             onChange={(e) => { const f = e.target.files?.[0]; if (f) void onImportZip(f); e.target.value = ""; }} />
         </div>
@@ -301,6 +344,8 @@ export function ProjectPanel() {
       {showNewConfirm && (
         <NewProjectConfirm
           projectName={project?.meta.name ?? "Untitled"}
+          zipBusy={zipBusy}
+          zipStatus={zipStatus}
           onSave={() => { void onNewSaveThenCreate(); }}
           onDiscard={onNewDiscardThenCreate}
           onCancel={() => setShowNewConfirm(false)}
@@ -372,9 +417,11 @@ function DeleteFootageConfirm({
 
 // §20.4b: New 押下時の「保存しますか？」モーダル。ExportDialog と同じ overlay スタイル。
 function NewProjectConfirm({
-  projectName, onSave, onDiscard, onCancel,
+  projectName, zipBusy, zipStatus, onSave, onDiscard, onCancel,
 }: {
   projectName: string;
+  zipBusy: boolean;
+  zipStatus: string | null;
   onSave: () => void;
   onDiscard: () => void;
   onCancel: () => void;
@@ -382,8 +429,8 @@ function NewProjectConfirm({
   return (
     <div
       style={confirmOverlay}
-      onClick={onCancel}
-      onKeyDown={(e) => { if (e.key === "Escape") onCancel(); }}
+      onClick={zipBusy ? undefined : onCancel}
+      onKeyDown={(e) => { if (!zipBusy && e.key === "Escape") onCancel(); }}
     >
       <div style={confirmDialog} onClick={(e) => e.stopPropagation()}>
         <div style={{ fontWeight: "bold", fontSize: 13, color: "#ddd", marginBottom: 8 }}>
@@ -393,10 +440,17 @@ function NewProjectConfirm({
           現在のプロジェクト「{projectName}」を保存しますか？<br />
           保存しない変更は失われます。
         </div>
+        {zipBusy && zipStatus && (
+          <div style={{ color: "#c9a227", fontSize: 11, marginBottom: 12 }}>
+            {zipStatus}
+          </div>
+        )}
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-          <button onClick={onSave} style={confirmPrimaryBtn} autoFocus>はい（保存）</button>
-          <button onClick={onDiscard} style={confirmBtn}>いいえ</button>
-          <button onClick={onCancel} style={confirmBtn}>キャンセル</button>
+          <button onClick={onSave} disabled={zipBusy} style={confirmPrimaryBtnDisabled(zipBusy)} autoFocus>
+            {zipBusy ? "保存中…" : "はい（保存）"}
+          </button>
+          <button onClick={onDiscard} disabled={zipBusy} style={confirmBtnDisabled(zipBusy)}>いいえ</button>
+          <button onClick={onCancel} disabled={zipBusy} style={confirmBtnDisabled(zipBusy)}>キャンセル</button>
         </div>
       </div>
     </div>
@@ -513,6 +567,18 @@ const btnStyle: React.CSSProperties = {
   cursor: "pointer",
   fontSize: 11,
 };
+
+function btnStyleDisabled(disabled: boolean): React.CSSProperties {
+  return disabled ? { ...btnStyle, opacity: 0.5, cursor: "default" } : btnStyle;
+}
+
+function confirmBtnDisabled(disabled: boolean): React.CSSProperties {
+  return disabled ? { ...confirmBtn, opacity: 0.5, cursor: "default" } : confirmBtn;
+}
+
+function confirmPrimaryBtnDisabled(disabled: boolean): React.CSSProperties {
+  return disabled ? { ...confirmPrimaryBtn, opacity: 0.5, cursor: "default" } : confirmPrimaryBtn;
+}
 
 const miniBtn: React.CSSProperties = {
   background: "#2a2a2a",

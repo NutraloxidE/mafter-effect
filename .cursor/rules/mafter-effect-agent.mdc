@@ -78,4 +78,13 @@ alwaysApply: true
 - Transform 合成順: `L = T(position)·R(rotation)·S(scale)·T(-anchor)` / Euler は Z·Y·X(deg) / 原点左上 +x右 +y下 +z手前
 - §27 effect / component 登録時は `previewBakeRequired: true | false` を必ず明示（spec §27.2 INVARIANT 参照）
 
+### Store 投影と FS 正本の整合（zip / export で必須）
+
+ストアは FS の投影（§17）。`exportZip`・bundle・その他 FS 直読みの書き出しを実装・変更するとき:
+
+1. **読み取り前に `await saveToFs()` でフラッシュ**（`void saveProject` の自動保存だけに頼らない）
+2. **`newProject` 等のメモリ切替は FS も同期**（残存 `assets/*` や旧 `project.json` で zip が UI と不一致になる）
+3. **FS アクセスは `getFs()` に一本化**（パネル内の `IndexedDbFs` 重複インスタンス禁止）
+4. **serialize 失敗は握りつぶさず export UI で表示**
+
 詳細（アーキテクチャ・マイルストーン M0–M4・設計決定）は `CLAUDE.md` と `doc/mafter-effect-spec.md` を参照。

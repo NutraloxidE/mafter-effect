@@ -177,6 +177,7 @@ interface SceneObject {
   opacity: AnimatedProp<number>; // 0..1, 全 Object 共通
   components: Component[];
   labelIndex?: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16; // §5.4c ラベル色。省略 = 無色
+  blendMode?: BlendMode;         // §5.4d 描画モード。省略 = "normal"
 }
 ```
 
@@ -223,6 +224,34 @@ interface SceneObject {
 ```
 
 - 直列化: `labelIndex` は **0–16 のときのみ**書く。範囲外は strip。UI は [src/editor/layerLabels.ts](../src/editor/layerLabels.ts) のパレット（AE 16 色 + index 16 = 旧 LayerBar ベージュ `#b89b6a`、§21.10）。
+
+### §5.4d 描画モード / ブレンドモード（additive スキーマ・確定）
+
+> AE の「描画モード」に準拠。レイヤー描画結果を**背面に積まれた合成結果**と合成する。**Web ネイティブ合成**を採り、preview / Live バンドルはラスター化ゼロ（CSS）、動画キャプチャは Canvas で合成し直して INV-2 を守る。
+
+```ts
+type BlendMode =
+  | "normal"
+  | "multiply" | "screen" | "overlay" | "darken" | "lighten"
+  | "color-dodge" | "color-burn" | "hard-light" | "soft-light"
+  | "difference" | "exclusion"
+  | "hue" | "saturation" | "color" | "luminosity"   // CSS が直接持つ 16 種（normal 含む）
+  | "ditherDissolve";                                 // ディザ合成（Bayer 秩序ディザ）
+
+interface SceneObject {
+  // ...既存フィールド...
+  blendMode?: BlendMode;  // 省略 = "normal"
+}
+```
+
+- **データ型はプレーン enum**（`AnimatedProp` にしない）。AE でも描画モードはキーフレーム不可。
+- **直列化**: `blendMode` は **`"normal"` 以外のときだけ**書く。`undefined`/`"normal"` はキー省略（§5.6 正準化）→ 既存 `project.json` は byte 等価（INV-4）。
+- **resolve（INV-3）**: `resolve()` が `ResolvedObject.blendMode`（既定 `"normal"`）に素通しで焼く。補間しない（純粋・INV-1）。
+- **描画経路**（§8 / §11）:
+  - **preview / Live HTML バンドル**: 16 種は CSS `mix-blend-mode` をレイヤー div に直接設定（ラスター化ゼロ・ネイティブ合成）。
+  - **動画キャプチャ書き出し（mp4 / webm / png 連番）**: `foreignObject` は backdrop 合成をしないため、comp 内に非 `normal` の 16 種が 1 つでもあれば **レイヤー別キャプチャ → Canvas 2D `globalCompositeOperation`**（`normal`→`source-over`、他 15 種は同名）で z 順に合成し直す。これで preview ≡ export（INV-2）を守る。非 blend comp は従来の単一スナップショット高速経路を維持。
+  - **`ditherDissolve`**: `mix-blend-mode` ではなく CSS `mask-image` に **Bayer（秩序）ディザのしきい値タイル**を敷き、レイヤー opacity を閾値にする（AE 準拠で opacity は div α ではなくディザ密度へ）。α 0/1 のしきい値処理なので `foreignObject` キャプチャでもそのまま出る（Canvas 再合成不要）。Bayer は固定行列で**完全決定論**（`Math.random` 不要・INV-1）。
+- **INVARIANTS**: ditherDissolve は秩序ディザで INV-1 を、capture コンポジットで INV-2 を守る。`blendMode` は `ResolvedObject` に焼くためレンダラ非依存（INV-3）、optional 省略で byte 等価（INV-4）。
 
 ### §5.5 Component（タグ付き union + プラグイン拡張）
 
@@ -766,7 +795,8 @@ SSoT 違反を避けるため、scope と正準性を分離する:
 | インタラクティブ bundle（入力応答） / alpha-bake（color+matte） | 将来 |
 | compRef / nested composition（precomp, 時間マッピング） | 将来 |
 | Timeline Tier B（ラベル色 / solo / lock / shy / parent ドロップダウン UI, §21.0） | 将来（優先度高） |
-| Timeline Tier C（ブレンドモード / トラックマット, §21.0） | 将来（優先度高） |
+| Timeline Tier C ブレンドモード（§5.4d / §21.0） | 実装済み |
+| Timeline Tier C トラックマット（§21.0） | 将来（優先度高） |
 | Timeline Tier D（モーションブラー / フレームブレンド / 3D レイヤー / 調整レイヤー, §21.0） | 将来 |
 | タイムコード ドロップフレーム表示（0;00;00;00, §21.1） | 将来 |
 | Model B（DOM 内省で要素を Object 化） | 将来 |
@@ -889,6 +919,7 @@ type LayoutNode =
 - **`+ HTML Comp`**: 既存どおり html comp を作成（FS スターター生成）。
 - **コンポのリネーム / 削除**を提供する（§20.2）。
 - **Footage（audio / image）の削除**を提供する（§20.2b）。使用中の場合は確認ダイアログを出し、素材と参照レイヤーを 1 command（undo 可）で削除する。
+- **`⬇ zip`（プロジェクト zip 書き出し）**: ブラウザダウンロード前に `saveToFs` → FS 走査 → JSZip 圧縮の前処理が走る。大きい `assets/*` では数秒以上かかるため、**Project パネルヘッダ内でインライン進行表示**する（ボタン `⬇ 準備中…` ＋ フェーズ文言: 保存中 / 読み込み中 n/m / 圧縮中 %）。§20.4b の「はい（保存）」経路でも同じ状態をモーダル内に表示する。
 
 ### §20.2 コンポジションの作成・切替・削除（store 操作）
 
@@ -943,6 +974,7 @@ html comp はタブに出さない（編集対象の timeline ではないため
   - **いいえ（保存せず新規作成）**: 保存せず `newProject()` を実行する。
   - **キャンセル**: 何もせずモーダルを閉じる（新規作成しない）。
 - モーダルは §11.2 ExportDialog と同じ overlay スタイルを踏襲する（中央・暗幕・`zIndex` 最前面）。Esc / 暗幕クリックは「キャンセル」と等価。
+- zip 保存実行中（「はい」押下後）はモーダル内に §20.1 と同じ zip 前処理フェーズ文言を表示し、全ボタンを無効化する（二重実行防止）。
 
 ### §20.4 パネル責務の分離（確定・§19.2 の明確化）
 
@@ -969,7 +1001,7 @@ AE タイムラインの機能を **Tier A〜D** に分け、本リビジョン�
 |---|---|---|---|
 | **A** | プロパティツリー展開 / per-property ストップウォッチ＋値編集 / KF 行 / レイヤーバーの drag（in/out トリム・スライド）/ 時間ルーラー＋SMPTE タイムコード / レイヤー番号 | **なし**（既存スキーマで成立） | **本リビジョン** |
 | **B** | **ラベル色（§21.10 部分実装済み）** / solo / lock / shy / **親とリンク(parent) ドロップダウン UI（§21.8 部分実装済み）** | additive（`SceneObject` にフラグ追加） | 将来（優先度高） |
-| **C** | ブレンドモード / トラックマット | renderer(INV-3)＋export 経路拡張 | 将来（優先度高） |
+| **C** | **ブレンドモード（§5.4d 実装済み）** / トラックマット | renderer(INV-3)＋export 経路拡張 | ブレンドモード=本実装 / トラックマット=将来（優先度高） |
 | **D** | モーションブラー / フレームブレンド / 3D レイヤー / 調整レイヤー | 大規模・決定論モデル評価要 | 将来 |
 
 ### §21.1 タイムコード表示（確定）
