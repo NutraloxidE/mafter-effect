@@ -24,6 +24,25 @@ export function compChildFrame(
   return Math.max(0, Math.min(raw, childDuration - 1));
 }
 
+/**
+ * §23.2: addCompLayer 配置時の初期 outPoint。
+ * 子コンプの再生可能尺を秒ベースで親 frame に換算し、[inPoint+1, parentDuration] に clamp。
+ */
+export function compLayerDefaultOutPoint(
+  inPoint: Frame,
+  trimStart: Frame,
+  childDuration: Frame,
+  parentFps: number,
+  childFps: number,
+  parentDuration: Frame,
+): Frame {
+  const playableChildFrames = Math.max(1, childDuration - trimStart);
+  const durationSec = playableChildFrames / childFps;
+  const parentSpan = Math.max(1, Math.round(durationSec * parentFps));
+  const raw = inPoint + parentSpan;
+  return Math.max(inPoint + 1, Math.min(raw, parentDuration));
+}
+
 export function isCompNestDepthAllowed(depth: number): boolean {
   return depth <= MAX_COMP_NEST_DEPTH;
 }

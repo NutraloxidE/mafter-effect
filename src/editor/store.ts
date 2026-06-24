@@ -22,7 +22,7 @@ import type {
 } from "../core/schema";
 import { IndexedDbFs } from "../fs/IndexedDbFs";
 import { compositionDir, DIR_ASSETS, pluginEntryPath, pluginManifestPath, scriptPath } from "../core/paths";
-import { compWouldCreateCycle } from "../runtime/compLayer";
+import { compLayerDefaultOutPoint, compWouldCreateCycle } from "../runtime/compLayer";
 import { rescaleCompFps, resizeCompCentered } from "./compEdit";
 import { registerBuiltinComponents } from "../runtime/builtinComponents";
 import { registerBuiltinEffects } from "../runtime/builtinEffects";
@@ -1021,7 +1021,14 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       zOrder: nextZOrder(currentComp),
       enabled: true,
       inPoint: 0,
-      outPoint: currentComp.duration,
+      outPoint: compLayerDefaultOutPoint(
+        0,
+        0,
+        srcComp.duration,
+        currentComp.fps,
+        srcComp.fps,
+        currentComp.duration,
+      ),
       transform: defaultTransform(),
       opacity: staticProp(1),
       components: [{ type: "comp", props: { compId, trimStart: 0 } }],

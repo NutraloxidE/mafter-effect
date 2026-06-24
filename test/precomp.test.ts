@@ -8,6 +8,7 @@ import { useEditorStore } from "../src/editor/store";
 import {
   MAX_COMP_NEST_DEPTH,
   compChildFrame,
+  compLayerDefaultOutPoint,
   compWouldCreateCycle,
   isCompNestDepthAllowed,
 } from "../src/runtime/compLayer";
@@ -89,6 +90,24 @@ describe("compLayer — childFrame mapping (§23.2 fps-aware 2026-06-24)", () =>
   it("fps 不一致でも trimStart は子 frame 単位で加算", () => {
     // parentTimeSec=1s, childFps=30 → 30 + trimStart 5 = 35
     expect(compChildFrame(60, 0, 5, 200, 60, 30)).toBe(35);
+  });
+});
+
+describe("compLayer — default outPoint (§23.2 initial placement)", () => {
+  it("同 fps: 子 duration をそのまま親 frame 尺にする", () => {
+    expect(compLayerDefaultOutPoint(0, 0, 150, 30, 30, 450)).toBe(150);
+  });
+
+  it("fps 不一致: 秒ベースで親 frame に換算", () => {
+    expect(compLayerDefaultOutPoint(0, 0, 150, 60, 30, 900)).toBe(300);
+  });
+
+  it("子が親より長い場合は parentDuration で clamp", () => {
+    expect(compLayerDefaultOutPoint(0, 0, 450, 30, 30, 150)).toBe(150);
+  });
+
+  it("outPoint は inPoint+1 以上", () => {
+    expect(compLayerDefaultOutPoint(10, 0, 1, 30, 30, 100)).toBe(11);
   });
 });
 
@@ -196,5 +215,19 @@ describe("store.addCompLayer — cycle & self-ref rejection (§23.4)", () => {
     useEditorStore.getState().addCompLayer(childId);
     useEditorStore.getState().setCurrentComp(childId);
     expect(useEditorStore.getState().addCompLayer(rootId)).toBeNull();
+  });
+
+  it("sets outPoint to child comp duration (not parent full duration)", () => {
+    const parentId = useEditorStore.getState().currentCompId;
+    useEditorStore.getState().setCompDuration(450);
+    const childId = useEditorStore.getState().addTimelineComp("Child5s")!;
+    useEditorStore.getState().setCurrentComp(parentId);
+    const layerId = useEditorStore.getState().addCompLayer(childId)!;
+    expect(layerId).toBeTruthy();
+    const after = useEditorStore.getState();
+    const parent = after.project!.compositions.find((c) => c.id === parentId && c.kind === "timeline") as TimelineComposition;
+    const layer = parent.objects.find((o) => o.id === layerId)!;
+    expect(layer.outPoint).toBe(150);
+    expect(parent.duration).toBe(450);
   });
 });

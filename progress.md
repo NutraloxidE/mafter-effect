@@ -242,3 +242,19 @@ canvas 化結果は以降から見て通常の背面ピクセルと等価（zOrd
   3. カメラ無しネスト comp は `perspective` 未設定＝従来どおり無回帰。
 - **spec**: §23.3b 新設 + §23.5 比較表に nested camera 行追加（§5/INV/直列化 不変）。
 - **検証**: 453 tests / typecheck 緑。Playwright — `verify-nested-3d-camera.mjs`（ネスト内 perspective・3D パン応答 / 2D 免除 / カメラ無し無回帰 PASS）+ `verify-3d-camera.mjs` 無回帰（`activeCameraSet` 断言撤去＝§6.5 自動カメラ移行後の整合）。
+
+### 2026-06-25（Cursor）— コンポ切替時タイムライン viewRange 競合修正
+
+- **症状**: 親 comp（長尺）から別 comp に切り替えると、レイヤーバーが親 comp の表示尺（`viewRange.end`）のまま配置され、短い comp ではバーが圧縮表示・長い comp では伸びきらない。
+- **真因**: [TimelinePanel.tsx](src/editor/panels/TimelinePanel.tsx) の comp 切替 effect（`viewRange` 全リセット）と duration クランプ effect が同一 tick で両方走り、後者が `min(prev.end, duration)` で旧 comp の短い `viewRange.end` を保持していた。
+- **Fix**: `prevCompIdRef` で comp 切替を検出し、切替時は `{0, duration}` へ全リセットのみ。duration クランプは同一 comp 内の duration 短縮時のみ実行。
+- **検証**: Playwright 実機（150↔300f 切替・full-span レイヤー 100% 幅）PASS / typecheck 緑。
+
+### 2026-06-25（Cursor）— comp レイヤー初期尺を子コンプ duration に合わせる（§23.4a）
+
+- **症状**: 15秒 comp に 5秒 comp を DnD すると、レイヤーバーが親 comp 全尺（15秒）で置かれる。ゴースト（`getLayerSourceExtent`）は子 5秒を示すが `outPoint` が親 duration のまま。
+- **Fix**:
+  1. [compLayer.ts](src/runtime/compLayer.ts) — `compLayerDefaultOutPoint()` 追加（§23.2 秒ベースで親 frame 換算、`parent.duration` で clamp）。
+  2. [store.ts](src/editor/store.ts) — `addCompLayer` の初期 `outPoint` を上記ヘルパに差し替え（`inPoint=0`, `trimStart=0` 既定）。
+- **spec**: §23.4a 新設（散文・§5/INV 不変）。
+- **検証**: `test/precomp.test.ts`（ヘルパ 4 件 + store 配置尺）/ typecheck 緑 / Playwright（450f 親 + 150f 子 → `outPoint=150` PASS）。

@@ -1339,6 +1339,15 @@ childFrame     = clamp(round(parentTimeSec * childFps) + trimStart, 0, childComp
 - `store.addCompLayer(compId)` において BFS で循環を検出し、循環が生じる場合は追加を拒否する（`null` 返却）。
 - FS インポート等で循環が混入した場合は、`renderNestedComp` の depth guard で深度 4 以上の再帰を打ち切る（最悪でも無限ループにならない）。
 
+### §23.4a 初期配置時のレイヤーバー尺（確定 2026-06-25）
+
+`addCompLayer` で comp をタイムラインに配置するとき、レイヤーの `inPoint`/`outPoint` は **子コンプの再生可能尺** を §23.2 の秒ベースマッピングで親 frame に換算した値で初期化する（AE 準拠: 配置直後のバー長 = ソース comp の duration）。
+
+- `inPoint = 0`、`trimStart = 0`（Phase 1 既定）。
+- `outPoint = clamp(inPoint + round((childDuration - trimStart) / childFps * parentFps), inPoint+1, parentDuration)`。実装は `compLayerDefaultOutPoint()`。
+- 子 comp が親より長い場合は `parent.duration` で打ち切る。
+- 配置後のトリム・スライドは §21.3 の既存規約どおり（ユーザー操作で `outPoint` を変更可）。
+
 ### §23.5 AE との比較
 
 | 項目 | AE | Mafter Phase 1 |
