@@ -76,6 +76,8 @@ interface PreviewViewerOverlayProps {
   onComponentPreview?: (patch: Partial<SceneObject>) => void;
   /** §26.3.3 ボックスリサイズの確定（updateObject + previewOverride クリア）。 */
   onComponentCommit?: (patch: Partial<SceneObject>, label: string) => void;
+  /** §26.3.3 box text のギズモをボックスリサイズにするか（false=通常 scale）。 */
+  boxGizmoEnabled?: boolean;
   resolveCtx?: ResolveContext;
   onPan: (delta: { x: number; y: number }) => void;
   textQuality?: "draft" | "precise";
@@ -112,6 +114,7 @@ export function PreviewViewerOverlay({
   onCommit,
   onComponentPreview,
   onComponentCommit,
+  boxGizmoEnabled = true,
   resolveCtx,
   onPan,
   textQuality = "draft",
@@ -488,7 +491,7 @@ export function PreviewViewerOverlay({
           resolved={activeResolved}
           parentWorld={parentWorldMatrix(comp, effectiveObject.id, frame, resolveCtx)}
           onBegin={beginDrag}
-          boxMode={textBoxCompIdx(effectiveObject, frame) !== null}
+          boxMode={boxGizmoEnabled && textBoxCompIdx(effectiveObject, frame) !== null}
         />
       )}
     </svg>

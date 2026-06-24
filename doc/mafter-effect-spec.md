@@ -1499,7 +1499,7 @@ interface TextProps {
 - 単位の確定: `tracking`・`leading` は **px**（AE の 1/1000 em 方式は将来）。`leading=0` は CSS `line-height: normal`。
 - **`boxWidth` セマンティクス**: `0` = point text（明示改行のみで折返さない＝従来挙動）。`>0` = 段落（ボックス）テキストで、行幅が `boxWidth` を超えると空白境界でワードラップ（収まらない単一トークンは文字境界で分割）。レイアウトは決定論（INV-1）で、注入された `measureChar`/`font` のみで幅を測る。`boxWidth` 欠落の旧プロジェクトは `0` とみなす（完全後方互換）。
 - **`boxHeight` セマンティクス**: `boxWidth>0` のときのみ有効。`0` = ボックス高さは内容（折返し行数）から自動算出。`>0` = 固定高さで、はみ出したテキストは下端でクリップ（CSS `overflow: hidden`）。ボックスの bounds（ギズモ枠）は `[0,boxWidth] × [0, boxHeight>0 ? boxHeight : 内容高さ]`。`boxHeight` 欠落の旧プロジェクトは `0`。
-- **ボックスのビューポート編集（§26.3.3）**: `boxWidth>0` のテキスト選択時、ギズモは scale ではなく**ボックスリサイズ**として働き、8 ハンドルが `boxWidth`/`boxHeight` を編集する（反対辺を comp 空間で固定し、左/上辺ドラッグ時は position を補正）。`boxWidth=0`（point text）や text 以外は従来通り scale。
+- **ボックスのビューポート編集（§26.3.3）**: `boxWidth>0` のテキスト選択時、ギズモは scale ではなく**ボックスリサイズ**として働き、8 ハンドルが `boxWidth`/`boxHeight` を編集する（反対辺を comp 空間で固定し、左/上辺ドラッグ時は position を補正）。`boxWidth=0`（point text）や text 以外は従来通り scale。Inspector の Box Width/Height 近くの **「Box Edit」トグル**（store `boxGizmoEnabled`・既定 ON・非直列化）で、ボックスリサイズ ⇄ 通常 scale を明示的に切替えられる。破線枠＝ボックスリサイズモード。
 - **`justify`**: `boxWidth>0` のとき各行（最終行・明示改行の直前行を除く）の語間スペース幅を `boxWidth` まで均等配分する。`boxWidth=0` では `left` にフォールバックする。
 - ストローク描画順: 塗りの**外側**にストローク（CSS `paint-order: stroke fill` / SVG も同順）。`strokeWidth` は中心揃えではなく外側基準とする（厳密モード基準・§26.4）。
 

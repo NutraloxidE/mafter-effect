@@ -83,6 +83,7 @@ export function PreviewPanel() {
   const updateObject = useEditorStore((s) => s.updateObject);
   const setPreviewOverride = useEditorStore((s) => s.setPreviewOverride);
   const clearPreviewOverride = useEditorStore((s) => s.clearPreviewOverride);
+  const boxGizmoEnabled = useEditorStore((s) => s.boxGizmoEnabled);
   const previewQualityEditing = useEditorStore((s) => s.previewQualityEditing);
   const setPreviewQuality = useEditorStore((s) => s.setPreviewQuality);
   const projectRevision = useEditorStore((s) => s.projectRevision);
@@ -1014,6 +1015,7 @@ export function PreviewPanel() {
                   onCommit={handleCommitTransform}
                   onComponentPreview={handleComponentPreview}
                   onComponentCommit={handleComponentCommit}
+                  boxGizmoEnabled={boxGizmoEnabled}
                   resolveCtx={{ expressions: evaluatorRef.current }}
                   onPan={handlePan}
                   textQuality={effectiveTextQuality}

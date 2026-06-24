@@ -888,6 +888,9 @@ function TextComponentFields({
   onDecomposeNull: () => void;
   onDecomposeChild: () => void;
 }) {
+  // §26.3.3 ボックスギズモ編集モード（hooks は早期 return より前に呼ぶ）。
+  const boxGizmoEnabled = useEditorStore((s) => s.boxGizmoEnabled);
+  const setBoxGizmoEnabled = useEditorStore((s) => s.setBoxGizmoEnabled);
   const comp = obj.components[compIdx];
   if (!comp || comp.type !== "text") return null;
   const def = globalPluginRegistry.getComponentDef("text");
@@ -1142,6 +1145,17 @@ function TextComponentFields({
           onBlur={onEditBlur}
           min={0}
         />
+      )}
+      {boxWidthVal > 0 && (
+        <Row label="Box Edit">
+          <button
+            onClick={() => setBoxGizmoEnabled(!boxGizmoEnabled)}
+            title="ビューポートのギズモでボックスをリサイズ（OFF=通常のスケール）"
+            style={{ ...btnStyle, fontSize: 10, color: boxGizmoEnabled ? "#7c5" : "#bbb" }}
+          >
+            {boxGizmoEnabled ? "Box ⤡" : "Scale"}
+          </button>
+        </Row>
       )}
       {isAnimated(strokeWidthProp) && (
         <AnimScalarRow

@@ -124,6 +124,10 @@ export interface EditorStore {
   setPreviewQuality: (mode: "draft" | "precise") => void;
   setPreviewQualityEditing: (editing: boolean) => void;
 
+  // §26.3.3 box text のギズモ編集モード（true=ボックスリサイズ / false=通常 scale）。グローバル・非直列化
+  boxGizmoEnabled: boolean;
+  setBoxGizmoEnabled: (enabled: boolean) => void;
+
   // §11.5.1 タイムライン波形表示モード（グローバル・非直列化）
   waveformMode: WaveformMode;
   setWaveformMode: (mode: WaveformMode) => void;
@@ -255,6 +259,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   isPlaying: false,
   previewQuality: "draft",
   previewQualityEditing: false,
+  boxGizmoEnabled: true,
   waveformMode: loadWaveformMode(),
   pluginsVersion: 0,
   undoStack: emptyStack(),
@@ -364,6 +369,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
   setPreviewQuality: (mode) => set({ previewQuality: mode }),
   setPreviewQualityEditing: (editing) => set({ previewQualityEditing: editing }),
+  setBoxGizmoEnabled: (enabled) => set({ boxGizmoEnabled: enabled }),
 
   setWaveformMode: (mode) => {
     try { localStorage.setItem(WAVEFORM_MODE_KEY, mode); } catch { /* ignore */ }

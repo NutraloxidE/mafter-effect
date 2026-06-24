@@ -131,6 +131,7 @@ canvas 化結果は以降から見て通常の背面ピクセルと等価（zOrd
   - [PreviewViewerOverlay.tsx](src/editor/panels/PreviewViewerOverlay.tsx) boxResize モード（横ハンドル=boxWidth のみ/縦=boxHeight のみ で自動高さ保持）。ライブは previewOverride、確定は updateObject（[PreviewPanel.tsx](src/editor/panels/PreviewPanel.tsx) の onComponentPreview/Commit）。
   - **bounds バグ修正**: `resolveTextPropsAtFrame` のサンプル対象キーに `boxWidth/boxHeight` が無く、ギズモ bounds が箱でなく内容幅になっていた（→ リサイズ起点が狂う）。キー追加で修正。
 - **検証**: typecheck / 406 tests / build。Playwright: `verify-text-box-gizmo.mjs`（E=幅+自動高さ維持・S=高さのみ explicit・W=左伸長で posX 補正 PASS）、`verify-decompose.mjs`（before==after 維持）。
+- **Box Edit トグル**: ギズモのボックスリサイズ ⇄ 通常 scale を明示切替（store `boxGizmoEnabled`・既定 ON・非直列化）。Inspector の Box Width/Height 近くにボタン配置（[InspectorPanel.tsx](src/editor/panels/InspectorPanel.tsx)）。overlay は `boxGizmoEnabled && boxWidth>0` で box モード。`verify-box-toggle.mjs` で破線枠の ON/OFF 切替を確認。
 
 ### 2026-06-24（Claude Opus）— テキスト整列バグ修正 + ボックステキスト/折返し + justify
 
