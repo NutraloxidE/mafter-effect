@@ -20,6 +20,7 @@ export interface GlyphDecomposeStyle {
   size: number;
   tracking: number;
   leading: number;
+  boxWidth: number;
   color: RGBA;
   strokeColor: RGBA;
   strokeWidth: number;
@@ -62,6 +63,7 @@ function readDecomposeStyle(
     size: readAnimatedNumber(props, "size", frame, 48),
     tracking: readAnimatedNumber(props, "tracking", frame, 0),
     leading: readAnimatedNumber(props, "leading", frame, 0),
+    boxWidth: readAnimatedNumber(props, "boxWidth", frame, 0),
     color: readAnimatedRgba(props, "color", frame, { r: 1, g: 1, b: 1, a: 1 }),
     strokeColor: readAnimatedRgba(props, "strokeColor", frame, { r: 0, g: 0, b: 0, a: 1 }),
     strokeWidth: readAnimatedNumber(props, "strokeWidth", frame, 0),
@@ -168,6 +170,7 @@ export function buildGlyphDecomposeObjects(
     style.leading,
     style.align,
     ctx.measureChar,
+    style.boxWidth,
   );
   if (placements.length === 0) return null;
 

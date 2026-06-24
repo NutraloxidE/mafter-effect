@@ -4,7 +4,6 @@ import {
   computeTextContentBounds,
   resolveTextLayout,
   textBaselineY,
-  textLineHeightPx,
   type LocalBounds,
   type TextAlign,
 } from "./textLayout";
@@ -17,6 +16,7 @@ export interface TextStyleProps {
   align: TextAlign;
   tracking: number;
   leading: number;
+  boxWidth: number;
   weight: number;
   italic: boolean;
   strokeColor: RGBA;
@@ -38,7 +38,7 @@ function isRgba(v: unknown): v is RGBA {
 }
 
 function asAlign(v: unknown): TextAlign {
-  if (v === "center" || v === "right") return v;
+  if (v === "center" || v === "right" || v === "justify") return v;
   return "left";
 }
 
@@ -52,6 +52,7 @@ export function parseTextProps(props: Record<string, unknown>): TextStyleProps {
     align: asAlign(props["align"]),
     tracking: typeof props["tracking"] === "number" ? props["tracking"] : 0,
     leading: typeof props["leading"] === "number" ? props["leading"] : 0,
+    boxWidth: typeof props["boxWidth"] === "number" && props["boxWidth"] > 0 ? props["boxWidth"] : 0,
     weight: typeof props["weight"] === "number" ? props["weight"] : 400,
     italic: props["italic"] === true,
     strokeColor: isRgba(props["strokeColor"]) ? props["strokeColor"] : DEFAULT_STROKE,
@@ -73,73 +74,22 @@ function applyMeasureFont(ctx: CanvasRenderingContext2D, p: TextStyleProps): voi
   ctx.font = `${p.italic ? "italic" : "normal"} ${p.weight} ${p.size}px ${p.font}`;
 }
 
-/** 1 行の幅（letter-spacing 込み）を Canvas 2D で測る。 */
-function measureLineWidthCanvas(
-  ctx: CanvasRenderingContext2D,
-  line: string,
-  tracking: number,
-): number {
-  if (line.length === 0) return 0;
-  let w = 0;
-  for (let i = 0; i < line.length; i++) {
-    w += ctx.measureText(line[i]!).width;
-    if (i < line.length - 1) w += tracking;
-  }
-  return w;
-}
-
 /**
  * Draft DOM / プレビューハンドル共用の Canvas 実測境界（content-local）。
  * solid の props.size と同様、描画 box とハンドル bounds を一致させる。
  */
 export function measureTextCanvasBounds(p: TextStyleProps): LocalBounds {
-  if (typeof document === "undefined") {
-    return computeTextContentBounds(
-      p.text, p.size, p.tracking, p.leading, p.align, null,
-    );
-  }
-
-  const canvas = document.createElement("canvas");
-  const ctx = canvas.getContext("2d");
+  const ctx = createMeasureCtx();
   if (!ctx) {
     return computeTextContentBounds(
-      p.text, p.size, p.tracking, p.leading, p.align, null,
+      p.text, p.size, p.tracking, p.leading, p.align, null, undefined, p.boxWidth,
     );
   }
-
   applyMeasureFont(ctx, p);
-  const lineHeight = textLineHeightPx(p.size, p.leading);
-  const lines = p.text.split("\n");
-
-  let minX = 0;
-  let maxX = 0;
-  let maxY = 0;
-
-  for (const line of lines) {
-    const lineW = measureLineWidthCanvas(ctx, line, p.tracking);
-    if (p.align === "center") {
-      minX = Math.min(minX, -lineW / 2);
-      maxX = Math.max(maxX, lineW / 2);
-    } else if (p.align === "right") {
-      minX = Math.min(minX, -lineW);
-      maxX = Math.max(maxX, 0);
-    } else {
-      maxX = Math.max(maxX, lineW);
-    }
-    maxY += lineHeight;
-  }
-
-  if (lines.length === 0 || (lines.length === 1 && lines[0] === "")) {
-    maxX = Math.max(maxX, p.size * 0.5);
-    maxY = lineHeight;
-  }
-
-  return {
-    minX,
-    minY: 0,
-    maxX: Math.max(maxX, minX + 1),
-    maxY: Math.max(lineHeight, maxY),
-  };
+  const measureChar = (char: string): number => ctx.measureText(char).width;
+  return computeTextContentBounds(
+    p.text, p.size, p.tracking, p.leading, p.align, null, measureChar, p.boxWidth,
+  );
 }
 
 /** Best=precise 時は opentype、Draft 時は Canvas 実測でハンドル bounds を決める。 */
@@ -149,14 +99,14 @@ export function computeTextBoundsForHandles(
   useFontMetrics: boolean,
 ): LocalBounds {
   if (useFontMetrics && font) {
-    return computeTextContentBounds(p.text, p.size, p.tracking, p.leading, p.align, font);
+    return computeTextContentBounds(p.text, p.size, p.tracking, p.leading, p.align, font, undefined, p.boxWidth);
   }
   const measureCtx = createMeasureCtx();
   if (measureCtx) applyMeasureFont(measureCtx, p);
   const measureChar = (char: string): number =>
     measureCtx ? measureCtx.measureText(char).width : p.size * 0.6;
   return resolveTextLayout(
-    p.text, p.size, p.tracking, p.leading, p.align, null, measureChar,
+    p.text, p.size, p.tracking, p.leading, p.align, null, measureChar, p.boxWidth,
   ).bounds;
 }
 
@@ -186,7 +136,7 @@ export function applyDraftText(el: HTMLElement, p: TextStyleProps): void {
   const measureChar = (char: string): number =>
     measureCtx ? measureCtx.measureText(char).width : p.size * 0.6;
   const { lines, bounds, lineHeight } = resolveTextLayout(
-    p.text, p.size, p.tracking, p.leading, p.align, null, measureChar,
+    p.text, p.size, p.tracking, p.leading, p.align, null, measureChar, p.boxWidth,
   );
 
   const boxW = bounds.maxX - bounds.minX;
@@ -239,6 +189,7 @@ export function renderPreciseText(
   const { lines, bounds } = resolveTextLayout(
     p.text, p.size, p.tracking, p.leading, p.align, font,
     measureCtx ? (char) => measureCtx.measureText(char).width : undefined,
+    p.boxWidth,
   );
   const boxW = bounds.maxX - bounds.minX;
   const boxH = bounds.maxY - bounds.minY;

@@ -90,6 +90,74 @@ describe("layoutTextLines", () => {
   });
 });
 
+describe("box text + word wrap (§26.1 boxWidth)", () => {
+  // 全文字幅 10px, tracking 0。boxWidth で折返す。
+  const m = () => 10;
+
+  it("boxWidth=0 keeps point text (no wrap)", () => {
+    const lines = layoutTextLines("AAAA BBBB", 10, 0, 12, "left", null, m, 0);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.text).toBe("AAAA BBBB");
+  });
+
+  it("wraps at whitespace when line exceeds boxWidth", () => {
+    // "AAAA BBBB" 各語幅 40。box=80 だと "AAAA BBBB" 全体は 90(40+10+40) で溢れる → 2 行。
+    const lines = layoutTextLines("AAAA BBBB", 10, 0, 12, "left", null, m, 80);
+    expect(lines.map((l) => l.text)).toEqual(["AAAA", "BBBB"]);
+    expect(lines[1]!.y).toBe(12); // 2 行目は lineHeight ぶん下
+  });
+
+  it("breaks an over-long single token at char boundary", () => {
+    // 1 語 "AAAAA" 幅 50, box=30 → 3/2 文字で割れる（最低 1 文字/行保証）
+    const lines = layoutTextLines("AAAAA", 10, 0, 12, "left", null, m, 30);
+    expect(lines.map((l) => l.text)).toEqual(["AAA", "AA"]);
+  });
+
+  it("box bounds use the box frame [0, boxWidth] not content", () => {
+    const b = computeTextContentBounds("AAAA BBBB", 10, 0, 0, "left", null, m, 80);
+    expect(b.minX).toBe(0);
+    expect(b.maxX).toBe(80);
+    expect(b.maxY).toBeCloseTo(2 * textLineHeightPx(10, 0), 5); // 2 行ぶん
+  });
+
+  it("center/right align within the box (boxWidth>0)", () => {
+    // 行 "AAAA" 幅 40, box 80。center → +20, right → +40。
+    const center = layoutTextLines("AAAA", 10, 0, 12, "center", null, m, 80);
+    expect(center[0]!.glyphs[0]!.x).toBeCloseTo(20, 5);
+    const right = layoutTextLines("AAAA", 10, 0, 12, "right", null, m, 80);
+    expect(right[0]!.glyphs[0]!.x).toBeCloseTo(40, 5);
+  });
+});
+
+describe("justify (§26.1)", () => {
+  const m = () => 10;
+
+  it("spreads inter-word space to fill the box on wrapped (non-last) lines", () => {
+    // "AA BB CC" 幅: 3 語×20 + 2 空白×10 = 80。box=120 → extra 40 / 2 空白 = 20 each。
+    const lines = layoutTextLines("AA BB CC", 10, 0, 12, "justify", null, m, 120);
+    // 単一行（最終行扱い）なので justify されない → left のまま
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.glyphs[lines[0]!.glyphs.length - 1]!.x).toBeCloseTo(70, 5); // 最終行は詰め
+  });
+
+  it("justifies non-last wrapped lines, leaves last line ragged", () => {
+    // box=70: "AA BB"(幅50) が 1 行目、"CC" が次行。1 行目=非最終→justify。
+    // 1 行目 extra=(70-50)/1=20 を空白後の文字に加算。
+    const lines = layoutTextLines("AA BB CC", 10, 0, 12, "justify", null, m, 70);
+    expect(lines).toHaveLength(2);
+    const g0 = lines[0]!.glyphs;
+    expect(g0.map((g) => g.x)).toEqual([0, 10, 20, 50, 60]); // 空白(idx2)後の B,B が +20
+    // 2 行目 "CC" は最終行 → left
+    expect(lines[1]!.glyphs[0]!.x).toBe(0);
+  });
+
+  it("justify falls back to left when boxWidth=0", () => {
+    const j = layoutTextLines("AA BB", 10, 0, 12, "justify", null, m, 0);
+    const l = layoutTextLines("AA BB", 10, 0, 12, "left", null, m, 0);
+    expect(j[0]!.glyphs.map((g) => g.x)).toEqual(l[0]!.glyphs.map((g) => g.x));
+  });
+});
+
 describe("textBaselineY (§26.4 Draft/Best baseline 一致)", () => {
   // CSS line-box の baseline 配置に一致させる:
   //   baseline = (line-height - (ascent + descent)) / 2 + ascent

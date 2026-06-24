@@ -1467,7 +1467,9 @@ INV-1〜8 を保持する。
 | テキストアニメーション | **グリフ分解（GG 分解）**（§26.5） | 専用エンジン不要・既存 Transform/KF を最大活用 |
 | プレビュー品質 | **グローバル 1 ボタンで 軽量⇄厳密 切替**（§26.4） | Draft/Best 相当 |
 | 厳密描画 | **SVG アウトライン**まで今回実装（キャッシュ基盤は将来・IF だけ確保） | §26.4 |
-| 段落（ボックス）テキスト / 文字単位の混在スタイル / パステキスト / 範囲セレクター式アニメーター | ❌ 将来（§16） | グリフ分解で代替できるため MVP 外 |
+| 段落（ボックス）テキスト + ワードラップ（`boxWidth`）| ✅ | 固定幅で折返し。justify の前提。`boxWidth=0` で従来 point text |
+| 整列 `justify`（両端揃え）| ✅ | `boxWidth>0` 時に語間を均等配分。`boxWidth=0` では left |
+| 文字単位の混在スタイル / パステキスト / 範囲セレクター式アニメーター | ❌ 将来（§16） | グリフ分解で代替できるため MVP 外 |
 
 ### §26.1 データモデル（スキーマ確定）
 
@@ -1483,16 +1485,19 @@ interface TextProps {
   leading:     AnimatedProp<number>;  // 行間 px（CSS line-height）。0 = normal（size×1.2 相当）
   strokeColor: AnimatedProp<RGBA>;    // 縁取り色
   strokeWidth: AnimatedProp<number>;  // px, 0 = ストロークなし
+  boxWidth:    AnimatedProp<number>;  // px。0 = point text（折返しなし・既存挙動）, >0 = 固定幅ボックスで折返し
 
   font:   string;                     // family 名（assets フォント §11.6 or system）。animatable: false
-  align:  "left" | "center" | "right";// animatable: false（justify は将来）
+  align:  "left" | "center" | "right" | "justify"; // animatable: false。justify は boxWidth>0 のみ有効（0 では left 扱い）
   weight: number;                     // 100..900（CSS font-weight）。animatable: false
   italic: boolean;                    // animatable: false
 }
 ```
 
-- 既定値（`addText` が積む初期 props）: `text="Text"`, `size=48`, `color=白`, `tracking=0`, `leading=0`, `strokeColor=黒`, `strokeWidth=0`, `font="sans-serif"`, `align="left"`, `weight=400`, `italic=false`。
+- 既定値（`addText` が積む初期 props）: `text="Text"`, `size=48`, `color=白`, `tracking=0`, `leading=0`, `strokeColor=黒`, `strokeWidth=0`, `boxWidth=0`, `font="sans-serif"`, `align="left"`, `weight=400`, `italic=false`。
 - 単位の確定: `tracking`・`leading` は **px**（AE の 1/1000 em 方式は将来）。`leading=0` は CSS `line-height: normal`。
+- **`boxWidth` セマンティクス**: `0` = point text（明示改行のみで折返さない＝従来挙動）。`>0` = 段落（ボックス）テキストで、行幅が `boxWidth` を超えると空白境界でワードラップ（収まらない単一トークンは文字境界で分割）。レイアウトは決定論（INV-1）で、注入された `measureChar`/`font` のみで幅を測る。`boxWidth` 欠落の旧プロジェクトは `0` とみなす（完全後方互換）。
+- **`justify`**: `boxWidth>0` のとき各行（最終行・明示改行の直前行を除く）の語間スペース幅を `boxWidth` まで均等配分する。`boxWidth=0` では `left` にフォールバックする。
 - ストローク描画順: 塗りの**外側**にストローク（CSS `paint-order: stroke fill` / SVG も同順）。`strokeWidth` は中心揃えではなく外側基準とする（厳密モード基準・§26.4）。
 
 ### §26.2 builtin ComponentDef 登録（バグ修正含む・確定）
@@ -1507,9 +1512,10 @@ registerComponent({
     { key: "font",        label: "Font",        kind: "string", default: "sans-serif", animatable: false },
     { key: "size",        label: "Size",        kind: "scalar", default: 48, animatable: true, min: 1 },
     { key: "color",       label: "Fill",        kind: "color",  default: { r:1,g:1,b:1,a:1 }, animatable: true },
-    { key: "align",       label: "Align",       kind: "enum",   default: "left", animatable: false, options: ["left","center","right"] },
+    { key: "align",       label: "Align",       kind: "enum",   default: "left", animatable: false, options: ["left","center","right","justify"] },
     { key: "tracking",    label: "Tracking",    kind: "scalar", default: 0, animatable: true },
     { key: "leading",     label: "Leading",     kind: "scalar", default: 0, animatable: true, min: 0 },
+    { key: "boxWidth",    label: "Box Width",   kind: "scalar", default: 0, animatable: true, min: 0 },
     { key: "weight",      label: "Weight",      kind: "enum",   default: 400, animatable: false, options: ["100","200","300","400","500","600","700","800","900"] },
     { key: "italic",      label: "Italic",      kind: "bool",   default: false, animatable: false },
     { key: "strokeColor", label: "Stroke",      kind: "color",  default: { r:0,g:0,b:0,a:1 }, animatable: true },

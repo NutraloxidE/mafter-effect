@@ -122,6 +122,15 @@ canvas 化結果は以降から見て通常の背面ピクセルと等価（zOrd
 - **Footage 削除（§20.2b）**: Project パネルの audio/image 行に × ボタン＋確認ダイアログ。`store.removeAsset` が asset 削除・参照レイヤーの全 comp 横断カスケード削除・FS 掃除・audio バッファ/波形キャッシュ evict を 1 undo command で実行。spec §20.1/§20.2b 追記。
 - **検証**: 365 tests / typecheck 緑。Playwright 実機（30s WAV・旧方式 137 vs 新方式 500 バケット・canvas 956px・`removeAsset` で asset/layer 消滅）+ `verify-audio.mjs` 無回帰 PASS。
 
+### 2026-06-24（Claude Opus）— テキスト整列バグ修正 + ボックステキスト/折返し + justify
+
+- **Phase 1: 整列バグ（commit 4df2301）**: `align` は schema/UI/layout 全層に在ったが、center/right で**ギズモ枠だけ左へズレ文字が動かない**不具合。原因 = ギズモ bounds は align を反映（`minX` 負）するのにレンダラがグリフを常に local 原点 0 へ再正規化していた不一致。**Fix** = [textRender.ts](src/runtime/textRender.ts) `applyDraftText`/`renderPreciseText` でテキスト要素を `bounds.minX` だけ左シフトし、描画矩形を `[minX,maxX]` に置いてギズモと一致（AE point text 相対）。left=minX0 は無変化＝非破壊。preview/export/bundle は同一 DomRenderer 経由で 1 箇所修正でカバー。
+- **Phase 2/3: ボックステキスト + justify**: §5/§26.1 スキーマに `boxWidth: AnimatedProp<number>`（0=point text・後方互換、>0=固定幅で折返し）追加、`align` に `"justify"` 追加。
+  - [textLayout.ts](src/runtime/textLayout.ts): `wrapParagraph`/`breakLongWord`（空白境界グリーディ折返し・長語char-break・決定論 INV-1）、justify の語間均等配分（非最終行のみ）、box 時 align は箱 [0,boxWidth] 基準、bounds は箱枠。`boxWidth` を全シグネチャ末尾に伝播。
+  - [builtinComponents.ts](src/runtime/builtinComponents.ts)/[store.ts](src/editor/store.ts)/[glyphDecompose.ts](src/editor/glyphDecompose.ts)/[InspectorPanel.tsx](src/editor/panels/InspectorPanel.tsx)（Box Width 行 + J ボタン）配線。
+- **既知の限定事項**: テキストに**エフェクト**を付けると center/right/box で effect region（[DomRenderer.ts:426](src/runtime/DomRenderer.ts#L426) `offsetWidth` ベース）が負シフト/箱を拾わずズレうる。エフェクト無しテキストは問題なし（follow-up）。
+- **検証**: typecheck / 402 tests 緑 / build（player.js 再生成）。Playwright 実機 — Phase1: anchor 固定で L/C/R が実再配置（`verify-text-align.mjs` PASS）。Phase2/3: point=1行・box=折返し複数行・justify が非最終行を箱端まで広げる（`verify-text-box.mjs` PASS）。
+
 ### 2026-06-24（Cursor）— レイヤーコピペ parent（Null）リマップ修正
 
 - **§21.7 Duplicate/Paste parent 欠落**: コピー段階（`cloneObject`）は `parent`/`isNull` を正しく保持していたが、`cmdDuplicateObjects` が新 ULID のみ付与し **複製セット内の `parent` を旧 ID のまま残していた**（Null+子をカット→ペーストで dangling → world 座標が親なし扱い、コピー→ペーストで子が元 Null にぶら下がる）。**Fix** = [duplicateObjects.ts](src/editor/duplicateObjects.ts) `duplicateObjectsWithRemap`（セット内 parent→新 ID、comp 内既存 parent 維持、dangling→null）を [commands.ts](src/editor/commands.ts) `cmdDuplicateObjects` から呼ぶ（Ctrl+D / Ctrl+V 共通）。spec §21.7 散文追記（§5/INV 不変）。

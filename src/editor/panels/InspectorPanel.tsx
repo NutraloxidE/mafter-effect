@@ -930,6 +930,7 @@ function TextComponentFields({
   const colorProp = props["color"];
   const trackingProp = props["tracking"];
   const leadingProp = props["leading"];
+  const boxWidthProp = props["boxWidth"];
   const strokeColorProp = props["strokeColor"];
   const strokeWidthProp = props["strokeWidth"];
 
@@ -942,13 +943,16 @@ function TextComponentFields({
     ? (sampleAny(trackingProp, frame) as number) : 0;
   const leadingVal = isAnimated(leadingProp) && typeof sampleAny(leadingProp, frame) === "number"
     ? (sampleAny(leadingProp, frame) as number) : 0;
+  const boxWidthVal = isAnimated(boxWidthProp) && typeof sampleAny(boxWidthProp, frame) === "number"
+    ? (sampleAny(boxWidthProp, frame) as number) : 0;
   const strokeColorVal = isAnimated(strokeColorProp) && isRgba(sampleAny(strokeColorProp, frame))
     ? (sampleAny(strokeColorProp, frame) as RGBA) : { r: 0, g: 0, b: 0, a: 1 };
   const strokeWidthVal = isAnimated(strokeWidthProp) && typeof sampleAny(strokeWidthProp, frame) === "number"
     ? (sampleAny(strokeWidthProp, frame) as number) : 0;
 
   const font = typeof props["font"] === "string" ? props["font"] : "sans-serif";
-  const align = props["align"] === "center" || props["align"] === "right" ? props["align"] : "left";
+  const align = props["align"] === "center" || props["align"] === "right" || props["align"] === "justify"
+    ? props["align"] : "left";
   const weight = typeof props["weight"] === "number" ? props["weight"] : 400;
   const italic = props["italic"] === true;
 
@@ -1046,13 +1050,14 @@ function TextComponentFields({
         </div>
       )}
       <Row label="Align">
-        {(["left", "center", "right"] as const).map((a) => (
+        {(["left", "center", "right", "justify"] as const).map((a) => (
           <button
             key={a}
             onClick={() => writeStatic("align", a, "Edit align")}
             style={{ ...btnStyle, background: align === a ? "#3a4a5a" : "#2a2a2a", fontSize: 10, minWidth: 28 }}
+            title={a === "justify" ? "両端揃え（Box Width > 0 のときのみ有効）" : a}
           >
-            {a === "left" ? "L" : a === "center" ? "C" : "R"}
+            {a === "left" ? "L" : a === "center" ? "C" : a === "right" ? "R" : "J"}
           </button>
         ))}
       </Row>
@@ -1089,6 +1094,26 @@ function TextComponentFields({
           onLiveChange={(v) => {
             if (leadingProp.keyframes.length > 0) previewAnim("leading", setKeyframe(leadingProp as AnimatedProp<number>, frame, v));
             else previewAnim("leading", { ...leadingProp, value: v });
+          }}
+          onFocus={onEditFocus}
+          onBlur={onEditBlur}
+          min={0}
+        />
+      )}
+      {isAnimated(boxWidthProp) && (
+        <AnimScalarRow
+          label="Box Width"
+          prop={boxWidthProp as AnimatedProp<number>}
+          value={boxWidthVal}
+          frame={frame}
+          onToggle={() => toggleKf("boxWidth", boxWidthProp)}
+          onCommit={(v) => {
+            if (boxWidthProp.keyframes.length > 0) writeAnim("boxWidth", setKeyframe(boxWidthProp as AnimatedProp<number>, frame, v), "Edit box width");
+            else writeAnim("boxWidth", { ...boxWidthProp, value: v }, "Edit box width");
+          }}
+          onLiveChange={(v) => {
+            if (boxWidthProp.keyframes.length > 0) previewAnim("boxWidth", setKeyframe(boxWidthProp as AnimatedProp<number>, frame, v));
+            else previewAnim("boxWidth", { ...boxWidthProp, value: v });
           }}
           onFocus={onEditFocus}
           onBlur={onEditBlur}

@@ -723,6 +723,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
             color: staticProp({ r: 1, g: 1, b: 1, a: 1 }),
             tracking: staticProp(0),
             leading: staticProp(0),
+            boxWidth: staticProp(0),
             strokeColor: staticProp({ r: 0, g: 0, b: 0, a: 1 }),
             strokeWidth: staticProp(0),
             font: "sans-serif",
