@@ -13,6 +13,7 @@ import {
   type PropPath,
 } from "../keyframeEdit";
 import { currentTimelineComp, setKeyframe, useEditorStore } from "../store";
+import { framesToTimecode } from "../timecode";
 import { isRgba } from "../ColorSwatch";
 import { getLayerSourceExtent, shiftFootageSourceOffset, type LayerSourceExtent } from "../layerSourceOffset";
 import { DRAG_MIME } from "./ProjectPanel";
@@ -41,18 +42,6 @@ import { buildReparentPatch } from "../reparent";
 import { loadAudioBuffer, peekAudioBuffer } from "../audioBufferCache";
 import { computePeaksForFrameRange, type WaveformMode } from "../../audio/waveform";
 import type { FileSystem } from "../../fs/FileSystem";
-
-// §21.1 SMPTE タイムコード（non-drop）。frame は正準・整数（INV-5）、これは派生表示のみ。
-function framesToTimecode(frame: Frame, fps: number): string {
-  const f = Math.max(1, Math.round(fps));
-  const ff = ((frame % f) + f) % f;
-  const totalSec = Math.floor(frame / f);
-  const ss = ((totalSec % 60) + 60) % 60;
-  const mm = (Math.floor(totalSec / 60) % 60 + 60) % 60;
-  const hh = Math.floor(totalSec / 3600);
-  const p2 = (n: number) => String(Math.abs(n)).padStart(2, "0");
-  return `${p2(hh)}:${p2(mm)}:${p2(ss)}:${p2(ff)}`;
-}
 
 // トラックのラベル列幅（左パネル）。グラフ領域はこれを引いた残り。
 const LABEL_W = 310;
@@ -1046,7 +1035,7 @@ export function TimelinePanel() {
           style={{ ...btnStyle, fontSize: 10, padding: "1px 5px" }}
           title="ビューをリセット (\)"
         >fit</button>
-        <span style={{ color: "#555", fontVariantNumeric: "tabular-nums" }}>F{frame} / {duration}</span>
+        <span style={{ color: "#555", fontVariantNumeric: "tabular-nums" }} title={`F${frame} / ${duration}`}>{framesToTimecode(frame, fps)} / {framesToTimecode(duration, fps)}</span>
         {statusMsg && <span style={{ color: "#8d8", fontSize: 10, marginLeft: 4 }}>{statusMsg}</span>}
       </div>
 

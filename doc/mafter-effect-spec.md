@@ -351,6 +351,11 @@ interface CompositionMeta {
 - **fps 変更（`setCompFps`）**: **秒タイミングを維持して再スケール**。`ratio = newFps/oldFps` で全 AnimatedProp の全キーフレーム `frame`・各レイヤーの `inPoint`/`outPoint`・comp の `duration` を `round(*ratio)`（INV-5 準拠で整数化）。`comp` コンポーネントの `trimStart` は子 frame 単位のため不変。fps 不一致ネストは §23.2 の秒ベース式で自動的に整合する。
 - **duration 変更（`setCompDuration`）**: `duration` のみ更新（再生ヘッドが超過時はクランプ）。
 
+**Duration の表示・入力フォーマット（確定・2026-06-25）**: Inspector の **Duration フィールドのみ** AE 既定の **タイムコード `H:MM:SS:FF`**（ノンドロップ・コロン区切り）で表示／入力する。内部値は **INV-5 どおり整数 `Frame` のまま**（スキーマ不変＝§5 変更なし）で、見た目だけ変換する。
+- **frames → timecode**: `totalSec = floor(frames/fps)` を `H:MM:SS` に、`FF = frames mod fps`。`MM`/`SS`/`FF` は 2 桁ゼロ詰め、`H` は非ゼロ詰め。例: 150f@30fps → `0:00:05:00`、45f@30fps → `0:00:01:15`。
+- **timecode → frames**（`:` または `;` 区切り・右詰め解釈）: 4 segs=`H:MM:SS:FF` / 3=`MM:SS:FF` / 2=`SS:FF` / **1 seg = 生フレーム数**（精度入力の逃げ道）。各 seg を `((H*60+MM)*60+SS)*fps + FF` で合算（桁あふれは自然に繰り上げ）。負数・非数値は拒否（変更なし）。
+- **fps 依存**: 同じ `frame` でも fps が変われば timecode 表示は変わる（`setCompFps` は frame を再スケールするので秒は維持される）。ドラッグ（scrub）は従来どおり 1px=1frame で動き、表示のみ timecode。実装: `src/editor/timecode.ts`（純関数）+ `TimecodeScrub`。
+
 ```ts
 // timeline comp: objects を持つ（続き）
 interface TimelineComposition extends CompositionMeta {
@@ -1016,7 +1021,8 @@ AE タイムラインの機能を **Tier A〜D** に分け、本リビジョン�
 ### §21.1 タイムコード表示（確定）
 
 - **正準単位は整数 `Frame`（INV-5 不変）**。タイムコードは**派生表示のみ**で、内部状態・直列化には一切影響しない。
-- 表示形式は **SMPTE `HH:MM:SS:FF`（non-drop）**。`f = round(fps)` とし、`FF = frame % f`、`SS = floor(frame/f) % 60`、`MM = floor(frame/(f*60)) % 60`、`HH = floor(frame/(f*3600))`。各 2 桁ゼロ埋め。
+- 表示形式は **AE 既定 `H:MM:SS:FF`（non-drop）**。`f = round(fps)` とし、`FF = frame % f`、`SS = floor(frame/f) % 60`、`MM = floor(frame/(f*60)) % 60`、`H = floor(frame/(f*3600))`。`MM`/`SS`/`FF` は 2 桁ゼロ埋め、`H` は非ゼロ詰め（§5.6 Duration と同一フォーマット）。実装は `src/editor/timecode.ts` の `framesToTimecode` を**唯一の共有実装**として使う（タイムライン toolbar・ルーラー目盛り・現在時刻／尺の右上表示・Inspector Duration がすべて一致）。
+- **現在時刻／尺の右上表示（確定・2026-06-25）**: タイムラインパネル右上は従来の生フレーム `F{frame} / {duration}` ではなく `framesToTimecode(frame) / framesToTimecode(duration)` を表示する（クリック編集は持たない純表示）。
 - ドロップフレーム（`0;00;00;00`）は §16 将来（整数 fps では non-drop と一致するため MVP 不要）。
 
 ### §21.2 プロパティツリー（確定）

@@ -11,6 +11,7 @@ import { staticProp } from "../../core/props";
 import { ColorSwatch, isRgba } from "../ColorSwatch";
 import { BUNDLED_FONTS, WEB_SAFE_FONTS, isKnownFont } from "../fontList";
 import { ScrubNumber } from "../ScrubNumber";
+import { TimecodeScrub } from "../TimecodeScrub";
 import { globalPluginRegistry } from "../../runtime/pluginRegistry";
 import { groupEffectsForPicker } from "../effectCategories";
 import { BakerBadge } from "../bakerLabel";
@@ -165,15 +166,13 @@ export function InspectorPanel() {
             <span style={{ color: "#666", fontSize: 10, marginLeft: 2 }}>fps</span>
           </Row>
           <Row label="Duration">
-            <ScrubNumber
+            <TimecodeScrub
               value={comp.duration}
+              fps={comp.fps}
               onCommit={(v) => setCompDuration(Math.round(v))}
               min={1}
-              decimals={0}
-              step={1}
               style={numInputStyle}
             />
-            <span style={{ color: "#666", fontSize: 10, marginLeft: 2 }}>f</span>
           </Row>
           <Row label="Background">
             <BackgroundControl comp={comp} onChange={setCompBackground} />
