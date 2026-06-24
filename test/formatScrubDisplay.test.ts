@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   formatScrubDisplay,
   formatScrubEdit,
+  formatScrubFixed,
   formatScrubTitle,
   trimTrailingZeros,
 } from "../src/editor/formatScrubDisplay";
@@ -45,6 +46,19 @@ describe("formatScrubDisplay", () => {
   it("handles non-finite values", () => {
     expect(formatScrubDisplay(NaN)).toBe("0");
     expect(formatScrubDisplay(Infinity)).toBe("0");
+  });
+});
+
+describe("formatScrubFixed", () => {
+  it("preserves trailing zeros in integers when decimals is 0", () => {
+    expect(formatScrubFixed(1920, 0)).toBe("1920");
+    expect(formatScrubFixed(1080, 0)).toBe("1080");
+    expect(formatScrubFixed(100, 0)).toBe("100");
+  });
+
+  it("trims fractional trailing zeros when decimals > 0", () => {
+    expect(formatScrubFixed(1.5, 2)).toBe("1.5");
+    expect(formatScrubFixed(100, 2)).toBe("100");
   });
 });
 

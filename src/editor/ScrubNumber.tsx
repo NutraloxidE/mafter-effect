@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   formatScrubDisplay,
   formatScrubEdit,
+  formatScrubFixed,
   formatScrubTitle,
 } from "./formatScrubDisplay";
 
@@ -73,7 +74,7 @@ export function ScrubNumber({
 }) {
   const effectiveSpeed = resolveScrubSpeed(speed, min, max, step);
   const displayFmt = (v: number) =>
-    decimals !== undefined ? v.toFixed(decimals).replace(/\.?0+$/, "") : formatScrubDisplay(v);
+    decimals !== undefined ? formatScrubFixed(v, decimals) : formatScrubDisplay(v);
   const editFmt = formatScrubEdit;
   const clamp = (v: number): number => {
     let r = v;
@@ -145,7 +146,14 @@ export function ScrubNumber({
     }
   };
 
-  const merged: React.CSSProperties = { ...defaultStyle, ...style };
+  const display = liveValue !== null ? liveValue : value;
+  const widthForText = (s: string) =>
+    `max(44px, calc(${Math.max(3, s.length)}ch + 8px))` as const;
+  const merged: React.CSSProperties = {
+    ...defaultStyle,
+    minWidth: widthForText(editing ? text : displayFmt(display)),
+    ...style,
+  };
   const title = `${formatScrubTitle(value)} — ドラッグで値変更（Shift=10倍 / Ctrl=0.1倍）/ クリックで入力`;
 
   if (editing) {
@@ -167,7 +175,6 @@ export function ScrubNumber({
     );
   }
 
-  const display = liveValue !== null ? liveValue : value;
   return (
     <div
       onMouseDown={handleMouseDown}
@@ -181,7 +188,7 @@ export function ScrubNumber({
 }
 
 const defaultStyle: React.CSSProperties = {
-  minWidth: 44,
+  flexShrink: 0,
   width: "auto",
   height: 20,
   background: "#2a2a2a",

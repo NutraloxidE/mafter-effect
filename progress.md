@@ -193,3 +193,15 @@ canvas 化結果は以降から見て通常の背面ピクセルと等価（zOrd
   3. [InspectorPanel.tsx](src/editor/panels/InspectorPanel.tsx) — `Vec3Row` を `sampleVec3` の number 直渡しに変更。`propVec3ToDisplay` 削除（[store.ts](src/editor/store.ts)）。
 - **spec**: §27.7.1 ScrubNumber 数値表示（散文・§5/INV 不変）。
 - **検証**: `test/formatScrubDisplay.test.ts` 9 件 + Playwright 実機（opacity `0.003` 表示・KF 保持・position `100.04` PASS）/ 415 tests / typecheck 緑。
+
+### 2026-06-25（Cursor）— コンポジション Inspector 桁表示修正
+
+- **症状**: Composition の Size が `192`×`108` のように末尾桁が欠けて表示。ラベル `Background` も左端が切れる。
+- **原因**:
+  1. **主因**: `ScrubNumber` の `decimals={0}` 表示で `toFixed(0).replace(/\.?0+$/, "")` が整数末尾ゼロまで除去（`1920`→`192`、`1080`→`108`）。
+  2. **副因**: Inspector `Row` ラベル列 52px 不足・ScrubNumber が flex 縮小しうる。
+- **Fix**:
+  1. [formatScrubDisplay.ts](src/editor/formatScrubDisplay.ts) — `formatScrubFixed` 追加（`decimals===0` は末尾ゼロ除去しない）。
+  2. [ScrubNumber.tsx](src/editor/ScrubNumber.tsx) — `formatScrubFixed` 使用、`flexShrink:0`、表示桁数ベース `minWidth`。
+  3. [InspectorPanel.tsx](src/editor/panels/InspectorPanel.tsx) — `Row`/`Vec3Row` ラベル 72px、`flexWrap`。
+- **検証**: `test/formatScrubDisplay.test.ts`（`formatScrubFixed`）+ Playwright（`1920`/`1080` 全文・Background ラベル PASS）/ 433 tests / typecheck 緑。

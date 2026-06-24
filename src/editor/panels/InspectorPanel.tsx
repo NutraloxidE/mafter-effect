@@ -1558,8 +1558,8 @@ function InspectorFoldout({
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 4 }}>
-      <span style={{ color: "#666", width: 52, textAlign: "right", flexShrink: 0 }}>{label}</span>
+    <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 4, flexWrap: "wrap" }}>
+      <span style={{ color: "#666", width: 72, textAlign: "right", flexShrink: 0 }}>{label}</span>
       {children}
     </div>
   );
@@ -1588,8 +1588,8 @@ function Vec3Row({
   };
 
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 4 }}>
-      <span style={{ color: "#666", width: 52, textAlign: "right", flexShrink: 0 }}>{label}</span>
+    <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 4, flexWrap: "wrap" }}>
+      <span style={{ color: "#666", width: 72, textAlign: "right", flexShrink: 0 }}>{label}</span>
       <span style={{ color: hasKf ? "#f0c040" : "#555", fontSize: 9 }}>⬦</span>
       {(["x", "y", "z"] as const).map((ax) => (
         <label key={ax} style={{ display: "flex", alignItems: "center", gap: 2 }}>
@@ -1608,8 +1608,6 @@ function Vec3Row({
 }
 
 const numInputStyle: React.CSSProperties = {
-  minWidth: 44,
-  width: "auto",
   background: "#2a2a2a",
   border: "1px solid #444",
   color: "#ddd",

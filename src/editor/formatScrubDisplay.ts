@@ -34,6 +34,13 @@ export function formatScrubDisplay(v: number, opts?: FormatScrubDisplayOpts): st
   return trimTrailingZeros(v.toFixed(decimals));
 }
 
+/** `decimals` 指定時の ScrubNumber 表示（整数は末尾ゼロを除去しない）。 */
+export function formatScrubFixed(v: number, decimals: number): string {
+  if (!Number.isFinite(v)) return "0";
+  const fixed = v.toFixed(decimals);
+  return decimals > 0 ? trimTrailingZeros(fixed) : fixed;
+}
+
 /** 編集モード・ホバー用のフル精度表示。 */
 export function formatScrubEdit(v: number): string {
   if (!Number.isFinite(v)) return "0";
