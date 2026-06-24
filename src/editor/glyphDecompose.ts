@@ -104,6 +104,9 @@ function buildGlyphTextComponent(
   props["text"] = staticProp(char);
   props["tracking"] = staticProp(0);
   props["align"] = "left";
+  // 各グリフは baked position で配置される単一文字 = point text。ソースが box text でも
+  // boxWidth を引き継がない（引き継ぐとグリフの bounds が箱幅に膨らみ選択枠が壊れる）。
+  props["boxWidth"] = staticProp(0);
   props["font"] = style.font;
   props["weight"] = style.weight;
   props["italic"] = style.italic;

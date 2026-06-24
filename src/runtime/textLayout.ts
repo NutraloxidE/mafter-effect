@@ -345,17 +345,16 @@ export function layoutGlyphsForDecompose(
   measureChar: (char: string) => number,
   boxWidth = 0,
 ): GlyphPlacement[] {
-  const { lines, bounds } = resolveTextLayout(text, size, tracking, leading, align, null, measureChar, boxWidth);
+  const { lines } = resolveTextLayout(text, size, tracking, leading, align, null, measureChar, boxWidth);
   const out: GlyphPlacement[] = [];
   for (const line of lines) {
     for (const g of line.glyphs) {
       if (!g.char.trim()) continue;
-      // renderPreciseText / applyDraftText と同じ content-local 原点（bounds 左上）に揃える。
-      out.push({
-        char: g.char,
-        x: g.x - bounds.minX,
-        y: g.y - bounds.minY,
-      });
+      // 生のレイアウト座標（align offset 込み）をそのまま使う。Phase 1（§26.4 整列バグ修正）で
+      // applyDraftText / renderPreciseText は要素を bounds.minX だけシフトし、グリフの絶対 local x
+      // は g.x（center/right では負）になった。分解後グリフを同じ位置に置くため bounds.minX を
+      // 引き戻してはならない（引くと中央/右寄せテキストが分解で横ズレする）。
+      out.push({ char: g.char, x: g.x, y: g.y });
     }
   }
   return out;

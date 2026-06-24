@@ -360,9 +360,11 @@ describe("glyph decompose", () => {
     expect(glyphs.map((g) => g.x)).toEqual([0, 20]);
   });
 
-  it("layoutGlyphsForDecompose applies bounds.minX like renderPreciseText (center align)", () => {
+  it("layoutGlyphsForDecompose is anchor-relative like the renderer (center align)", () => {
+    // §26.4 整列バグ修正後、グリフ絶対 local x = 生の g.x（center は負）。
+    // "AB" 幅20, center → A@-10, B@0。分解はこの座標をそのまま使う（横ズレ防止）。
     const glyphs = layoutGlyphsForDecompose("AB", 10, 0, 0, "center", () => 10);
-    expect(glyphs.map((g) => g.x)).toEqual([0, 10]);
+    expect(glyphs.map((g) => g.x)).toEqual([-10, 0]);
   });
 
   it("layoutGlyphsForDecompose preserves multiline y with explicit leading", () => {
@@ -371,10 +373,10 @@ describe("glyph decompose", () => {
     expect(glyphs[1]!.y).toBe(160);
   });
 
-  it("layoutGlyphsForDecompose matches render-local origin (no double minX offset)", () => {
+  it("layoutGlyphsForDecompose matches the renderer origin (anchor-relative, no minX renorm)", () => {
     const measure = (c: string) => (c === "A" ? 10 : 8);
     const glyphs = layoutGlyphsForDecompose("AB", 10, 0, 0, "center", measure);
-    // line width 18, minX=-9 → A at 0, B at 10
-    expect(glyphs.map((g) => g.x)).toEqual([0, 10]);
+    // line width 18, center offset -9 → A@-9, B@1（A advance 10）。
+    expect(glyphs.map((g) => g.x)).toEqual([-9, 1]);
   });
 });
