@@ -931,6 +931,7 @@ function TextComponentFields({
   const trackingProp = props["tracking"];
   const leadingProp = props["leading"];
   const boxWidthProp = props["boxWidth"];
+  const boxHeightProp = props["boxHeight"];
   const strokeColorProp = props["strokeColor"];
   const strokeWidthProp = props["strokeWidth"];
 
@@ -945,6 +946,8 @@ function TextComponentFields({
     ? (sampleAny(leadingProp, frame) as number) : 0;
   const boxWidthVal = isAnimated(boxWidthProp) && typeof sampleAny(boxWidthProp, frame) === "number"
     ? (sampleAny(boxWidthProp, frame) as number) : 0;
+  const boxHeightVal = isAnimated(boxHeightProp) && typeof sampleAny(boxHeightProp, frame) === "number"
+    ? (sampleAny(boxHeightProp, frame) as number) : 0;
   const strokeColorVal = isAnimated(strokeColorProp) && isRgba(sampleAny(strokeColorProp, frame))
     ? (sampleAny(strokeColorProp, frame) as RGBA) : { r: 0, g: 0, b: 0, a: 1 };
   const strokeWidthVal = isAnimated(strokeWidthProp) && typeof sampleAny(strokeWidthProp, frame) === "number"
@@ -1114,6 +1117,26 @@ function TextComponentFields({
           onLiveChange={(v) => {
             if (boxWidthProp.keyframes.length > 0) previewAnim("boxWidth", setKeyframe(boxWidthProp as AnimatedProp<number>, frame, v));
             else previewAnim("boxWidth", { ...boxWidthProp, value: v });
+          }}
+          onFocus={onEditFocus}
+          onBlur={onEditBlur}
+          min={0}
+        />
+      )}
+      {isAnimated(boxHeightProp) && (
+        <AnimScalarRow
+          label="Box Height"
+          prop={boxHeightProp as AnimatedProp<number>}
+          value={boxHeightVal}
+          frame={frame}
+          onToggle={() => toggleKf("boxHeight", boxHeightProp)}
+          onCommit={(v) => {
+            if (boxHeightProp.keyframes.length > 0) writeAnim("boxHeight", setKeyframe(boxHeightProp as AnimatedProp<number>, frame, v), "Edit box height");
+            else writeAnim("boxHeight", { ...boxHeightProp, value: v }, "Edit box height");
+          }}
+          onLiveChange={(v) => {
+            if (boxHeightProp.keyframes.length > 0) previewAnim("boxHeight", setKeyframe(boxHeightProp as AnimatedProp<number>, frame, v));
+            else previewAnim("boxHeight", { ...boxHeightProp, value: v });
           }}
           onFocus={onEditFocus}
           onBlur={onEditBlur}

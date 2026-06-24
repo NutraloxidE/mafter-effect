@@ -17,6 +17,7 @@ export interface TextStyleProps {
   tracking: number;
   leading: number;
   boxWidth: number;
+  boxHeight: number;
   weight: number;
   italic: boolean;
   strokeColor: RGBA;
@@ -53,6 +54,7 @@ export function parseTextProps(props: Record<string, unknown>): TextStyleProps {
     tracking: typeof props["tracking"] === "number" ? props["tracking"] : 0,
     leading: typeof props["leading"] === "number" ? props["leading"] : 0,
     boxWidth: typeof props["boxWidth"] === "number" && props["boxWidth"] > 0 ? props["boxWidth"] : 0,
+    boxHeight: typeof props["boxHeight"] === "number" && props["boxHeight"] > 0 ? props["boxHeight"] : 0,
     weight: typeof props["weight"] === "number" ? props["weight"] : 400,
     italic: props["italic"] === true,
     strokeColor: isRgba(props["strokeColor"]) ? props["strokeColor"] : DEFAULT_STROKE,
@@ -99,14 +101,14 @@ export function computeTextBoundsForHandles(
   useFontMetrics: boolean,
 ): LocalBounds {
   if (useFontMetrics && font) {
-    return computeTextContentBounds(p.text, p.size, p.tracking, p.leading, p.align, font, undefined, p.boxWidth);
+    return computeTextContentBounds(p.text, p.size, p.tracking, p.leading, p.align, font, undefined, p.boxWidth, p.boxHeight);
   }
   const measureCtx = createMeasureCtx();
   if (measureCtx) applyMeasureFont(measureCtx, p);
   const measureChar = (char: string): number =>
     measureCtx ? measureCtx.measureText(char).width : p.size * 0.6;
   return resolveTextLayout(
-    p.text, p.size, p.tracking, p.leading, p.align, null, measureChar, p.boxWidth,
+    p.text, p.size, p.tracking, p.leading, p.align, null, measureChar, p.boxWidth, p.boxHeight,
   ).bounds;
 }
 
@@ -136,7 +138,7 @@ export function applyDraftText(el: HTMLElement, p: TextStyleProps): void {
   const measureChar = (char: string): number =>
     measureCtx ? measureCtx.measureText(char).width : p.size * 0.6;
   const { lines, bounds, lineHeight } = resolveTextLayout(
-    p.text, p.size, p.tracking, p.leading, p.align, null, measureChar, p.boxWidth,
+    p.text, p.size, p.tracking, p.leading, p.align, null, measureChar, p.boxWidth, p.boxHeight,
   );
 
   const boxW = bounds.maxX - bounds.minX;
@@ -144,7 +146,8 @@ export function applyDraftText(el: HTMLElement, p: TextStyleProps): void {
   el.style.width = `${Math.max(1, boxW)}px`;
   el.style.height = `${Math.max(1, boxH)}px`;
   el.style.lineHeight = `${lineHeight}px`;
-  el.style.overflow = "visible";
+  // 固定高さボックス（boxHeight>0）でははみ出しをクリップ。それ以外は従来通り可視。
+  el.style.overflow = p.boxWidth > 0 && p.boxHeight > 0 ? "hidden" : "visible";
   el.style.transform = "";
   // align（center/right）では bounds.minX が負になる。グリフは 0 基準に正規化済みなので、
   // 要素全体を minX だけシフトして anchor(原点) 相対の配置にする。これでギズモ bounds
@@ -189,7 +192,7 @@ export function renderPreciseText(
   const { lines, bounds } = resolveTextLayout(
     p.text, p.size, p.tracking, p.leading, p.align, font,
     measureCtx ? (char) => measureCtx.measureText(char).width : undefined,
-    p.boxWidth,
+    p.boxWidth, p.boxHeight,
   );
   const boxW = bounds.maxX - bounds.minX;
   const boxH = bounds.maxY - bounds.minY;
@@ -200,6 +203,10 @@ export function renderPreciseText(
   // コンテナを minX/minY だけシフトしてギズモ bounds と一致させる。
   container.style.left = `${bounds.minX}px`;
   container.style.top = `${bounds.minY}px`;
+  // 固定高さボックスはコンテナでクリップ（svg は overflow:visible のまま）。
+  container.style.overflow = p.boxWidth > 0 && p.boxHeight > 0 ? "hidden" : "visible";
+  container.style.width = `${Math.max(1, boxW)}px`;
+  container.style.height = `${Math.max(1, boxH)}px`;
 
   const fill = rgbaCss(p.color);
   const stroke = rgbaCss(p.strokeColor);

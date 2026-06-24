@@ -122,6 +122,16 @@ canvas 化結果は以降から見て通常の背面ピクセルと等価（zOrd
 - **Footage 削除（§20.2b）**: Project パネルの audio/image 行に × ボタン＋確認ダイアログ。`store.removeAsset` が asset 削除・参照レイヤーの全 comp 横断カスケード削除・FS 掃除・audio バッファ/波形キャッシュ evict を 1 undo command で実行。spec §20.1/§20.2b 追記。
 - **検証**: 365 tests / typecheck 緑。Playwright 実機（30s WAV・旧方式 137 vs 新方式 500 バケット・canvas 956px・`removeAsset` で asset/layer 消滅）+ `verify-audio.mjs` 無回帰 PASS。
 
+### 2026-06-24（Claude Opus）— グリフ分解リグレッション修正 + boxHeight + ボックスリサイズギズモ
+
+- **グリフ分解リグレッション（commit 06e9fa9）**: Phase 1 でレンダラを anchor 相対（glyph 絶対 local x = `g.x`）に直したが `layoutGlyphsForDecompose` が旧 0 基準（`g.x - bounds.minX`）のままで、中央/右寄せテキストの分解が横ズレ。生の `g.x` を使うよう修正＋分解グリフの `boxWidth/boxHeight` を 0 リセット（box 引き継ぎで選択枠が膨らむのを防止）。実機 before==after で確認。
+- **boxHeight（§5/§26.1 追加）**: `boxHeight: AnimatedProp<number>`（0=自動高さ, >0=固定でクリップ）。`computeTextContentBounds` が box の maxY を boxHeight or 内容で返す。[textRender.ts](src/runtime/textRender.ts) は boxHeight>0 で `overflow:hidden`。store/builtinComponents/Inspector（Box Height 行）配線。**builtinComponents は Phase2/3 で未更新だった align justify/boxWidth も今回登録**。
+- **ボックスリサイズギズモ（§26.3.3）**: `boxWidth>0` のテキスト選択時、ギズモを scale → boxResize に切替（破線枠で区別）。8 ハンドルが boxWidth/boxHeight を編集、反対辺を comp 空間で固定し左/上辺で position 補正。
+  - [previewViewer.ts](src/editor/previewViewer.ts) `resizeBoxFromOppositeEdge`（`positionForFixedLocalPoint` 再利用）。
+  - [PreviewViewerOverlay.tsx](src/editor/panels/PreviewViewerOverlay.tsx) boxResize モード（横ハンドル=boxWidth のみ/縦=boxHeight のみ で自動高さ保持）。ライブは previewOverride、確定は updateObject（[PreviewPanel.tsx](src/editor/panels/PreviewPanel.tsx) の onComponentPreview/Commit）。
+  - **bounds バグ修正**: `resolveTextPropsAtFrame` のサンプル対象キーに `boxWidth/boxHeight` が無く、ギズモ bounds が箱でなく内容幅になっていた（→ リサイズ起点が狂う）。キー追加で修正。
+- **検証**: typecheck / 406 tests / build。Playwright: `verify-text-box-gizmo.mjs`（E=幅+自動高さ維持・S=高さのみ explicit・W=左伸長で posX 補正 PASS）、`verify-decompose.mjs`（before==after 維持）。
+
 ### 2026-06-24（Claude Opus）— テキスト整列バグ修正 + ボックステキスト/折返し + justify
 
 - **Phase 1: 整列バグ（commit 4df2301）**: `align` は schema/UI/layout 全層に在ったが、center/right で**ギズモ枠だけ左へズレ文字が動かない**不具合。原因 = ギズモ bounds は align を反映（`minX` 負）するのにレンダラがグリフを常に local 原点 0 へ再正規化していた不一致。**Fix** = [textRender.ts](src/runtime/textRender.ts) `applyDraftText`/`renderPreciseText` でテキスト要素を `bounds.minX` だけ左シフトし、描画矩形を `[minX,maxX]` に置いてギズモと一致（AE point text 相対）。left=minX0 は無変化＝非破壊。preview/export/bundle は同一 DomRenderer 経由で 1 箇所修正でカバー。

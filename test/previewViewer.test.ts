@@ -12,13 +12,54 @@ import {
   oppositeControlPoint,
   parentWorldMatrix,
   handleControlPoint,
+  resizeBoxFromOppositeEdge,
   roundTripLocalToComp,
   roundTripTransformPoint,
   scaleFromOppositeCorner,
   screenToComp,
   zoomAtCursor,
 } from "../src/editor/previewViewer";
+import type { ResolvedTransform } from "../src/editor/previewViewer";
 import { identity, localMatrix, transformPoint } from "../src/runtime/mat4";
+
+describe("resizeBoxFromOppositeEdge (§26.3.3 box text resize)", () => {
+  const xf: ResolvedTransform = {
+    anchor: vec3(0, 0, 0),
+    position: vec3(0, 0, 0),
+    rotation: vec3(0, 0, 0),
+    scale: vec3(1, 1, 1),
+  };
+  const I = identity();
+
+  it("right edge (e) grows width, keeps left edge fixed (no position change)", () => {
+    const r = resizeBoxFromOppositeEdge(xf, 200, 100, "e",
+      { x: 0, y: 50, z: 0 }, { x: 200, y: 50, z: 0 }, { x: 250, y: 50, z: 0 }, I);
+    expect(r.boxWidth).toBeCloseTo(250, 5);
+    expect(r.boxHeight).toBeCloseTo(100, 5);
+    expect(r.position.x).toBeCloseTo(0, 5);
+    expect(r.position.y).toBeCloseTo(0, 5);
+  });
+
+  it("left edge (w) grows width leftward, keeps right edge fixed (position shifts)", () => {
+    const r = resizeBoxFromOppositeEdge(xf, 200, 100, "w",
+      { x: 200, y: 50, z: 0 }, { x: 0, y: 50, z: 0 }, { x: -30, y: 50, z: 0 }, I);
+    expect(r.boxWidth).toBeCloseTo(230, 5);
+    expect(r.position.x).toBeCloseTo(-30, 5); // origin moved left; right edge stays at 200
+  });
+
+  it("bottom edge (s) grows height, top fixed", () => {
+    const r = resizeBoxFromOppositeEdge(xf, 200, 100, "s",
+      { x: 100, y: 0, z: 0 }, { x: 100, y: 100, z: 0 }, { x: 100, y: 160, z: 0 }, I);
+    expect(r.boxHeight).toBeCloseTo(160, 5);
+    expect(r.position.y).toBeCloseTo(0, 5);
+  });
+
+  it("clamps to a minimum dimension", () => {
+    const r = resizeBoxFromOppositeEdge(xf, 200, 100, "e",
+      { x: 0, y: 50, z: 0 }, { x: 200, y: 50, z: 0 }, { x: -500, y: 50, z: 0 }, I);
+    expect(r.boxWidth).toBeGreaterThanOrEqual(4);
+  });
+});
 
 function makeObject(over: Partial<SceneObject> & { id: string }): SceneObject {
   return {

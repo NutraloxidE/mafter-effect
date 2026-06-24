@@ -157,6 +157,7 @@ export function computeTextContentBounds(
   font: Font | null,
   measureChar?: (char: string) => number,
   boxWidth = 0,
+  boxHeight = 0,
 ): LocalBounds {
   if (size <= 0) return { minX: 0, minY: 0, maxX: 1, maxY: 1 };
   const lineHeight = textLineHeightPx(size, leading);
@@ -166,10 +167,12 @@ export function computeTextContentBounds(
   }
 
   // box text: ギズモ/anchor は箱 [0, boxWidth] が基準（内容ではなく枠）。
+  // 高さは boxHeight>0 なら固定（クリップ）、0 なら内容（折返し行数）から算出。
   if (boxWidth > 0) {
-    let maxY = 0;
-    for (const line of lines) maxY = Math.max(maxY, line.y + lineHeight);
-    return { minX: 0, minY: 0, maxX: Math.max(1, boxWidth), maxY: Math.max(lineHeight, maxY) };
+    let contentY = 0;
+    for (const line of lines) contentY = Math.max(contentY, line.y + lineHeight);
+    const maxY = boxHeight > 0 ? boxHeight : Math.max(lineHeight, contentY);
+    return { minX: 0, minY: 0, maxX: Math.max(1, boxWidth), maxY: Math.max(1, maxY) };
   }
 
   let minX = 0;
@@ -322,10 +325,11 @@ export function resolveTextLayout(
   font: Font | null,
   measureChar?: (char: string) => number,
   boxWidth = 0,
+  boxHeight = 0,
 ): ResolvedTextLayout {
   const lineHeight = textLineHeightPx(size, leading);
   const lines = layoutTextLines(text, size, tracking, lineHeight, align, font, measureChar, boxWidth);
-  const bounds = computeTextContentBounds(text, size, tracking, leading, align, font, measureChar, boxWidth);
+  const bounds = computeTextContentBounds(text, size, tracking, leading, align, font, measureChar, boxWidth, boxHeight);
   return { lines, bounds, lineHeight };
 }
 

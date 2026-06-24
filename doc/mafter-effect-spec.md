@@ -1486,6 +1486,7 @@ interface TextProps {
   strokeColor: AnimatedProp<RGBA>;    // 縁取り色
   strokeWidth: AnimatedProp<number>;  // px, 0 = ストロークなし
   boxWidth:    AnimatedProp<number>;  // px。0 = point text（折返しなし・既存挙動）, >0 = 固定幅ボックスで折返し
+  boxHeight:   AnimatedProp<number>;  // px。boxWidth>0 のときのみ意味を持つ。0 = 内容から自動算出, >0 = 固定高さでクリップ
 
   font:   string;                     // family 名（assets フォント §11.6 or system）。animatable: false
   align:  "left" | "center" | "right" | "justify"; // animatable: false。justify は boxWidth>0 のみ有効（0 では left 扱い）
@@ -1494,9 +1495,11 @@ interface TextProps {
 }
 ```
 
-- 既定値（`addText` が積む初期 props）: `text="Text"`, `size=48`, `color=白`, `tracking=0`, `leading=0`, `strokeColor=黒`, `strokeWidth=0`, `boxWidth=0`, `font="sans-serif"`, `align="left"`, `weight=400`, `italic=false`。
+- 既定値（`addText` が積む初期 props）: `text="Text"`, `size=48`, `color=白`, `tracking=0`, `leading=0`, `strokeColor=黒`, `strokeWidth=0`, `boxWidth=0`, `boxHeight=0`, `font="sans-serif"`, `align="left"`, `weight=400`, `italic=false`。
 - 単位の確定: `tracking`・`leading` は **px**（AE の 1/1000 em 方式は将来）。`leading=0` は CSS `line-height: normal`。
 - **`boxWidth` セマンティクス**: `0` = point text（明示改行のみで折返さない＝従来挙動）。`>0` = 段落（ボックス）テキストで、行幅が `boxWidth` を超えると空白境界でワードラップ（収まらない単一トークンは文字境界で分割）。レイアウトは決定論（INV-1）で、注入された `measureChar`/`font` のみで幅を測る。`boxWidth` 欠落の旧プロジェクトは `0` とみなす（完全後方互換）。
+- **`boxHeight` セマンティクス**: `boxWidth>0` のときのみ有効。`0` = ボックス高さは内容（折返し行数）から自動算出。`>0` = 固定高さで、はみ出したテキストは下端でクリップ（CSS `overflow: hidden`）。ボックスの bounds（ギズモ枠）は `[0,boxWidth] × [0, boxHeight>0 ? boxHeight : 内容高さ]`。`boxHeight` 欠落の旧プロジェクトは `0`。
+- **ボックスのビューポート編集（§26.3.3）**: `boxWidth>0` のテキスト選択時、ギズモは scale ではなく**ボックスリサイズ**として働き、8 ハンドルが `boxWidth`/`boxHeight` を編集する（反対辺を comp 空間で固定し、左/上辺ドラッグ時は position を補正）。`boxWidth=0`（point text）や text 以外は従来通り scale。
 - **`justify`**: `boxWidth>0` のとき各行（最終行・明示改行の直前行を除く）の語間スペース幅を `boxWidth` まで均等配分する。`boxWidth=0` では `left` にフォールバックする。
 - ストローク描画順: 塗りの**外側**にストローク（CSS `paint-order: stroke fill` / SVG も同順）。`strokeWidth` は中心揃えではなく外側基準とする（厳密モード基準・§26.4）。
 
@@ -1516,6 +1519,7 @@ registerComponent({
     { key: "tracking",    label: "Tracking",    kind: "scalar", default: 0, animatable: true },
     { key: "leading",     label: "Leading",     kind: "scalar", default: 0, animatable: true, min: 0 },
     { key: "boxWidth",    label: "Box Width",   kind: "scalar", default: 0, animatable: true, min: 0 },
+    { key: "boxHeight",   label: "Box Height",  kind: "scalar", default: 0, animatable: true, min: 0 },
     { key: "weight",      label: "Weight",      kind: "enum",   default: 400, animatable: false, options: ["100","200","300","400","500","600","700","800","900"] },
     { key: "italic",      label: "Italic",      kind: "bool",   default: false, animatable: false },
     { key: "strokeColor", label: "Stroke",      kind: "color",  default: { r:0,g:0,b:0,a:1 }, animatable: true },

@@ -41,7 +41,7 @@ import { loadAudioBuffer, peekAudioBuffer } from "../audioBufferCache";
 import { loadWorkArea } from "../workAreaStorage";
 import { currentTimelineComp, selectedObjects, useEditorStore } from "../store";
 import { CHECKERBOARD_STYLE } from "../checkerboardStyle";
-import type { HtmlComposition, TimelineComposition, Transform } from "../../core/schema";
+import type { HtmlComposition, SceneObject, TimelineComposition, Transform } from "../../core/schema";
 import { PreviewViewerOverlay } from "./PreviewViewerOverlay";
 
 const _previewFs = new IndexedDbFs("mafter-effect-fs");
@@ -81,6 +81,8 @@ export function PreviewPanel() {
   const pluginsVersion = useEditorStore((s) => s.pluginsVersion);
   const selectedIds = useEditorStore((s) => s.selectedObjectIds);
   const updateObject = useEditorStore((s) => s.updateObject);
+  const setPreviewOverride = useEditorStore((s) => s.setPreviewOverride);
+  const clearPreviewOverride = useEditorStore((s) => s.clearPreviewOverride);
   const previewQualityEditing = useEditorStore((s) => s.previewQualityEditing);
   const setPreviewQuality = useEditorStore((s) => s.setPreviewQuality);
   const projectRevision = useEditorStore((s) => s.projectRevision);
@@ -716,6 +718,23 @@ export function PreviewPanel() {
     [primaryObject, updateObject],
   );
 
+  // §26.3.3 ボックスリサイズ: ライブは previewOverride、確定は updateObject。
+  const handleComponentPreview = useCallback(
+    (patch: Partial<SceneObject>) => {
+      if (!primaryObject) return;
+      setPreviewOverride({ objectId: primaryObject.id, patch });
+    },
+    [primaryObject, setPreviewOverride],
+  );
+  const handleComponentCommit = useCallback(
+    (patch: Partial<SceneObject>, label: string) => {
+      if (!primaryObject) return;
+      updateObject(primaryObject.id, patch, label);
+      clearPreviewOverride();
+    },
+    [primaryObject, updateObject, clearPreviewOverride],
+  );
+
   const fps = comp?.fps ?? 30;
   const timecode = framesToTimecode(frame, fps);
   const zoomPercent = Math.round(effectiveZoom * 100);
@@ -993,6 +1012,8 @@ export function PreviewPanel() {
                   draftTransform={draftTransform}
                   onDraftChange={setDraftTransform}
                   onCommit={handleCommitTransform}
+                  onComponentPreview={handleComponentPreview}
+                  onComponentCommit={handleComponentCommit}
                   resolveCtx={{ expressions: evaluatorRef.current }}
                   onPan={handlePan}
                   textQuality={effectiveTextQuality}

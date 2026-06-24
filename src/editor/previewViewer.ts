@@ -270,7 +270,7 @@ function resolveTextPropsAtFrame(
   frame: Frame,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = { ...props };
-  for (const key of ["text", "size", "tracking", "leading", "color", "strokeColor", "strokeWidth"] as const) {
+  for (const key of ["text", "size", "tracking", "leading", "boxWidth", "boxHeight", "color", "strokeColor", "strokeWidth"] as const) {
     if (key in props) out[key] = sampleAny(props[key], frame);
   }
   return out;
@@ -570,6 +570,64 @@ export function scaleFromOppositeCorner(
   );
 
   return { scale: newScale, position: newPosition };
+}
+
+export interface BoxResizeResult {
+  boxWidth: number;
+  boxHeight: number;
+  position: Vec3;
+}
+
+const MIN_BOX_DIM = 4;
+
+/**
+ * §26.3.3 ボックステキストのリサイズ。反対辺/コーナーを comp 空間で固定して
+ * boxWidth/boxHeight を local px で更新し、左/上辺ドラッグ時は position を補正する。
+ * scale は変えない（テキストは拡大せず箱だけ変わり、中身は再折返しされる）。
+ */
+export function resizeBoxFromOppositeEdge(
+  startTransform: ResolvedTransform,
+  startBoxW: number,
+  startBoxH: number,
+  handle: ScaleHandle,
+  fixedComp: Vec3,
+  startComp: Vec3,
+  curComp: Vec3,
+  parentWorld: Mat4,
+): BoxResizeResult {
+  const startWorld = multiply(
+    parentWorld,
+    localMatrix(startTransform.anchor, startTransform.position, startTransform.rotation, startTransform.scale),
+  );
+  const inv = invert(startWorld);
+  const startLocal = inv ? transformPoint(inv, startComp) : startComp;
+  const curLocal = inv ? transformPoint(inv, curComp) : curComp;
+  const dx = curLocal.x - startLocal.x;
+  const dy = curLocal.y - startLocal.y;
+
+  let boxWidth = startBoxW;
+  let boxHeight = startBoxH;
+  if (handle.includes("e")) boxWidth = startBoxW + dx;
+  if (handle.includes("w")) boxWidth = startBoxW - dx;
+  if (handle.includes("s")) boxHeight = startBoxH + dy;
+  if (handle.includes("n")) boxHeight = startBoxH - dy;
+  boxWidth = Math.max(MIN_BOX_DIM, boxWidth);
+  boxHeight = Math.max(MIN_BOX_DIM, boxHeight);
+
+  // 反対辺/コーナー（新 bounds 基準）を fixedComp に保つよう position を補正。
+  const fixedLocalNew = oppositeControlPoint(
+    { minX: 0, minY: 0, maxX: boxWidth, maxY: boxHeight },
+    handle,
+  );
+  const position = positionForFixedLocalPoint(
+    fixedComp,
+    fixedLocalNew,
+    startTransform.anchor,
+    startTransform.rotation,
+    startTransform.scale,
+    parentWorld,
+  );
+  return { boxWidth, boxHeight, position };
 }
 
 export type ScaleHandle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";

@@ -1,8 +1,10 @@
 import { useCallback, useMemo, useRef } from "react";
 import type { Font } from "opentype.js";
-import type { Frame, Project, SceneObject, TimelineComposition, Transform, Vec3 } from "../../core/schema";
+import type { AnimatedProp, Frame, Project, SceneObject, TimelineComposition, Transform, Vec3 } from "../../core/schema";
 import type { ResolveContext } from "../../runtime/resolve";
-import type { PreviewOverride } from "../store";
+import { setKeyframe, type PreviewOverride } from "../store";
+import { sampleAny } from "../../runtime/interpolate";
+import { staticProp } from "../../core/props";
 import {
   anchorCompPosition,
   applyRotationFromDrag,
@@ -19,6 +21,7 @@ import {
   parentWorldMatrix,
   patchTransformAtFrame,
   projectBoundsToComp,
+  resizeBoxFromOppositeEdge,
   resolveTransformAtFrame,
   scaleFromOppositeCorner,
   screenToComp,
@@ -33,8 +36,28 @@ export type DragMode =
   | { kind: "pan" }
   | { kind: "move" }
   | { kind: "scale"; handle: ScaleHandle }
+  | { kind: "boxResize"; handle: ScaleHandle }
   | { kind: "rotate" }
   | { kind: "anchor" };
+
+/** boxWidth>0 のテキストレイヤーなら { compIdx } を返す（= ボックスリサイズ対象）。 */
+function textBoxCompIdx(obj: SceneObject | null, frame: Frame): number | null {
+  if (!obj) return null;
+  const idx = obj.components.findIndex((c) => c.type === "text");
+  if (idx < 0) return null;
+  const bw = sampleAny(obj.components[idx]!.props["boxWidth"], frame);
+  return typeof bw === "number" && bw > 0 ? idx : null;
+}
+
+/** boxWidth/boxHeight プロパティを非破壊に更新（KF があれば打点、無ければ値置換）。 */
+function writeBoxProp(prop: unknown, frame: Frame, value: number): AnimatedProp<number> {
+  if (prop && typeof prop === "object" && "value" in prop && "keyframes" in prop) {
+    const p = prop as AnimatedProp<number>;
+    if (p.keyframes.length > 0) return setKeyframe(p, frame, value);
+    return { ...p, value };
+  }
+  return staticProp(value);
+}
 
 interface PreviewViewerOverlayProps {
   comp: TimelineComposition;
@@ -49,6 +72,10 @@ interface PreviewViewerOverlayProps {
   draftTransform: Transform | null;
   onDraftChange: (t: Transform | null) => void;
   onCommit: (transform: Transform, label: string) => void;
+  /** §26.3.3 ボックスリサイズのライブプレビュー（previewOverride 経由）。 */
+  onComponentPreview?: (patch: Partial<SceneObject>) => void;
+  /** §26.3.3 ボックスリサイズの確定（updateObject + previewOverride クリア）。 */
+  onComponentCommit?: (patch: Partial<SceneObject>, label: string) => void;
   resolveCtx?: ResolveContext;
   onPan: (delta: { x: number; y: number }) => void;
   textQuality?: "draft" | "precise";
@@ -83,6 +110,8 @@ export function PreviewViewerOverlay({
   draftTransform,
   onDraftChange,
   onCommit,
+  onComponentPreview,
+  onComponentCommit,
   resolveCtx,
   onPan,
   textQuality = "draft",
@@ -99,6 +128,10 @@ export function PreviewViewerOverlay({
     baseTransform: Transform;
     fixedComp?: Vec3;
     scaleBounds?: import("../previewViewer").LocalBounds;
+    startBoxW?: number;
+    startBoxH?: number;
+    boxCompIdx?: number;
+    lastBoxPatch?: Partial<SceneObject>;
   } | null>(null);
   const lastDraftRef = useRef<Transform | null>(null);
 
@@ -207,7 +240,7 @@ export function PreviewViewerOverlay({
 
       let fixedComp: Vec3 | undefined;
       let scaleBounds: import("../previewViewer").LocalBounds | undefined;
-      if (mode.kind === "scale") {
+      if (mode.kind === "scale" || mode.kind === "boxResize") {
         scaleBounds = getLayerLocalBounds(effectiveObject, frame, project, boundsCtx);
         const fixedLocal = oppositeControlPoint(scaleBounds, mode.handle);
         const startWorld = multiply(
@@ -232,6 +265,10 @@ export function PreviewViewerOverlay({
         baseTransform: activeTransform,
         fixedComp,
         scaleBounds,
+        // box リサイズは scaleBounds（= [0,boxWidth]×[0,effectiveHeight]）を起点寸法に使う。
+        startBoxW: scaleBounds ? scaleBounds.maxX - scaleBounds.minX : undefined,
+        startBoxH: scaleBounds ? scaleBounds.maxY - scaleBounds.minY : undefined,
+        boxCompIdx: mode.kind === "boxResize" ? (textBoxCompIdx(effectiveObject, frame) ?? undefined) : undefined,
       };
       if (!draftTransform) onDraftChange(activeTransform);
 
@@ -268,6 +305,40 @@ export function PreviewViewerOverlay({
           );
           patch.scale = result.scale;
           patch.position = result.position;
+        } else if (
+          d.mode.kind === "boxResize" &&
+          d.fixedComp &&
+          d.startBoxW !== undefined &&
+          d.startBoxH !== undefined &&
+          d.boxCompIdx !== undefined &&
+          onComponentPreview
+        ) {
+          const result = resizeBoxFromOppositeEdge(
+            d.startTransform,
+            d.startBoxW,
+            d.startBoxH,
+            d.mode.handle,
+            d.fixedComp,
+            d.startComp,
+            curComp,
+            pw,
+          );
+          const compIdx = d.boxCompIdx;
+          const affectsX = d.mode.handle.includes("e") || d.mode.handle.includes("w");
+          const affectsY = d.mode.handle.includes("n") || d.mode.handle.includes("s");
+          const components = effectiveObject.components.map((c, i) => {
+            if (i !== compIdx) return c;
+            const props = { ...c.props };
+            // 横ハンドルは boxWidth のみ、縦ハンドルは boxHeight のみ更新（自動高さを保つ）。
+            if (affectsX) props["boxWidth"] = writeBoxProp(c.props["boxWidth"], frame, result.boxWidth);
+            if (affectsY) props["boxHeight"] = writeBoxProp(c.props["boxHeight"], frame, result.boxHeight);
+            return { ...c, props };
+          });
+          const transform = patchTransformAtFrame(d.baseTransform, frame, { position: result.position });
+          const boxPatch: Partial<SceneObject> = { components, transform };
+          d.lastBoxPatch = boxPatch;
+          onComponentPreview(boxPatch);
+          return;
         } else if (d.mode.kind === "rotate") {
           const anchorComp = anchorCompPosition(pw, d.startTransform);
           const rz = applyRotationFromDrag(
@@ -296,6 +367,10 @@ export function PreviewViewerOverlay({
         window.removeEventListener("mousemove", move);
         window.removeEventListener("mouseup", up);
         if (!d || d.mode.kind === "pan") return;
+        if (d.mode.kind === "boxResize") {
+          if (d.lastBoxPatch && onComponentCommit) onComponentCommit(d.lastBoxPatch, "Resize text box");
+          return;
+        }
         const final = lastDraftRef.current ?? d.baseTransform;
         const label =
           d.mode.kind === "move" ? "Move layer"
@@ -309,7 +384,7 @@ export function PreviewViewerOverlay({
       window.addEventListener("mousemove", move);
       window.addEventListener("mouseup", up);
     },
-    [activeResolved, activeTransform, boundsCtx, comp, draftTransform, effectiveObject, frame, hostRect, onCommit, onDraftChange, onPan, project, resolveCtx, selectedObject, viewPan, viewZoom],
+    [activeResolved, activeTransform, boundsCtx, comp, draftTransform, effectiveObject, frame, hostRect, onCommit, onComponentCommit, onComponentPreview, onDraftChange, onPan, project, resolveCtx, selectedObject, viewPan, viewZoom],
   );
 
   const gridStep = Math.max(10, Math.round(comp.width / 10));
@@ -413,6 +488,7 @@ export function PreviewViewerOverlay({
           resolved={activeResolved}
           parentWorld={parentWorldMatrix(comp, effectiveObject.id, frame, resolveCtx)}
           onBegin={beginDrag}
+          boxMode={textBoxCompIdx(effectiveObject, frame) !== null}
         />
       )}
     </svg>
@@ -424,16 +500,22 @@ function SelectionHandles({
   resolved,
   parentWorld,
   onBegin,
+  boxMode = false,
 }: {
   aabb: import("../previewViewer").LocalBounds;
   resolved: ResolvedTransform;
   parentWorld: import("../../runtime/mat4").Mat4;
   onBegin: (mode: DragMode, e: React.MouseEvent) => void;
+  boxMode?: boolean;
 }) {
   const { minX, minY, maxX, maxY } = aabb;
   const boxW = maxX - minX;
   const boxH = maxY - minY;
   const anchorComp = anchorCompPosition(parentWorld, resolved);
+  // box text はハンドルが boxWidth/boxHeight を編集する（scale ではない）。枠を破線で区別。
+  const frameStroke = boxMode ? "#7c5" : "#4af";
+  const handleMode = (handle: ScaleHandle): DragMode =>
+    boxMode ? { kind: "boxResize", handle } : { kind: "scale", handle };
 
   return (
     <g style={{ pointerEvents: "all" }}>
@@ -443,8 +525,9 @@ function SelectionHandles({
         width={boxW}
         height={boxH}
         fill="none"
-        stroke="#4af"
+        stroke={frameStroke}
         strokeWidth={1}
+        strokeDasharray={boxMode ? "4 3" : undefined}
         style={{ cursor: "move" }}
         onMouseDown={(e) => onBegin({ kind: "move" }, e)}
       />
@@ -460,10 +543,10 @@ function SelectionHandles({
             width={HANDLE_SIZE}
             height={HANDLE_SIZE}
             fill="#fff"
-            stroke="#4af"
+            stroke={frameStroke}
             strokeWidth={1}
             style={{ cursor: handle.cursor }}
-            onMouseDown={(e) => onBegin({ kind: "scale", handle: handle.id }, e)}
+            onMouseDown={(e) => onBegin(handleMode(handle.id), e)}
           />
         );
       })}
