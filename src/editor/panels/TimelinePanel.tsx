@@ -2895,7 +2895,8 @@ function NumberField({
       step={step}
       className="tl-num"
       style={{
-        width: 44,
+        minWidth: 44,
+        width: "auto",
         height: 18,
         background: "#111",
         border: "1px solid #333",

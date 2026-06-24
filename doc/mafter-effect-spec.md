@@ -346,6 +346,11 @@ interface CompositionMeta {
 
 **背景色の編集 UI（確定・UI 層）**: `background` はコンポのプロパティであり、編集は **Inspector**（レイヤー未選択時の **Composition** セクション — 色スウォッチ + 透明トグル、`setCompBackground`・undo 可）。Preview の `⬚` チェッカー/黒トグルは **ビューア設定**（§25.2）であり背景値そのものではない。
 
+**Composition 設定の編集 UI（確定・2026-06-24）**: 同 **Composition** セクションで `width` / `height` / `fps` / `duration` も **`ScrubNumber` で編集可能**（AE Composition Settings 基本相当）。すべて command パターン（undo 可）。挙動:
+- **リサイズ（`resizeComp`）**: 既存レイヤーは**中央基準でオフセット**（`parent === null` のレイヤーのみ `transform.position` x/y を `((newW-oldW)/2, (newH-oldH)/2)` 平行移動、z 不変。子は parent 継承で追従＝二重移動しない）。相対的な中央配置を維持する。
+- **fps 変更（`setCompFps`）**: **秒タイミングを維持して再スケール**。`ratio = newFps/oldFps` で全 AnimatedProp の全キーフレーム `frame`・各レイヤーの `inPoint`/`outPoint`・comp の `duration` を `round(*ratio)`（INV-5 準拠で整数化）。`comp` コンポーネントの `trimStart` は子 frame 単位のため不変。fps 不一致ネストは §23.2 の秒ベース式で自動的に整合する。
+- **duration 変更（`setCompDuration`）**: `duration` のみ更新（再生ヘッドが超過時はクランプ）。
+
 ```ts
 // timeline comp: objects を持つ（続き）
 interface TimelineComposition extends CompositionMeta {
@@ -1245,15 +1250,19 @@ SceneObject.components = [
 
 `compRef` は将来の仮名であったが、実装は `Component.type = "comp"` として統合した（`Component.type` は open-string なので既存スキーマに変更なし）。
 
-### §23.2 時間マッピング（Phase 1）
+### §23.2 時間マッピング（Phase 1・fps 対応 2026-06-24）
 
 ```
-childFrame = clamp(parentFrame - layer.inPoint + trimStart, 0, childComp.duration - 1)
+parentTimeSec = (parentFrame - layer.inPoint) / parentFps
+childFrame     = clamp(round(parentTimeSec * childFps) + trimStart, 0, childComp.duration - 1)
 ```
 
+- **秒ベースのマッピング**（AE 既定 ＝ "Preserve frame rate when nested" OFF 相当）。親と子の fps が異なっても**実時間で等速**に再生される。子は自身の fps グリッドでサンプルされる（INV-5: 正準単位は整数 Frame、秒は導出値）。
+- **fps 一致時は従来式と完全に同一**: `round((pf-in)/fps*fps)+trim = pf-in+trim`。既存プロジェクト（親子 fps 一致）は描画・キャッシュキー（`precomp:{compId}:f{childFrame}`）ともにビット単位で不変＝後方互換。
+- `trimStart` は引き続き**子コンプの frame 単位**。本コンポ（親）の fps 変更の影響を受けない。
 - 親フレームが子コンプの `duration` を超えた場合は **最終フレームで停止（Freeze）** — AE のデフォルト同等。
-- 1:1 時間マッピング（時間リマップなし）。
-- `layer.inPoint` は DomRenderer が `resolve()` を通じて受け取る（resolved component props に `_inPoint` として注入）。
+- `layer.inPoint` と `parentFps` は DomRenderer が `resolve()` を通じて受け取る（resolved component props に `_inPoint` / `_parentFps` として注入）。`childFps` は `childComp.fps`。**`parentFps` は `resolve()` する comp の fps をその場で焼くため、DomRenderer の mount 時スナップショット（`this.currentComp`）に依存しない**（マウント後の fps 変更や comp 切替でも常に最新の親 fps が使われる）。
+- AE の "Preserve frame rate when nested"（子を自身の frame 境界でのみ更新＝スタッター）個別トグルは将来（§23.0 Phase 2）。
 
 ### §23.3 レンダリング（Phase 1）
 
@@ -2130,6 +2139,14 @@ Layer
 
 - PropPath を `effects.<effectId>.<key>` で addressable に拡張（現状 string PropPath を拡張・§21 P1 で component props も同様に拡張済み）。KF ダイヤ・グラフエディタ（§22）・Ease パネル（§24）と**同じ KF 機構を共有**。
 - 調整レイヤーはレイヤーバーに**モードバッジ（Live / Raster）**を表示（AE のアイコン相当）。
+
+#### §27.7.1 ScrubNumber 数値表示（確定 2026-06-24）
+
+Inspector / Timeline の数値フィールド（[ScrubNumber.tsx](../src/editor/ScrubNumber.tsx)）は **表示のみ**適応桁数 + 末尾ゼロ除去（[formatScrubDisplay.ts](../src/editor/formatScrubDisplay.ts)）を用いる。**内部値・KF 値・project.json は表示桁で丸めない**。
+
+- 大きい値（例 `1920`）は短く、微小値（例 `0.003`）は有効桁が見えるまで桁を増やす（上限 4 桁）。
+- ホバー `title` とクリック編集時はフル精度を表示する。
+- Transform 等は `sampleVec3` / `sampleScalar` の **number を直接** ScrubNumber に渡す（表示用文字列への round-trip 禁止）。
 
 ### §27.8 ストア / コマンド / Undo（確定）
 

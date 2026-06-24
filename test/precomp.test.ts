@@ -41,25 +41,54 @@ function compLayerObject(id: string, compId: string, inPoint = 0): SceneObject {
   };
 }
 
-describe("compLayer — childFrame mapping (§23.2 Freeze)", () => {
+describe("compLayer — childFrame mapping (§23.2 Freeze, equal fps)", () => {
   it("maps 1:1 from parent frame when inPoint and trimStart are 0", () => {
-    expect(compChildFrame(10, 0, 0, 100)).toBe(10);
+    expect(compChildFrame(10, 0, 0, 100, 30, 30)).toBe(10);
   });
 
   it("freezes at frame 0 when parent is before layer inPoint", () => {
-    expect(compChildFrame(5, 10, 0, 100)).toBe(0);
+    expect(compChildFrame(5, 10, 0, 100, 30, 30)).toBe(0);
   });
 
   it("freezes at last frame when parent exceeds child duration", () => {
-    expect(compChildFrame(150, 0, 0, 100)).toBe(99);
+    expect(compChildFrame(150, 0, 0, 100, 30, 30)).toBe(99);
   });
 
   it("applies trimStart offset", () => {
-    expect(compChildFrame(20, 0, 5, 100)).toBe(25);
+    expect(compChildFrame(20, 0, 5, 100, 30, 30)).toBe(25);
   });
 
   it("combines inPoint and trimStart", () => {
-    expect(compChildFrame(30, 10, 5, 100)).toBe(25);
+    expect(compChildFrame(30, 10, 5, 100, 30, 30)).toBe(25);
+  });
+});
+
+describe("compLayer — childFrame mapping (§23.2 fps-aware 2026-06-24)", () => {
+  it("equal fps は旧式 (parentFrame - inPoint + trimStart) と完全一致", () => {
+    for (const fps of [24, 30, 60]) {
+      for (const pf of [0, 7, 50, 99]) {
+        const inPoint = 3, trimStart = 4, dur = 200;
+        const oldFormula = Math.max(0, Math.min(pf - inPoint + trimStart, dur - 1));
+        expect(compChildFrame(pf, inPoint, trimStart, dur, fps, fps)).toBe(oldFormula);
+      }
+    }
+  });
+
+  it("親60fps / 子30fps は子を半速サンプル（実時間維持）", () => {
+    // parentTimeSec = 60/60 = 1s → childFrame = round(1*30) = 30
+    expect(compChildFrame(60, 0, 0, 200, 60, 30)).toBe(30);
+    // parentTimeSec = 30/60 = 0.5s → round(0.5*30)=15
+    expect(compChildFrame(30, 0, 0, 200, 60, 30)).toBe(15);
+  });
+
+  it("親30fps / 子60fps は子を倍速サンプル（実時間維持）", () => {
+    // parentTimeSec = 30/30 = 1s → round(1*60)=60
+    expect(compChildFrame(30, 0, 0, 200, 30, 60)).toBe(60);
+  });
+
+  it("fps 不一致でも trimStart は子 frame 単位で加算", () => {
+    // parentTimeSec=1s, childFps=30 → 30 + trimStart 5 = 35
+    expect(compChildFrame(60, 0, 5, 200, 60, 30)).toBe(35);
   });
 });
 
@@ -130,6 +159,15 @@ describe("resolve — comp _inPoint injection (§23.2)", () => {
     expect(rc.type).toBe("comp");
     expect(rc.props["_inPoint"]).toBe(12);
     expect(rc.props.compId).toBe(childId);
+  });
+
+  it("injects parent comp fps as _parentFps (§23.2 fps-aware mapping・stale currentComp 非依存)", () => {
+    const childId = newCompId();
+    const obj = compLayerObject(newObjectId(), childId, 0);
+    const comp: TimelineComposition = { ...timelineComp(newCompId(), [obj]), fps: 60 };
+    const scene = resolve(comp, 0);
+    const rc = scene.objects[0]!.components[0]!;
+    expect(rc.props["_parentFps"]).toBe(60);
   });
 });
 

@@ -4,7 +4,6 @@ import type { AnimatedProp, BlendMode, Component, Easing, EffectInstance, ParamD
 import { BLEND_MODES } from "../../core/schema";
 import {
   currentTimelineComp,
-  propVec3ToDisplay,
   setKeyframe,
   useEditorStore,
 } from "../store";
@@ -87,6 +86,9 @@ export function InspectorPanel() {
   const setThreeDMode = useEditorStore((s) => s.setThreeDMode);
   const setBlendMode = useEditorStore((s) => s.setBlendMode);
   const setCompBackground = useEditorStore((s) => s.setCompBackground);
+  const resizeComp = useEditorStore((s) => s.resizeComp);
+  const setCompFps = useEditorStore((s) => s.setCompFps);
+  const setCompDuration = useEditorStore((s) => s.setCompDuration);
   const setActiveCamera = useEditorStore((s) => s.setActiveCamera);
   const removeEffect = useEditorStore((s) => s.removeEffect);
   const reorderEffect = useEditorStore((s) => s.reorderEffect);
@@ -133,12 +135,45 @@ export function InspectorPanel() {
           onToggle={() => toggleExpanded("composition")}
         >
           <Row label="Size">
-            <span style={readOnlyNumStyle}>{comp.width}</span>
+            <ScrubNumber
+              value={comp.width}
+              onCommit={(v) => resizeComp(Math.round(v), comp.height)}
+              min={1}
+              decimals={0}
+              step={1}
+              style={numInputStyle}
+            />
             <span style={{ color: "#555", fontSize: 10 }}>×</span>
-            <span style={readOnlyNumStyle}>{comp.height}</span>
+            <ScrubNumber
+              value={comp.height}
+              onCommit={(v) => resizeComp(comp.width, Math.round(v))}
+              min={1}
+              decimals={0}
+              step={1}
+              style={numInputStyle}
+            />
             <span style={{ color: "#666", fontSize: 10, marginLeft: 2 }}>px</span>
-            <span style={{ color: "#888", fontSize: 10, marginLeft: 6 }}>{comp.fps}fps</span>
-            <span style={{ color: "#888", fontSize: 10, marginLeft: 6 }}>{comp.duration}f</span>
+          </Row>
+          <Row label="Frame Rate">
+            <ScrubNumber
+              value={comp.fps}
+              onCommit={(v) => setCompFps(v)}
+              min={1}
+              step={1}
+              style={numInputStyle}
+            />
+            <span style={{ color: "#666", fontSize: 10, marginLeft: 2 }}>fps</span>
+          </Row>
+          <Row label="Duration">
+            <ScrubNumber
+              value={comp.duration}
+              onCommit={(v) => setCompDuration(Math.round(v))}
+              min={1}
+              decimals={0}
+              step={1}
+              style={numInputStyle}
+            />
+            <span style={{ color: "#666", fontSize: 10, marginLeft: 2 }}>f</span>
           </Row>
           <Row label="Background">
             <BackgroundControl comp={comp} onChange={setCompBackground} />
@@ -148,10 +183,10 @@ export function InspectorPanel() {
     );
   }
 
-  const pos = propVec3ToDisplay(obj.transform.position, frame);
-  const anchor = propVec3ToDisplay(obj.transform.anchor, frame);
-  const rot = propVec3ToDisplay(obj.transform.rotation, frame);
-  const scl = propVec3ToDisplay(obj.transform.scale, frame);
+  const pos = sampleVec3(obj.transform.position, frame);
+  const anchor = sampleVec3(obj.transform.anchor, frame);
+  const rot = sampleVec3(obj.transform.rotation, frame);
+  const scl = sampleVec3(obj.transform.scale, frame);
   const opacity = sampleScalar(obj.opacity, frame);
 
   const previewPatch = (patch: Partial<SceneObject>) => {
@@ -1534,7 +1569,7 @@ function Vec3Row({
   label, vals, onChange, onLiveChange, hasKf, speeds,
 }: {
   label: string;
-  vals: { x: string; y: string; z: string };
+  vals: Vec3;
   onChange: (v: Vec3, deltaParts?: Partial<Vec3>) => void;
   onLiveChange?: (v: Vec3) => void;
   hasKf: boolean;
@@ -1542,24 +1577,14 @@ function Vec3Row({
 }) {
   const commit = (axis: "x" | "y" | "z", newVal: number, delta?: number) => {
     if (!Number.isFinite(newVal)) return;
-    const base = {
-      x: parseFloat(vals.x),
-      y: parseFloat(vals.y),
-      z: parseFloat(vals.z),
-    };
-    const v: Vec3 = { ...base, [axis]: newVal };
+    const v: Vec3 = { ...vals, [axis]: newVal };
     const deltaParts = delta !== undefined ? ({ [axis]: delta } as Partial<Vec3>) : undefined;
     onChange(v, deltaParts);
   };
 
   const live = (axis: "x" | "y" | "z", newVal: number) => {
     if (!Number.isFinite(newVal) || !onLiveChange) return;
-    const base = {
-      x: parseFloat(vals.x),
-      y: parseFloat(vals.y),
-      z: parseFloat(vals.z),
-    };
-    onLiveChange({ ...base, [axis]: newVal });
+    onLiveChange({ ...vals, [axis]: newVal });
   };
 
   return (
@@ -1570,7 +1595,7 @@ function Vec3Row({
         <label key={ax} style={{ display: "flex", alignItems: "center", gap: 2 }}>
           <span style={{ color: "#555", fontSize: 10 }}>{ax.toUpperCase()}</span>
           <ScrubNumber
-            value={parseFloat(vals[ax])}
+            value={vals[ax]}
             onCommit={(v, d) => commit(ax, v, d)}
             onLiveChange={(v) => live(ax, v)}
             speed={speeds?.[ax] ?? 1}
@@ -1583,7 +1608,8 @@ function Vec3Row({
 }
 
 const numInputStyle: React.CSSProperties = {
-  width: 52,
+  minWidth: 44,
+  width: "auto",
   background: "#2a2a2a",
   border: "1px solid #444",
   color: "#ddd",
@@ -1591,14 +1617,6 @@ const numInputStyle: React.CSSProperties = {
   padding: "2px 4px",
   fontSize: 11,
   fontVariantNumeric: "tabular-nums",
-};
-
-const readOnlyNumStyle: React.CSSProperties = {
-  ...numInputStyle,
-  display: "inline-block",
-  boxSizing: "border-box",
-  textAlign: "right",
-  color: "#aaa",
 };
 
 const btnStyle: React.CSSProperties = {

@@ -1,4 +1,9 @@
 import { useEffect, useRef, useState } from "react";
+import {
+  formatScrubDisplay,
+  formatScrubEdit,
+  formatScrubTitle,
+} from "./formatScrubDisplay";
 
 /**
  * min/max からスクラブ 1px あたりの delta を決める。
@@ -67,8 +72,9 @@ export function ScrubNumber({
   className?: string;
 }) {
   const effectiveSpeed = resolveScrubSpeed(speed, min, max, step);
-  const dec = resolveScrubDecimals(speed, decimals, min, max);
-  const fmt = (v: number) => v.toFixed(dec);
+  const displayFmt = (v: number) =>
+    decimals !== undefined ? v.toFixed(decimals).replace(/\.?0+$/, "") : formatScrubDisplay(v);
+  const editFmt = formatScrubEdit;
   const clamp = (v: number): number => {
     let r = v;
     if (min !== undefined) r = Math.max(min, r);
@@ -77,7 +83,7 @@ export function ScrubNumber({
   };
 
   const [editing, setEditing] = useState(false);
-  const [text, setText] = useState(fmt(value));
+  const [text, setText] = useState(editFmt(value));
   const [liveValue, setLiveValue] = useState<number | null>(null);
   const scrubRef = useRef<{
     startX: number;
@@ -86,7 +92,7 @@ export function ScrubNumber({
   } | null>(null);
 
   useEffect(() => {
-    if (!editing && liveValue === null) setText(fmt(value));
+    if (!editing && liveValue === null) setText(editFmt(value));
   }, [value, editing, liveValue]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleMouseDown = (e: React.MouseEvent) => {
@@ -115,7 +121,7 @@ export function ScrubNumber({
       setLiveValue(null);
       if (!state.dragging) {
         setEditing(true);
-        setText(fmt(value));
+        setText(editFmt(value));
       } else {
         const dx = ev.clientX - state.startX;
         const mod = ev.shiftKey ? 10 : ev.ctrlKey || ev.metaKey ? 0.1 : 1;
@@ -135,11 +141,12 @@ export function ScrubNumber({
       const clamped = clamp(n);
       onCommit(clamped, clamped - value);
     } else {
-      setText(fmt(value));
+      setText(editFmt(value));
     }
   };
 
   const merged: React.CSSProperties = { ...defaultStyle, ...style };
+  const title = `${formatScrubTitle(value)} — ドラッグで値変更（Shift=10倍 / Ctrl=0.1倍）/ クリックで入力`;
 
   if (editing) {
     return (
@@ -149,10 +156,11 @@ export function ScrubNumber({
         onBlur={commitText}
         onKeyDown={(e) => {
           if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-          if (e.key === "Escape") { setEditing(false); setText(fmt(value)); }
+          if (e.key === "Escape") { setEditing(false); setText(editFmt(value)); }
         }}
         onFocus={(e) => e.target.select()}
         autoFocus
+        title={title}
         style={{ ...merged, cursor: "text", outline: "1px solid #5a9ff0", userSelect: "text" }}
         className={className}
       />
@@ -163,17 +171,18 @@ export function ScrubNumber({
   return (
     <div
       onMouseDown={handleMouseDown}
-      title="ドラッグで値変更（Shift=10倍 / Ctrl=0.1倍）/ クリックで入力"
+      title={title}
       style={{ ...merged, cursor: "ew-resize", display: "inline-flex", alignItems: "center" }}
       className={className}
     >
-      {fmt(display)}
+      {displayFmt(display)}
     </div>
   );
 }
 
 const defaultStyle: React.CSSProperties = {
-  width: 52,
+  minWidth: 44,
+  width: "auto",
   height: 20,
   background: "#2a2a2a",
   border: "1px solid #444",

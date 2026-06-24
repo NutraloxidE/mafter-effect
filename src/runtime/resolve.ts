@@ -94,8 +94,13 @@ function resolverFor(comp: TimelineComposition, ctx: ResolveContext | undefined)
         ? applyExpr(raw, sampled, frame, objectId)
         : sampled;
     }
-    // comp type: DomRenderer が子フレームを計算できるよう層の inPoint を注入する。
-    if (c.type === "comp") props["_inPoint"] = objInPoint;
+    // comp type: DomRenderer が子フレームを計算できるよう層の inPoint と
+    // 親コンプ fps を注入する（§23.2 秒ベース時間マッピング）。fps は解決中コンプの
+    // 値なので、マウント時スナップショット（this.currentComp）に依存せず常に最新。
+    if (c.type === "comp") {
+      props["_inPoint"] = objInPoint;
+      props["_parentFps"] = fps;
+    }
     props["_hostInPoint"] = objInPoint;
     const out: ResolvedComponent = { type: c.type, props };
     if (c.exportStrategy !== undefined) out.exportStrategy = c.exportStrategy;

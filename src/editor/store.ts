@@ -19,14 +19,14 @@ import type {
   SceneObject,
   ThreeDMode,
   TimelineComposition,
-  Vec3,
 } from "../core/schema";
 import { IndexedDbFs } from "../fs/IndexedDbFs";
 import { compositionDir, DIR_ASSETS, pluginEntryPath, pluginManifestPath, scriptPath } from "../core/paths";
 import { compWouldCreateCycle } from "../runtime/compLayer";
+import { rescaleCompFps, resizeCompCentered } from "./compEdit";
 import { registerBuiltinComponents } from "../runtime/builtinComponents";
 import { registerBuiltinEffects } from "../runtime/builtinEffects";
-import { sampleScalar, sampleVec3 } from "../runtime/interpolate";
+import { sampleScalar } from "../runtime/interpolate";
 import { ModuleLoader } from "../runtime/moduleLoader";
 import type { PluginContext, PluginManifest, EffectDef } from "../runtime/plugin";
 import { globalPluginRegistry } from "../runtime/pluginRegistry";
@@ -245,6 +245,12 @@ export interface EditorStore {
   setCompRenderer3d: (mode: Renderer3d) => void;
   /** §5.6 コンポ背景色。null = 透明（未設定）。 */
   setCompBackground: (bg: RGBA | null) => void;
+  /** §5.6 コンポサイズ変更（中央基準でレイヤーをオフセット）。 */
+  resizeComp: (width: number, height: number) => void;
+  /** §5.6 コンポ fps 変更（秒タイミング維持で KF/duration を再スケール）。 */
+  setCompFps: (fps: number) => void;
+  /** §5.6 コンポ duration 変更（再生ヘッド超過時はクランプ）。 */
+  setCompDuration: (duration: number) => void;
 
   // §5.4d 描画モード
   setBlendMode: (objId: string, mode: BlendMode) => void;
@@ -1284,6 +1290,56 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     };
     get().applyCommand({ label: bg ? "Set Background" : "Clear Background (transparent)", before, after });
   },
+
+  resizeComp: (width, height) => {
+    const before = get().project;
+    if (!before) return;
+    const compId = get().currentCompId;
+    const target = before.compositions.find((c) => c.id === compId);
+    if (!target || target.kind !== "timeline") return;
+    const resized = resizeCompCentered(target, width, height);
+    if (resized.width === target.width && resized.height === target.height) return;
+    const after: Project = {
+      ...before,
+      compositions: before.compositions.map((c) => (c.id === compId ? resized : c)),
+    };
+    get().applyCommand({ label: `Comp Size ${resized.width}×${resized.height}`, before, after });
+  },
+
+  setCompFps: (fps) => {
+    const before = get().project;
+    if (!before) return;
+    const compId = get().currentCompId;
+    const target = before.compositions.find((c) => c.id === compId);
+    if (!target || target.kind !== "timeline") return;
+    const newFps = Math.max(1, Math.round(fps));
+    if (newFps === target.fps) return;
+    const rescaled = rescaleCompFps(target, newFps);
+    const after: Project = {
+      ...before,
+      compositions: before.compositions.map((c) => (c.id === compId ? rescaled : c)),
+    };
+    get().applyCommand({ label: `Comp FPS ${newFps}`, before, after });
+    // 再生ヘッドも秒維持で再配置（プロジェクト外の transient 状態）。
+    const ratio = newFps / target.fps;
+    set({ currentFrame: Math.max(0, Math.min(Math.round(get().currentFrame * ratio), rescaled.duration - 1)) });
+  },
+
+  setCompDuration: (duration) => {
+    const before = get().project;
+    if (!before) return;
+    const compId = get().currentCompId;
+    const target = before.compositions.find((c) => c.id === compId);
+    if (!target) return;
+    const newDur = Math.max(1, Math.round(duration));
+    if (newDur === target.duration) return;
+    const after: Project = {
+      ...before,
+      compositions: before.compositions.map((c) => (c.id === compId ? { ...c, duration: newDur } : c)),
+    };
+    get().applyCommand({ label: `Comp Duration ${newDur}f`, before, after });
+    if (get().currentFrame > newDur - 1) set({ currentFrame: newDur - 1 });
+  },
 }));
 
 declare global {
@@ -1364,11 +1420,3 @@ export function selectedObjects(
   return comp.objects.filter((o) => selectedIds.includes(o.id));
 }
 
-/** AnimatedProp<Vec3> の value を表示用に返す。 */
-export function propVec3ToDisplay(
-  prop: AnimatedProp<Vec3>,
-  frame: Frame,
-): { x: string; y: string; z: string } {
-  const v = sampleVec3(prop, frame);
-  return { x: v.x.toFixed(1), y: v.y.toFixed(1), z: v.z.toFixed(1) };
-}

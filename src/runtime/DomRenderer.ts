@@ -342,7 +342,8 @@ export class DomRenderer implements Renderer {
         if (childComp) {
           const inPoint = (c.props["_inPoint"] as number) ?? 0;
           const trimStart = (c.props["trimStart"] as number) ?? 0;
-          const childFrame = compChildFrame(frame, inPoint, trimStart, childComp.duration);
+          const parentFps = (c.props["_parentFps"] as number) ?? childComp.fps;
+          const childFrame = compChildFrame(frame, inPoint, trimStart, childComp.duration, parentFps, childComp.fps);
           this.renderNestedComp(el, childComp, childFrame, 1);
         }
       }
@@ -1109,7 +1110,8 @@ export class DomRenderer implements Renderer {
             const innerEl = document.createElement("div");
             const inPoint = (c.props["_inPoint"] as number) ?? 0;
             const trimStart = (c.props["trimStart"] as number) ?? 0;
-            const nestedFrame = compChildFrame(childFrame, inPoint, trimStart, nestedComp.duration);
+            const parentFps = (c.props["_parentFps"] as number) ?? childComp.fps;
+            const nestedFrame = compChildFrame(childFrame, inPoint, trimStart, nestedComp.duration, parentFps, nestedComp.fps);
             this.renderNestedComp(innerEl, nestedComp, nestedFrame, depth + 1);
             div.appendChild(innerEl);
           }

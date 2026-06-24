@@ -3,15 +3,25 @@ import type { Frame, Project, TimelineComposition } from "../core/schema";
 /** §23.3: renderNestedComp の再帰深度上限（depth > 4 で打ち切り）。 */
 export const MAX_COMP_NEST_DEPTH = 4;
 
-/** §23.2: childFrame = clamp(parentFrame - inPoint + trimStart, 0, duration - 1) */
+/**
+ * §23.2: 秒ベースの時間マッピング（AE 既定）。
+ *   parentTimeSec = (parentFrame - inPoint) / parentFps
+ *   childFrame    = clamp(round(parentTimeSec * childFps) + trimStart, 0, duration - 1)
+ *
+ * parentFps === childFps のとき従来式 `parentFrame - inPoint + trimStart` と完全一致（後方互換）。
+ * trimStart は子コンプの frame 単位なのでリスケールしない。
+ */
 export function compChildFrame(
   parentFrame: Frame,
   inPoint: Frame,
   trimStart: Frame,
   childDuration: Frame,
+  parentFps: number,
+  childFps: number,
 ): Frame {
-  const raw = parentFrame - inPoint + trimStart;
-  return Math.max(0, Math.min(Math.round(raw), childDuration - 1));
+  const parentTimeSec = (parentFrame - inPoint) / parentFps;
+  const raw = Math.round(parentTimeSec * childFps) + trimStart;
+  return Math.max(0, Math.min(raw, childDuration - 1));
 }
 
 export function isCompNestDepthAllowed(depth: number): boolean {
