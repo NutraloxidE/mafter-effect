@@ -14,8 +14,8 @@ export interface NewProjectOptions {
 // optional フィールドの方針（1 本化）:
 //   「値が存在するものは書く / 機能が不在のものはキーごと省略（null を書かない）」（§5.6-canon）。
 //   - background: comp の塗り（authored な値）なので明示する。
-//   - activeCamera: まだカメラが無い＝機能不在なので省略（未設定 = 正射影, §6.5）。
 //   この規則は createProject の populate と canonicalStringify の undefined 省略で一貫する。
+//   （active camera は永続しない。frame ごとに最前面の可視カメラを resolve() が選ぶ・§6.5）
 /** 既定の timeline comp を 1 つ持つ空プロジェクトを生成する。 */
 export function createProject(opts: NewProjectOptions = {}): Project {
   const {

@@ -191,12 +191,19 @@ describe("resolve — expression seam (§9, M2 frozen boundary)", () => {
   });
 });
 
+function camObj(id: string, pos: Vec3, over: Partial<SceneObject> = {}): SceneObject {
+  return atPos(id, pos, {
+    components: [{ type: "camera", props: { cameraType: "one-node", zoom: 1158 } }],
+    ...over,
+  });
+}
+
 describe("resolve — camera (§6.5)", () => {
-  it("produces a view matrix = inverse(camera world) when activeCamera set", () => {
+  it("produces a view matrix = inverse(camera world) for the lone camera", () => {
     const cam = atPos("cam", vec3(0, 0, 500), {
       components: [{ type: "camera", props: { fov: 60 } }],
     });
-    const scene = resolve(comp([cam, atPos("x", vec3(0, 0, 0))], { activeCamera: "cam" }), 0);
+    const scene = resolve(comp([cam, atPos("x", vec3(0, 0, 0))]), 0);
     expect(scene.camera).toBeDefined();
     expect(scene.camera!.fov).toBe(60);
     // camera at z=500 → view matrix translates scene by -500 in z
@@ -210,7 +217,7 @@ describe("resolve — camera (§6.5)", () => {
     const cam = atPos("cam", vec3(0, 0, 500), {
       components: [{ type: "camera", props: { cameraType: "one-node", zoom } }],
     });
-    const scene = resolve(comp([cam], { activeCamera: "cam" }), 0);
+    const scene = resolve(comp([cam]), 0);
     expect(scene.camera!.fov).toBeCloseTo(50, 4);
   });
 
@@ -220,7 +227,7 @@ describe("resolve — camera (§6.5)", () => {
         { type: "camera", props: { cameraType: "two-node", pointOfInterest: vec3(0, 0, 0), zoom: 1000 } },
       ],
     });
-    const scene = resolve(comp([cam], { activeCamera: "cam" }), 0);
+    const scene = resolve(comp([cam]), 0);
     // POI (origin) sits in front of the camera → view-space z negative.
     const poiInView = transformPoint(scene.camera!.viewMatrix, vec3(0, 0, 0));
     expect(poiInView.z).toBeLessThan(0);
@@ -235,7 +242,7 @@ describe("resolve — camera (§6.5)", () => {
         { type: "camera", props: { cameraType: "two-node", pointOfInterest: vec3(960, 540, 0), zoom: 1158 } },
       ],
     });
-    const scene = resolve(comp([cam], { activeCamera: "cam" }), 0);
+    const scene = resolve(comp([cam]), 0);
     const v = scene.camera!.viewMatrix;
     // a point to the right of POI maps to view +x (NOT mirrored to -x).
     const right = transformPoint(v, vec3(960 + 100, 540, 0));
@@ -243,6 +250,59 @@ describe("resolve — camera (§6.5)", () => {
     // a point below POI (world +y) maps to view +y (no flip).
     const below = transformPoint(v, vec3(960, 540 + 100, 0));
     expect(below.y).toBeCloseTo(100, 3);
+  });
+});
+
+describe("resolve — active camera auto-selection (§6.5, AE 準拠)", () => {
+  it("picks the topmost (highest zOrder) visible camera", () => {
+    const back = camObj("back", vec3(0, 0, 300), { zOrder: 1 });
+    const front = camObj("front", vec3(0, 0, 700), { zOrder: 5 });
+    const scene = resolve(comp([back, front]), 0);
+    // front camera (z=700) wins → view translates by -700.
+    expect(transformPoint(scene.camera!.viewMatrix, vec3(0, 0, 0)).z).toBeCloseTo(-700, 6);
+  });
+
+  it("falls back to the next camera when the topmost is out of its time range", () => {
+    const lower = camObj("lower", vec3(0, 0, 300), { zOrder: 1, inPoint: 0, outPoint: 100 });
+    const topShort = camObj("top", vec3(0, 0, 700), { zOrder: 5, inPoint: 0, outPoint: 10 });
+    const scene = resolve(comp([lower, topShort]), 50); // frame 50: top is out of range
+    expect(transformPoint(scene.camera!.viewMatrix, vec3(0, 0, 0)).z).toBeCloseTo(-300, 6);
+  });
+
+  it("skips a disabled topmost camera", () => {
+    const lower = camObj("lower", vec3(0, 0, 300), { zOrder: 1 });
+    const topOff = camObj("top", vec3(0, 0, 700), { zOrder: 5, enabled: false });
+    const scene = resolve(comp([lower, topOff]), 0);
+    expect(transformPoint(scene.camera!.viewMatrix, vec3(0, 0, 0)).z).toBeCloseTo(-300, 6);
+  });
+
+  it("no visible camera → default view (scene.camera undefined)", () => {
+    const offRange = camObj("c", vec3(0, 0, 500), { inPoint: 60, outPoint: 100 });
+    const scene = resolve(comp([offRange]), 0);
+    expect(scene.camera).toBeUndefined();
+  });
+
+  it("previewCamera override forces that camera (editor-only)", () => {
+    const back = camObj("back", vec3(0, 0, 300), { zOrder: 1 });
+    const front = camObj("front", vec3(0, 0, 700), { zOrder: 5 });
+    const c = comp([back, front]);
+    const scene = resolve(c, 0, { previewCamera: "back" });
+    expect(transformPoint(scene.camera!.viewMatrix, vec3(0, 0, 0)).z).toBeCloseTo(-300, 6);
+  });
+
+  it('previewCamera "default" forces no camera (default view)', () => {
+    const cam = camObj("cam", vec3(0, 0, 500));
+    const scene = resolve(comp([cam]), 0, { previewCamera: "default" });
+    expect(scene.camera).toBeUndefined();
+  });
+
+  it("INV-2: output resolve (no override) is independent of preview override", () => {
+    const back = camObj("back", vec3(0, 0, 300), { zOrder: 1 });
+    const front = camObj("front", vec3(0, 0, 700), { zOrder: 5 });
+    const c = comp([back, front]);
+    const output = resolve(c, 0); // export path: no previewCamera
+    // auto-selected front camera regardless of any editor preview state.
+    expect(transformPoint(output.camera!.viewMatrix, vec3(0, 0, 0)).z).toBeCloseTo(-700, 6);
   });
 });
 

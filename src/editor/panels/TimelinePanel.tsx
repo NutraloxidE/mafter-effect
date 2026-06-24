@@ -32,6 +32,7 @@ import type {
   Vec3,
 } from "../../core/schema";
 import { sampleAny, sampleScalar, sampleVec3 } from "../../runtime/interpolate";
+import { activeCameraAt } from "../../runtime/resolve";
 import { globalPluginRegistry } from "../../runtime/pluginRegistry";
 import { previewCacheService } from "../previewCacheService";
 import { framesToSegments } from "../cacheSegments";
@@ -108,7 +109,8 @@ export function TimelinePanel() {
   const addAdjustmentLayer = useEditorStore((s) => s.addAdjustmentLayer);
   const addNullLayer = useEditorStore((s) => s.addNullLayer);
   const addCamera = useEditorStore((s) => s.addCamera);
-  const setActiveCamera = useEditorStore((s) => s.setActiveCamera);
+  const previewCamera = useEditorStore((s) => s.previewCamera);
+  const setPreviewCamera = useEditorStore((s) => s.setPreviewCamera);
   const setCompRenderer3d = useEditorStore((s) => s.setCompRenderer3d);
   const removeObject = useEditorStore((s) => s.removeObject);
   const selectObjects = useEditorStore((s) => s.selectObjects);
@@ -155,6 +157,9 @@ export function TimelinePanel() {
   }, [compId, workAreaRevision]);
   // P1-5: タイムラインは zOrder 降順で表示（最前面=最上段, AE 準拠）。配列順ではなく描画順に並べる。
   const objects = [...(comp?.objects ?? [])].sort((a, b) => b.zOrder - a.zOrder);
+
+  // §6.5: 現フレームで実際に出力に使われるカメラ（最前面の可視カメラ）。CAM● バッジに使う。
+  const autoActiveCameraId = comp ? (activeCameraAt(comp, frame)?.id ?? null) : null;
 
   // P0-1: ズーム/スクロール状態 — viewRange は表示フレーム範囲（UI 状態, project 非保存）。
   const [viewRange, setViewRange] = useState<{ start: number; end: number }>({ start: 0, end: duration });
@@ -985,15 +990,18 @@ export function TimelinePanel() {
         {comp && (
           <>
             <select
-              value={comp.activeCamera ?? ""}
-              onChange={(e) => setActiveCamera(e.target.value === "" ? null : e.target.value)}
-              title="アクティブカメラ（§6.5）"
-              style={{ ...btnStyle, fontSize: 10, padding: "1px 4px", color: "#7fb8f0" }}
+              value={previewCamera ?? ""}
+              onChange={(e) =>
+                setPreviewCamera(e.target.value === "" ? null : e.target.value)
+              }
+              title="プレビュー視点（§6.5・AE の 3D View 相当）。出力カメラは常にその時刻で最前面の可視カメラ。これは表示視点だけを変え、export には影響しない。"
+              style={{ ...btnStyle, fontSize: 10, padding: "1px 4px", color: previewCamera ? "#f0c060" : "#7fb8f0" }}
             >
-              <option value="">No Camera</option>
+              <option value="">View: Active Camera</option>
               {objects.filter((o) => o.components.some((c) => c.type === "camera")).map((o) => (
-                <option key={o.id} value={o.id}>{o.name}</option>
+                <option key={o.id} value={o.id}>View: {o.name}</option>
               ))}
+              <option value="default">View: Default (no camera)</option>
             </select>
             <select
               value={comp.renderer3d ?? "classic"}
@@ -1115,7 +1123,7 @@ export function TimelinePanel() {
             onSetLabelIndex={setLayerLabelIndex}
             onSetParent={handleSetParent}
             allObjects={objects}
-            activeCameraId={comp?.activeCamera ?? null}
+            activeCameraId={autoActiveCameraId}
             onPreviewPatch={(id, patch) => setPreviewOverride({ objectId: id, patch })}
             frameToPercent={frameToPercent}
             sourceExtent={project ? getLayerSourceExtent(obj, project, fps) : null}
@@ -2006,7 +2014,10 @@ function LayerRow(props: LayerRowProps) {
               </span>
             )}
             {obj.components.some((c) => c.type === "camera") && (
-              <span style={{ marginLeft: 4, fontSize: 9, color: "#7fb8f0", fontWeight: 600 }}>
+              <span
+                style={{ marginLeft: 4, fontSize: 9, color: "#7fb8f0", fontWeight: 600 }}
+                title={activeCameraId === obj.id ? "現フレームの出力カメラ（最前面の可視カメラ）" : "カメラ（このフレームでは非アクティブ）"}
+              >
                 {activeCameraId === obj.id ? "CAM●" : "CAM"}
               </span>
             )}

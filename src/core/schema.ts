@@ -174,7 +174,8 @@ export interface CompositionMeta {
 export interface TimelineComposition extends CompositionMeta {
   kind: "timeline";
   objects: SceneObject[]; // flat list, id 昇順で直列化（§5.4-note）
-  activeCamera?: ObjectId;
+  // active camera は永続しない。resolve() が frame ごとに最前面の可視 camera を自動選択（§6.5）。
+  // 旧 `activeCamera?: ObjectId` はロード時に無視（後方互換）。
   renderer3d?: Renderer3d; // §5.4b 3D レンダラー。省略 = "classic"
 }
 

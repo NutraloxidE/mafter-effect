@@ -239,7 +239,9 @@ export interface EditorStore {
 
   // §5.4b / §6.5 3D レイヤー & カメラ
   addCamera: (name?: string) => string | null;
-  setActiveCamera: (objId: string | null) => void;
+  /** §6.5 プレビュー視点 override（非永続）。null = 自動（最前面の可視カメラ）。"default" = デフォルト視点。 */
+  previewCamera: string | "default" | null;
+  setPreviewCamera: (cam: string | "default" | null) => void;
   setThreeD: (objId: string, enabled: boolean) => void;
   setThreeDMode: (objId: string, mode: ThreeDMode) => void;
   setCompRenderer3d: (mode: Renderer3d) => void;
@@ -260,6 +262,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   project: null,
   currentCompId: "",
   currentFrame: 0,
+  previewCamera: null,
   selectedObjectIds: [],
   selectedKfKeys: [],
   isPlaying: false,
@@ -365,7 +368,8 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
   setFrame: (frame) => set({ currentFrame: frame }),
   // §20.3 アクティブ comp 切替時は frame を 0・選択をクリア
-  setCurrentComp: (id) => set({ currentCompId: id, currentFrame: 0, selectedObjectIds: [] }),
+  setCurrentComp: (id) =>
+    set({ currentCompId: id, currentFrame: 0, selectedObjectIds: [], previewCamera: null }),
   selectObjects: (ids) => set({ selectedObjectIds: ids }),
 
   setSelectedKfKeys: (keys) =>
@@ -473,7 +477,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     };
     get().applyCommand({ label: "Add Composition", before, after });
     // 作成した comp をアクティブにする（エディタ状態, undo 対象外）
-    set({ currentCompId: id, currentFrame: 0, selectedObjectIds: [] });
+    set({ currentCompId: id, currentFrame: 0, selectedObjectIds: [], previewCamera: null });
     return id;
   },
 
@@ -510,7 +514,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
     // currentCompId が消えたら rootComposition に移す
     if (get().currentCompId === id) {
-      set({ currentCompId: rootComposition, currentFrame: 0, selectedObjectIds: [] });
+      set({ currentCompId: rootComposition, currentFrame: 0, selectedObjectIds: [], previewCamera: null });
     }
   },
 
@@ -1210,13 +1214,13 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         },
       ],
     };
-    // オブジェクト追加と activeCamera 設定を 1 コマンドにまとめる。
+    // §6.5: active camera は永続しない。追加するだけで最前面ならその frame で自動採用される。
     const before = get().project!;
     const withObj: Project = {
       ...before,
       compositions: before.compositions.map((c) =>
         c.id === comp.id && c.kind === "timeline"
-          ? { ...c, objects: [...c.objects, obj], activeCamera: id }
+          ? { ...c, objects: [...c.objects, obj] }
           : c,
       ),
     };
@@ -1224,20 +1228,9 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     return id;
   },
 
-  setActiveCamera: (objId) => {
-    const before = get().project;
-    if (!before) return;
-    const compId = get().currentCompId;
-    const after: Project = {
-      ...before,
-      compositions: before.compositions.map((c) =>
-        c.id === compId && c.kind === "timeline"
-          ? { ...c, activeCamera: objId ?? undefined }
-          : c,
-      ),
-    };
-    get().applyCommand({ label: objId ? "Set Active Camera" : "Clear Active Camera", before, after });
-  },
+  // §6.5: プレビュー視点 override（非永続・undo に積まない・project.json に書かない）。
+  // null = 自動（最前面の可視カメラ）。ObjectId = そのカメラを強制。"default" = デフォルト視点。
+  setPreviewCamera: (cam) => set({ previewCamera: cam }),
 
   setThreeD: (objId, enabled) => {
     const comp = currentTimelineComp(get().project, get().currentCompId);

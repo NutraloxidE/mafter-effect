@@ -53,6 +53,8 @@ export function canonicalizeProject(project: Project): Project {
         };
         // §5.4b: renderer3d は "advanced" のときだけ書く（"classic" 既定は省略）。
         if (t.renderer3d === "classic") t.renderer3d = undefined;
+        // §6.5: active camera は永続しない。旧 project.json の `activeCamera` はここで落とす（後方互換）。
+        delete (t as { activeCamera?: unknown }).activeCamera;
         return t;
       }
       return { ...comp };

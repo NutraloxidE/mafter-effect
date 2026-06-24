@@ -361,7 +361,9 @@ interface CompositionMeta {
 interface TimelineComposition extends CompositionMeta {
   kind: "timeline";
   objects: SceneObject[];   // flat list, id 昇順で直列化。ツリーは parent から導出（§5.4-note）
-  activeCamera?: ObjectId;
+  // active camera は永続フィールドではない。その frame で「最前面（最大 zOrder）かつ可視」な
+  // camera レイヤーを resolve() が自動選択する（§6.5）。手動のプレビュー視点切替は非永続 UI 状態（§17）。
+  // 旧 `activeCamera?: ObjectId` はロード時に無視（後方互換・§5 変更 2026-06-25）。
   renderer3d?: "classic" | "advanced";  // 3D レンダラー。省略 = "classic"（§5.4b / §6.5）
 }
 
@@ -441,6 +443,8 @@ L = T(position) · R(rotation) · S(scale) · T(-anchor)
 - **端の外挿**: 最初の KF より前は最初の値、最後の KF より後は最後の値で **hold**（clamp）。
 
 ### §6.5 3D / Camera（確定）
+- **アクティブカメラ選択（AE 準拠・確定 2026-06-25）**: コンポ映像（preview / browser export / headless export すべて）に使うカメラは**手動固定しない**。`resolve(comp, frame)` がその frame で **`enabled && inPoint <= frame < outPoint`（= `isVisible`）を満たす camera component 持ちレイヤーのうち最大 `zOrder`（最前面）**を自動選択する。タイは id で安定化。**該当が 1 つも無ければカメラ無し＝デフォルト視点**（`scene.camera` を設定しない＝正射影）。純関数のまま（INV-1）で preview/export が一致する（INV-2）。
+  - **プレビュー視点 override（非永続・エディタ専用）**: AE の 3D View ポップアップ相当。`ResolveContext.previewCamera?: ObjectId | "default"` で、エディタのビューポートだけ任意カメラ（`ObjectId`）／デフォルト視点（`"default"`）に切り替えられる。**export / bundle / nested comp は常に override を渡さない**ため出力は上記の自動選択で決定論的（INV-2 を破らない）。override は Zustand の ephemeral 状態で `project.json` に書かない（§17）。
 - DOM レンダラは root に `transform-style: preserve-3d`。dom モード 3D の前後関係はブラウザが z 深度で合成（§5.4b）。
 - **active camera あり**: `perspective = (compHeight/2) / tan(fov/2)` [px] と `perspective-origin: 50% 50%` を **root に設定**する。**ビュー変換（camera world の逆）は root には掛けず、各 3D レイヤーの行列に焼く（per-object）**。理由 = CSS `perspective` は**その要素の子孫**の 3D 変換にのみ効くため、view を root（perspective と同一要素）に置くとカメラ Z が平面適用され dolly/zoom が効かない（実測確定・§6.5b）。
   - 3D レイヤー（`threeD=true`）の DOM 変換 = **`translate(cx, cy, P) · view · worldTransform`**（`P=perspective=zoom`、`cx,cy=comp 中央`）。`translate(cx,cy,P)` は XY 再センタリング＋深度補正で、既定カメラ（cameraZ=zoom=P）を等倍 neutral にする。dolly: `scale=P/(cameraZ−z)`、zoom: `scale=P/cameraZ`。

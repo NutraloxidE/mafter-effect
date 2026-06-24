@@ -90,7 +90,8 @@ export function InspectorPanel() {
   const resizeComp = useEditorStore((s) => s.resizeComp);
   const setCompFps = useEditorStore((s) => s.setCompFps);
   const setCompDuration = useEditorStore((s) => s.setCompDuration);
-  const setActiveCamera = useEditorStore((s) => s.setActiveCamera);
+  const previewCamera = useEditorStore((s) => s.previewCamera);
+  const setPreviewCamera = useEditorStore((s) => s.setPreviewCamera);
   const removeEffect = useEditorStore((s) => s.removeEffect);
   const reorderEffect = useEditorStore((s) => s.reorderEffect);
   const toggleEffect = useEditorStore((s) => s.toggleEffect);
@@ -437,13 +438,14 @@ export function InspectorPanel() {
             <ScrubNumber value={readCamNum("near", 1)} onCommit={(v) => setCamProp("near", Math.max(0.001, v), "Set near")} min={0.001} step={1} style={numInputStyle} />
             <ScrubNumber value={readCamNum("far", 10000)} onCommit={(v) => setCamProp("far", Math.max(1, v), "Set far")} min={1} step={10} style={numInputStyle} />
           </Row>
-          <Row label="Active">
+          <Row label="Preview View">
             <button
               type="button"
-              onClick={() => setActiveCamera(comp?.activeCamera === obj.id ? null : obj.id)}
-              style={{ ...btnStyle, background: comp?.activeCamera === obj.id ? "#2f4a68" : "#2a2a2a", color: comp?.activeCamera === obj.id ? "#9fc8f0" : "#ccc" }}
+              title="プレビュー視点をこのカメラに切替（§6.5・AE の 3D View 相当）。出力カメラは常に最前面の可視カメラで、これは表示視点だけを変え export に影響しない。"
+              onClick={() => setPreviewCamera(previewCamera === obj.id ? null : obj.id)}
+              style={{ ...btnStyle, background: previewCamera === obj.id ? "#5a4a20" : "#2a2a2a", color: previewCamera === obj.id ? "#f0c060" : "#ccc" }}
             >
-              {comp?.activeCamera === obj.id ? "Active ●" : "Set Active"}
+              {previewCamera === obj.id ? "Previewing ●" : "Preview through"}
             </button>
           </Row>
         </InspectorFoldout>

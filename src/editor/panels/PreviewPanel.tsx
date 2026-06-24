@@ -88,6 +88,7 @@ export function PreviewPanel() {
   const setPreviewQuality = useEditorStore((s) => s.setPreviewQuality);
   const projectRevision = useEditorStore((s) => s.projectRevision);
   const previewOverride = useEditorStore((s) => s.previewOverride);
+  const previewCamera = useEditorStore((s) => s.previewCamera);
   const workAreaRevision = useEditorStore((s) => s.workAreaRevision);
 
   const timelineComps = (project?.compositions ?? []).filter((c) => c.kind === "timeline");
@@ -108,6 +109,7 @@ export function PreviewPanel() {
   const frameRef = useRef(frame);
   const renderCompRef = useRef<TimelineComposition | null>(null);
   const previewOverrideRef = useRef(previewOverride);
+  const previewCameraRef = useRef(previewCamera);
   const draftTransformRef = useRef<Transform | null>(null);
   const isPlayingRef = useRef(isPlaying);
   const playbackConfigRef = useRef({
@@ -137,6 +139,7 @@ export function PreviewPanel() {
   const comp = currentTimelineComp(project, compId);
   frameRef.current = frame;
   previewOverrideRef.current = previewOverride;
+  previewCameraRef.current = previewCamera;
   draftTransformRef.current = draftTransform;
   isPlayingRef.current = isPlaying;
 
@@ -206,8 +209,18 @@ export function PreviewPanel() {
     if (!rc || !renderer || isStale()) return;
 
     const ram = previewCacheService.getController();
-    const editingLive = previewOverrideRef.current !== null || draftTransformRef.current !== null;
+    // previewCamera override（プレビュー視点）が効いている間はキャッシュを使わない・残さない。
+    // RAM キャッシュは出力（自動カメラ）フレームのため、override フレームを混ぜると不整合になる。
+    const previewCameraOverride = previewCameraRef.current;
+    const editingLive =
+      previewOverrideRef.current !== null ||
+      draftTransformRef.current !== null ||
+      previewCameraOverride !== null;
     const preferCache = !editingLive && (ram?.shouldPreferCacheDisplay() ?? false);
+    const resolveCtx = {
+      expressions: evaluatorRef.current,
+      previewCamera: previewCameraOverride ?? undefined,
+    };
 
     const afterLiveRender = () => {
       if (isStale()) return;
@@ -220,10 +233,7 @@ export function PreviewPanel() {
     if (!preferCache) {
       setUseCachedFrame(false);
       const t0 = performance.now();
-      renderer.renderFrame(
-        resolve(rc, targetFrame, { expressions: evaluatorRef.current }),
-        targetFrame,
-      );
+      renderer.renderFrame(resolve(rc, targetFrame, resolveCtx), targetFrame);
       await renderer.flushRasterEffects();
       if (isStale()) return;
       ram?.recordLiveRenderMs(performance.now() - t0);
@@ -437,7 +447,7 @@ export function PreviewPanel() {
     setRenderTick((t) => t + 1);
   }, [previewOverride]);
 
-  const editingLive = previewOverride !== null || draftTransform !== null;
+  const editingLive = previewOverride !== null || draftTransform !== null || previewCamera !== null;
   const draftPlaybackActive = isPlaying && effectiveTextQuality === "draft" && !editingLive;
 
   useEffect(() => {
@@ -467,7 +477,10 @@ export function PreviewPanel() {
       setUseCachedFrame(false);
       const t0 = performance.now();
       rendererRef.current.renderFrame(
-        resolve(renderComp, frame, { expressions: evaluatorRef.current }),
+        resolve(renderComp, frame, {
+          expressions: evaluatorRef.current,
+          previewCamera: previewCamera ?? undefined,
+        }),
         frame,
       );
       void rendererRef.current.flushRasterEffects().then(() => {
@@ -491,7 +504,10 @@ export function PreviewPanel() {
       if (isPlaying) ram?.notePlaybackFrame(false);
       const t0 = performance.now();
       rendererRef.current!.renderFrame(
-        resolve(renderComp, frame, { expressions: evaluatorRef.current }),
+        resolve(renderComp, frame, {
+          expressions: evaluatorRef.current,
+          previewCamera: previewCamera ?? undefined,
+        }),
         frame,
       );
       await rendererRef.current!.flushRasterEffects();
@@ -502,7 +518,7 @@ export function PreviewPanel() {
     return () => {
       cancelled = true;
     };
-  }, [renderComp, frame, renderTick, projectRevision, isPlaying, previewOverride, draftTransform, effectiveCacheEnabled, draftPlaybackActive, editingLive]);
+  }, [renderComp, frame, renderTick, projectRevision, isPlaying, previewOverride, previewCamera, draftTransform, effectiveCacheEnabled, draftPlaybackActive, editingLive]);
 
   playbackConfigRef.current = {
     fps: comp?.fps ?? 30,
@@ -1016,7 +1032,7 @@ export function PreviewPanel() {
                   onComponentPreview={handleComponentPreview}
                   onComponentCommit={handleComponentCommit}
                   boxGizmoEnabled={boxGizmoEnabled}
-                  resolveCtx={{ expressions: evaluatorRef.current }}
+                  resolveCtx={{ expressions: evaluatorRef.current, previewCamera: previewCamera ?? undefined }}
                   onPan={handlePan}
                   textQuality={effectiveTextQuality}
                   getFont={(family) => fontCacheRef.current.getFont(family) ?? null}

@@ -43,6 +43,34 @@ export type ExpressionEvaluator = (args: ExpressionEvalArgs) => unknown;
 export interface ResolveContext {
   /** 事前ロード済み expression 評価関数（§9 / §11.3）。未指定なら expression は無視され keyframe/static 値が使われる。 */
   expressions?: ExpressionEvaluator;
+  /**
+   * §6.5 プレビュー視点 override（エディタ専用・非永続）。AE の 3D View ポップアップ相当。
+   * 未指定（既定）= その frame で最前面の可視カメラを自動選択（出力・export と一致）。
+   * `ObjectId` = そのカメラを強制。`"default"` = カメラ無し（デフォルト視点）を強制。
+   * export / bundle / nested comp は渡さない（INV-2: 出力は常に自動選択で決定論的）。
+   */
+  previewCamera?: ObjectId | "default";
+}
+
+/**
+ * §6.5 その frame で出力に使われるカメラオブジェクトを返す（純関数・INV-1）。
+ * 条件: camera component を持ち `isVisible(obj, frame)`。複数なら最大 zOrder（最前面）、タイは id で安定化。
+ * 該当が無ければ null（= デフォルト視点）。
+ */
+export function activeCameraAt(comp: TimelineComposition, frame: Frame): SceneObject | null {
+  let best: SceneObject | null = null;
+  for (const obj of comp.objects) {
+    if (!isVisible(obj, frame)) continue;
+    if (!obj.components.some((c) => c.type === "camera")) continue;
+    if (
+      best === null ||
+      obj.zOrder > best.zOrder ||
+      (obj.zOrder === best.zOrder && obj.id > best.id)
+    ) {
+      best = obj;
+    }
+  }
+  return best;
 }
 
 function resolverFor(comp: TimelineComposition, ctx: ResolveContext | undefined) {
@@ -243,8 +271,16 @@ export function resolve(
   };
 
   // active camera（§6.5 / §6.5b）。one-node: view = world の逆。two-node: lookAt で注視点を向く。
-  if (comp.activeCamera && byId.has(comp.activeCamera)) {
-    const camObj = byId.get(comp.activeCamera)!;
+  // 出力カメラは「その frame で最前面の可視カメラ」を自動選択（AE 準拠）。エディタは previewCamera で上書き可。
+  const previewCam = ctx?.previewCamera;
+  const camObj =
+    previewCam === "default"
+      ? null
+      : typeof previewCam === "string"
+        ? (byId.get(previewCam) ?? null)
+        : activeCameraAt(comp, frame);
+  // override 指定カメラも「camera component を持ち可視」でなければデフォルト視点に倒す。
+  if (camObj && isVisible(camObj, frame) && camObj.components.some((c) => c.type === "camera")) {
     const camWorld = worldOf(camObj.id);
     const cameraComp = camObj.components.find((c) => c.type === "camera");
     const camType = cameraComp ? sampleAny(cameraComp.props.cameraType, frame) : undefined;

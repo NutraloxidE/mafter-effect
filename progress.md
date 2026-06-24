@@ -206,3 +206,20 @@ canvas 化結果は以降から見て通常の背面ピクセルと等価（zOrd
   2. [ScrubNumber.tsx](src/editor/ScrubNumber.tsx) — `formatScrubFixed` 使用、`flexShrink:0`、表示桁数ベース `minWidth`。
   3. [InspectorPanel.tsx](src/editor/panels/InspectorPanel.tsx) — `Row`/`Vec3Row` ラベル 72px、`flexWrap`。
 - **検証**: `test/formatScrubDisplay.test.ts`（`formatScrubFixed`）+ Playwright（`1920`/`1080` 全文・Background ラベル PASS）/ 433 tests / typecheck 緑。
+
+### 2026-06-25（Cursor）— アクティブカメラを「最前面の自動カメラ」に（AE 準拠）
+
+- **要望**: コンポ映像に使うカメラがプルダウンで手動固定されていた。AE 同様、その時刻で最前面（最大 zOrder）のアクティブなカメラレイヤーを自動で出力カメラにしたい。
+- **確定仕様**（§6.5 更新）:
+  - 出力（preview/export 共通）= その frame で `enabled && inPoint<=f<outPoint`（=`isVisible`）を満たす camera レイヤーのうち最大 zOrder。該当無し＝デフォルト視点。`resolve()` 内で自動選択（INV-1/INV-2 維持）。
+  - 手動プルダウンは**プレビュー視点専用**（AE の 3D View 相当・非永続）。`ResolveContext.previewCamera?: ObjectId|"default"` で、PreviewPanel だけが渡す。export/bundle/nested は渡さない。
+  - `TimelineComposition.activeCamera`（§5）を**削除**。旧 project.json はロード時に無視（[serialize.ts](src/core/serialize.ts) で canonicalize 時に drop）。
+- **実装**:
+  1. [resolve.ts](src/runtime/resolve.ts) — `activeCameraAt(comp, frame)` export + `ResolveContext.previewCamera` + カメラ選択ブロック書換。
+  2. [schema.ts](src/core/schema.ts) / [serialize.ts](src/core/serialize.ts) — `activeCamera` 削除 + 後方互換 drop。
+  3. [store.ts](src/editor/store.ts) — `setActiveCamera` → 非永続 `previewCamera` / `setPreviewCamera`（undo 非対象）。comp 切替でリセット。`addCamera` は activeCamera 設定をやめた。
+  4. [PreviewPanel.tsx](src/editor/panels/PreviewPanel.tsx) — resolve 4 経路に previewCamera 注入。override 中は RAM キャッシュをバイパス（editingLive 扱い）。
+  5. [TimelinePanel.tsx](src/editor/panels/TimelinePanel.tsx) — プルダウンを「View: …」プレビュー視点セレクタ化。CAM● バッジは `activeCameraAt` の自動結果に。
+  6. [InspectorPanel.tsx](src/editor/panels/InspectorPanel.tsx) — 「Active」ボタン → 「Preview through」トグル。
+- **検証**: `test/resolve.test.ts` にカメラ自動選択・フォールバック・override・INV-2 ケース追加 / 453 tests / typecheck / build 緑。
+- **未**: ブラウザ実機での UI 配線（プルダウン・バッジ・プレビュー切替）の目視確認は未実施（ユーザー確認待ち）。
