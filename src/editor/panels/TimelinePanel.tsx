@@ -872,8 +872,11 @@ export function TimelinePanel() {
         return;
       }
 
-      // P0-1: \ = ビューをリセット（fit all）
-      if (e.key === "\\" || e.key === "|") {
+      // P0-1: \ = ビューをリセット（fit all）。JIS では ¥ キー（IntlBackslash）も同物理キー。
+      const isFitViewKey =
+        e.key === "\\" || e.key === "|" || e.key === "¥" ||
+        e.code === "Backslash" || e.code === "IntlBackslash";
+      if (isFitViewKey) {
         e.preventDefault();
         setViewRange({ start: 0, end: compDuration });
         return;
@@ -1041,7 +1044,7 @@ export function TimelinePanel() {
         <button
           onClick={() => setViewRange({ start: 0, end: duration })}
           style={{ ...btnStyle, fontSize: 10, padding: "1px 5px" }}
-          title="ビューをリセット (\)"
+          title="ビューを全尺表示 (\ / ¥ キー)"
         >fit</button>
         <span style={{ color: "#555", fontVariantNumeric: "tabular-nums" }} title={`F${frame} / ${duration}`}>{framesToTimecode(frame, fps)} / {framesToTimecode(duration, fps)}</span>
         {statusMsg && <span style={{ color: "#8d8", fontSize: 10, marginLeft: 4 }}>{statusMsg}</span>}
