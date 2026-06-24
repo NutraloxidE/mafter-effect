@@ -10,7 +10,7 @@ import type { Renderer } from "./renderer";
 import type { ResolvedComponent, ResolvedEffect, ResolvedObject, ResolvedScene } from "./resolved";
 import { compChildFrame, isCompNestDepthAllowed } from "./compLayer";
 import type { NestedCompRasterizer } from "./compFrameCapture";
-import { resolve } from "./resolve";
+import { resolve, type ExpressionEvaluator } from "./resolve";
 import { applyTextEl, rgbaCss } from "./textRender";
 import { captureElementToCanvas, rasterizeFilteredImage } from "./rasterCapture";
 import { canvasToRasterBuffer, rasterBufferToCanvas } from "./pixelSort";
@@ -42,6 +42,13 @@ const SVG_NS = "http://www.w3.org/2000/svg";
  * - 16種: `mix-blend-mode`（normal はクリア）。ラスター化ゼロのネイティブ合成。
  * - ditherDissolve: `mask-image` に Bayer ディザを敷き、opacity を閾値へ回す（div α は 1 固定・AE 準拠）。
  */
+/** §6.5b / §23.3b — 3D 層のみ cameraPre を掛け、2D 層は免除。 */
+function objectWorldTransformWithCamera(cameraPre: Mat4 | null, obj: ResolvedObject): Mat4 {
+  return cameraPre && obj.threeD === true
+    ? multiply(cameraPre, obj.worldTransform)
+    : obj.worldTransform;
+}
+
 function setBlendModeStyle(el: HTMLElement, blend: BlendMode, opacity: number): void {
   const s = el.style;
   if (blend === "ditherDissolve") {
@@ -178,23 +185,7 @@ export class DomRenderer implements Renderer {
     );
 
     // camera / perspective (§6.5 / §6.5b)
-    if (scene.camera) {
-      const perspective = scene.height / 2 / Math.tan((scene.camera.fov * Math.PI) / 360);
-      this.root.style.perspective = `${perspective}px`;
-      this.root.style.perspectiveOrigin = "50% 50%";
-      // §6.5b CSS リグ: perspective は子孫の 3D 変換にしか効かないため view を root に置くと
-      // カメラ Z が平面適用され dolly/zoom が効かない。view は各 3D オブジェクトに焼く。
-      this.root.style.transform = "";
-      // pre = translate(cx, cy, P) · view。cx,cy=XY 再センタリング、P=深度補正（既定 cameraZ=P で等倍）。
-      this.cameraPre = multiply(
-        translation(scene.width / 2, scene.height / 2, perspective),
-        scene.camera.viewMatrix,
-      );
-    } else {
-      this.root.style.perspective = "";
-      this.root.style.transform = "";
-      this.cameraPre = null;
-    }
+    this.cameraPre = this.setupCameraRig(this.root, scene);
 
     const seen = new Set<string>();
     for (const obj of scene.objects) {
@@ -272,9 +263,7 @@ export class DomRenderer implements Renderer {
   private applyObject(entry: ObjectEntry, obj: ResolvedObject, frame: Frame): void {
     // §6.5b/§5.4b 3D 層（threeD）のみカメラ view を per-object で焼く（root perspective を受けて
     // dolly/zoom が効く）。2D 層は素の worldTransform = カメラ免除（AE 準拠, z=0 で perspective 無歪み）。
-    const xform = this.cameraPre && obj.threeD === true
-      ? multiply(this.cameraPre, obj.worldTransform)
-      : obj.worldTransform;
+    const xform = objectWorldTransformWithCamera(this.cameraPre, obj);
     entry.div.style.transform = mat4ToCss(xform);
     entry.div.style.opacity = String(obj.opacity);
     entry.div.style.zIndex = String(Math.round(obj.zOrder * BASE_Z));
@@ -1077,6 +1066,39 @@ export class DomRenderer implements Renderer {
     this.pendingTimelineComps = comps;
   }
 
+  // §23.3b ネスト comp の expression 用: comp ごとの ExpressionEvaluator を注入する。
+  // renderNestedComp は子 comp を自前で resolve() するため、トップレベルと違い evaluator が
+  // 渡されないと nested comp 内の expression（opacity/effect param 含む）が静的化する。
+  private pendingCompEvaluators: Map<string, ExpressionEvaluator> | null = null;
+
+  setCompEvaluators(evaluators: Map<string, ExpressionEvaluator>): void {
+    this.pendingCompEvaluators = evaluators;
+  }
+
+  /**
+   * §6.5b / §23.3b — コンテナに perspective を設定し、3D 層用の cameraPre を返す。
+   * カメラ無しの場合は perspective をクリアし null を返す（ネスト無カメラ comp の無回帰）。
+   */
+  private setupCameraRig(
+    container: HTMLElement,
+    scene: { camera?: { fov: number; viewMatrix: Mat4 }; width: number; height: number },
+  ): Mat4 | null {
+    if (scene.camera) {
+      const perspective = scene.height / 2 / Math.tan((scene.camera.fov * Math.PI) / 360);
+      container.style.perspective = `${perspective}px`;
+      container.style.perspectiveOrigin = "50% 50%";
+      // view を root transform に置くと dolly/zoom が効かない（§6.5b）。3D 層へ per-object で焼く。
+      container.style.transform = "";
+      return multiply(
+        translation(scene.width / 2, scene.height / 2, perspective),
+        scene.camera.viewMatrix,
+      );
+    }
+    container.style.perspective = "";
+    container.style.transform = "";
+    return null;
+  }
+
   // §23 ネスト comp をコンテナ div に描画する (Phase 1: 非 reconcile、solid/text/image のみ対応)。
   // html/plugin component を含む子オブジェクトは描画されない（Phase 2 以降で対応）。
   // depth で無限ループを防ぐ（循環参照が挿入時に阻止されるが念のため）。
@@ -1089,57 +1111,83 @@ export class DomRenderer implements Renderer {
       return;
     }
 
-    const childScene = resolve(childComp, childFrame);
+    // §23.3b: 子 comp の expression を評価するため comp 固有の evaluator を渡す。
+    // 渡さないと nested comp 内の wiggle 等が静的化し、opacity/effect param も動かない。
+    const childScene = resolve(childComp, childFrame, {
+      expressions: this.pendingCompEvaluators?.get(childComp.id),
+    });
     // §23.3a: isolation:isolate で内部ブレンドを precomp 内に閉じる（AE collapse OFF 相当）。
     // これで mix-blend-mode が外側へ漏れず、export の単一 capture でも内部ブレンドがネイティブに焼ける。
     container.style.cssText = `position:absolute;top:0;left:0;width:${childComp.width}px;height:${childComp.height}px;overflow:hidden;transform-style:preserve-3d;isolation:isolate`;
     if (childComp.background) container.style.background = rgbaCss(childComp.background);
     else container.style.background = "";
+    // §23.3b: ネスト comp は自身のカメラを live で適用（§6.5b と同一リグ）。
+    const cameraPre = this.setupCameraRig(container, childScene);
 
     // 毎フレーム再描画（Phase 1 簡易実装。html/plugin comp は対象外）
     container.innerHTML = "";
     for (const obj of childScene.objects) {
       const div = document.createElement("div");
-      div.style.cssText = `position:absolute;top:0;left:0;transform-origin:0 0;transform:${mat4ToCss(obj.worldTransform)};opacity:${obj.opacity};z-index:${Math.round(obj.zOrder * BASE_Z)}`;
-      for (const c of obj.components) {
-        if (c.type === "comp") {
-          // ネストされた comp は再帰描画（深度制限付き）
-          const nestedCompId = c.props["compId"] as string | undefined;
-          const nestedComp = this.pendingTimelineComps?.get(nestedCompId ?? "");
-          if (nestedComp) {
-            const innerEl = document.createElement("div");
-            const inPoint = (c.props["_inPoint"] as number) ?? 0;
-            const trimStart = (c.props["trimStart"] as number) ?? 0;
-            const parentFps = (c.props["_parentFps"] as number) ?? childComp.fps;
-            const nestedFrame = compChildFrame(childFrame, inPoint, trimStart, nestedComp.duration, parentFps, nestedComp.fps);
-            this.renderNestedComp(innerEl, nestedComp, nestedFrame, depth + 1);
-            div.appendChild(innerEl);
+      const xform = objectWorldTransformWithCamera(cameraPre, obj);
+      const isAdj = obj.isAdjustment === true;
+      if (isAdj) {
+        // §23.3d: 調整レイヤーは comp 全面の空 div とし、effect を backdrop-filter で背後へ効かせる。
+        // コンテンツ component は描かない（背後を覆わないため）。
+        div.style.cssText = `position:absolute;top:0;left:0;transform-origin:0 0;transform:${mat4ToCss(xform)};opacity:${obj.opacity};z-index:${Math.round(obj.zOrder * BASE_Z)};width:${childComp.width}px;height:${childComp.height}px;background:transparent;pointer-events:none`;
+      } else {
+        div.style.cssText = `position:absolute;top:0;left:0;transform-origin:0 0;transform:${mat4ToCss(xform)};opacity:${obj.opacity};z-index:${Math.round(obj.zOrder * BASE_Z)}`;
+        for (const c of obj.components) {
+          if (c.type === "comp") {
+            // ネストされた comp は再帰描画（深度制限付き）
+            const nestedCompId = c.props["compId"] as string | undefined;
+            const nestedComp = this.pendingTimelineComps?.get(nestedCompId ?? "");
+            if (nestedComp) {
+              const innerEl = document.createElement("div");
+              const inPoint = (c.props["_inPoint"] as number) ?? 0;
+              const trimStart = (c.props["trimStart"] as number) ?? 0;
+              const parentFps = (c.props["_parentFps"] as number) ?? childComp.fps;
+              const nestedFrame = compChildFrame(childFrame, inPoint, trimStart, nestedComp.duration, parentFps, nestedComp.fps);
+              this.renderNestedComp(innerEl, nestedComp, nestedFrame, depth + 1);
+              div.appendChild(innerEl);
+            }
+            continue;
           }
-          continue;
+          const el = createComponentEl(c.type);
+          const hostInPoint = (c.props["_hostInPoint"] as number | undefined) ?? 0;
+          updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, childFrame, hostInPoint, childComp.fps);
+          div.appendChild(el);
         }
-        const el = createComponentEl(c.type);
-        const hostInPoint = (c.props["_hostInPoint"] as number | undefined) ?? 0;
-        updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, childFrame, hostInPoint, childComp.fps);
-        div.appendChild(el);
       }
       container.appendChild(div);
       // §23.3a: トップレベルと挙動を揃える（ラスタ無し・append 後に実測サイズで filter region 決定）。
       setBlendModeStyle(div, obj.blendMode, obj.opacity);
-      this.applyNestedLiveEffects(div, obj, childFrame);
+      // §23.3d: 調整は backdrop-filter（region=comp 寸法）、通常は filter（region=実測 div）。
+      this.applyNestedLiveEffects(div, obj, childFrame, childComp.width, childComp.height);
     }
   }
 
   /**
-   * §23.3a — ネスト comp 内オブジェクトに live filter 系 effect を適用する（ラスタ無し）。
+   * §23.3a/§23.3d — ネスト comp 内オブジェクトに live filter 系 effect を適用する（ラスタ無し）。
    * `EffectDef.apply()` の css/svg ピースのみ。`kind:"raster"` と full displacement
    * （wave/ripple/turbulentDisplace）は raster 経路を要するため live では適用しない
    * （それらは §28.11 の comp 単位ラスタ経路で反映される）。
+   *
+   * 調整レイヤー（§23.3d）は `backdrop-filter` で背後（自 precomp 内の下位レイヤー）へ効かせる。
+   * 中身が空で実寸が取れないため filter region は comp 寸法（compW/compH）でクランプする。
+   * 通常レイヤーは従来どおり `filter`（region=実測 div サイズ、fallback=comp 寸法）。
    */
-  private applyNestedLiveEffects(div: HTMLElement, obj: ResolvedObject, frame: Frame): void {
+  private applyNestedLiveEffects(
+    div: HTMLElement,
+    obj: ResolvedObject,
+    frame: Frame,
+    compW: number,
+    compH: number,
+  ): void {
     const effects = obj.effects ?? [];
     if (effects.length === 0) return;
-    const w = Math.max(1, Math.round(div.offsetWidth || 0));
-    const h = Math.max(1, Math.round(div.offsetHeight || 0));
+    const isAdj = obj.isAdjustment === true;
+    const w = isAdj ? Math.max(1, Math.round(compW)) : Math.max(1, Math.round(div.offsetWidth || compW || 0));
+    const h = isAdj ? Math.max(1, Math.round(compH)) : Math.max(1, Math.round(div.offsetHeight || compH || 0));
     const ctx = { width: w, height: h, frame };
     const tokens: string[] = [];
     const svgFilters: { id: string; primitives: string }[] = [];
@@ -1160,7 +1208,13 @@ export class DomRenderer implements Renderer {
       this.pushFilterPiece(piece, tokens, svgFilters, `nfx-${obj.id}-${i++}`);
     }
     if (tokens.length === 0) return;
-    div.style.filter = tokens.join(" ");
+    const filterStr = tokens.join(" ");
+    if (isAdj) {
+      div.style.backdropFilter = filterStr;
+      (div.style as CSSStyleDeclaration & { webkitBackdropFilter?: string }).webkitBackdropFilter = filterStr;
+    } else {
+      div.style.filter = filterStr;
+    }
     if (svgFilters.length === 0) return;
     const svg = document.createElementNS(SVG_NS, "svg");
     svg.setAttribute("aria-hidden", "true");

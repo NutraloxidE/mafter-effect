@@ -19,7 +19,11 @@
 
 **MVP = M0–M4 完了。** 以降 §20 Project / §21 Timeline AE化 / §22 グラフエディタ / §23 precomp / §24 Ease / §25 Preview編集 / §26 テキスト / §27 エフェクト & 調整レイヤー / §28 Preview Cache / §30 Null / §19.5 Pipeline パネル を拡張中。
 
-現行: **446 tests PASS** / typecheck ✅ / build ✅（2026-06-25・§5.6/§21.1 Duration/タイムコードを AE `H:MM:SS:FF` 表示に統一）。
+現行: **453 tests PASS** / typecheck ✅ / build ✅（2026-06-25）。
+
+- §23.3b: ネスト comp が自身のカメラを live で適用（`setupCameraRig` 共有・Composer 2.5 実装）。
+- §23.3c: ネスト comp 内の expression を live で評価する修正。`renderNestedComp` は子 comp を自前 resolve するため evaluator 未注入で wiggle 等が静的化していた（opacity/effect param 含む）。`DomRenderer.setCompEvaluators(Map<compId, evaluator>)` を追加し preview/export/bundle の 3 経路で配線（INV-2）。`createCompFrameCaptureContext` にも配線して深い階層（depth 2+）の expression を補完。
+- §23.3d: ネスト comp 内の**調整レイヤーを live 合成**（`backdrop-filter`・ラスタ無し・collapse OFF）。`renderNestedComp` が `isAdjustment` を無視していたため Comp 内調整の blur/displace がネスト先で全消失していた。調整 div を comp 全面・空にして effect を backdrop-filter に積む（`applyNestedLiveEffects` を filter/backdrop 分離、region=comp 寸法）。実データ Comp 19→Comp 10→camera wiggle expression（depth 2）で単体表示と nested の視覚一致を確認（raster 0 段）。Fast* displacement は live、full displacement は §28.11 ラスタ経路据え置き。collapse ON / 強制ラスタライズ opt-in は将来（phase 2）。
 
 ---
 
@@ -64,6 +68,10 @@
 - **§26.4 Draft/Best 残差（許容済み）**: DOM vs SVG 経路差で 100% ピクセル一致は非目標（実測 ≤2px・実用上問題なし）。
 - **§28.11 export/bundle parity（follow-up）**: precomp comp 単位ラスタは現状ライブ preview + RAM Preview のみ。`exporter.ts` / `bundleBake.ts`（runtime）へ rasterizer 未注入のため、ファイル export ではネスト comp 内 effect が §23 Phase-1（非焼き込み）のまま。`resolve()` 出力は一致（INV-2 の literal は保持）だがピクセル一致は §27.3 と同じ tracked follow-up。runtime→editor 依存を避けるため optional param 経路で後日配線。
 - **調整レイヤー export follow-up**: §27.4.1 multi-pass flush の厳密 sequential 化（積層調整の export 順序）/ precomp ネスト内 Live 調整の export auto_raster（compFrameCapture へ option 未配線）/ RAM preview cache の Live 調整 fidelity。
+- **§23.3d 派生 TODO（phase 2・未着手・要ユーザー確認＋§5 スキーマ判断）**:
+  - **collapse ON オプトイン**: ネスト comp 内の調整レイヤーが親 comp の下位レイヤーにも染み出すモード（AE collapse transformations 相当）。現状は collapse OFF 固定（isolation:isolate で precomp 内スコープ）。レイヤー単位 opt-in が必要なら `SceneObject` への schema 追加が要る → 事前にユーザー確認（INV/§5 変更ゲート）。
+  - **強制ラスタライザ opt-in**: HTML 書き出しを必要としないユーザー向けに、comp/レイヤー単位で「決定論的にラスタ化して再生」を強制できるオプション（例: `forceRaster?` フィールド）。プロフェッショナル動画出力向けフォールバック。schema 追加のため事前にユーザー確認が必要。
+  - 両方ともユーザーの了承（「live調整(§23.3d)+evaluator補完を今回実装」のみ今回スコープ）により今回は対象外。次にこの領域に着手する際は、まず仕様（§23.3 系）に追記してから実装する。
 - **verify スクリプト未整合**: `verify-preview-cache.mjs`（cache 既定 OFF 後の Realtime 期待）・`verify-effects.mjs`（project ロード前提）が現行挙動と FAIL。要更新。
 - **3D Phase 1 の意図的な制約（Phase 2 で対応）**: ①**2D 層のカメラ免除は Phase 1.1 で実装済み**（per-object 焼き込みで 3D 層のみカメラ応答・2D は固定＝AE 準拠。当初懸念した特異点/ two-stratum 分離は per-object 方式で不要だった）。②**raster3d は dom にフォールバック** — Phase 1 は GL シーン未実装のため実効 raster3d も dom 描画。③**3D の正準書き出し未対応** — foreignObject は preserve-3d/WebGL 非対応、ブラウザ内 readPixels 取り込みは Phase 2。④**camera zoom/POI のタイムライン KF UI 未配線**（Inspector 静的編集のみ）。⑤**one-node の XY truck**は再センタリングと両立するが、厳密な AE 挙動の調整は Phase 2 ストラタム整備時に再検証。⑥**zoom↔焦点距離↔fov の AE 厳密換算**は未確定（filmSize 連動 UI 未実装）。
 - **インフラ**: `npm install` 時の transitive deps 脆弱性警告（dev/build 由来・実行時影響なし・`npm audit` 精査推奨）/ IndexedDbFs.list は全 key 取得 → IDBKeyRange 最適化余地（§11.1）。
@@ -83,6 +91,7 @@
 5. **ディストーション phase/speed/direction スキーマ** — 設計判断（Claude Code）後に実装。
 6. **M5 Phase 2+ Web Bundle** / **Timeline Tier B–D**（~~ラベル色~~/solo/lock/shy・~~ブレンドモード~~/トラックマット・モーションブラー）/ **グラフエディタ Phase 2/3**（per-axis カーブ・空間モーションパス・速度グラフ）。いずれも spec 追記 + INV 評価が前提。
 7. **3D Phase 2（plan: `~/.claude/plans/3d-dom-3d-webgl-3d-soft-meadow.md`）** — 共有 Three.js シーン1個 / `raster3d`（レイヤー→テクスチャ板、静的キャッシュ＋スケール時再ラスタ）/ `scene3d` メッシュコンポーネント / カメラ共有（perspective+view）/ **2D 層のカメラ免除（two-stratum）** / **正準3D書き出し（GL readPixels を z 合成）**。`three` を遅延ロード。Phase 3 = ライト/DOF/オービットギズモ。
+8. **§23.3d 派生 phase 2（ユーザー確認待ち・着手前に仕様化必須）** — (a) collapse ON opt-in（ネスト調整レイヤーが親 comp 下位層へ染み出すモード・レイヤー単位）。(b) 強制ラスタライザ opt-in（`forceRaster?` 等の §5 スキーマ追加で決定論的ラスタ出力をユーザーが選べるフォールバック・HTML export 不要層向け）。どちらも INV/§5 変更を伴いうるため、着手前に選択肢＋推奨案を提示してユーザー確認を取ること。
 
 ### 参考: 先取り済みの境界
 - **INV-7**: `@mafter/runtime` 単一核（resolve / Renderer / module loader / expression / 再生クロック）。preview / exporter / web bundle player が共有。
@@ -223,3 +232,13 @@ canvas 化結果は以降から見て通常の背面ピクセルと等価（zOrd
   6. [InspectorPanel.tsx](src/editor/panels/InspectorPanel.tsx) — 「Active」ボタン → 「Preview through」トグル。
 - **検証**: `test/resolve.test.ts` にカメラ自動選択・フォールバック・override・INV-2 ケース追加 / 453 tests / typecheck / build 緑。
 - **未**: ブラウザ実機での UI 配線（プルダウン・バッジ・プレビュー切替）の目視確認は未実施（ユーザー確認待ち）。
+
+### 2026-06-25（Cursor）— ネスト comp のカメラを live で適用（§23.3b・AE non-collapse 準拠）
+
+- **症状**: カメラ付き comp をネストすると、ライブ preview で平面（オルソ）描画になる。`resolve()` は `childScene.camera` を正しく算出していたが `renderNestedComp` が perspective / per-object view を捨てていた（ラスタ経路のみ正しかった）。
+- **Fix**（[DomRenderer.ts](src/runtime/DomRenderer.ts) のみ）:
+  1. `setupCameraRig` を抽出し `renderFrame` と `renderNestedComp` で共有（§6.5b 同一リグ）。
+  2. `objectWorldTransformWithCamera` ヘルパで 3D 層のみ `cameraPre·world`、2D 層は免除。
+  3. カメラ無しネスト comp は `perspective` 未設定＝従来どおり無回帰。
+- **spec**: §23.3b 新設 + §23.5 比較表に nested camera 行追加（§5/INV/直列化 不変）。
+- **検証**: 453 tests / typecheck 緑。Playwright — `verify-nested-3d-camera.mjs`（ネスト内 perspective・3D パン応答 / 2D 免除 / カメラ無し無回帰 PASS）+ `verify-3d-camera.mjs` 無回帰（`activeCameraSet` 断言撤去＝§6.5 自動カメラ移行後の整合）。

@@ -126,6 +126,10 @@ export async function exportComposition(
     let evaluator: ExpressionEvaluator | undefined;
     await Promise.all([
       engine.prepare(tlComp).then(() => { evaluator = engine.makeEvaluator(tlComp); }),
+      // §23.3b: ネスト comp の expression も export で評価する（preview と一致・INV-2）。
+      Promise.all(timelineComps.map((c) => engine.prepare(c))).then(() => {
+        renderer.setCompEvaluators(new Map(timelineComps.map((c) => [c.id, engine.makeEvaluator(c)])));
+      }),
       player.prepare(htmlComps, (id) => `${compositionDir(id)}/script.js`),
     ]);
 

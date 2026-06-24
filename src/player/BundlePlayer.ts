@@ -95,6 +95,11 @@ export class BundlePlayer {
 
     await this.engine.prepare(comp);
     this.evaluator = this.engine.makeEvaluator(comp);
+    // §23.3b: ネスト comp の expression も評価する（renderNestedComp は自前で resolve するため）。
+    await Promise.all(timelineComps.map((c) => this.engine.prepare(c)));
+    this.renderer.setCompEvaluators(
+      new Map(timelineComps.map((c) => [c.id, this.engine.makeEvaluator(c)])),
+    );
     await this.htmlPlayer.prepare(htmlComps, (id) => `${compositionDir(id)}/script.js`);
 
     const [rangeStart] = this.manifest.range;

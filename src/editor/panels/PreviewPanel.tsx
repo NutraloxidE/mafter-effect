@@ -408,9 +408,18 @@ export function PreviewPanel() {
       (c): c is TimelineComposition => c.kind === "timeline" && c.id !== comp?.id,
     );
     rendererRef.current?.setTimelineComps(new Map(timelineCompsForNesting.map((c) => [c.id, c])));
+    // §23.3b: ネスト comp は renderNestedComp が自前で resolve() するため、各 comp の expression を
+    // 評価できるよう comp 固有の evaluator を用意して DomRenderer に注入する（無いと nested 内の
+    // expression が静的化し opacity/effect param も動かない）。
+    const allTimelineComps = (project?.compositions ?? []).filter(
+      (c): c is TimelineComposition => c.kind === "timeline",
+    );
     void Promise.all([
-      _exprEngine.prepare(comp).then(() => {
+      Promise.all(allTimelineComps.map((c) => _exprEngine.prepare(c))).then(() => {
         evaluatorRef.current = _exprEngine.makeEvaluator(comp);
+        rendererRef.current?.setCompEvaluators(
+          new Map(allTimelineComps.map((c) => [c.id, _exprEngine.makeEvaluator(c)])),
+        );
       }),
       _htmlPlayer.prepare(htmlComps, (id) => `${compositionDir(id)}/script.js`),
     ]).then(() => setRenderTick((t) => t + 1));

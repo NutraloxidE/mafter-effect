@@ -112,6 +112,11 @@ export async function createCompFrameCaptureContext(
     engine.prepare(tlComp).then(() => {
       evaluator = engine.makeEvaluator(tlComp);
     }),
+    // §23.3c 補完: 深い階層（depth 2+）の live ネスト comp も expression を評価できるよう、
+    // 捕捉対象以外の timeline comp 用 evaluator も用意して renderNestedComp へ注入する。
+    Promise.all(timelineComps.map((c) => engine.prepare(c))).then(() => {
+      renderer.setCompEvaluators(new Map(timelineComps.map((c) => [c.id, engine.makeEvaluator(c)])));
+    }),
     player.prepare(htmlComps, (id) => `${compositionDir(id)}/script.js`),
   ]);
 

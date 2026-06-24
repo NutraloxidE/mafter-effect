@@ -1298,6 +1298,42 @@ childFrame     = clamp(round(parentTimeSec * childFps) + trimStart, 0, childComp
 > - **3D（preserve-3d）× mix-blend-mode**: CSS 仕様上、`mix-blend-mode` は 3D 描画文脈を flatten する。ネスト内に 3D レイヤー＋ブレンドが混在すると AE と差が出る場合がある（エッジケース・別途検討）。
 > - **Fast\* displacement の region**: ライブ再解決は毎フレーム DOM を再構築するため、内側 div の実測サイズが取れないフレームでは SVG filter region クランプが甘くなる可能性がある（blur/色補正等の通常 filter には影響なし）。
 
+### §23.3b ネスト comp のカメラ（live・AE non-collapse 準拠）
+
+ネスト comp（`renderNestedComp` のライブ再解決経路）は、**自身の active camera** を §6.5b と同方式で適用する。`resolve(childComp, childFrame)` が算出した `childScene.camera` を、トップレベル `renderFrame` と共有ヘルパ `setupCameraRig` でコンテナへ反映する。
+
+- **カメラあり**: ネストコンテナに `perspective` + `perspective-origin:50% 50%` を設定し、各オブジェクト div の transform を `threeD === true` の層のみ `translate(cx,cy,P)·view·world` に焼く（2D 層はカメラ免除・§6.5b と同一）。
+- **カメラなし**: `perspective` を設定せず、従来どおり生の `worldTransform` のみ。カメラ無しネスト comp は無回帰。
+- **ラスタ無し**: §28.11 の comp 単位ラスタ経路（`renderNestedCompRaster`）は従来どおり `renderFrame` 経由でカメラ適用済み。本節はライブ経路のみを対象とする。
+- **再帰ネスト**: 各階層のコンテナが自分の `perspective` を持つため、深いネストでも各 comp が自分のカメラで描かれる（collapse ON＝親カメラ貫通は将来）。
+
+> **既知の制約（§23.3a と共通）**: ネスト内に 3D 層＋`mix-blend-mode` が混在すると CSS が 3D 文脈を flatten し AE と差が出うる。
+
+### §23.3c ネスト comp の expression（live）
+
+`renderNestedComp` は子 comp を**自前で `resolve(childComp, childFrame, ctx)` する**ため、トップレベル描画（`resolve(comp, frame, { expressions })`）と違い、**ctx に evaluator を渡さないと nested comp 内の expression が評価されず静的化する**（`wiggle` 等が止まり、opacity / effect param を expression で駆動している場合もその値が固定される）。
+
+- **evaluator は comp 固有**（`ExpressionEngine.makeEvaluator(comp)` が comp の fps とレイヤー参照に束縛される）。よって **comp ごとに 1 つ用意**し、`DomRenderer.setCompEvaluators(Map<compId, ExpressionEvaluator>)` で注入する。
+- `renderNestedComp` は `this.pendingCompEvaluators?.get(childComp.id)` を `resolve` の `expressions` に渡す。
+- **配線箇所**（preview / export / bundle で同一の evaluator マップを用意し INV-2 を保つ）:
+  - preview: `PreviewPanel` がプロジェクト内全 timeline comp を `prepare` → `setCompEvaluators`。
+  - export: `exporter.ts` が `timelineComps` を `prepare` → `setCompEvaluators`。
+  - bundle: `BundlePlayer` が同上。
+- §28.11 ラスタ経路（`renderNestedCompRaster` / `compFrameCapture`）は子 comp ごとに evaluator を生成する。**深い階層（depth 2+）の live ネスト comp も評価できるよう、`createCompFrameCaptureContext` は捕捉対象だけでなくプロジェクト内全 timeline comp を `prepare` → `setCompEvaluators` する**（§23.3c と同型・補完）。
+
+### §23.3d ネスト comp の調整レイヤー（live・backdrop-filter・collapse OFF）
+
+ネスト comp 内の **調整レイヤー（`isAdjustment`）** を、トップレベル「Live 調整」（§27.4）と**同一機構＝ CSS `backdrop-filter`** でライブ適用する。**ラスター化を一切伴わない**。狙いは「複数シーン(comp)を 1 つにまとめて HTML で live 再生する」用途で、precomp 内の調整がネスト先でも効くこと。
+
+- **適用方式**: 調整レイヤーの div を **comp 全面サイズ**（`childComp.width × height`）・`background:transparent`・`pointer-events:none` で該当 z-index に置き、`EffectDef.apply()` の css/svg ピースを **`filter` ではなく `backdropFilter`（+ `-webkit-backdrop-filter`）** に積む。これにより div の**背後（同一コンテナ内の下位レイヤー）**にライブで効く。
+- **スコープ（collapse OFF 維持）**: ネストコンテナの `isolation:isolate`（§23.3a）が backdrop のスコープ境界になり、**調整は自 precomp 内に閉じる**（外側 comp の下位レイヤーには染み出さない）。collapse ON（親へ貫通）はレイヤー単位のオプトインとして将来。
+- **SVG filter region**: 調整 div は中身が空で実寸が取れないため、displacement 等の SVG filter region は **comp 寸法**（`childComp.width/height`）でクランプする。
+- **displacement**: `Fast*`（`fastTurbulentDisplace` 等）は region クランプ済みで backdrop に積める → **live**。**full displacement（`wave`/`ripple`/`turbulentDisplace`）は live 不可**なので調整でも skip（§23.3a と同方針・raster 経路が要る）。
+- **adjustmentMode**: ネスト live 経路では `"live"` / `"raster"` 双方を backdrop-filter で近似適用する。決定論ラスタが要る場合は将来の強制ラスタライズ opt-in で受ける。
+
+> **既知の制約（ユーザー了承済み「全力 Live・破綻許容」）**
+> - `backdrop-filter` は `transform-style:preserve-3d`（カメラ・§23.3b）/ `mix-blend-mode`（§23.3a）と CSS 仕様上 相互に flatten しうる。調整 + カメラ + 3D + blend が同一 comp に混在すると AE と差が出る場合がある。破綻ケースは将来の collapse ON / 強制ラスタライズ opt-in で受ける。
+
 ### §23.4 循環参照制御
 
 - `store.addCompLayer(compId)` において BFS で循環を検出し、循環が生じる場合は追加を拒否する（`null` 返却）。
@@ -1312,6 +1348,8 @@ childFrame     = clamp(round(parentTimeSec * childFps) + trimStart, 0, childComp
 | time remapping | AnimatedProp として設定可 | Phase 2 以降 |
 | collapse / non-collapse | 2 モード切替 | 常に non-collapse 相当（`isolation:isolate`・§23.3a） |
 | nested 内のブレンド/エフェクト | precomp 内で合成 → 1枚で配置 | live filter + blendMode を内部適用（ラスタ無し・§23.3a）。full displacement/raster 系は §28.11 ラスタ経路 |
+| nested 内のカメラ | precomp 内カメラで合成 → 1枚で配置 | 自カメラを live で適用（§23.3b・§6.5b 同一リグ）。collapse ON は将来 |
+| nested 内の調整レイヤー | precomp 内で合成 → 1枚で配置 | `backdrop-filter` で live 適用・自 precomp 内スコープ（§23.3d）。full displacement は §28.11 ラスタ経路。collapse ON は将来 |
 | precomp opacity | レイヤー全体で適用 | 同じ（CSS opacity 継承） |
 | 循環参照 | UI 拒否 | 追加時に BFS 検出・拒否 |
 | nested html/plugin comp | 専用レンダラ | Phase 3 以降 |
