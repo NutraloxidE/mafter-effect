@@ -163,6 +163,7 @@ export function TimelinePanel() {
 
   // P0-1: ズーム/スクロール状態 — viewRange は表示フレーム範囲（UI 状態, project 非保存）。
   const [viewRange, setViewRange] = useState<{ start: number; end: number }>({ start: 0, end: duration });
+  const prevCompIdRef = useRef<string | null>(null);
 
   const [expandMode, setExpandMode] = useState<Map<string, ExpandMode>>(new Map());
   const graphRef = useRef<HTMLDivElement>(null);
@@ -207,22 +208,29 @@ export function TimelinePanel() {
     statusTimerRef.current = setTimeout(() => setStatusMsg(""), 1800);
   };
 
-  // comp 切替でビュー・選択・展開をリセット
+  // comp 切替 / duration 変更時の viewRange と UI 状態
   useEffect(() => {
-    setSelectedKfKeys([]);
-    setExpandMode(new Map());
-    setViewRange({ start: 0, end: duration });
-    setKfContextMenu(null);
-    layerDragRef.current = null;
-    setLayerDrag(null);
-    setBarDrag(null);
-    lastSelectedIdRef.current = null;
-  }, [compId]); // eslint-disable-line react-hooks/exhaustive-deps
+    const compSwitched = prevCompIdRef.current !== compId;
+    prevCompIdRef.current = compId;
 
-  // duration 変更時に viewRange.end をクランプ
-  useEffect(() => {
-    setViewRange((prev) => ({ start: prev.start, end: Math.max(prev.start + 5, Math.min(prev.end, duration)) }));
-  }, [duration]);
+    if (compSwitched) {
+      setSelectedKfKeys([]);
+      setExpandMode(new Map());
+      setViewRange({ start: 0, end: duration });
+      setKfContextMenu(null);
+      layerDragRef.current = null;
+      setLayerDrag(null);
+      setBarDrag(null);
+      lastSelectedIdRef.current = null;
+      return;
+    }
+
+    // 同一 comp 内で duration が短くなったときだけ end をクランプ（comp 切替直後は上で全リセット済み）
+    setViewRange((prev) => ({
+      start: prev.start,
+      end: Math.max(prev.start + 5, Math.min(prev.end, duration)),
+    }));
+  }, [compId, duration]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // P0-1: frame → % 変換（viewRange 基準）。
   const frameToPercent = (f: number): number => {
