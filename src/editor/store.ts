@@ -15,6 +15,7 @@ import type {
   LabelIndex,
   Project,
   Renderer3d,
+  RGBA,
   SceneObject,
   ThreeDMode,
   TimelineComposition,
@@ -238,6 +239,8 @@ export interface EditorStore {
   setThreeD: (objId: string, enabled: boolean) => void;
   setThreeDMode: (objId: string, mode: ThreeDMode) => void;
   setCompRenderer3d: (mode: Renderer3d) => void;
+  /** §5.6 コンポ背景色。null = 透明（未設定）。 */
+  setCompBackground: (bg: RGBA | null) => void;
 
   // §5.4d 描画モード
   setBlendMode: (objId: string, mode: BlendMode) => void;
@@ -447,7 +450,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       height: 1080,
       fps: 30,
       duration: 150,
-      background: { r: 0, g: 0, b: 0, a: 1 },
+      // 背景は未設定 = 透明（§5.6）。色が要るなら setCompBackground で設定。
       objects: [],
     };
     const after: Project = {
@@ -1257,6 +1260,21 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       ),
     };
     get().applyCommand({ label: `3D Renderer: ${mode}`, before, after });
+  },
+
+  setCompBackground: (bg) => {
+    const before = get().project;
+    if (!before) return;
+    const compId = get().currentCompId;
+    const after: Project = {
+      ...before,
+      compositions: before.compositions.map((c) =>
+        c.id === compId
+          ? { ...c, background: bg ?? undefined }
+          : c,
+      ),
+    };
+    get().applyCommand({ label: bg ? "Set Background" : "Clear Background (transparent)", before, after });
   },
 }));
 

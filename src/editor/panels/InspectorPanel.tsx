@@ -15,6 +15,7 @@ import { ScrubNumber } from "../ScrubNumber";
 import { globalPluginRegistry } from "../../runtime/pluginRegistry";
 import { groupEffectsForPicker } from "../effectCategories";
 import { BakerBadge } from "../bakerLabel";
+import { BackgroundControl } from "./BackgroundControl";
 
 const EASING_PRESETS: { label: string; easing: Easing }[] = [
   { label: "Linear", easing: { type: "linear" } },
@@ -46,6 +47,28 @@ const BLEND_MODE_LABELS: Record<BlendMode, string> = {
   ditherDissolve: "Dither Dissolve",
 };
 
+/** Transform 等のレイヤー Inspector と同じスクロール枠（overlay scrollbar 時も右余白を揃える）。 */
+const INSPECTOR_ROOT_STYLE: React.CSSProperties = {
+  fontSize: 12,
+  color: "#ccc",
+  padding: 4,
+  overflowY: "auto",
+  overflowX: "hidden",
+  scrollbarGutter: "stable",
+  height: "100%",
+  width: "100%",
+  boxSizing: "border-box",
+  minWidth: 0,
+  background: "#1c1c1c",
+};
+
+const INSPECTOR_HEADER_STYLE: React.CSSProperties = {
+  padding: "6px 8px 8px",
+  fontWeight: "bold",
+  color: "#eee",
+  fontSize: 13,
+};
+
 export function InspectorPanel() {
   const project = useEditorStore((s) => s.project);
   const compId = useEditorStore((s) => s.currentCompId);
@@ -63,6 +86,7 @@ export function InspectorPanel() {
   const setThreeD = useEditorStore((s) => s.setThreeD);
   const setThreeDMode = useEditorStore((s) => s.setThreeDMode);
   const setBlendMode = useEditorStore((s) => s.setBlendMode);
+  const setCompBackground = useEditorStore((s) => s.setCompBackground);
   const setActiveCamera = useEditorStore((s) => s.setActiveCamera);
   const removeEffect = useEditorStore((s) => s.removeEffect);
   const reorderEffect = useEditorStore((s) => s.reorderEffect);
@@ -83,10 +107,43 @@ export function InspectorPanel() {
   const comp = currentTimelineComp(project, compId);
   const obj = comp?.objects.find((o) => o.id === selectedIds[0]);
 
+  const toggleExpanded = (section: string) => {
+    const key = obj ? `${obj.id}:${section}` : `${compId}:${section}`;
+    setExpanded((prev) => ({ ...prev, [key]: !(prev[key] ?? true) }));
+  };
+  const isExpanded = (section: string) => {
+    const key = obj ? `${obj.id}:${section}` : `${compId}:${section}`;
+    return expanded[key] ?? true;
+  };
+
   if (!obj) {
+    if (!comp) {
+      return (
+        <div style={{ padding: 16, color: "#555", fontSize: 12 }}>
+          Select an object to inspect
+        </div>
+      );
+    }
     return (
-      <div style={{ padding: 16, color: "#555", fontSize: 12 }}>
-        Select an object to inspect
+      <div ref={panelScrollRef} style={INSPECTOR_ROOT_STYLE}>
+        <div style={INSPECTOR_HEADER_STYLE}>{comp.name}</div>
+        <InspectorFoldout
+          label="Composition"
+          expanded={isExpanded("composition")}
+          onToggle={() => toggleExpanded("composition")}
+        >
+          <Row label="Size">
+            <span style={readOnlyNumStyle}>{comp.width}</span>
+            <span style={{ color: "#555", fontSize: 10 }}>×</span>
+            <span style={readOnlyNumStyle}>{comp.height}</span>
+            <span style={{ color: "#666", fontSize: 10, marginLeft: 2 }}>px</span>
+            <span style={{ color: "#888", fontSize: 10, marginLeft: 6 }}>{comp.fps}fps</span>
+            <span style={{ color: "#888", fontSize: 10, marginLeft: 6 }}>{comp.duration}f</span>
+          </Row>
+          <Row label="Background">
+            <BackgroundControl comp={comp} onChange={setCompBackground} />
+          </Row>
+        </InspectorFoldout>
       </div>
     );
   }
@@ -219,11 +276,6 @@ export function InspectorPanel() {
   };
 
   const foldoutKey = (section: string) => `${obj.id}:${section}`;
-  const isExpanded = (section: string) => expanded[foldoutKey(section)] ?? true;
-  const toggleExpanded = (section: string) => {
-    const key = foldoutKey(section);
-    setExpanded((prev) => ({ ...prev, [key]: !(prev[key] ?? true) }));
-  };
 
   const handleAddEffect = (type: string) => {
     const effectId = addEffect(obj.id, type);
@@ -241,8 +293,8 @@ export function InspectorPanel() {
   };
 
   return (
-    <div ref={panelScrollRef} style={{ fontSize: 12, color: "#ccc", padding: 4, overflow: "auto", height: "100%", background: "#1c1c1c" }}>
-      <div style={{ padding: "6px 8px 8px", fontWeight: "bold", color: "#eee", fontSize: 13, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+    <div ref={panelScrollRef} style={INSPECTOR_ROOT_STYLE}>
+      <div style={{ ...INSPECTOR_HEADER_STYLE, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
         <LayerNameHeader objId={obj.id} name={obj.name} />
         {obj.isAdjustment && (
           <span style={{ marginLeft: 6, fontSize: 10, color: "#c9a227", fontWeight: 600 }}>
@@ -1477,6 +1529,14 @@ const numInputStyle: React.CSSProperties = {
   padding: "2px 4px",
   fontSize: 11,
   fontVariantNumeric: "tabular-nums",
+};
+
+const readOnlyNumStyle: React.CSSProperties = {
+  ...numInputStyle,
+  display: "inline-block",
+  boxSizing: "border-box",
+  textAlign: "right",
+  color: "#aaa",
 };
 
 const btnStyle: React.CSSProperties = {

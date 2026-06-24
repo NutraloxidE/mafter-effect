@@ -36,7 +36,7 @@ export function createProject(opts: NewProjectOptions = {}): Project {
     height,
     fps,
     duration: Math.round(durationSeconds * fps),
-    background: { r: 0, g: 0, b: 0, a: 1 },
+    // 背景は未設定 = 透明（§5.6）。
     objects: [],
   };
 

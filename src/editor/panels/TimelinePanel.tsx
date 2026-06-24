@@ -811,6 +811,13 @@ export function TimelinePanel() {
       // P0-2: Space = 再生/停止
       if (e.code === "Space") { e.preventDefault(); storeTogglePlay(); return; }
 
+      // §21: Escape = レイヤー選択解除（Composition インスペクター表示）
+      if (e.key === "Escape" && selectedObjectIds.length > 0) {
+        e.preventDefault();
+        useEditorStore.getState().selectObjects([]);
+        return;
+      }
+
       // P0-4: フレームナビゲーション（store 正本 — ref ハンドラの stale closure を避ける）
       if (e.key === "ArrowLeft")  { e.preventDefault(); setStoreFrame(Math.max(0, currentFrame - (e.shiftKey ? 10 : 1))); return; }
       if (e.key === "ArrowRight") { e.preventDefault(); setStoreFrame(Math.min(compDuration, currentFrame + (e.shiftKey ? 10 : 1))); return; }
@@ -1063,7 +1070,14 @@ export function TimelinePanel() {
       >
         {/* time ruler — sticky so it stays visible while layers scroll */}
         <div style={{ position: "sticky", top: 0, zIndex: 10, display: "flex", flexShrink: 0, borderBottom: "1px solid #2a2a2a", background: "#202020" }}>
-          <div style={{ width: LABEL_W, boxSizing: "border-box", flexShrink: 0, borderRight: "1px solid #333" }} />
+          <div
+            style={{ width: LABEL_W, boxSizing: "border-box", flexShrink: 0, borderRight: "1px solid #333", cursor: "default" }}
+            onMouseDown={(e) => {
+              e.stopPropagation();
+              if (selectedIds.length > 0) selectObjects([]);
+            }}
+            title="クリックでレイヤー選択解除"
+          />
           <div
             ref={graphRef}
             style={{ position: "relative", flex: 1, height: 22, cursor: "pointer", overflow: "hidden" }}

@@ -331,19 +331,6 @@ export function PreviewViewerOverlay({
         }}
       />
 
-      <defs>
-        <pattern id="pv-checker" width="16" height="16" patternUnits="userSpaceOnUse">
-          <rect width="8" height="8" fill="#2a2a2a" />
-          <rect x="8" y="0" width="8" height="8" fill="#333" />
-          <rect x="0" y="8" width="8" height="8" fill="#333" />
-          <rect x="8" y="8" width="8" height="8" fill="#2a2a2a" />
-        </pattern>
-      </defs>
-
-      {settings.checkerboard && !comp.background && (
-        <rect width={comp.width} height={comp.height} fill="url(#pv-checker)" />
-      )}
-
       {settings.grid && (
         <g stroke="#ffffff18" strokeWidth={1}>
           {Array.from({ length: Math.ceil(comp.width / gridStep) + 1 }, (_, i) => (

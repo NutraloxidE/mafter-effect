@@ -40,6 +40,7 @@ import { hasAudioLayers } from "../../player/BundleAudioClock";
 import { loadAudioBuffer, peekAudioBuffer } from "../audioBufferCache";
 import { loadWorkArea } from "../workAreaStorage";
 import { currentTimelineComp, selectedObjects, useEditorStore } from "../store";
+import { CHECKERBOARD_STYLE } from "../checkerboardStyle";
 import type { HtmlComposition, TimelineComposition, Transform } from "../../core/schema";
 import { PreviewViewerOverlay } from "./PreviewViewerOverlay";
 
@@ -607,6 +608,17 @@ export function PreviewPanel() {
     }
   }, [comp?.width, comp?.height, proxyScale]);
 
+  // §5.6 comp 背景色をライブ反映（mount 後の編集で DomRenderer root を更新）。
+  // 未設定（透明）は root 背景をクリアし、背後の stage（チェッカー/黒）を見せる。
+  useEffect(() => {
+    const root = rendererRef.current?.getRoot();
+    if (!root) return;
+    const c = comp?.background;
+    root.style.background = c
+      ? `rgba(${Math.round(c.r * 255)},${Math.round(c.g * 255)},${Math.round(c.b * 255)},${c.a})`
+      : "";
+  }, [comp?.background, comp?.id, renderTick]);
+
   // viewport / host rect observer
   useEffect(() => {
     const fit = fitRef.current;
@@ -934,7 +946,11 @@ export function PreviewPanel() {
                 width: comp.width,
                 height: comp.height,
                 flexShrink: 0,
-                background: comp.background ? undefined : "#000",
+                ...(comp.background
+                  ? null
+                  : viewerSettings.checkerboard
+                    ? CHECKERBOARD_STYLE
+                    : { background: "#000" }),
                 boxShadow: "0 0 0 1px #444",
                 transform: `scale(${effectiveZoom}) translate(${effectivePan.x}px, ${effectivePan.y}px)`,
                 transformOrigin: "0 0",

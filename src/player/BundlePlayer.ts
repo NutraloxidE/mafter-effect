@@ -243,9 +243,8 @@ export class BundlePlayer {
     if (comp.background) {
       const c = comp.background;
       stage.style.background = `rgba(${Math.round(c.r * 255)},${Math.round(c.g * 255)},${Math.round(c.b * 255)},${c.a})`;
-    } else {
-      stage.style.background = "#000";
     }
+    // 未設定 = 透明。background を設定せず、ホストページの地が透けるようにする（§5.6）。
 
     viewport.appendChild(stage);
     host.appendChild(viewport);

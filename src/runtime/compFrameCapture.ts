@@ -48,7 +48,8 @@ function rgbaToHex(c: RGBA): string {
 }
 
 function compBackground(comp: TimelineComposition): string {
-  return comp.background ? rgbaToHex(comp.background) : "#000000";
+  // 未設定背景 = 透明。ネスト comp は親の上に透過合成される（§5.6）。
+  return comp.background ? rgbaToHex(comp.background) : "transparent";
 }
 
 function nextTick(): Promise<void> {

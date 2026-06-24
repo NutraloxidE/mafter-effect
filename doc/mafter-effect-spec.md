@@ -340,10 +340,14 @@ interface CompositionMeta {
   height: number;           // px（任意比率・任意解像度を明示可能）
   fps: number;
   duration: Frame;          // 総フレーム数
-  background?: RGBA;
+  background?: RGBA;        // 未設定 = 透明。不透明 export（alpha 無）の最終ラスタ化時のみ黒でマット。bundle 再生・ネストコンポ合成は透明。
 }
+```
 
-// timeline comp: objects を持つ
+**背景色の編集 UI（確定・UI 層）**: `background` はコンポのプロパティであり、編集は **Inspector**（レイヤー未選択時の **Composition** セクション — 色スウォッチ + 透明トグル、`setCompBackground`・undo 可）。Preview の `⬚` チェッカー/黒トグルは **ビューア設定**（§25.2）であり背景値そのものではない。
+
+```ts
+// timeline comp: objects を持つ（続き）
 interface TimelineComposition extends CompositionMeta {
   kind: "timeline";
   objects: SceneObject[];   // flat list, id 昇順で直列化。ツリーは parent から導出（§5.4-note）
@@ -1040,6 +1044,8 @@ AE タイムラインの機能を **Tier A〜D** に分け、本リビジョン�
 
 既存 `updateObject`（command 経由）で `inPoint`/`outPoint`/`transform`/`opacity`/`components` を patch する。Tier A 専用の最小ヘルパーをパネル内に置く（store API を増やしすぎない）。`currentFrame` は既存 `setFrame`（エディタ状態, undo 対象外）。
 
+**レイヤー選択解除（確定）**: `selectedObjectIds` が空のとき Inspector は **Composition** インスペクター（§5.6 背景編集等）を表示する。解除操作: **Escape**（入力欄フォーカス中は無効）、**タイムライン ruler 左のラベル列空白クリック**、`setCurrentComp` / 新規 comp 作成時の自動クリア。Ctrl/Cmd+クリックで最後の 1 レイヤーをトグル解除しても空になる。
+
 **複数オブジェクト横断の 1-command 編集**（§21.5 用）: 複数の `SceneObject` への patch を**1 つの command（1 undo）**で確定する `updateObjects(patches, label)` を追加する。`patches` は `{ id, patch }[]`。内部は既存 command 層（before/after スナップショット, §17）で実装し、`withCompObjects` を 1 度だけ通して全 patch を適用する。スキーマには影響しない。
 
 ### §21.5 キーフレーム複数選択（確定・Tier A 拡張）
@@ -1387,7 +1393,7 @@ INV-1〜6 を保持。Phase 1 は resolve・スキーマ・直列化に影響し
 
 すべてビューア表示専用のオーバーレイで、**`resolve()` の解決値・export・ラスタには一切影響しない**（INV-2/3 不変）。トグルで個別 ON/OFF:
 
-- **透明チェッカーボード**: ステージ背景。comp に背景色がある場合はその上、無い領域（アルファ抜き）でチェッカーが見える。export は従来どおり comp 背景/アルファに従う。
+- **透明チェッカーボード**: comp 背景が**未設定**のときの stage 背景（コンテンツの**背後**に描画）。トグル ON でチェッカー、OFF で黒。comp に背景色がある場合はそれを優先（チェッカーは出ない）。export は従来どおり comp 背景/アルファに従う（不透明 export は黒マット、alpha export は透明）。**`⬚` トグルはビューア設定**（localStorage 永続・§25.7）であり、`comp.background` の編集 UI ではない（背景色編集は Inspector の Composition セクション — §5.6）。
 - **セーフマージン**: action-safe（外周 5%）/ title-safe（外周 10%）の枠。
 - **グリッド / 中心十字 / 定規**: comp 座標基準。グリッド間隔は既定値（例 comp 幅の 1/10）固定で可。
 - **解像度プロキシ**: Full/Half/Quarter（描画解像度を落として軽量プレビュー）。**scene 解決値は不変**で、DomRenderer のラスタ近似/プレビュー品質のみに作用させる（best-effort、INV-2 は scene 値の一致のみを要求）。
