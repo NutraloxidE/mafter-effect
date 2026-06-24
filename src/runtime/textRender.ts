@@ -196,6 +196,11 @@ export function applyDraftText(el: HTMLElement, p: TextStyleProps): void {
   el.style.lineHeight = `${lineHeight}px`;
   el.style.overflow = "visible";
   el.style.transform = "";
+  // align（center/right）では bounds.minX が負になる。グリフは 0 基準に正規化済みなので、
+  // 要素全体を minX だけシフトして anchor(原点) 相対の配置にする。これでギズモ bounds
+  // [minX,maxX] と描画矩形が一致する（左寄せ=minX=0 は無変化＝非破壊・§26.4）。
+  el.style.left = `${bounds.minX}px`;
+  el.style.top = `${bounds.minY}px`;
 
   el.textContent = "";
   for (const line of lines) {
@@ -240,6 +245,10 @@ export function renderPreciseText(
   svg.setAttribute("width", String(Math.ceil(Math.max(1, boxW))));
   svg.setAttribute("height", String(Math.ceil(Math.max(1, boxH))));
   svg.style.transform = "";
+  // applyDraftText と同じく anchor 相対へ：path/tspan は bounds 左上(0)基準なので
+  // コンテナを minX/minY だけシフトしてギズモ bounds と一致させる。
+  container.style.left = `${bounds.minX}px`;
+  container.style.top = `${bounds.minY}px`;
 
   const fill = rgbaCss(p.color);
   const stroke = rgbaCss(p.strokeColor);

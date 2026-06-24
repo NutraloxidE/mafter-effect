@@ -70,6 +70,24 @@ describe("layoutTextLines", () => {
     expect(b.maxX).toBeCloseTo(12, 5);
     expect(b.maxY).toBeCloseTo(textLineHeightPx(10, 0), 5);
   });
+
+  // anchor 相対 align の契約（§26.4 整列バグ修正）。Draft/Precise レンダラは
+  // テキスト要素を bounds.minX だけ local シフトして配置し、ギズモ bounds と一致させる。
+  // この minX 符号がレンダラ配置とギズモの両方の唯一の正なのでロックする。
+  it("computeTextContentBounds is anchor-relative for center/right align", () => {
+    // 1 行 "AB", advance=10, tracking=0 → 行幅 20
+    const left = computeTextContentBounds("AB", 10, 0, 0, "left", null, () => 10);
+    expect(left.minX).toBe(0);
+    expect(left.maxX).toBeCloseTo(20, 5);
+
+    const center = computeTextContentBounds("AB", 10, 0, 0, "center", null, () => 10);
+    expect(center.minX).toBeCloseTo(-10, 5); // anchor がボックス中央
+    expect(center.maxX).toBeCloseTo(10, 5);
+
+    const right = computeTextContentBounds("AB", 10, 0, 0, "right", null, () => 10);
+    expect(right.minX).toBeCloseTo(-20, 5); // anchor がボックス右端
+    expect(right.maxX).toBeCloseTo(0, 5);
+  });
 });
 
 describe("textBaselineY (§26.4 Draft/Best baseline 一致)", () => {
