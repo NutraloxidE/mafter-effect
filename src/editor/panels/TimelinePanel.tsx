@@ -16,7 +16,7 @@ import { currentTimelineComp, setKeyframe, useEditorStore } from "../store";
 import { framesToTimecode } from "../timecode";
 import { isRgba } from "../ColorSwatch";
 import { getLayerSourceExtent, shiftFootageSourceOffset, type LayerSourceExtent } from "../layerSourceOffset";
-import { DRAG_MIME } from "./ProjectPanel";
+import { DRAG_MIME } from "./dragMime";
 import { ScrubNumber } from "../ScrubNumber";
 import { labelBarColor, labelColorTitle, labelRowTint, LAYER_LABEL_COLORS, timelineBarFill } from "../layerLabels";
 import type {

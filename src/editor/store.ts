@@ -1,7 +1,15 @@
 import { create } from "zustand";
 import { createProject } from "../core/createProject";
-import { newCompId, newObjectId } from "../core/ids";
+import { newBinId, newCompId, newObjectId } from "../core/ids";
 import { loadProject, saveProject } from "../core/projectFs";
+import {
+  createBinInProject,
+  deleteBinFromProject,
+  moveTreeEntries,
+  registerNewProjectItem,
+  renameBinInProject,
+  unregisterProjectItem,
+} from "../core/projectTree";
 import { defaultTransform, staticProp, vec3 } from "../core/props";
 import type {
   AnimatedProp,
@@ -14,6 +22,7 @@ import type {
   Keyframe,
   LabelIndex,
   Project,
+  ProjectTreeEntry,
   Renderer3d,
   RGBA,
   SceneObject,
@@ -176,6 +185,15 @@ export interface EditorStore {
   addTimelineComp: (name?: string) => string | null;
   removeComposition: (id: string) => void;
   renameComposition: (id: string, name: string) => void;
+  // §20.5 Project Bin
+  createBin: (parentBinId?: string | null, name?: string) => string | null;
+  renameBin: (id: string, name: string) => void;
+  deleteBin: (id: string) => void;
+  moveProjectEntries: (
+    entries: ProjectTreeEntry[],
+    targetBinId: string | null,
+    index: number,
+  ) => void;
   // §21.9 レイヤー名リネーム
   renameObject: (id: string, name: string) => void;
   // §21.10 ラベル色
@@ -475,12 +493,15 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       // 背景は未設定 = 透明（§5.6）。色が要るなら setCompBackground で設定。
       objects: [],
     };
-    const after: Project = {
-      ...before,
-      compositions: [...before.compositions, comp].sort((a, b) =>
-        a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
-      ),
-    };
+    const after = registerNewProjectItem(
+      {
+        ...before,
+        compositions: [...before.compositions, comp].sort((a, b) =>
+          a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
+        ),
+      },
+      { kind: "composition", id },
+    );
     get().applyCommand({ label: "Add Composition", before, after });
     // 作成した comp をアクティブにする（エディタ状態, undo 対象外）
     set({ currentCompId: id, currentFrame: 0, selectedObjectIds: [], previewCamera: null });
@@ -504,7 +525,10 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       if (!firstTimeline) return; // ガード（上の不変条件で到達しないはず）
       rootComposition = firstTimeline.id;
     }
-    const after: Project = { ...before, compositions: remaining, rootComposition };
+    const after = unregisterProjectItem(
+      { ...before, compositions: remaining, rootComposition },
+      { kind: "composition", id },
+    );
     get().applyCommand({ label: "Remove Composition", before, after });
 
     // html comp の FS ファイルを掃除（best-effort, §20.2）
@@ -532,6 +556,41 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       compositions: before.compositions.map((c) => (c.id === id ? { ...c, name } : c)),
     };
     get().applyCommand({ label: "Rename Composition", before, after });
+  },
+
+  createBin: (parentBinId = null, name) => {
+    const before = get().project;
+    if (!before) return null;
+    const id = newBinId();
+    const count = (before.bins ?? []).length;
+    const after = createBinInProject(before, id, name ?? `Folder ${count + 1}`, parentBinId ?? null);
+    get().applyCommand({ label: "New Folder", before, after });
+    return id;
+  },
+
+  renameBin: (id, name) => {
+    const before = get().project;
+    if (!before) return;
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const after = renameBinInProject(before, id, trimmed);
+    get().applyCommand({ label: "Rename Folder", before, after });
+  },
+
+  deleteBin: (id) => {
+    const before = get().project;
+    if (!before) return;
+    if (!(before.bins ?? []).some((b) => b.id === id)) return;
+    const after = deleteBinFromProject(before, id);
+    get().applyCommand({ label: "Delete Folder", before, after });
+  },
+
+  moveProjectEntries: (entries, targetBinId, index) => {
+    if (entries.length === 0) return;
+    const before = get().project;
+    if (!before) return;
+    const after = moveTreeEntries(before, entries, targetBinId, index);
+    get().applyCommand({ label: "Move Project Item", before, after });
   },
 
   renameObject: (id, name) => {
@@ -637,12 +696,15 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       fps: 30,
       duration: 150,
     };
-    const after: Project = {
-      ...before,
-      compositions: [...before.compositions, htmlComp].sort((a, b) =>
-        a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
-      ),
-    };
+    const after = registerNewProjectItem(
+      {
+        ...before,
+        compositions: [...before.compositions, htmlComp].sort((a, b) =>
+          a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
+        ),
+      },
+      { kind: "composition", id },
+    );
     get().applyCommand({ label: "Add HTML Comp", before, after });
     return id;
   },
@@ -781,10 +843,13 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       /* meta optional — 失敗時は尺フォールバック */
     }
     const asset: AssetEntry = { id, path: assetPath, kind: "audio", meta };
-    const after: Project = {
-      ...before,
-      assets: [...before.assets, asset].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
-    };
+    const after = registerNewProjectItem(
+      {
+        ...before,
+        assets: [...before.assets, asset].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+      },
+      { kind: "asset", id },
+    );
     get().applyCommand({ label: "Import Audio", before, after });
     return id;
   },
@@ -828,10 +893,13 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       /* meta optional */
     }
     const asset: AssetEntry = { id, path: assetPath, kind: "image", meta };
-    const after: Project = {
-      ...before,
-      assets: [...before.assets, asset].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
-    };
+    const after = registerNewProjectItem(
+      {
+        ...before,
+        assets: [...before.assets, asset].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+      },
+      { kind: "asset", id },
+    );
     get().applyCommand({ label: "Import Image", before, after });
     return id;
   },
@@ -880,10 +948,13 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       /* meta optional */
     }
     const asset: AssetEntry = { id, path: assetPath, kind: "video", meta };
-    const after: Project = {
-      ...before,
-      assets: [...before.assets, asset].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
-    };
+    const after = registerNewProjectItem(
+      {
+        ...before,
+        assets: [...before.assets, asset].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+      },
+      { kind: "asset", id },
+    );
     get().applyCommand({ label: "Import Video", before, after });
     return id;
   },
@@ -933,11 +1004,14 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       return objects.length === c.objects.length ? c : { ...c, objects };
     });
 
-    const after: Project = {
-      ...before,
-      compositions,
-      assets: before.assets.filter((a) => a.id !== assetId),
-    };
+    const after = unregisterProjectItem(
+      {
+        ...before,
+        compositions,
+        assets: before.assets.filter((a) => a.id !== assetId),
+      },
+      { kind: "asset", id: assetId },
+    );
     get().applyCommand({ label: "Remove Footage", before, after });
 
     if (removedLayerIds.size > 0) {

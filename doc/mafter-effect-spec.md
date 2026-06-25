@@ -341,6 +341,7 @@ interface CompositionMeta {
   fps: number;
   duration: Frame;          // 総フレーム数
   background?: RGBA;        // 未設定 = 透明。不透明 export（alpha 無）の最終ラスタ化時のみ黒でマット。bundle 再生・ネストコンポ合成は透明。
+  binId?: string;           // §20.5 Project Bin。省略 = ルート。resolve 非参照。
 }
 ```
 
@@ -380,13 +381,27 @@ interface Project {
   compositions: (TimelineComposition | HtmlComposition)[];
   rootComposition: CompId;       // 既定で開く comp
   pluginRefs: PluginRef[];       // plugins/ の有効化リスト
+  bins?: ProjectBin[];            // §20.5 仮想フォルダ（省略可）
+  treeOrder?: Record<string, ProjectTreeEntry[]>; // §20.5 キー "" = ルート
 }
+
+interface ProjectBin {
+  id: string;
+  name: string;
+  parentId: string | null;
+}
+
+type ProjectTreeEntry =
+  | { kind: "bin"; id: string }
+  | { kind: "composition"; id: CompId }
+  | { kind: "asset"; id: AssetId };
 
 interface AssetEntry {
   id: AssetId;
   path: string;                  // assets/ 下の相対パス
   kind: "image" | "video" | "font" | "audio" | "other";
   meta?: Record<string, unknown>;
+  binId?: string;                  // §20.5 省略 = ルート
 }
 
 interface PluginRef { id: string; version: string; enabled: boolean; }
@@ -398,7 +413,7 @@ interface PluginRef { id: string; version: string; enabled: boolean; }
 
 **(a) データ正規化（順序・直列化前）**
 - **集合配列は id 昇順にソート**: `objects` / `assets` / `compositions` / `pluginRefs`。配列順に意味を持たせない（描画順は `zOrder` が持つ、§5.4-note）。
-- **意味順を持つ配列は並べ替えない**: `components`（重なり順が意味）、`effects`（適用順が意味・§5.5b/§27）、各 `AnimatedProp.keyframes`（`frame` 昇順を維持）。
+- **意味順を持つ配列は並べ替えない**: `components`（重なり順が意味）、`effects`（適用順が意味・§5.5b/§27）、各 `AnimatedProp.keyframes`（`frame` 昇順を維持）、**`treeOrder` 各配列**（§20.5 Project Bin のユーザー並べ順）。
   - `SceneObject.effects` / `SceneObject.isAdjustment` / `SceneObject.adjustmentMode` / `SceneObject.isNull` は **optional**。`effects` は空（無し）なら**キーごと省略**、`isAdjustment` / `isNull` は `false` なら省略、`adjustmentMode` は既定 `"live"` なら省略し `"raster"` のときだけ書く（(b) の optional 規則）。これによりエフェクト未使用、および既存 `isAdjustment: true`（live 相当）の project.json は **byte 等価のまま**（INV-4・回帰なし）。`EffectInstance.id` は ULID（INV-6）、`props` は component props と同じく正準化対象。
 - 文字列は **Unicode NFC** へ正規化。
 
@@ -919,11 +934,11 @@ type LayoutNode =
 
 ## §20. Project パネル / コンポジション管理（UI 層・MVP 後の UX 拡張）
 
-> §19 の続き。「AE の Project パネル概念」と「アクティブコンポジションの明示」を規定する。エンジン SSoT（§5 スキーマ）は変更しない — `Project.compositions` / `rootComposition` / `currentCompId`(エディタ状態) は既存。本節は **UI 層と store 操作の規約**であり、データモデルに新フィールドを足さない。
+> §19 の続き。「AE の Project パネル概念」と「アクティブコンポジションの明示」を規定する。`Project.compositions` / `rootComposition` / `currentCompId`(エディタ状態) は既存。**§20.5 Project Bin** は additive スキーマ例外（`bins` / `treeOrder` / `binId`）。それ以外の本節は **UI 層と store 操作の規約**。
 
 ### §20.1 Project パネル（= AE の Project パネル相当）
 
-`project` パネル（§19.1 の左パネル）は **プロジェクトに属する全アイテムの一覧**を表示する。AE 同様、ここは「素材とコンポの倉庫」であり、**レイヤー一覧ではない**（レイヤーは Timeline パネルが持つ。§20.4）。
+`project` パネル（§19.1 の左パネル）は **プロジェクトに属する全アイテムの一覧**を表示する。AE 同様、ここは「素材とコンポの倉庫」であり、**レイヤー一覧ではない**（レイヤーは Timeline パネルが持つ。§20.4）。**§20.5** により単一ツリー（仮想フォルダ対応）。
 
 表示する 2 系統:
 
@@ -1005,6 +1020,40 @@ html comp はタブに出さない（編集対象の timeline ではないため
 | `inspector` | 選択レイヤーのプロパティ。 |
 
 レイヤーの追加（solid/text 等）と削除は **Timeline パネル**で行う（AE と同じく「コンポを開いている状態でレイヤーを足す」モデル）。Project パネルからレイヤー一覧を撤去する。
+
+### §20.5 Project Bin（仮想フォルダ・additive スキーマ・確定 2026-06-26）
+
+AE の Project パネル相当の **整理用仮想フォルダ**。`resolve()` / export / 参照 id（INV-6）には**一切影響しない**（倉庫の棚ラベルのみ）。
+
+**スキーマ（§5 additive・byte 等価）**:
+- `Project.bins?: ProjectBin[]` — フォルダ定義（`parentId: null` = ルート直下のフォルダ行）
+- `Project.treeOrder?: Record<string, ProjectTreeEntry[]>` — 各親内の表示順。キー `""` = ルート
+- `CompositionMeta.binId?` / `AssetEntry.binId?` — 所属フォルダ（省略 = ルート）
+
+**正準化**:
+- `bins` は id 昇順ソート
+- `treeOrder` の各配列は**ユーザー順を保持**（id ソートしない）
+- `binId` / 空 `bins` / 空 `treeOrder` は省略（既存 project.json と byte 等価）
+
+**load 時**:
+- 未知 `binId` → root 扱い + warn
+- bin 親循環 → `ProjectError`
+- `treeOrder` 未設定 → id 昇順で自動生成
+
+**store 操作（undo 可）**:
+```ts
+createBin(parentBinId?, name?): BinId
+renameBin(id, name): void
+deleteBin(id): void          // 中身を親へ移動してから削除
+moveProjectEntries(entries, targetBinId, index): void
+```
+
+**UI**:
+- Project パネルは **単一ツリー**（comp / footage / bin 混在）。Plugins は Bin 対象外（下部固定）
+- 新規 import / `+Comp` / `+HTML` は **常にルート末尾**（v1）
+- フォルダ開閉は **localStorage**（project.json 非直列化）
+- 検索: 名前フィルタ + マッチ祖先 bin を自動展開
+- ツリー内 DnD: フォルダ行へドロップで移動（`application/x-mafter-project-tree`）。Timeline 配置 DnD（`application/x-mafter-item`）とは別 MIME
 
 ---
 

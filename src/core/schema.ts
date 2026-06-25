@@ -169,6 +169,8 @@ export interface CompositionMeta {
   fps: number;
   duration: Frame; // 総フレーム数
   background?: RGBA;
+  /** §20.5 Project Bin 整理用。省略 = ルート。resolve 非参照。 */
+  binId?: string;
 }
 
 export interface TimelineComposition extends CompositionMeta {
@@ -193,7 +195,22 @@ export interface AssetEntry {
   path: string; // assets/ 下の相対パス
   kind: AssetKind;
   meta?: Record<string, unknown>;
+  /** §20.5 Project Bin 整理用。省略 = ルート。resolve 非参照。 */
+  binId?: string;
 }
+
+/** §20.5 AE 型 Project パネル仮想フォルダ。描画・参照には影響しない。 */
+export interface ProjectBin {
+  id: string;
+  name: string;
+  parentId: string | null;
+}
+
+/** §20.5 フォルダ内の表示順エントリ。 */
+export type ProjectTreeEntry =
+  | { kind: "bin"; id: string }
+  | { kind: "composition"; id: CompId }
+  | { kind: "asset"; id: AssetId };
 
 export interface PluginRef {
   id: string;
@@ -214,6 +231,13 @@ export interface Project {
   compositions: Composition[];
   rootComposition: CompId; // 既定で開く comp
   pluginRefs: PluginRef[]; // plugins/ の有効化リスト
+  /** §20.5 仮想フォルダ定義。省略 = フォルダなし。 */
+  bins?: ProjectBin[];
+  /**
+   * §20.5 各親フォルダ内の表示順。キー "" = ルート、否则 bin id。
+   * 配列順はユーザー順を保持（id ソート対象外）。省略 = ロード時に導出。
+   */
+  treeOrder?: Record<string, ProjectTreeEntry[]>;
 }
 
 export const CURRENT_SCHEMA_VERSION = 1 as const;

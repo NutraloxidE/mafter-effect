@@ -15,3 +15,7 @@ export function newCompId(): CompId {
 export function newAssetId(): AssetId {
   return ulid();
 }
+
+export function newBinId(): string {
+  return ulid();
+}

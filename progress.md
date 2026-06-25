@@ -431,3 +431,19 @@ canvas 化結果は以降から見て通常の背面ピクセルと等価（zOrd
   - **新規 `verify-video-export-monotonic.mjs`**（恒久）: 連続フレームを順に書き出し `<video>.currentTime`／フレーム間差分を測定し **reversals=0・stuckFrames=0・onTarget=25/25** を確認。旧 `verify-video-export.mjs` は静的な劣化アセット（`video_test.mp4` 自体が旧プレイヤーUIバグの焼き込み＋ほぼ静止）で**動き検出が無効**だったため、ffmpeg `testsrc2` で生成した動く素材 `for-debug-data/video_motion.mp4`（`ffmpeg -f lavfi -i testsrc2=size=1280x720:rate=30:duration=3 -pix_fmt yuv420p`）を使用。`VERIFY_VIDEO` で差し替え可。
   - 既存 `verify-video-export.mjs` PASS（playerUi=0%・非blank 無回帰）。
 - **残（別タスク・symptom B）**: 1フレーム ~320ms は foreignObject ラスタ化（~290ms）が主因で本修正と独立。高速化は「video を foreignObject 外で直接 canvas 合成 / WebCodecs」案（issue §未試行 #1/#2）。出力の動き（symptom A）は解消。
+
+### 2026-06-26（Cursor）— Project Bin v1（仮想フォルダ・単一ツリー）
+
+- **要請**: AE 型 Project パネルで comp/footage を仮想フォルダ（Bin）で整理。v1 は Bin ツリーのみ（font import / Replace Footage は Phase 2）。新規 import / +Comp / +HTML は常にルート直下。
+- **スキーマ（additive・ユーザー承認済）**: `Project.bins` / `Project.treeOrder` / `CompositionMeta.binId` / `AssetEntry.binId`（resolve・compRef・asset 参照は ULID のまま非接触）。
+- **実装**:
+  - [projectTree.ts](src/core/projectTree.ts) — ツリー純関数（create/delete/move/register、`ensureProjectTree`、`treeOrderIsRedundant`）
+  - [serialize.ts](src/core/serialize.ts) — `bins` id 昇順、`treeOrder` ユーザー順保持、既定順と同じ `treeOrder` は省略（byte 等価）
+  - [validate.ts](src/core/validate.ts) — bin 循環検出、未知 `binId` warn + root 化
+  - [store.ts](src/editor/store.ts) — `createBin` / `renameBin` / `deleteBin` / `moveProjectEntries`、既存 add/import/remove に tree 配線
+  - [ProjectTreeView.tsx](src/editor/panels/projectTree/ProjectTreeView.tsx) — 単一ツリー、検索、フォルダ CRUD、DnD（フォルダへドロップ）、Timeline DnD 維持
+  - [projectBinStorage.ts](src/editor/projectBinStorage.ts) — フォルダ開閉 localStorage
+  - [ProjectPanel.tsx](src/editor/panels/ProjectPanel.tsx) — `ProjectTreeView` 置換、Plugins は下部固定
+  - spec §5 / §20.5 / §5.6-canon 追記
+- **検証**: `npm run typecheck` 緑、`test/projectBins.test.ts` 7件、`npm test` 486 PASS（roundtrip / canonical-edge 回帰なし）
+- **Phase 2（v1 外）**: `importFontAsset`、`replaceAsset`、行間 DnD 並べ替え、OS→Project 直接 DnD、Playwright 実機 verify スクリプト

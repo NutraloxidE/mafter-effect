@@ -1,4 +1,5 @@
-import type { Project, SceneObject, TimelineComposition } from "./schema";
+import type { Project, SceneObject, TimelineComposition, ProjectBin, ProjectTreeEntry } from "./schema";
+import { treeOrderIsRedundant } from "./projectTree";
 
 // §5.6 正準シリアライズ:
 //   - キー順固定（再帰的にキーをアルファベット昇順へ正規化 → 決定論的・安定）
@@ -39,6 +40,34 @@ function canonicalizeObject(obj: SceneObject): SceneObject {
   return out;
 }
 
+function stripBinId<T extends { binId?: string }>(item: T): T {
+  if (item.binId === undefined) {
+    const { binId: _removed, ...rest } = item;
+    return rest as T;
+  }
+  return item;
+}
+
+function canonicalizeBins(bins: ProjectBin[] | undefined): ProjectBin[] | undefined {
+  if (!bins || bins.length === 0) return undefined;
+  return [...bins].sort(byId);
+}
+
+function canonicalizeTreeOrder(
+  order: Record<string, ProjectTreeEntry[]> | undefined,
+): Record<string, ProjectTreeEntry[]> | undefined {
+  if (!order || Object.keys(order).length === 0) return undefined;
+  const keys = Object.keys(order).sort((a, b) =>
+    a.normalize("NFC") < b.normalize("NFC") ? -1 : a.normalize("NFC") > b.normalize("NFC") ? 1 : 0,
+  );
+  const out: Record<string, ProjectTreeEntry[]> = {};
+  for (const k of keys) {
+    const entries = order[k];
+    if (entries && entries.length > 0) out[k] = [...entries];
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 /**
  * 直列化前にプロジェクトを正準形へ正規化する（深いコピーを返す。入力は変更しない）。
  * 配列順を id 昇順に固定し、追加/削除/並べ替えのどれでも diff が局所化されるようにする。
@@ -57,15 +86,23 @@ export function canonicalizeProject(project: Project): Project {
         delete (t as { activeCamera?: unknown }).activeCamera;
         return t;
       }
-      return { ...comp };
+      return stripBinId({ ...comp });
     })
     .sort(byStringKey);
 
+  const bins = canonicalizeBins(project.bins);
+  let treeOrder = canonicalizeTreeOrder(project.treeOrder);
+  if (treeOrder && treeOrderIsRedundant({ ...project, treeOrder })) {
+    treeOrder = undefined;
+  }
+
   return {
     ...project,
-    assets: [...project.assets].sort(byId),
+    assets: [...project.assets].sort(byId).map(stripBinId),
     compositions,
     pluginRefs: [...project.pluginRefs].sort(byStringKey),
+    bins,
+    treeOrder,
   };
 }
 

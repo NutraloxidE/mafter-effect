@@ -1,5 +1,6 @@
 import type { Project, SceneObject, TimelineComposition } from "./schema";
 import { BLEND_MODES, CURRENT_SCHEMA_VERSION } from "./schema";
+import { ensureProjectTree } from "./projectTree";
 
 export interface ValidationResult {
   project: Project; // 正規化後（不正 parent を root 化した結果など）
@@ -36,6 +37,9 @@ export function validateProject(raw: unknown): ValidationResult {
       validateTimeline(comp, warnings);
     }
   }
+
+  validateProjectBins(project, warnings);
+  project = ensureProjectTree(project);
 
   return { project, warnings };
 }
@@ -126,4 +130,54 @@ function validateTimeline(
     state.set(id, 2);
   };
   for (const obj of comp.objects) visit(obj.id);
+}
+
+function validateProjectBins(project: Project, warnings: string[]): void {
+  const bins = project.bins ?? [];
+  const binIds = new Set(bins.map((b) => b.id));
+
+  for (const bin of bins) {
+    if (bin.parentId !== null && !binIds.has(bin.parentId)) {
+      warnings.push(
+        `project bin ${bin.id} has unknown parent ${bin.parentId}; treating as root`,
+      );
+      bin.parentId = null;
+    }
+    if (bin.parentId === bin.id) {
+      warnings.push(`project bin ${bin.id} is its own parent; treating as root`);
+      bin.parentId = null;
+    }
+  }
+
+  const state = new Map<string, 0 | 1 | 2>();
+  const byId = new Map(bins.map((b) => [b.id, b]));
+  const visit = (id: string): void => {
+    const s = state.get(id) ?? 0;
+    if (s === 2) return;
+    if (s === 1) {
+      throw new ProjectError(`project: bin parent cycle detected at ${id}`);
+    }
+    state.set(id, 1);
+    const parent = byId.get(id)?.parentId;
+    if (parent && byId.has(parent)) visit(parent);
+    state.set(id, 2);
+  };
+  for (const bin of bins) visit(bin.id);
+
+  for (const comp of project.compositions) {
+    if (comp.binId && !binIds.has(comp.binId)) {
+      warnings.push(
+        `composition ${comp.id} has unknown binId ${comp.binId}; treating as root`,
+      );
+      comp.binId = undefined;
+    }
+  }
+  for (const asset of project.assets) {
+    if (asset.binId && !binIds.has(asset.binId)) {
+      warnings.push(
+        `asset ${asset.id} has unknown binId ${asset.binId}; treating as root`,
+      );
+      asset.binId = undefined;
+    }
+  }
 }
