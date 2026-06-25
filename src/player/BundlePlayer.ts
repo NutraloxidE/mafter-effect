@@ -122,9 +122,11 @@ export class BundlePlayer {
       });
       this.audioClock.setEndedCallback(() => {
         this.playing = false;
+        this.renderer.setPreviewRenderOptions({ previewVideoPlayback: false });
       });
       this.audioClock.play(rangeStart);
       this.playing = true;
+      this.renderer.setPreviewRenderOptions({ previewVideoPlayback: true });
     } else {
       this.play(rangeStart);
     }
@@ -169,9 +171,11 @@ export class BundlePlayer {
     if (this.audioClock) {
       this.audioClock.play(fromFrame ?? this.currentFrame);
       this.playing = true;
+      this.renderer.setPreviewRenderOptions({ previewVideoPlayback: true });
       return;
     }
     this.playing = true;
+    this.renderer.setPreviewRenderOptions({ previewVideoPlayback: true });
     this.lastRafMs = null;
     const start = fromFrame ?? this.currentFrame;
     this.currentFrame = start;
@@ -211,6 +215,7 @@ export class BundlePlayer {
 
   pause(): void {
     this.playing = false;
+    this.renderer.setPreviewRenderOptions({ previewVideoPlayback: false });
     if (this.rafId !== null) cancelAnimationFrame(this.rafId);
     this.rafId = null;
     this.audioClock?.pause();

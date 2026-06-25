@@ -369,3 +369,10 @@ canvas 化結果は以降から見て通常の背面ピクセルと等価（zOrd
 - **検証**: `npm run typecheck` 緑、`test/videoAssetProbe.test.ts` 追加、459 tests（`previewPlaybackLoop` 1件は既知フレーク）、`verify-video-import.mjs` PASS
 - **エッジケース検証（追補）**: `verify-video-import-edges.mjs`（12項目 PASS）— +Video ボタン / Footage クリック配置 / blob キャッシュ / 再生トグル / 1回再生停止 / **レイヤーカット（in·out + trimStart）** / **途中スクラブ・途中から再生**。ユニット: `test/videoLayerOutPoint.test.ts`・`imageAssetCache` video blob
 - **スコープ外（別タスク）**: export 時 `requestVideoFrameCallback` による seek 精度改善、動画内蔵音声
+
+### 2026-06-26（Cursor）— 動画 preview 再生のもっさり感修正
+
+- **症状**: 動画レイヤー入りコンポの再生が、通常コンポより重く・カクついて感じる。
+- **真因**: DomRenderer が毎フレーム `video.currentTime` で seek していた。さらに 0.05s 閾値のため 30fps では約2フレームに1回しか更新されず、見た目も15fps相当に。
+- **修正**: [videoElementSync.ts](src/runtime/videoElementSync.ts) — preview 再生中は `video.play()` でネイティブ decode に任せ、停止/スクラブ/export は半フレーム閾値で seek。`setPreviewRenderOptions({ previewVideoPlayback })` を PreviewPanel / BundlePlayer から配線。
+- **検証**: `test/videoElementSync.test.ts` 7件、`verify-video-import-edges.mjs` 12/12 PASS

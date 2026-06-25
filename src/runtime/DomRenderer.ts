@@ -17,6 +17,7 @@ import { canvasToRasterBuffer, rasterBufferToCanvas } from "./pixelSort";
 import { processRasterChainAsync } from "./rasterProcessAsync";
 import { applyFilterChainToBuffer } from "./effectRaster";
 import { resolveEffectChain } from "./effectChain";
+import { syncVideoElementTime } from "./videoElementSync";
 import type { ExportChain, ExportLayer, NestedCompositeMeta, ExportTaggedElement } from "./exportComposite";
 import type { EffectFilter } from "./plugin";
 import type { BlendMode } from "../core/schema";
@@ -140,15 +141,24 @@ export class DomRenderer implements Renderer {
   /** §27.4 export — オフDOM コンポジタ（exportComposite.ts）が調整合成を担う。true の間、
    *  調整レイヤーは live DOM を破壊せず effect chain を entry.exportChain に保存するだけ。 */
   private exportCompositeMode = false;
+  /** preview 再生中は video を play() で進め、フレーム毎 seek を避ける。 */
+  private previewVideoPlayback = false;
 
   setPreviewRenderOptions(opts: {
     holdLastRaster?: boolean;
     forceAdjustmentRaster?: boolean;
     exportCompositeMode?: boolean;
+    previewVideoPlayback?: boolean;
   }): void {
     if (opts.holdLastRaster !== undefined) this.holdLastRaster = opts.holdLastRaster;
     if (opts.forceAdjustmentRaster !== undefined) this.forceAdjustmentRaster = opts.forceAdjustmentRaster;
     if (opts.exportCompositeMode !== undefined) this.exportCompositeMode = opts.exportCompositeMode;
+    if (opts.previewVideoPlayback !== undefined) {
+      if (this.previewVideoPlayback && !opts.previewVideoPlayback) {
+        this.pauseAllVideos();
+      }
+      this.previewVideoPlayback = opts.previewVideoPlayback;
+    }
   }
 
   setTextQuality(mode: "draft" | "precise"): void {
@@ -345,12 +355,27 @@ export class DomRenderer implements Renderer {
   }
 
   dispose(): void {
+    this.pauseAllVideos();
     if (this.root) {
       this.root.remove();
       this.root = null;
     }
     this.entries.clear();
     this.currentComp = null;
+  }
+
+  private pauseAllVideos(): void {
+    for (const entry of this.entries.values()) {
+      for (const el of entry.children) {
+        if (el instanceof HTMLVideoElement && !el.paused) {
+          try {
+            el.pause();
+          } catch {
+            /* pause best-effort */
+          }
+        }
+      }
+    }
   }
 
   private applyObject(entry: ObjectEntry, obj: ResolvedObject, frame: Frame): void {
@@ -400,7 +425,7 @@ export class DomRenderer implements Renderer {
       const el = entry.children[i];
       if (el) {
         const hostInPoint = (c.props["_hostInPoint"] as number | undefined) ?? 0;
-        updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, frame, hostInPoint, this.currentComp?.fps ?? 30);
+        updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, frame, hostInPoint, this.currentComp?.fps ?? 30, this.previewVideoPlayback);
       }
 
       // Plugin component: registry から ComponentDef.render を呼ぶ（組み込み型は未登録でスキップ）
@@ -1205,7 +1230,7 @@ export class DomRenderer implements Renderer {
           }
           const el = createComponentEl(c.type);
           const hostInPoint = (c.props["_hostInPoint"] as number | undefined) ?? 0;
-          updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, childFrame, hostInPoint, childComp.fps);
+          updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, childFrame, hostInPoint, childComp.fps, this.previewVideoPlayback);
           div.appendChild(el);
         }
       }
@@ -1372,6 +1397,7 @@ function updateComponentEl(
   hostFrame = 0,
   hostInPoint = 0,
   fps = 30,
+  previewVideoPlayback = false,
 ): void {
   switch (type) {
     case "solid": {
@@ -1427,13 +1453,7 @@ function updateComponentEl(
       }
       const trimStart = (props["trimStart"] as number | undefined) ?? 0;
       const t = Math.max(0, (hostFrame - hostInPoint) / fps + trimStart / fps);
-      if (Number.isFinite(t) && Math.abs(video.currentTime - t) > 0.05) {
-        try {
-          video.currentTime = t;
-        } catch {
-          /* seek best-effort */
-        }
-      }
+      syncVideoElementTime(video, t, fps, { playbackMode: previewVideoPlayback });
       const size = assetId ? imageCache?.getSize(assetId) : null;
       if (size) {
         video.style.width = `${size.width}px`;

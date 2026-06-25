@@ -469,6 +469,7 @@ export function PreviewPanel() {
     if (!renderer) return;
     renderer.setPreviewRenderOptions({
       holdLastRaster: isPlaying && !editingLive,
+      previewVideoPlayback: isPlaying && !editingLive,
     });
   }, [isPlaying, editingLive]);
 
