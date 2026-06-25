@@ -1,8 +1,18 @@
-import { useCallback, useMemo, useState, type DragEvent } from "react";
+import { useCallback, useMemo, useRef, useState, type DragEvent, type MouseEvent } from "react";
 import type { AssetEntry, Composition, Project, ProjectTreeEntry } from "../../../core/schema";
 import { orderedEntriesForParent } from "../../../core/projectTree";
+import { useDragEdgeAutoScroll } from "../../dragEdgeAutoScroll";
 import { isBinExpanded, toggleBinExpanded } from "../../projectBinStorage";
 import { DRAG_MIME } from "../dragMime";
+import {
+  entryKey,
+  filterMovableEntries,
+  keysToEntries,
+  parseTreeDragPayload,
+  serializeTreeDragPayload,
+} from "./projectTreeSelection";
+import { ResourceAddMenu } from "./ResourceAddMenu";
+import { toolbarBtn } from "./toolbarStyles";
 
 export const TREE_DRAG_MIME = "application/x-mafter-project-tree";
 
@@ -86,16 +96,35 @@ function filterEntries(
   return out;
 }
 
-function parseTreeDrag(data: string): ProjectTreeEntry | null {
-  try {
-    const parsed = JSON.parse(data) as ProjectTreeEntry;
-    if (parsed.kind === "bin" || parsed.kind === "composition" || parsed.kind === "asset") {
-      return parsed;
+function collectVisibleEntries(
+  project: Project,
+  search: string,
+  expandedVersion: number,
+): ProjectTreeEntry[] {
+  void expandedVersion;
+  const out: ProjectTreeEntry[] = [];
+  const walk = (parentBinId: string | null) => {
+    for (const entry of filterEntries(project, orderedEntriesForParent(project, parentBinId), search)) {
+      out.push(entry);
+      if (entry.kind === "bin") {
+        const expanded = search.trim() ? true : isBinExpanded(entry.id);
+        if (expanded) walk(entry.id);
+      }
     }
-  } catch {
-    /* ignore */
-  }
-  return null;
+  };
+  walk(null);
+  return out;
+}
+
+function rowBackground(selected: boolean, activeComp: boolean, hovered: boolean): string {
+  if (selected) return "#354560";
+  if (activeComp) return "#2a3a4a";
+  if (hovered) return "#262626";
+  return "transparent";
+}
+
+function isInteractiveChild(target: EventTarget | null): boolean {
+  return !!(target as HTMLElement | null)?.closest("button, input");
 }
 
 export function ProjectTreeView(props: ProjectTreeViewProps) {
@@ -126,33 +155,112 @@ export function ProjectTreeView(props: ProjectTreeViewProps) {
   const [search, setSearch] = useState("");
   const [renamingBinId, setRenamingBinId] = useState<string | null>(null);
   const [expandVersion, setExpandVersion] = useState(0);
+  const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
+  const [hoveredKey, setHoveredKey] = useState<string | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const lastSelectedKeyRef = useRef<string | null>(null);
+
+  const selectedSet = useMemo(() => new Set(selectedKeys), [selectedKeys]);
+
+  const visibleEntries = useMemo(
+    () => collectVisibleEntries(project, search, expandVersion),
+    [project, search, expandVersion],
+  );
 
   const rootEntries = useMemo(
     () => filterEntries(project, orderedEntriesForParent(project, null), search),
     [project, search],
   );
 
-  const onTreeDragStart = useCallback((e: DragEvent, entry: ProjectTreeEntry) => {
-    e.dataTransfer.setData(TREE_DRAG_MIME, JSON.stringify(entry));
-    e.dataTransfer.effectAllowed = "move";
-  }, []);
+  const isTreeDrag = useCallback(
+    (e: React.DragEvent) =>
+      e.dataTransfer.types.includes(TREE_DRAG_MIME) ||
+      e.dataTransfer.types.includes(DRAG_MIME),
+    [],
+  );
+  const edgeScroll = useDragEdgeAutoScroll(scrollRef, { isActive: isTreeDrag });
+
+  const handleEntryClick = useCallback(
+    (entry: ProjectTreeEntry, e: MouseEvent) => {
+      e.stopPropagation();
+      const key = entryKey(entry);
+
+      if (e.shiftKey && lastSelectedKeyRef.current) {
+        const keys = visibleEntries.map(entryKey);
+        const lastIdx = keys.indexOf(lastSelectedKeyRef.current);
+        const thisIdx = keys.indexOf(key);
+        if (lastIdx >= 0 && thisIdx >= 0) {
+          const lo = Math.min(lastIdx, thisIdx);
+          const hi = Math.max(lastIdx, thisIdx);
+          const range = keys.slice(lo, hi + 1);
+          setSelectedKeys([...new Set([...selectedKeys, ...range])]);
+          return;
+        }
+      }
+
+      if (e.ctrlKey || e.metaKey) {
+        if (selectedSet.has(key)) {
+          setSelectedKeys(selectedKeys.filter((k) => k !== key));
+        } else {
+          setSelectedKeys([...selectedKeys, key]);
+          lastSelectedKeyRef.current = key;
+        }
+        return;
+      }
+
+      setSelectedKeys([key]);
+      lastSelectedKeyRef.current = key;
+
+      if (entry.kind === "composition") {
+        const comp = compById(project, entry.id);
+        if (comp?.kind === "timeline") onSetCurrentComp(comp.id);
+      }
+    },
+    [onSetCurrentComp, project, selectedKeys, selectedSet, visibleEntries],
+  );
+
+  const getDragEntries = useCallback(
+    (entry: ProjectTreeEntry): ProjectTreeEntry[] => {
+      const key = entryKey(entry);
+      if (!selectedSet.has(key) || selectedKeys.length <= 1) return [entry];
+
+      const order = new Map(visibleEntries.map((e, i) => [entryKey(e), i]));
+      return keysToEntries(selectedKeys).sort(
+        (a, b) => (order.get(entryKey(a)) ?? 0) - (order.get(entryKey(b)) ?? 0),
+      );
+    },
+    [selectedKeys, selectedSet, visibleEntries],
+  );
+
+  const onTreeDragStart = useCallback(
+    (e: DragEvent, entry: ProjectTreeEntry) => {
+      const entries = getDragEntries(entry);
+      e.dataTransfer.setData(TREE_DRAG_MIME, serializeTreeDragPayload(entries));
+      e.dataTransfer.effectAllowed = "move";
+    },
+    [getDragEntries],
+  );
+
+  const onTreeDragEnd = edgeScroll.onDragEnd;
 
   const onDropOnBin = useCallback(
     (e: DragEvent, targetBinId: string | null) => {
       const raw = e.dataTransfer.getData(TREE_DRAG_MIME);
-      const entry = parseTreeDrag(raw);
-      if (!entry) return;
+      const entries = filterMovableEntries(project, parseTreeDragPayload(raw), targetBinId);
+      if (entries.length === 0) return;
       e.preventDefault();
       e.stopPropagation();
-      if (entry.kind === "bin" && entry.id === targetBinId) return;
       const targetList = orderedEntriesForParent(project, targetBinId);
-      onMoveProjectEntries([entry], targetBinId, targetList.length);
+      onMoveProjectEntries(entries, targetBinId, targetList.length);
     },
     [onMoveProjectEntries, project],
   );
 
   const renderEntry = (entry: ProjectTreeEntry, depth: number) => {
     const pad = 10 + depth * 14;
+    const key = entryKey(entry);
+    const selected = selectedSet.has(key);
+    const hovered = hoveredKey === key;
 
     if (entry.kind === "bin") {
       const bin = binById(project, entry.id);
@@ -166,6 +274,10 @@ export function ProjectTreeView(props: ProjectTreeViewProps) {
       return (
         <div key={`bin:${entry.id}`}>
           <div
+            onClick={(e) => {
+              if (isInteractiveChild(e.target)) return;
+              handleEntryClick(entry, e);
+            }}
             onDragOver={(e) => {
               if (e.dataTransfer.types.includes(TREE_DRAG_MIME)) {
                 e.preventDefault();
@@ -173,6 +285,8 @@ export function ProjectTreeView(props: ProjectTreeViewProps) {
               }
             }}
             onDrop={(e) => onDropOnBin(e, entry.id)}
+            onMouseEnter={() => setHoveredKey(key)}
+            onMouseLeave={() => setHoveredKey((h) => (h === key ? null : h))}
             style={{
               display: "flex",
               alignItems: "center",
@@ -180,9 +294,9 @@ export function ProjectTreeView(props: ProjectTreeViewProps) {
               padding: `3px ${pad}px 3px 6px`,
               cursor: "pointer",
               userSelect: "none",
+              background: rowBackground(selected, false, hovered),
+              borderLeft: selected ? "2px solid #6a9fd4" : "2px solid transparent",
             }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = "#262626")}
-            onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
           >
             <button
               type="button"
@@ -222,9 +336,10 @@ export function ProjectTreeView(props: ProjectTreeViewProps) {
             ) : (
               <span
                 style={{ flex: 1, color: "#ccc", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-                onDoubleClick={() => setRenamingBinId(entry.id)}
+                onDoubleClick={(e) => { e.stopPropagation(); setRenamingBinId(entry.id); }}
                 draggable
                 onDragStart={(e) => onTreeDragStart(e, entry)}
+                onDragEnd={onTreeDragEnd}
               >
                 {bin.name}
               </span>
@@ -271,27 +386,26 @@ export function ProjectTreeView(props: ProjectTreeViewProps) {
             }
             e.dataTransfer.effectAllowed = "copyMove";
           }}
-          onClick={renamingCompId === comp.id ? undefined : () => {
-            if (comp.kind === "timeline") onSetCurrentComp(comp.id);
-          }}
+          onDragEnd={onTreeDragEnd}
+          onClick={renamingCompId === comp.id ? undefined : (e) => handleEntryClick(entry, e)}
           onDoubleClick={() => onSetRenamingCompId(comp.id)}
           title={
             comp.kind === "timeline"
-              ? "クリックでアクティブ / ドラッグでタイムラインへ"
-              : "ドラッグでタイムラインへ配置"
+              ? "クリックで選択・アクティブ / Ctrl・Shift で複数選択 / ドラッグで移動・タイムラインへ"
+              : "Ctrl・Shift で複数選択 / ドラッグで移動・タイムラインへ配置"
           }
+          onMouseEnter={() => setHoveredKey(key)}
+          onMouseLeave={() => setHoveredKey((h) => (h === key ? null : h))}
           style={{
             display: "flex",
             alignItems: "center",
             gap: 6,
             padding: `3px ${pad}px`,
             paddingLeft: pad,
-            background: active ? "#2a3a4a" : "transparent",
-            borderLeft: active ? "2px solid #4a8acf" : "2px solid transparent",
+            background: rowBackground(selected, active && !selected, hovered),
+            borderLeft: selected ? "2px solid #6a9fd4" : active ? "2px solid #4a8acf" : "2px solid transparent",
             cursor: "pointer",
           }}
-          onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = "#262626"; }}
-          onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = "transparent"; }}
         >
           <span style={{ color: iconColor }}>{icon}</span>
           {renamingCompId === comp.id ? (
@@ -338,7 +452,7 @@ export function ProjectTreeView(props: ProjectTreeViewProps) {
     const asset = assetById(project, entry.id);
     if (!asset) return null;
     const isFootage = asset.kind === "audio" || asset.kind === "image" || asset.kind === "video";
-    const onFootageClick = () => {
+    const addFootageLayer = () => {
       if (asset.kind === "audio") {
         const id = onAddAudioLayer(asset.id);
         if (id) onSelectObjects([id]);
@@ -370,8 +484,16 @@ export function ProjectTreeView(props: ProjectTreeViewProps) {
           }
           e.dataTransfer.effectAllowed = "copyMove";
         }}
-        title={isFootage ? "クリック or ドラッグでアクティブ comp に配置" : undefined}
-        onClick={() => { if (isFootage) onFootageClick(); }}
+        onDragEnd={onTreeDragEnd}
+        title={
+          isFootage
+            ? "クリックで選択 / ダブルクリックでタイムラインへ / Ctrl・Shift で複数選択 / ドラッグで移動・配置"
+            : undefined
+        }
+        onClick={(e) => handleEntryClick(entry, e)}
+        onDoubleClick={() => { if (isFootage) addFootageLayer(); }}
+        onMouseEnter={() => setHoveredKey(key)}
+        onMouseLeave={() => setHoveredKey((h) => (h === key ? null : h))}
         style={{
           display: "flex",
           alignItems: "center",
@@ -379,9 +501,9 @@ export function ProjectTreeView(props: ProjectTreeViewProps) {
           padding: `3px ${pad}px`,
           paddingLeft: pad,
           cursor: isFootage ? "pointer" : "default",
+          background: rowBackground(selected, false, hovered),
+          borderLeft: selected ? "2px solid #6a9fd4" : "2px solid transparent",
         }}
-        onMouseEnter={(e) => (e.currentTarget.style.background = "#262626")}
-        onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
       >
         <span style={{ color: iconColor }}>{icon}</span>
         <span style={{ flex: 1, color: "#aaa", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -401,8 +523,6 @@ export function ProjectTreeView(props: ProjectTreeViewProps) {
     );
   };
 
-  void expandVersion;
-
   return (
     <>
       <div style={toolbar}>
@@ -413,29 +533,43 @@ export function ProjectTreeView(props: ProjectTreeViewProps) {
           onChange={(e) => setSearch(e.target.value)}
           style={searchInput}
         />
-        <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 4 }}>
-          <button type="button" onClick={() => onCreateBin(null)} style={miniBtn} title="新規フォルダ">
+        <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 4, alignItems: "center", minHeight: 18 }}>
+          <button type="button" onClick={() => onCreateBin(null)} style={toolbarBtn} title="新規フォルダ">
             📁+ Folder
           </button>
-          <button type="button" onClick={onAddTimelineComp} style={miniBtn}>+ Comp</button>
-          <button type="button" onClick={() => void onAddHtmlComp()} style={miniBtn}>+ HTML</button>
-          <button type="button" onClick={onImportImage} style={miniBtn}>+ Image</button>
-          <button type="button" onClick={onImportVideo} style={miniBtn}>+ Video</button>
-          <button type="button" onClick={onImportAudio} style={miniBtn}>+ Audio</button>
+          <ResourceAddMenu
+            onAddTimelineComp={onAddTimelineComp}
+            onAddHtmlComp={onAddHtmlComp}
+            onImportImage={onImportImage}
+            onImportVideo={onImportVideo}
+            onImportAudio={onImportAudio}
+          />
         </div>
       </div>
       <div
+        ref={scrollRef}
         style={{ flex: 1, overflow: "auto" }}
+        onDragOverCapture={edgeScroll.onDragOverCapture}
+        onDragLeave={edgeScroll.onDragLeave}
+        onClick={(e) => {
+          if (e.target === e.currentTarget) setSelectedKeys([]);
+        }}
         onDragOver={(e) => {
           if (e.dataTransfer.types.includes(TREE_DRAG_MIME)) {
             e.preventDefault();
             e.dataTransfer.dropEffect = "move";
           }
         }}
-        onDrop={(e) => onDropOnBin(e, null)}
+        onDrop={(e) => {
+          edgeScroll.onDrop();
+          onDropOnBin(e, null);
+        }}
       >
         {rootEntries.length === 0 && (
-          <div style={{ padding: "8px 10px", color: "#444", fontSize: 10 }}>
+          <div
+            style={{ padding: "8px 10px", color: "#444", fontSize: 10 }}
+            onClick={(e) => e.stopPropagation()}
+          >
             {search.trim() ? "一致するアイテムがありません" : "プロジェクトは空です"}
           </div>
         )}

@@ -1,0 +1,22 @@
+/** Project ツリー・ツールバー共通ボタン（Folder / リソース ▾ 等）。 */
+export const toolbarBtn: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  height: 18,
+  minHeight: 18,
+  maxHeight: 18,
+  margin: 0,
+  padding: "0 6px",
+  background: "#2a2a2a",
+  border: "1px solid #444",
+  color: "#bbb",
+  borderRadius: 3,
+  cursor: "pointer",
+  fontSize: 10,
+  lineHeight: 1,
+  fontFamily: "inherit",
+  boxSizing: "border-box",
+  verticalAlign: "middle",
+  whiteSpace: "nowrap",
+};
