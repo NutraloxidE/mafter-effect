@@ -168,6 +168,19 @@ Zustand ストアは **IndexedDbFs の投影**（§17）。UI はストア、zip
 3. **エディタから FS に触るときは `store.getFs()` を使う**。パネルごとに `new IndexedDbFs("mafter-effect-fs")` を重複生成しない（同一 DB 名でも別インスタンス＋フラッシュ漏れで「保存したのに古い zip」が起きる）。
 4. **serialize 失敗は export でユーザーに見せる**（黙って古い FS を zip すると「ボタンが壊れた」ように見える）。
 
+### 新描画レイヤーオブジェクトの export 正常化（他経路無回帰・必須）
+
+新型の描画コンポーネント（`video` / `image` / 将来の shape 等）や、既存型の **export 専用キャプチャ経路**（`foreignObject` インライン化・seek・フレーム待ち等）を直すときは、**その型の export を直すことだけを完了条件にしない**。共有パイプラインを変えると、触っていない型・触っていない書き出し形式だけが静かに壊れる（camera bundle-bake 誤判定と同型の「片経路だけ」回帰）。
+
+**守ること:**
+
+1. **共有コードの変更は最小・型別オプトイン** — `rasterCapture.ts` / `DomRenderer` / `videoElementSync.ts` / `exporter.ts` / `compFrameCapture.ts` 等を触るとき、全レイヤー・全フレームに一律適用する挙動変更を避ける。新型専用は `c.type` 分岐・`exportVideoStep` / `inlineVideoFrames` のような**経路・型フラグ**で閉じる。
+2. **書き出し経路を横断して列挙** — 修正の影響を受けうる経路を Phase 2 で必ず書き出す: browser export（mp4 / webm / PNG 連番）/ `compFrameCapture`（ネスト precomp・調整レイヤー raster）/ Web bundle player（§11.7）/ preview（INV-2）。新型用 verify だけ緑にして終わらない。
+3. **既存 export の回帰ゲート** — 変更後は少なくとも次を無回帰確認する（該当するもの）: 既存 `verify-*-export*.mjs`・blend / 調整 / fast 系 displacement・solid+text+image のみコンプ・bundle bake 件数・`npm test` の export / raster / bundle 関連。新型の verify 追加は歓迎だが、**既存シナリオの PASS を置き換えない**。
+4. **preview 専用と export 専用の分離** — preview 再生最適化（例: `video.play()`）と export 決定論（seek + `requestVideoFrameCallback`）は共有ヘルパでも**モード分岐**を維持。一方を直して他方のフレーム精度・速度を壊さない。
+
+詳細チェックリストは [.claude/skills/add-layer-component-type/SKILL.md](.claude/skills/add-layer-component-type/SKILL.md) の export 節と [.claude/skills/implementation-loop/SKILL.md](.claude/skills/implementation-loop/SKILL.md) Phase 4c を参照。
+
 ---
 
 ## 参照

@@ -68,4 +68,12 @@ alwaysApply: true
 3. **FS アクセスは `getFs()` に一本化**（パネル内の `IndexedDbFs` 重複インスタンス禁止）
 4. **serialize 失敗は握りつぶさず export UI で表示**
 
-詳細（アーキテクチャ・マイルストーン M0–M4・設計決定）は `CLAUDE.md` と `doc/mafter-effect-spec.md` を参照。
+### 新描画レイヤーオブジェクトの export 正常化（他経路無回帰・必須）
+
+新型描画コンポーネント（`video` / `image` 等）や export 専用キャプチャ（`foreignObject` インライン化・seek・フレーム待ち）を直すとき、**その型の export だけ動けば完了にしない**。`rasterCapture` / `DomRenderer` / `exporter` / `compFrameCapture` 等の共有変更は、触っていないレイヤー型・書き出し形式（mp4/webm/PNG/bundle/ネスト precomp）だけが壊れる回帰を起こしやすい。
+
+- **型別・経路別オプトイン**（`c.type` 分岐・`exportVideoStep` / `inlineVideoFrames` 等）で閉じ、全レイヤー一律の挙動変更を避ける
+- **browser export / compFrameCapture / bundle / preview** を Phase 2 で列挙し、新型 verify だけでなく**既存 export シナリオの無回帰**を完了条件に含める
+- **preview 最適化と export 決定論**はモード分岐を維持（一方の修正で他方のフレーム精度・速度を壊さない）
+
+詳細チェックリスト: [.claude/skills/add-layer-component-type/SKILL.md](mdc:.claude/skills/add-layer-component-type/SKILL.md) §E、実装ループ Phase 4c-2。アーキテクチャ・マイルストーンは `CLAUDE.md` と `doc/mafter-effect-spec.md` を参照。

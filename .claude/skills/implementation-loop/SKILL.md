@@ -108,6 +108,7 @@ description: Mafter Effect で新機能実装・バグ修正・視覚/レンダ�
 3. **INV を守る** — `resolve()` は純関数（INV-1）。Renderer は `ResolvedScene` のみ（INV-3）。
 4. **compositor を素朴に再実装しない** — canvas 再現はフレーム間ステートレス。live DOM の毎フレーム破壊操作はちらつきの温床。
 5. **FS 整合** — zip/export/bundle は `await saveToFs()` 後に `getFs()` で読む（store 投影と FS 正本のズレ防止）。
+6. **新型 export 正常化は他経路を壊さない** — 描画レイヤー新型や export キャプチャ修正は共有パイプライン（`rasterCapture` / `DomRenderer` / `exporter` / `compFrameCapture` / `videoElementSync`）に触れやすい。**型別・経路別オプトイン**（`c.type` 分岐・`exportVideoStep` / `inlineVideoFrames` 等）で閉じ、全レイヤー一律変更を避ける。新型用 verify だけ緑にせず、既存 export シナリオ（solid/text/image・blend・調整・displacement・bundle bake 件数等）の無回帰を完了条件に含める。preview 最適化と export 決定論はモード分岐を維持。
 
 ## Phase 4 — 検証ループ（完了判定の核心）
 
@@ -155,7 +156,22 @@ filter / フォント / 合成順 など）を入れるときは、次を満た�
    （std / エッジ量 / 既知の不変量）＋生成画像の目視（blank が diff を下げる罠に注意）。
 
 6. **推測で直さず局在化** — 経路を分解してどこで壊れるかを実機で特定してから最小修正
-   （事例: [doc/issue/mp4-live-adjustment-layer-parity.md](../../../doc/issue/mp4-live-adjustment-layer-parity.md)）。
+   （事例: [doc/issue/mp4-live-adjustment-layer-parity.md](../../../doc/issue/mp4-live-adjustment-parity.md)）。
+
+### 4c-2. 新描画レイヤー export 正常化の無回帰ゲート（該当時必須）
+
+`video` / `image` / 新型コンテンツの **export 専用経路**（foreignObject インライン化・メディア seek・フレーム待ち・`flush*`）を追加・修正するときは、次を満たすまで完了にしない。
+
+1. **影響地図** — 変更が及ぶ共有モジュールと、触っていないはずの経路を列挙する:
+   - browser export（mp4 / webm / PNG 連番）
+   - `compFrameCapture`（ネスト precomp・調整レイヤー auto_raster）
+   - Web bundle player
+   - preview（INV-2・再生中の `video.play()` 等）
+2. **スコープ閉じ** — 新型専用ロジックは `c.type` または exporter/capture の**明示フラグ**に閉じる。共有関数のデフォルト挙動を変えない（変えるなら全経路の回帰理由を progress に書く）。
+3. **既存 export 回帰** — 新型の verify に加え、リポジトリ内の既存 export 関連 verify・unit（blend / rasterCapture / bundleExport / 調整・fast displacement 等、変更に関連するもの）を再実行し PASS を確認する。
+4. **二重モード** — preview 用と export 用のメディア同期（例: `videoElementSync`）は、片方の最適化が他方のフレーム精度・書き出し速度を壊していないことを確認する。
+
+worked example（2026-06-26）: 動画 export で `inlineVideoFrames` + `exportVideoStep` を video 型に閉じ、`rasterCapture` / `waitForVideoFrame` の共有改善は他型に波及しないよう分岐。完了条件に `verify-video-export.mjs` **と** 既存コンプ（solid/text/image・blend 等）の無回帰を含めた。
 
 ### 4d. タスク別 — 下位スキルを必ず読んで実行
 
@@ -196,6 +212,7 @@ Phase 4
 - [ ] typecheck / test（+ build）緑
 - [ ] Playwright 実機で再現・修正を確認
 - [ ] 経路間 parity（該当時）— 同一経路同士だけの比較で終えていない
+- [ ] 新型 export 正常化（該当時）— 型別オプトイン・既存 export シナリオ無回帰（4c-2）
 - [ ] 視覚系: debug-visual-render-bug を実行した
 - [ ] エフェクト系: implement-visual-effect を実行した（該当時）
 - [ ] 新型: add-layer-component-type チェックリスト完了（該当時）
@@ -210,6 +227,8 @@ Phase 5
 
 - spec / progress を読まずにコードを書き始める。
 - preview だけ動いた時点で完了にする（export / bundle 未確認）。
+- 新型 export だけ verify して既存 export（solid/text/image・blend・調整・bundle 等）の回帰を見ない。
+- 共有 capture パイプラインを全レイヤー一律変更する（型別フラグで閉じない）。
 - 各レンダリングパスを個別パッチする（式が 2 本になる）。
 - テスト緑を視覚的正しさの証明にする。
 - 経路分解せず compositor 全体を書き換える。
@@ -224,6 +243,7 @@ Phase 5
 | camera bundle 誤 bake | `BUILTIN_COMPONENT_TYPES` 漏れ → bundle のみ | 1 行追加 + bake 回帰テスト |
 | nested fps 2 倍速 | stale `this.currentComp.fps` → resolve 注入で統一 | 実機 frame 対応表で 1 倍速確認 |
 | reparent + KF | 1 KF だけ補正 → 全 KF frame で world 保持 | 純関数テスト + Playwright |
+| video export 正常化 | foreignObject は `<video>` 不可 → 共有 capture 変更 | 型別 `inlineVideoFrames`/`exportVideoStep` + 既存 export 無回帰 |
 | Fast displacement ドリフト | host rect 偽陽性 → ink centroid へ | implement-visual-effect の経路統一 |
 
 詳細は各 issue 節・下位スキルの worked example を参照。

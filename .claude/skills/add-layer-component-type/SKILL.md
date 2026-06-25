@@ -1,6 +1,6 @@
 ---
 name: add-layer-component-type
-description: Mafter Effect に新しいレイヤー／コンポーネント型（camera / scene3d / light / shape / 新コンテンツ型など built-in component）を追加・変更するときの「配線もれ」防止チェックリスト。新型は ComponentDef を登録しただけでは不十分で、型の挙動は `c.type` で分岐する 10〜15 箇所に散在する（bundle bake 判定・レンダラ・resolve・キャッシュ・タイムライン source・UI・直列化）。登録した型が export で誤って動画化される／キャッシュが効かない／タイムラインで尺が出ない／UI に出ない、等の「片側だけ壊れる」症状や、その予防に使う。エフェクト（EffectInstance）追加は別軸＝implement-visual-effect を見る。
+description: Mafter Effect に新しいレイヤー／コンポーネント型（camera / scene3d / light / shape / 新コンテンツ型など built-in component）を追加・変更するときの「配線もれ」防止チェックリスト。新型は ComponentDef を登録しただけでは不十分で、型の挙動は `c.type` で分岐する 10〜15 箇所に散在する（bundle bake 判定・レンダラ・resolve・キャッシュ・タイムライン source・UI・直列化）。登録した型が export で誤って動画化される／キャッシュが効かない／タイムラインで尺が出ない／UI に出ない、等の「片側だけ壊れる」症状や、その予防に使う。描画型の export 正常化では共有 capture パイプラインを触るため、新型 verify だけでなく既存 export 経路の無回帰（§E）が必須。エフェクト（EffectInstance）追加は別軸＝implement-visual-effect を見る。
 ---
 
 # 新しいレイヤー／コンポーネント型の配線チェック
@@ -77,12 +77,32 @@ grep -rn 'c\.type === "\|component\.type\|\.some((c) => c\.type\|BUILTIN_COMPONE
 - [ ] previewViewer.ts: ビューポート直接操作が要る型なら配線
 ```
 
-### E. 検証（緑 ≠ 配線完了）
+### E. Export 正常化（描画型・他経路無回帰 — 必須）
+
+新型が **ピクセルを出す描画コンポーネント**（`video` / `image` / shape 等）のとき、export は preview と別の制約（`foreignObject`・seek 精度・インライン化・決定論フレームステップ）を持つ。**その型の export を直すだけで完了にしない。**
+
+```
+- [ ] export 専用経路を型で閉じる: c.type 分岐・DomRenderer の flush*・rasterCapture の
+      inline*・exporter/compFrameCapture の明示フラグ（例: exportVideoStep, inlineVideoFrames）
+- [ ] 共有パイプライン変更は最小: rasterCapture / videoElementSync / exporter の
+      デフォルト挙動を全レイヤー一律に変えない（変えるなら全経路の回帰理由を明記）
+- [ ] preview と export のメディア同期はモード分岐維持（play 最適化 vs seek+rVFC 決定論）
+- [ ] browser export（mp4/webm/PNG）+ compFrameCapture（ネスト・調整 raster）+
+      bundle player のどれに効くか Phase 2 で列挙
+- [ ] ★ 既存 export 無回帰: 新型 verify に加え、無関係なはずのコンプでも PASS
+      （solid/text/image のみ・blend 合成・調整レイヤー・fast displacement・bundle bake 件数等）
+- [ ] 回帰テスト: 新型の export/capture ユニット + 既存 test/rasterCapture・bundleExport 等
+```
+
+worked example（2026-06-26・video）: `<video>` は foreignObject で描画不可 → clone 側のみ img 化（`inlineVideoFrames`）。`waitForVideoFrame` / `exportVideoStep` は video 経路に閉じ、solid/text/image の単一スナップショット高速経路や blend per-layer 合成を壊さない。完了条件 = `verify-video-export.mjs` + 既存 export シナリオ無回帰。
+
+### F. 検証（緑 ≠ 配線完了）
 ```
 - [ ] ユニット: resolve / serialize(byte 等価) / componentNeedsBake / findBakeTargets を新型で固定
 - [ ] ★ bake 回帰: 「新型＋他レイヤーのみ」のコンプで findBakeTargets が意図どおり
       （非描画型が誤って bake 対象に入らないこと）
 - [ ] Playwright 実機: add<Type>→ preview 描画 → export ダイアログの bake 件数 → console error 0
+- [ ] 描画型なら E（export 正常化・他経路無回帰）を完了
 - [ ] typecheck / npm test / build 緑
 ```
 
@@ -110,6 +130,8 @@ grep -rn 'c\.type === "\|component\.type\|\.some((c) => c\.type\|BUILTIN_COMPONE
 - `previewBakeRequired` と `bundleExportDefault` を同一視する。
 - 非描画/メタ型を bake 候補のまま放置する（無意味な動画アセットを生む）。
 - preview と typecheck の緑だけで export/bundle/cache/timeline 経路を検証しない。
+- 新型 export だけ verify し、共有 capture パイプライン変更後の既存 export（solid/text/image・blend・調整等）回帰を見ない。
+- 共有 `rasterCapture` / `exporter` を全レイヤー一律変更する（型別フラグで閉じない）。
 - `c.type ===` の全ディスパッチ点を grep せず、気づいた箇所だけ直す。
 
 ## worked example（camera bundle-bake 誤判定）
