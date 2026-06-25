@@ -33,26 +33,7 @@ alwaysApply: true
 
 ## 実装ワークフロー（Cursor 向け）
 
-1. **現状把握** — spec・progress・関連実装を読む
-2. **spec 確認** — 実装対象が spec に確定済みか確認。未確定なら実装せずユーザーに確認（選択肢 + 推奨案を提示）
-3. **実装 → 修正ループ** — `npm run typecheck` / `npm test` / 必要なら `npm run build` を緑にする。
-   UI・レンダリング・ブラウザ挙動に触れる変更は**同一ループ内で Playwright + Chromium による実機検証も回す**
-   （手動ブラウザ確認やコードリーディングだけでは不十分）。
-4. **回帰確認** — 共有 UI・ストア・イベントハンドラの影響範囲を Playwright で確認
-   （typecheck/test が通っても UI ランタイムは別途確認）。
-5. **記録** — 完了後 `progress.md` を更新する
-
-### 修正ループの Playwright 実機検証（必須）
-
-型・単体テストが緑でも UI / レンダリング / ブラウザ挙動は保証されない。**修正ループでは Playwright を正準ハーネスとする。**
-
-- **対象**: UI 変更、DomRenderer / Preview / export、タイムライン操作、視覚バグ、preview↔export 一致確認 など
-- **起動**: `npm run dev`（既定 5173、衝突時 5175+）→ Playwright で Chromium を開いて操作・測定
-- **状態リセット**: `indexedDB.deleteDatabase("mafter-effect-fs")` + reload、`localStorage.clear()`（viewer 設定）
-- **store 参照**: `(await import("/src/editor/store.ts")).useEditorStore.getState()`
-- **flaky 時**: dev サーバを再起動（HMR 蓄積で store null 化・古いモジュール配信のノイズ除去）
-- **視覚バグの詳細手順**: [debug-visual-render-bug.mdc](mdc:.cursor/rules/debug-visual-render-bug.mdc)
-- **後始末**: 使い捨て Playwright スクリプト・一時 `console.log` はコミットに残さない
+新機能・バグ修正・レンダリング変更は、正本 **[.claude/skills/implementation-loop/SKILL.md](mdc:.claude/skills/implementation-loop/SKILL.md)** に従う（Phase 0–5・Playwright 実機・分岐表・一貫性ゲートはすべてスキル側。**本ルールに手順を重複しない**）。
 
 ### progress.md の運用（コンフリクト回避）
 

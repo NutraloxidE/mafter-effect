@@ -5,9 +5,15 @@ description: Method for debugging visual/rendering bugs that can't be judged fro
 
 # Debugging visual / rendering bugs
 
+> **正本（隔離）**: measure-don't-theorize ループ・ハーネス要点は本ファイルに集約。
+> `.cursor/rules/debug-visual-render-bug.mdc` はポインタのみ。
+
 Visual bugs cannot be solved by reading code or doing metric math in your head. Browser/runtime
 behavior differs from the spec. **Reproduce in the real renderer, measure, and let the numbers
 localize the cause.** This is a measure-don't-theorize loop.
+
+**親ループ**: 着手〜完了判定の骨格は [implementation-loop](../implementation-loop/SKILL.md) に従う。
+本スキルは Phase 4 の視覚・parity バグ向け詳細手順。
 
 ## When to use
 - A bug is described **visually**: "位置がズレる", "looks wrong", "二重に見える", spacing/size/
@@ -86,8 +92,8 @@ Two bugs hid behind one symptom ("Draft and Best don't match"):
 
 ## Project harness notes (Mafter Effect)
 
-Canonical setup is documented in [mafter-effect-agent.mdc](mdc:.cursor/rules/mafter-effect-agent.mdc)
-(「修正ループの Playwright 実機検証」). Visual-bug extras:
+正準 Playwright 手順は [implementation-loop](../implementation-loop/SKILL.md) Phase 4b。
+視覚バグ向けの追加要点:
 
 - Reset state via `indexedDB.deleteDatabase("mafter-effect-fs")` + reload, `localStorage.clear()` for viewer settings
 - Reach the live store with `(await import("/src/editor/store.ts")).useEditorStore.getState()`

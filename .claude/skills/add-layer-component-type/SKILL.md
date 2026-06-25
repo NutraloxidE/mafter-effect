@@ -10,6 +10,8 @@ description: Mafter Effect に新しいレイヤー／コンポーネント型�
 ComponentDef を `registerBuiltinComponents` に足しただけでは半分しか配線されず、
 **触れていない経路だけが静かに誤動作**する（緑のテストをすり抜ける）。
 
+**親ループ**: [implementation-loop](../implementation-loop/SKILL.md) Phase 2c（ディスパッチ点）・Phase 4（配線検証）。
+
 > 実例（2026-06-23）: `camera` を builtin 登録したが [bundleCollect.ts](../../../src/runtime/bundleCollect.ts)
 > の `BUILTIN_COMPONENT_TYPES` に入れ忘れ → `componentNeedsBake` がプラグイン扱い →
 > `bundleExportDefault` 未指定で**既定 bake** → 非描画のカメラ層が Static HTML 書き出しで

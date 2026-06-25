@@ -1,64 +1,11 @@
 ---
-description: 視覚・レンダリングのバグ（位置/サイズ/間隔/baseline/色のズレ、"見た目がおかしい"、preview⇄export や Draft⇄Best などの一致しない系）を直すときの方法論。コードや型の緑だけでは視覚は保証されない。実機で測って直す。
+description: 視覚・レンダリングバグの正本へのポインタ。手順本体は .claude/skills/debug-visual-render-bug/SKILL.md（ここに重複しない）。
 globs:
 alwaysApply: false
 ---
 
-# 視覚バグの直し方（measure-don't-theorize）
+# 視覚バグの直し方
 
-視覚バグは**コードを読むだけ／頭の中のメトリクス計算では解けない**。ブラウザの実挙動が正。
-**実機で再現し、ピクセルを測り、誤差の出方で原因を局所化する。**
+正本: [.claude/skills/debug-visual-render-bug/SKILL.md](mdc:.claude/skills/debug-visual-render-bug/SKILL.md)
 
-完全版・実例: [.claude/skills/debug-visual-render-bug/SKILL.md](mdc:.claude/skills/debug-visual-render-bug/SKILL.md)
-
-## 使う場面
-- 「位置がズレる」「見た目がおかしい」「二重に見える」など**視覚的に記述されたバグ**。
-- **一致しない系**: 一致すべき 2 出力がズレる（preview vs export / モードA vs B / 変更前後）。
-- `npm test` / `npm run typecheck` が緑でも見た目が直っていない。**緑 ≠ 視覚的に正しい。**
-
-## ループ
-
-**修正ループ全体も Playwright + Chromium が正準。** 手動ブラウザやコードリーディングだけで「直った」と判断しない。
-
-1. **頭でなく Playwright で実機再現する。** `npm run dev` を起動し Playwright で Chromium を駆動して
-   描画結果を取る。CSS/フォント数式の机上再現で結論しない（ブラウザ実挙動が ground truth）。
-2. **「おかしい」を数値化する。** 目視 diff でなく具体ジオメトリを測る: インク bbox(上下左右)、
-   `getBoundingClientRect`、2 状態の **delta**。特徴を pixel スキャンで拾う（黒地の白文字なら
-   閾値超えの最初/最後の行・列）。
-3. **1 パラメータを振って誤差の出方を見る（原因の局所化が最速）。**
-   - 一定オフセット → 原点/配線/対象要素の取り違え。
-   - サイズ/ズーム/個数に**比例** → 基準を誤った式（em/比率/％）。
-   - **片軸だけ** → その軸の計算。
-   - 値を変えると**消える** → 値がレンダラに届いていない（タイミング/状態）。
-4. **集計値の偽陰性に注意。** pixel-diff の**件数**は小さな位置ズレを AA バンドに隠す。**位置**
-   （エッジ/重心）を測る。件数だけで「AA だから OK」と判断しない。
-5. **一致系は計算を 1 本に寄せる。** A と B が一致すべきなら、各々を別々に直さず**単一の計算
-   （共有のレイアウト関数）**に収束させる。式が 2 本あると必ずドリフトする。
-6. **「適用されない」系は状態/順序をログで確認。** 値がレンダラに届いているか、effect の実行順、
-   インスタンスの同一性を一時ログで確かめる（推測しない）。確認後にログは消す。
-7. **収束を再測定する（許容値つき）。** before→after を数値で（例 `0.08em → 0.02em`）。
-   許容（サブピクセル/AA 内）を定義し、それ未満を確認。「変わった」ではなく「直った」を示す。
-8. **決定論テストで固定。** ピクセルは直接テストしにくいので、**下層の純計算（式/変換）**を
-   抽出し DOM 無しで unit test。誤った基準と正しい基準をテストに明記して再発を防ぐ。
-9. **最後に目視確認し、後始末。** side-by-side スクショで人間が確認できる形に。使い捨て
-   ハーネス・一時ログはコミットに残さない。
-
-## アンチパターン
-- フォント/CSS 仕様から机上で式を作り、実機で測らず出す。
-- 「テスト緑/型緑」を視覚的正しさの証明にする。
-- 一致系の判定を pixel-diff **件数**だけで行う。
-- 各レンダリングパスを別々に直す。共有の計算に寄せない。
-- デバッグ `console.log` や一回限りの Playwright スクリプトをコミットに残す。
-
-## このリポジトリのハーネス
-
-正準手順は常時ルール [mafter-effect-agent.mdc](mdc:.cursor/rules/mafter-effect-agent.mdc) の
-「修正ループの Playwright 実機検証」を参照。視覚バグ向けの追加要点:
-
-- `indexedDB.deleteDatabase("mafter-effect-fs")` + reload で初期化、viewer 設定は `localStorage.clear()`
-- live store: `(await import("/src/editor/store.ts")).useEditorStore.getState()`
-- **測定が不安定なら dev サーバを再起動する。** 多数編集後の HMR 蓄積で store が途中で null 化／
-  古いモジュールグラフを配ることがある。新しい port のクリーン `vite` でノイズ除去。
-- インク測定は comp ステージ矩形内で行い、**先にレイヤー選択解除**（選択ハンドルの白点が混入する）。
-- **INV-1/INV-2 厳守。** 描画モードは同一 `ResolvedScene` のラスタライズ違い（`resolve()` は純粋）。
-  precise/export 基準が reference、fast はその近似で AA 許容内のみ差を許す。
+着手時は先に [implementation-loop](mdc:.claude/skills/implementation-loop/SKILL.md) で地図化してから、上記スキルの measure-don't-theorize ループを実行する。

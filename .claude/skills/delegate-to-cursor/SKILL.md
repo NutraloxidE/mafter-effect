@@ -50,7 +50,7 @@ git diff <base-branch>..HEAD --stat
 ```
 
 - 緑が確認できない場合はマージしない。差分の内容（spec/CLAUDE.md が変更されていないか、INV-1〜6 を破っていないか）を確認する。
-- UI/レンダリングに触る変更なら、`.cursor/rules/debug-visual-render-bug.mdc` の実機検証が Cursor 側で行われたか diff・ログから確認する。
+- UI/レンダリングに触る変更なら、`.claude/skills/implementation-loop/SKILL.md` の Playwright 実機検証が Cursor 側で行われたか diff・ログから確認する。
 
 ### 4. マージはユーザーに確認してから
 

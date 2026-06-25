@@ -10,6 +10,7 @@ description: 視覚エフェクト（displacement / noise / filter / 合成系�
 **(b) レンダリング経路が座標を歪めている** か **(c) プロシージャル素材の平均が中心からずれている**。
 このスキルはこの 3 つを順に潰すための判断フレームワーク。前提として
 [debug-visual-render-bug](../debug-visual-render-bug/SKILL.md) の「measure-don't-theorize ループ」に従う。
+**親ループ**: [implementation-loop](../implementation-loop/SKILL.md) Phase 2–4（エフェクト系）。
 
 ## 使うとき
 - 新エフェクト追加後、または `Amount`/`Amplitude`/`Scale` を上げると中身が片方向へドリフトする。
@@ -99,7 +100,7 @@ description: 視覚エフェクト（displacement / noise / filter / 合成系�
 6. `svgDisplaceFilterMarkup` / 各 intercept 定数を export し `test/effectSvg.test.ts` で固定。
 
 ## ハーネス注意（Mafter Effect）
-[mafter-effect-agent.mdc](../../../.cursor/rules/mafter-effect-agent.mdc) の Playwright 実機検証に従う。追加で:
+[implementation-loop](../implementation-loop/SKILL.md) Phase 4b（Playwright 実機検証）に従う。追加で:
 - 計測スクリプトは `import()` だと Zustand が別インスタンスになりがち。`window.__mafterEditorStore`
   経由で実ストアに触る（store.ts が dev で公開）。
 - 空 IDB 起動が flaky なら `loadFromFs()` を明示呼び出し → `project && currentCompId` を待つ。

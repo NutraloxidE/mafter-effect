@@ -1,0 +1,11 @@
+---
+description: 実装ループの正本へのポインタ。手順本体は .claude/skills/implementation-loop/SKILL.md（ここに重複しない）。
+globs:
+alwaysApply: false
+---
+
+# 実装ループ
+
+正本: [.claude/skills/implementation-loop/SKILL.md](mdc:.claude/skills/implementation-loop/SKILL.md)
+
+新機能・バグ修正・レンダリング変更の着手時は上記を読んで実行する。
