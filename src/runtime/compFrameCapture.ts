@@ -10,7 +10,7 @@ import { ExpressionEngine } from "./expressionEngine";
 import { HtmlCompPlayer } from "./htmlComp";
 import { ModuleLoader } from "./moduleLoader";
 import { resolve, type ExpressionEvaluator } from "./resolve";
-import { captureElementToCanvas } from "./rasterCapture";
+import { compositeExportFrame } from "./exportComposite";
 import { canvasToPngBytes } from "./pngEncode";
 
 export interface CompFrameCaptureContext {
@@ -92,10 +92,10 @@ export async function createCompFrameCaptureContext(
   const player = new HtmlCompPlayer(htmlLoader);
   const renderer = new DomRenderer();
   renderer.setHtmlPlayer(player);
-  // §27.4 / §28.11 — このコンテキストは captureElementToCanvas（foreignObject）で静止画化される
-  // 経路（RAM Preview / precomp raster cache / bundle bake）専用。backdrop-filter は foreignObject
-  // で焼けないため、exporter.ts と同様に Live 調整も comp 背面 capture の bake 経路へ回す。
-  renderer.setPreviewRenderOptions({ forceAdjustmentRaster: true });
+  // §27.4 / §28.11 — このコンテキストは foreignObject で静止画化される経路（RAM Preview /
+  // precomp raster cache / bundle bake）専用。backdrop-filter は foreignObject で焼けないため、
+  // exporter.ts と同様に Live 調整を exportComposite.ts のオフDOM z 順コンポジタで背面 master に焼く。
+  renderer.setPreviewRenderOptions({ exportCompositeMode: true });
   const fontCache = new FontOutlineCache();
   const imageCache = new ImageAssetCache();
   await Promise.all([
@@ -144,16 +144,10 @@ export async function captureCompFramePng(
   frame: number,
 ): Promise<Uint8Array> {
   ctx.renderer.renderFrame(resolve(comp, frame, { expressions: ctx.evaluator }), frame);
-  await ctx.renderer.flushExportComposite();
+  // レイヤ直付け raster の完了のみ待つ。調整合成は compositeExportFrame が行う。
+  await ctx.renderer.flushRasterEffects();
   await nextTick();
   const bg = compBackground(comp);
-  const canvas = await captureElementToCanvas(
-    ctx.renderer.getRoot()!,
-    ctx.nw,
-    ctx.nh,
-    bg,
-    ctx.nw,
-    ctx.nh,
-  );
+  const canvas = await compositeExportFrame(ctx.renderer, ctx.nw, ctx.nh, ctx.nw, ctx.nh, bg);
   return canvasToPngBytes(canvas);
 }

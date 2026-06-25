@@ -1,0 +1,177 @@
+// §27.4 / §27.4.1 — mp4 / png / precomp raster 用のオフDOM・ステートレス合成。
+//
+// 旧 export 経路（DomRenderer の forceAdjustmentRaster bake）は live DOM を毎フレーム破壊的に
+// 操作（visibility トグル + raster overlay + フレーム間 raster 使い回し）していたため、非同期競合で
+// 前フレームの状態が混入して「ちらつき」を生んだ。本モジュールは live render DOM を一切変更せず、
+// z 昇順に累積 master canvas を組み、調整レイヤー到達点で master（= 確定済み背面ピクセル）に
+// effect chain を適用する。毎フレーム fresh に組むためフレーム間状態が無く、原理的にちらつかない。
+//
+// §6.5b カメラ: perspective / perspective-origin は **root** に、preserve-3d も root に付く。preview では
+// 全レイヤがこの perspective root の子なので、3D 層は perspective 射影され、2D 層（z=0）は無影響になる。
+// よってレイヤを root から切り離して個別 capture すると 3D 層の perspective が落ちて「カメラが効いて
+// いない」フレームが混入する（＝カメラのちらつき）。これを避けるため、各レイヤを **root と同じ
+// perspective / perspective-origin を持つラッパ div** に入れて capture する。実測で root 一括 capture と
+// 一致（同一 std）し、2D 層には無影響（perspective は 2D transform を変えない）。
+
+import { captureElementToCanvas, flattenShadow, inlineCanvasBitmaps, svgToDataUrl } from "./rasterCapture";
+import { canvasToRasterBuffer } from "./pixelSort";
+import { processRasterChainAsync } from "./rasterProcessAsync";
+import { applyFilterChainToBuffer, type FilterRegion } from "./effectRaster";
+import { blendModeToCompositeOp } from "./blendCompose";
+import { globalPluginRegistry } from "./pluginRegistry";
+import type { ResolvedEffect } from "./resolved";
+import type { BlendMode } from "../core/schema";
+
+const XHTML = "http://www.w3.org/1999/xhtml";
+
+/** §27.4 調整レイヤーの解決済み effect chain（exportComposite が背面 master に適用する）。 */
+export interface ExportChain {
+  /** raster section より前の CSS/SVG filter token（`url(#id)` 含む）。 */
+  preFilterStr: string;
+  preSvgFilters: { id: string; primitives: string }[];
+  /** raster section より後の CSS/SVG filter token。 */
+  postFilterStr: string;
+  postSvgFilters: { id: string; primitives: string }[];
+  /** raster 実行 effect（pixelSorter / 完全 displacement 等）。Live 調整では空。 */
+  rasterChain: { effect: ResolvedEffect; def: NonNullable<ReturnType<typeof globalPluginRegistry.getEffectDef>> }[];
+  region: FilterRegion;
+  /** ctx.frame（raster chain の決定論評価に使用）。 */
+  frame: number;
+}
+
+/** §27.4.1 z 順合成用のレイヤ記述。 */
+export interface ExportLayer {
+  div: HTMLElement;
+  blendMode: BlendMode;
+  isAdjustment: boolean;
+  /** 調整レイヤーのみ非 null。 */
+  exportChain: ExportChain | null;
+}
+
+/** getExportLayers / hasAdjustmentLayers / hasCssBlendLayers を備えた最小レンダラ面。 */
+export interface ExportCompositeSource {
+  getRoot(): HTMLElement | null;
+  getExportLayers(): ExportLayer[];
+  hasAdjustmentLayers(): boolean;
+  hasCssBlendLayers(): boolean;
+}
+
+function makeCanvas(w: number, h: number): HTMLCanvasElement {
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  return c;
+}
+
+/**
+ * レイヤ div を root と同じ perspective context のラッパに入れて 1 枚 capture する（transparent 背景）。
+ * `perspective` が空（カメラ無し）ならラッパ無しで素の capture。3D 層は perspective で射影され、
+ * 2D 層（z=0 transform）は無影響。canvas ビットマップは live の layer div から inline（クローンは空のため）。
+ */
+export async function captureLayerWithPerspective(
+  layerDiv: HTMLElement,
+  perspective: string,
+  perspectiveOrigin: string,
+  nw: number,
+  nh: number,
+): Promise<HTMLCanvasElement> {
+  const cloned = flattenShadow(layerDiv) as HTMLElement;
+  cloned.setAttribute("xmlns", XHTML);
+  await inlineCanvasBitmaps(cloned, layerDiv);
+  const inner = new XMLSerializer().serializeToString(cloned);
+  const content = perspective
+    ? `<div xmlns="${XHTML}" style="position:absolute;top:0;left:0;width:${nw}px;height:${nh}px;`
+      + `perspective:${perspective};perspective-origin:${perspectiveOrigin}">${inner}</div>`
+    : inner;
+  const svgStr = [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${nw}" height="${nh}">`,
+    `<foreignObject x="0" y="0" width="${nw}" height="${nh}">`,
+    content,
+    `</foreignObject>`,
+    `</svg>`,
+  ].join("");
+  const img = new Image();
+  img.src = svgToDataUrl(svgStr);
+  await new Promise<void>((res, rej) => {
+    img.onload = () => res();
+    img.onerror = () => rej(new Error("export layer rasterization failed"));
+  });
+  const canvas = makeCanvas(nw, nh);
+  canvas.getContext("2d")!.drawImage(img, 0, 0);
+  return canvas;
+}
+
+/**
+ * §27.4 — 調整レイヤーの effect chain を background canvas（= 累積 master）に適用して in-place 更新する。
+ * pre CSS/SVG filter → raster chain → post CSS/SVG filter の順（DomRenderer の調整 pipeline と同順）。
+ */
+async function applyAdjustmentToMaster(
+  master: HTMLCanvasElement,
+  chain: ExportChain,
+  nw: number,
+  nh: number,
+): Promise<void> {
+  let buffer = canvasToRasterBuffer(master);
+  if (chain.preFilterStr) {
+    buffer = await applyFilterChainToBuffer(buffer, nw, nh, chain.preFilterStr, chain.preSvgFilters, chain.region);
+  }
+  if (chain.rasterChain.length > 0) {
+    buffer = await processRasterChainAsync(buffer, chain.rasterChain, { width: nw, height: nh, frame: chain.frame });
+  }
+  if (chain.postFilterStr) {
+    buffer = await applyFilterChainToBuffer(buffer, nw, nh, chain.postFilterStr, chain.postSvgFilters, chain.region);
+  }
+  const ctx = master.getContext("2d")!;
+  ctx.globalCompositeOperation = "source-over";
+  ctx.putImageData(new ImageData(new Uint8ClampedArray(buffer.data), buffer.width, buffer.height), 0, 0);
+}
+
+/**
+ * 1 フレームを comp ネイティブ解像度 (nw×nh) で合成し、必要なら (w×h) へスケールした canvas を返す。
+ *
+ * - 調整レイヤーも CSS blend も無ければ単一ショット root capture（最速・3D 深度 / perspective 完全保持）。
+ * - それ以外は z 昇順に各レイヤを perspective ラッパ付きで個別 capture → master へ blend 合成、
+ *   調整レイヤー到達点で master（= 確定背面）に effect chain を適用。live DOM 非破壊・ステートレス。
+ */
+export async function compositeExportFrame(
+  src: ExportCompositeSource,
+  nw: number,
+  nh: number,
+  w: number,
+  h: number,
+  bg: string,
+): Promise<HTMLCanvasElement> {
+  const root = src.getRoot();
+  if (!root) throw new Error("compositeExportFrame: no root");
+
+  // 高速経路: 調整も blend も無いフレームは root を 1 枚 capture（全レイヤ・3D・perspective 保持）。
+  if (!src.hasAdjustmentLayers() && !src.hasCssBlendLayers()) {
+    return captureElementToCanvas(root, nw, nh, bg, w, h);
+  }
+
+  const perspective = root.style.perspective;
+  const perspectiveOrigin = root.style.perspectiveOrigin || "50% 50%";
+
+  const master = makeCanvas(nw, nh);
+  const mctx = master.getContext("2d")!;
+  if (bg !== "transparent") {
+    mctx.fillStyle = bg;
+    mctx.fillRect(0, 0, nw, nh);
+  }
+
+  for (const layer of src.getExportLayers()) {
+    if (layer.isAdjustment) {
+      if (layer.exportChain) await applyAdjustmentToMaster(master, layer.exportChain, nw, nh);
+      continue;
+    }
+    const sub = await captureLayerWithPerspective(layer.div, perspective, perspectiveOrigin, nw, nh);
+    mctx.globalCompositeOperation = blendModeToCompositeOp(layer.blendMode);
+    mctx.drawImage(sub, 0, 0);
+  }
+  mctx.globalCompositeOperation = "source-over";
+
+  if (w === nw && h === nh) return master;
+  const scaled = makeCanvas(w, h);
+  scaled.getContext("2d")!.drawImage(master, 0, 0, w, h);
+  return scaled;
+}

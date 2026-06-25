@@ -15,8 +15,7 @@ import { ExpressionEngine } from "./expressionEngine";
 import { HtmlCompPlayer } from "./htmlComp";
 import { ModuleLoader } from "./moduleLoader";
 import { resolve, type ExpressionEvaluator } from "./resolve";
-import { captureElementToCanvas } from "./rasterCapture";
-import { blendModeToCompositeOp } from "./blendCompose";
+import { compositeExportFrame } from "./exportComposite";
 
 export type ExportPhase = "prepare" | "render" | "encode" | "audio" | "bake" | "pack" | "done" | "error";
 
@@ -106,10 +105,10 @@ export async function exportComposition(
     const renderer = new DomRenderer();
     renderer.setHtmlPlayer(player);
     // §27.4 / INV-2 — captureElementToCanvas（foreignObject）は backdrop-filter 非対応のため、
-    // Live 調整も export では comp 背面 capture + filter 適用の bake 経路（forceAdjustmentRaster）
-    // を使い preview と同じ見た目を再現する。3D ネスト comp（カメラリグ）下地は
-    // captureAdjustmentBackdrop 内の data-has-camera-rig 検出 + 個別 flatten で対応済み。
-    renderer.setPreviewRenderOptions({ forceAdjustmentRaster: true });
+    // Live 調整は exportComposite.ts のオフDOM・ステートレス z 順コンポジタで背面 master に焼く。
+    // exportCompositeMode 中、DomRenderer は調整レイヤーの live DOM を破壊せず effect chain を
+    // entry.exportChain に保存するだけ（旧 forceAdjustmentRaster bake のちらつきを根絶）。
+    renderer.setPreviewRenderOptions({ exportCompositeMode: true });
     const fontCache = new FontOutlineCache();
     const imageCache = new ImageAssetCache();
     await Promise.all([
@@ -176,60 +175,10 @@ export async function exportComposition(
 
 // ─── Frame capture ────────────────────────────────────────────────────────────
 
-/**
- * container の DOM コンテンツを SVG foreignObject 経由で canvas にラスタ化する。
- * Shadow DOM は inline に展開して foreignObject に含める（§7 HTML comp 対応）。
- * transform-style:preserve-3d は foreignObject 非対応 → best-effort 制約として記録。
- */
-async function captureFrame(
-  container: HTMLElement,
-  nw: number,
-  nh: number,
-  w: number,
-  h: number,
-  bg: string,
-): Promise<HTMLCanvasElement> {
-  return captureElementToCanvas(container, nw, nh, bg, w, h);
-}
-
-/**
- * §5.4d capture — comp に CSS mix-blend レイヤーがあれば各レイヤーを個別キャプチャし、
- * Canvas 2D globalCompositeOperation で z 順に合成し直す（foreignObject は backdrop 合成を
- * しないため・INV-2）。blend が無ければ従来の単一スナップショット高速経路を使う。
- * ditherDissolve は mask で焼き済みのため高速経路のままで正しく出る。
- */
-async function captureRendererFrame(
-  renderer: DomRenderer,
-  nw: number,
-  nh: number,
-  w: number,
-  h: number,
-  bg: string,
-): Promise<HTMLCanvasElement> {
-  const root = renderer.getRoot()!;
-  if (!renderer.hasCssBlendLayers()) {
-    return captureFrame(root, nw, nh, w, h, bg);
-  }
-
-  const master = document.createElement("canvas");
-  master.width = w;
-  master.height = h;
-  const ctx = master.getContext("2d")!;
-  if (bg !== "transparent") {
-    ctx.fillStyle = bg;
-    ctx.fillRect(0, 0, w, h);
-  }
-  for (const { div, blendMode } of renderer.getCompositeLayers()) {
-    // 各レイヤーを透明背景でラスタ化 → 累積結果へ blend して重ねる。
-    const layer = await captureElementToCanvas(div, nw, nh, "transparent", w, h);
-    ctx.globalCompositeOperation = blendModeToCompositeOp(blendMode);
-    ctx.drawImage(layer, 0, 0);
-  }
-  ctx.globalCompositeOperation = "source-over";
-  return master;
-}
-
-// flattenShadow / svgToDataUrl は rasterCapture.ts に移動済み（下記は削除）
+// §5.4d / §27.4 capture — フレーム合成は exportComposite.ts の compositeExportFrame に一本化。
+// 調整レイヤー・CSS blend が無ければ単一ショット root capture（3D 深度保持）、あれば z 順に
+// 累積 master を組み調整レイヤーで背面に effect を焼く（オフDOM・ステートレス・INV-2）。
+// flattenShadow / svgToDataUrl は rasterCapture.ts に移動済み。
 
 // ─── PNG sequence ─────────────────────────────────────────────────────────────
 
@@ -253,11 +202,12 @@ async function runPngSeq(
     renderer.renderFrame(resolve(comp, frame, { expressions: evaluator }), frame);
     onProgress({ phase: "render", frame: fi, totalFrames, message: `Frame ${fi + 1}/${totalFrames}` });
 
-    await renderer.flushExportComposite();
+    // レイヤ直付け raster（通常レイヤの displacement 等）の完了のみ待つ。調整合成は compositeExportFrame が行う。
+    await renderer.flushRasterEffects();
     // DOM が描画される次ティックまで待つ
     await nextTick();
 
-    const canvas = await captureRendererFrame(renderer, nw, nh, w, h, bg);
+    const canvas = await compositeExportFrame(renderer, nw, nh, w, h, bg);
     const pngBlob = await canvasToBlob(canvas, "image/png");
     zip.file(`frame_${String(fi).padStart(6, "0")}.png`, pngBlob);
   }
@@ -463,10 +413,11 @@ async function encodeVideoFrames(
     renderer.renderFrame(resolve(comp, frame, { expressions: evaluator }), frame);
     onProgress({ phase: "render", frame: fi, totalFrames, message: `Rendering frame ${fi + 1}/${totalFrames}` });
 
-    await renderer.flushExportComposite();
+    // レイヤ直付け raster の完了のみ待つ。調整合成は compositeExportFrame が行う。
+    await renderer.flushRasterEffects();
     await nextTick();
 
-    const canvas = await captureRendererFrame(renderer, nw, nh, w, h, bg);
+    const canvas = await compositeExportFrame(renderer, nw, nh, w, h, bg);
     const bitmap = await createImageBitmap(canvas);
     const vf = new VideoFrame(bitmap, {
       timestamp: fi * usDuration,

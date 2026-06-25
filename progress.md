@@ -309,3 +309,36 @@ canvas 化結果は以降から見て通常の背面ピクセルと等価（zOrd
   4. 検証スクリプト — `verify-comp10-export-parity.mjs` / `verify-export-adjustment.mjs` を **実 Preview パネル screenshot vs export(bake)** に書換（旧版は同一 offscreen 経路同士で無意味）。判定は pixel-diff ではなく **中央走査線 std（効果シグネチャ）**（消失時 export std が崩れる／pixel-diff は blank の方が小さく出るため不適）。Preview 取得用に PreviewPanel に `data-testid="preview-canvas-root"` 追加。
 - **検証**: typecheck / 458 tests 緑 / `verify-comp10-export-parity.mjs` PASS（f100 export std 2.9→23.9 ≈ preview 30）/ `verify-export-adjustment.mjs` PASS（blur ぼけ縁 mid=96）/ 回帰 verify 全 PASS（verify-nested-3d-camera, verify-3d-camera, verify-export-bake, verify-export-filter, verify-fast-export-parity, verify-comp19-adjustment）/ f100 export 画像で content+blur 目視確認。
 - **follow-up**: §27.4 spec 散文の「foreignObject は preserve-3d 非対応 → 3D 個別 capture 必要」記述が実測と矛盾（root capture で 3D も焼ける）。spec 更新は §5/INV 不変なので Cursor 主導で可。
+
+### 2026-06-25（Opus）— MP4 Live 調整の**ちらつき**を構造解消（export 合成をオフDOMへオーバーホール）
+
+- **症状**: bake 復帰後 effect は乗るが MP4 が**ちらつく**（ユーザー報告・`for-debug-data/Comp_10 (2).mp4`）。
+- **真因**: bake（`forceAdjustmentRaster`）は毎フレーム **live DOM を破壊操作**（`visibility` トグル + raster overlay + `holdLastRaster`/`frameRenderCache` 使い回し + 直列キュー）。非同期競合で前フレーム状態が次フレームのキャプチャに混入 → ちらつき。
+- **方針決定（ユーザー確認）**: デプロイは**ブラウザのみ**（静的・バックエンドなし）→ ヘッドレス Chromium 正準書き出し（spec §16/M3.5, A 案）はクライアント不可。getDisplayMedia（B 案）は実時間/解像度/精度で不適。→ **C1: ブラウザ内のまま、export 合成を live DOM 非破壊・ステートレスに作り直す**。
+- **実装**:
+  1. [exportComposite.ts](src/runtime/exportComposite.ts)（新規） — `compositeExportFrame`: 毎フレーム fresh に z 昇順で累積 master canvas を組み、調整レイヤー到達点で master（=確定背面）に effect chain を適用。調整/blend 無しなら単一ショット root capture（3D 深度保持）の高速経路。
+  2. [effectRaster.ts](src/runtime/effectRaster.ts)（新規） — `applyFilterChainToBuffer`（旧 DomRenderer.applyCssSvgFilterToBuffer を pure 化、live/export 共有）。
+  3. [DomRenderer.ts](src/runtime/DomRenderer.ts) — `exportCompositeMode` 追加（true 時、調整レイヤーは live DOM を触らず effect chain を `entry.exportChain` に保存するだけ）。`getExportLayers()` / `hasAdjustmentLayers()` 追加。
+  4. [exporter.ts](src/runtime/exporter.ts) / [compFrameCapture.ts](src/runtime/compFrameCapture.ts) — `forceAdjustmentRaster`→`exportCompositeMode`、`flushExportComposite`→`flushRasterEffects`、capture を `compositeExportFrame` に一本化。
+- **raster effect**: レイヤ直付け raster は従来どおり自前 canvas に焼かれ単体キャプチャが拾う。調整 raster（displacement 含む）は master に既存 helper を pure 適用。両方 export で焼ける（f100 で目視確認）。
+- **検証**: typecheck / 458 tests / build 緑。`verify-comp10-export-parity.mjs` 書換（**ちらつき＝フレーム間状態リーク検査**: seq[1 renderer 順次] vs iso[frame ごと新 renderer] の diff。stateless なら 0%）→ **f82–100 全フレーム seqVsIso=0.000%**（＝ちらつき根絶）+ parity OK + f88/f100 目視で content+effect 確認。回帰 verify 全 PASS（export-adjustment / export-bake / export-filter / fast-export-parity / 3d-camera / nested-3d-camera / comp19-adjustment）。
+- **未削除（意図的・低リスク優先）**: `forceAdjustmentRaster` フラグ + bake pipeline（`runAdjustment*Pipeline` / `captureAdjustmentBackdrop` / `flushExportComposite` / `exportAdjustmentQueue`）は **live preview の displacement / raster-mode 調整経路と entangle** しているため残置。`forceAdjustmentRaster` はどこからも true にされず（export は `exportCompositeMode` を使う）ちらつき経路は再活性化しない。完全削除は `effectRouting.ts` / `adjustmentMode.test.ts` に波及するため follow-up（要回帰確認）。
+
+#### 追補（同日 Opus）— 調整フレームで**カメラがちらつく**バグも修正
+
+- **症状**: 上記オーバーホール後、調整 effect/opacity は安定したが、**カメラ(perspective)が効くフレームと効かないフレームが断続的に出る**（ユーザー報告）。
+- **真因**: perspective / perspective-origin / preserve-3d は **root** に付き、preview では全レイヤがその perspective root の子。初版 compositor は調整フレームでレイヤを **root から切り離して個別 capture** していたため 3D 層の perspective 射影が落ち、`hasAdjustmentLayers()` が in/out で切り替わるたびに fast path(root 一括=カメラ有り) と slow path(per-layer=カメラ無し) が交代 → カメラのちらつき。
+- **実機局在化**（`verify-diag-capture.mjs`）で f100 を計測: root 一括 capture=std37.1（カメラ正）/ per-layer 無 perspective=std70.1（カメラ落ち）/ **per-layer を root と同じ perspective ラッパで包む=std37.1（root と pixel 一致）**。
+- **修正**: [exportComposite.ts](src/runtime/exportComposite.ts) を **per-layer + perspective ラッパ**方式に変更（`captureLayerWithPerspective`: 各レイヤを `perspective`/`perspective-origin` = root と同値の div に入れて capture）。2D 層は perspective 無影響、3D 層は正しく射影。blend は `globalCompositeOperation`、調整は master に chain 適用。調整も blend も無いフレームは root 一括 capture の高速経路。
+- **検証**: typecheck / 458 tests / build 緑。`verify-comp10-export-parity.mjs` に **camera 保持検査**追加 → f100 で per-layer+persp std=37.1 == root std=37.1（rel 0.0% / pixel diff 0.00%）＝カメラ完全保持。ちらつき seq≡iso=0.000% 継続。f100 export 目視でコンテンツが perspective 射影＋blur されているのを確認。回帰 verify 全 PASS（export-bake / export-filter / fast-export-parity / 3d-camera / nested-3d-camera / export-adjustment / comp19-adjustment）。
+
+### 2026-06-25（Cursor）— 実装ループスキル化 + エージェントプロンプト追記
+
+- **要請**: 直近の修正メソッド・思考フレームワーク・一連の流れを抽象化し、新機能/バグ修正時にエージェントが参照する統合ループとしてスキル化。
+- **追加**: [.claude/skills/implementation-loop/SKILL.md](.claude/skills/implementation-loop/SKILL.md) — Phase 0–5（progress/spec → スコープ → 影響地図化 → 最小実装 → Playwright+経路間 parity → 固定・記録）。バグは経路分解、視覚系は `debug-visual-render-bug`、エフェクトは `implement-visual-effect`、新型は `add-layer-component-type` へ分岐。
+- **プロンプト追記**: [CLAUDE.md](CLAUDE.md)「実装ループ（必須スキル）」、[mafter-effect-agent.mdc](.cursor/rules/mafter-effect-agent.mdc) 実装ワークフロー Phase 番号化 + バグ修正時スキル分岐表、[implementation-loop.mdc](.cursor/rules/implementation-loop.mdc)（要約ルール）、[debug-visual-render-bug.mdc](.cursor/rules/debug-visual-render-bug.mdc) から親ループへのリンク。下位 3 スキルに親参照を追加。
+
+### 2026-06-25（Cursor）— 実装ループのプロンプト隔離
+
+- **要請**: ループ本体が `CLAUDE.md` / `alwaysApply` ルールに重複してシステムプロンプトを汚染しないよう隔離。
+- **変更**: 正本は `.claude/skills/implementation-loop/SKILL.md` のみ（一貫性ゲート・Playwright 手順・抽象要請の確認をスキルへ移設）。`CLAUDE.md` / `mafter-effect-agent.mdc` / `implementation-loop.mdc` / `debug-visual-render-bug.mdc` は**ポインタのみ**に縮小。ループ更新はスキルファイルだけ編集すればよい。

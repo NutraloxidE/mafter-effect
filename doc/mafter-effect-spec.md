@@ -2118,7 +2118,7 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 
 | モード | preview | web bundle export | mp4 / png export | 載せられる effect |
 |---|---|---|---|---|
-| **`"live"`**（既定・軽量） | `backdrop-filter`（同期・軽量） | `backdrop-filter`（live DOM・中間 raster 化ゼロ） | **comp 背面 capture → 自動 raster 化**で見た目維持（重い・UI 明示） | `executionPath === "live"` のみ |
+| **`"live"`**（既定・軽量） | `backdrop-filter`（同期・軽量） | `backdrop-filter`（live DOM・中間 raster 化ゼロ） | **オフDOM z 順コンポジタで背面 master に自動 raster 化**して見た目維持（重い・UI 明示） | `executionPath === "live"` のみ |
 | **`"raster"`**（高精度） | comp 背面 capture → canvas（cache 前提） | bake（raster） | raster（高精度・確実） | live + raster 両方 |
 
 **DOM 実装**:
@@ -2129,7 +2129,8 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 
 **mp4/png export での Live 自動 raster 化（= 旧 §27.4 注記の "Phase 2" を実装・確定）**:
 - mp4/webm/png は**ピクセルのフレーム列**で、最終ラスタライズ（foreignObject→canvas）は不可避。**通常レイヤーの CSS/SVG filter は最終ラスタライズでブラウザが一括適用される**（実証済み）が、**`backdrop-filter` だけは foreignObject ラスタ化で背面参照が欠落して消える**（実証済み）。
-- よって export 経路（`fastDisplaceDirect` 不問・exporter / `compFrameCapture`）では、**Live調整レイヤーを Raster 同等の comp 背面 capture 経路へ自動フォールバック**して焼く（`auto_raster_mp4`）。これで mp4/png でも Live調整の見た目を維持する。中間 raster 化のコスト増が発生するため **UI で明示**する。
+- よって export 経路（exporter / `compFrameCapture`）では、Live調整レイヤーを **オフDOM・ステートレスな z 順コンポジタ**（[`exportComposite.ts`](../src/runtime/exportComposite.ts) `compositeExportFrame`）で焼く（`auto_raster_mp4`）。毎フレーム、**live render DOM を一切破壊操作せず**（`visibility` トグル・フレーム間 raster 使い回しを行わない）、z 昇順に累積 master canvas を組み、調整レイヤー到達点で「累積済み背面 = master」に effect chain（raster machinery 流用）を適用する。これで mp4/png でも Live調整の見た目を維持しつつ、フレーム間状態混入によるちらつきが原理的に発生しない。
+- かつての実装は DomRenderer 側で live DOM を毎フレーム書き換える bake（`forceAdjustmentRaster`）だったが、非同期競合で**ちらつき**を生んだため、合成責務を exporter のオフDOM コンポジタへ移した（DomRenderer は preview の live `backdrop-filter` 経路のみ担う）。
 - 帰結: **Live調整の「中間 raster 化ゼロ」の利点は web bundle（live DOM 再生）でのみ成立**。mp4 では実質 Raster と同コスト。この棲み分けは好みでなく技術的必然。
 
 **store / 作成 UI**:
@@ -2146,7 +2147,7 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 - **軸1 — precomp 境界 = non-collapse 固定**: precomp（§23・`Component.type="comp"`）は1枚に合成・確定してから親 comp が1レイヤーとして扱う（§23.5 の non-collapse と一貫）。調整レイヤーの作用範囲は **自 comp スコープ**（precomp 内の調整は内で閉じ、precomp 外の調整は precomp を1枚の背面レイヤーとして参照）。collapse（境界透過）は将来。
 - **軸2 — Raster 出力 = 確定境界（キャッシュ境界）**: Raster調整 / raster effect / Live調整の export 時 auto_raster が canvas に焼いた結果は**確定境界**。その上の live（通常レイヤーの `filter` / Live調整の `backdrop-filter`）は**背面の確定ピクセルに作用するだけで、確定済み部分を再計算しない**。重い Raster を一度焼けば、上に live を足しても再ラスタライズは走らない。
 - **ラスタに live をかけられるか（確定）**: **かけられる**。canvas はピクセルなので CSS filter / backdrop-filter が作用する。preview は backdrop-filter が描画順で背面（canvas overlay 含む）を自動参照。export は下記 multi-pass flush で「Raster を先に確定 → その上の Live を背面 capture」する。
-- **export = multi-pass flush（INV-2・§27.9）**: 単一 root capture（現状 [exporter.ts](../src/runtime/exporter.ts) `flushRasterEffects()` → `captureFrame(root)`）ではなく、**zOrder 昇順に各 raster ポイント（Raster調整 / raster effect / Live調整の auto_raster）で「それ未満の確定ピクセルを背面 capture → 処理 → overlay → 確定」を繰り返す**。precomp は内側 depth から先に確定（depth ≤ 4・§23.4）。これで多段 raster・調整レイヤー・precomp ネストが preview と一致して焼ける。
+- **export = オフDOM ステートレス z 順合成（INV-2・§27.9）**: 単一 root capture（調整/ blend 無しの高速経路）か、または **zOrder 昇順に累積 master canvas を組む**コンポジタ（[`exportComposite.ts`](../src/runtime/exportComposite.ts) `compositeExportFrame`）。通常レイヤーは単体キャプチャを master へ `globalCompositeOperation`（blendMode）で重ね、各 raster ポイント（Raster調整 / Live調整の auto_raster）では **master（=それ未満の確定ピクセル）に effect chain を適用**して master を更新する。**live render DOM は変更しない**（ステートレス・毎フレーム fresh）。precomp は内側 depth から先に確定（depth ≤ 4・§23.4）。これで多段 raster・調整レイヤー・precomp ネストが preview と一致し、かつちらつき無く焼ける。
 
 ### §27.5 解決（resolve）と ResolvedScene（確定・INV-1/3）
 

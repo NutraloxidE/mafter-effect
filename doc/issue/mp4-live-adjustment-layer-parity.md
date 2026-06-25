@@ -2,7 +2,7 @@
 
 > **対象**: Live 調整レイヤー（`isAdjustment: true` / `adjustmentMode` 省略 = `"live"`）経由の effect  
 > **通常レイヤー直付け effect** は本 issue の対象外（問題なし）。  
-> **状態**: 2026-06-25 **解消**（bake 経路 B を復帰し、真因＝3D subtree flatten を除去）。  
+> **状態**: 2026-06-25 **解消**。① effect 欠落＝3D subtree flatten 除去で解消、② その後の**ちらつき**＝export 合成を bake（live DOM 破壊）からオフDOM・ステートレス compositor へオーバーホールして根絶（§下部「ちらつき解消」）。  
 > **再現データ**: `for-debug-data/mafter-project (7).zip` → **Comp 10**
 
 **関連 spec**: §27.4 / §27.4.1 / INV-2  
@@ -227,3 +227,32 @@ f85–89 は z13 + z14 調整が **重なる**（stacked adjustment）。bake �
 **残**:
 
 - [ ] §27.4 spec 散文 — 「foreignObject は preserve-3d 非対応 → 3D 個別 capture 必要」が実測と矛盾。root capture で 3D も焼ける旨に更新（§5/INV 不変・Cursor 主導可）
+
+---
+
+## ちらつき解消（2026-06-25 Opus — export 合成のオーバーホール）
+
+effect 欠落・消失が直った後、**MP4 がちらつく**症状が残った（`for-debug-data/Comp_10 (2).mp4`）。
+
+**真因**: bake（`forceAdjustmentRaster`）は毎フレーム **live render DOM を破壊操作**する（下位 `visibility:hidden` トグル + raster overlay 差し替え + `holdLastRaster`/`frameRenderCache` の使い回し + `exportAdjustmentQueue` 直列化）。これらは非同期で、前フレームの overlay / 抑制状態が次フレームの foreignObject キャプチャに混入するタイミングが生じる → フレーム間で見た目が不連続にぶれる＝ちらつき。bake は本質的に**ブラウザ compositor の backdrop-filter を canvas で再実装**しており、毎フレームの可変 DOM 状態に依存するため脆い。
+
+**方針（ユーザー確認）**: デプロイは**ブラウザのみ**。ヘッドレス Chromium 正準書き出し（§16/M3.5）はクライアント不可、getDisplayMedia は実時間/解像度/精度で不適。→ **ブラウザ内のまま、export 合成を live DOM 非破壊・ステートレスに作り直す（C1）**。
+
+**実施**:
+
+- [x] [exportComposite.ts](../../src/runtime/exportComposite.ts) 新規 — `compositeExportFrame`: 毎フレーム fresh に z 昇順で累積 master canvas を組み、調整レイヤー到達点で master（=確定背面ピクセル）に effect chain を適用。調整/CSS blend が無ければ単一ショット root capture（3D 深度保持）の高速経路。
+- [x] [effectRaster.ts](../../src/runtime/effectRaster.ts) 新規 — `applyFilterChainToBuffer`（旧 `DomRenderer.applyCssSvgFilterToBuffer` を pure 化、live/export 共有）。
+- [x] [DomRenderer.ts](../../src/runtime/DomRenderer.ts) — `exportCompositeMode`（true 時、調整レイヤーは live DOM を触らず effect chain を `entry.exportChain` に保存するだけ）+ `getExportLayers()` / `hasAdjustmentLayers()`。
+- [x] [exporter.ts](../../src/runtime/exporter.ts) / [compFrameCapture.ts](../../src/runtime/compFrameCapture.ts) — `forceAdjustmentRaster`→`exportCompositeMode`、`flushExportComposite`→`flushRasterEffects`、capture を `compositeExportFrame` に一本化。
+- [x] **検証（ちらつき＝フレーム間状態リーク）**: seq（1 renderer 順次＝実 export ループ）と iso（frame ごと新 renderer）の同一フレーム出力 diff。stateless なら 0%。→ Comp 10 **f82–100 全フレーム seqVsIso=0.000%**。parity（実 Preview std）OK、f88/f100 目視で content+effect 確認。回帰 verify 全 PASS + 458 tests。
+
+**未削除（意図的）**: 旧 bake pipeline（`forceAdjustmentRaster` / `runAdjustment*Pipeline` / `captureAdjustmentBackdrop` / `flushExportComposite` / `exportAdjustmentQueue`）は **live preview の displacement / raster-mode 調整経路と共用**のため残置。`forceAdjustmentRaster` はどこからも true にされず、ちらつき経路は再活性化しない。完全分離は `effectRouting.ts` / `adjustmentMode.test.ts` に波及するため follow-up。
+
+### カメラのちらつき修正（同日 Opus）
+
+オフDOM 化後、調整 effect/opacity は安定したが **カメラ(perspective)が断続的にちらつく**症状が残った。
+
+- **真因**: perspective / perspective-origin / preserve-3d は **root** に付く。初版 compositor は調整フレームでレイヤを root から切り離して個別 capture したため 3D 層の perspective 射影が落ち、`hasAdjustmentLayers()` の in/out 切替で fast path(root 一括=カメラ有) と slow path(per-layer=カメラ無) が交代 → ちらつき。
+- **局在化**（`verify-diag-capture.mjs`、f100）: root 一括=std37.1（正）/ per-layer 無 perspective=std70.1（カメラ落ち）/ **per-layer を root と同じ perspective ラッパで包む=std37.1（root と pixel 一致）**。
+- **修正**: [exportComposite.ts](../../src/runtime/exportComposite.ts) を **per-layer + perspective ラッパ**（`captureLayerWithPerspective`）方式へ。各レイヤを `perspective`/`perspective-origin` = root と同値の div に入れて capture（2D 層は無影響、3D 層は正しく射影）。調整も blend も無いフレームは root 一括の高速経路。
+- **検証**: `verify-comp10-export-parity.mjs` に camera 保持検査追加 → f100 で per-layer+persp std=37.1 == root std=37.1（diff 0.00%）。ちらつき seq≡iso=0.000% 継続。回帰 verify 全 PASS + 458 tests。

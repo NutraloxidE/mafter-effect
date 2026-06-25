@@ -1,4 +1,4 @@
-import { DISPLACEMENT_EFFECT_TYPES, FAST_DISPLACEMENT_EFFECT_TYPES, svgDisplaceFilterMarkup } from "./effectSvg";
+import { DISPLACEMENT_EFFECT_TYPES, FAST_DISPLACEMENT_EFFECT_TYPES } from "./effectSvg";
 import { needsSvgDisplaceCapture } from "./effectRouting";
 import type { CompositionMeta, Frame, HtmlComposition, RGBA, TimelineComposition } from "../core/schema";
 import type { FontOutlineCache } from "./fontOutlineCache";
@@ -12,9 +12,11 @@ import { compChildFrame, isCompNestDepthAllowed } from "./compLayer";
 import type { NestedCompRasterizer } from "./compFrameCapture";
 import { resolve, type ExpressionEvaluator } from "./resolve";
 import { applyTextEl, rgbaCss } from "./textRender";
-import { captureElementToCanvas, rasterizeFilteredImage } from "./rasterCapture";
+import { captureElementToCanvas } from "./rasterCapture";
 import { canvasToRasterBuffer, rasterBufferToCanvas } from "./pixelSort";
 import { processRasterChainAsync } from "./rasterProcessAsync";
+import { applyFilterChainToBuffer } from "./effectRaster";
+import type { ExportChain, ExportLayer } from "./exportComposite";
 import type { EffectFilter } from "./plugin";
 import type { BlendMode } from "../core/schema";
 import { isCssBlendMode } from "./blendCompose";
@@ -91,6 +93,10 @@ interface ObjectEntry {
   blendMode: BlendMode;
   /** §6.5b export 調整 backdrop capture 用（threeD 層のスナップショット化） */
   threeD: boolean;
+  /** §27.4 現フレームが調整レイヤーか（exportComposite の z 順合成で参照） */
+  isAdjustment: boolean;
+  /** §27.4 export — 解決済み effect chain（exportComposite が背面 master へ適用）。非調整は null。 */
+  exportChain: ExportChain | null;
 }
 
 interface RasterWorkItem {
@@ -128,13 +134,18 @@ export class DomRenderer implements Renderer {
   private forceAdjustmentRaster = false;
   /** §27.4.1 export — Live 調整 bake を zOrder 直列化（preview compositor 相当） */
   private exportAdjustmentQueue: Promise<void> = Promise.resolve();
+  /** §27.4 export — オフDOM コンポジタ（exportComposite.ts）が調整合成を担う。true の間、
+   *  調整レイヤーは live DOM を破壊せず effect chain を entry.exportChain に保存するだけ。 */
+  private exportCompositeMode = false;
 
   setPreviewRenderOptions(opts: {
     holdLastRaster?: boolean;
     forceAdjustmentRaster?: boolean;
+    exportCompositeMode?: boolean;
   }): void {
     if (opts.holdLastRaster !== undefined) this.holdLastRaster = opts.holdLastRaster;
     if (opts.forceAdjustmentRaster !== undefined) this.forceAdjustmentRaster = opts.forceAdjustmentRaster;
+    if (opts.exportCompositeMode !== undefined) this.exportCompositeMode = opts.exportCompositeMode;
   }
 
   setTextQuality(mode: "draft" | "precise"): void {
@@ -226,6 +237,8 @@ export class DomRenderer implements Renderer {
           fxUseBackdropDisplace: false,
           blendMode: "normal",
           threeD: false,
+          isAdjustment: false,
+          exportChain: null,
         };
         this.entries.set(obj.id, entry);
       }
@@ -477,6 +490,30 @@ export class DomRenderer implements Renderer {
     return layers.map(({ div, blendMode }) => ({ div, blendMode }));
   }
 
+  /** §27.4 — 現フレームに調整レイヤーが 1 つでもあるか（exportComposite の経路選択用）。 */
+  hasAdjustmentLayers(): boolean {
+    for (const e of this.entries.values()) if (e.isAdjustment) return true;
+    return false;
+  }
+
+  /** §27.4.1 — exportComposite 用の z 昇順レイヤ列。調整レイヤーは effect chain 付き。 */
+  getExportLayers(): ExportLayer[] {
+    const layers = [...this.entries.values()].map((e) => ({
+      div: e.div as HTMLElement,
+      blendMode: e.blendMode,
+      isAdjustment: e.isAdjustment,
+      exportChain: e.isAdjustment ? e.exportChain : null,
+      z: Number(e.div.style.zIndex) || 0,
+    }));
+    layers.sort((a, b) => a.z - b.z);
+    return layers.map(({ div, blendMode, isAdjustment, exportChain }) => ({
+      div,
+      blendMode,
+      isAdjustment,
+      exportChain,
+    }));
+  }
+
   /** §27.1/§27.4 — effects を filter / backdrop-filter / raster として適用。 */
   private applyEffects(entry: ObjectEntry, obj: ResolvedObject, frame: Frame): void {
     const effects = obj.effects ?? [];
@@ -562,6 +599,34 @@ export class DomRenderer implements Renderer {
       } else {
         this.pushFilterPiece(piece, preTokens, preSvgFilters, `fx-${obj.id}-pre-${preSvgIndex++}`);
       }
+    }
+
+    // §27.4 export — オフDOM コンポジタ（exportComposite.ts）が背面 master へ焼くための解決済み chain を保存。
+    entry.isAdjustment = obj.isAdjustment === true;
+    if (obj.isAdjustment) {
+      entry.exportChain = {
+        preFilterStr: preTokens.join(" "),
+        preSvgFilters,
+        postFilterStr: postTokens.join(" "),
+        postSvgFilters,
+        rasterChain,
+        region: {
+          fxLayerW: entry.fxLayerW,
+          fxLayerH: entry.fxLayerH,
+          fxMaxDisplaceScale: entry.fxMaxDisplaceScale,
+          fxUseBackdropDisplace: entry.fxUseBackdropDisplace,
+        },
+        frame: ctx.frame,
+      };
+      if (this.exportCompositeMode) {
+        // 調整合成は exportComposite が master 上で行う。live DOM に overlay/suppression/backdrop を残さない。
+        this.clearRasterOverlay(entry);
+        this.restoreAdjustmentSuppression(obj.id);
+        this.applyFilterTokens(entry, obj, [], []);
+        return;
+      }
+    } else {
+      entry.exportChain = null;
     }
 
     if (rasterChain.length === 0) {
@@ -755,7 +820,7 @@ export class DomRenderer implements Renderer {
         fxMaxDisplaceScale: entry.fxMaxDisplaceScale,
         fxUseBackdropDisplace: false,
       };
-      buffer = await this.applyCssSvgFilterToBuffer(buffer, w, h, filterStr, svgFilters, filterEntry);
+      buffer = await applyFilterChainToBuffer(buffer, w, h, filterStr, svgFilters, filterEntry);
 
       if (entry.rasterRunKey !== rasterRunKey) return;
       if (!this.bufferHasVisiblePixels(buffer)) {
@@ -822,7 +887,7 @@ export class DomRenderer implements Renderer {
         fxMaxDisplaceScale: entry.fxMaxDisplaceScale,
         fxUseBackdropDisplace: false,
       };
-      buffer = await this.applyCssSvgFilterToBuffer(buffer, w, h, filterStr, svgFilters, filterEntry);
+      buffer = await applyFilterChainToBuffer(buffer, w, h, filterStr, svgFilters, filterEntry);
 
       if (entry.rasterRunKey !== rasterRunKey) return;
       if (!this.bufferHasVisiblePixels(buffer)) {
@@ -856,38 +921,6 @@ export class DomRenderer implements Renderer {
   private async captureAdjustmentBackdrop(w: number, h: number): Promise<HTMLCanvasElement> {
     if (!this.root) throw new Error("captureAdjustmentBackdrop: no root");
     return captureElementToCanvas(this.root, w, h, "transparent");
-  }
-
-  private async applyCssSvgFilterToBuffer(
-    buffer: { data: Uint8ClampedArray; width: number; height: number },
-    w: number,
-    h: number,
-    filterStr: string,
-    svgFilters: { id: string; primitives: string }[],
-    filterEntry: Pick<ObjectEntry, "fxLayerW" | "fxLayerH" | "fxMaxDisplaceScale" | "fxUseBackdropDisplace">,
-  ): Promise<{ data: Uint8ClampedArray; width: number; height: number }> {
-    const sourceCanvas = rasterBufferToCanvas(buffer);
-    const dataUrl = sourceCanvas.toDataURL("image/png");
-    const filtersMarkup = svgFilters
-      .map(({ id, primitives }) => {
-        const isDisplace = primitives.includes("feDisplacementMap");
-        if (isDisplace && filterEntry.fxLayerW > 0 && filterEntry.fxLayerH > 0) {
-          return svgDisplaceFilterMarkup(
-            id,
-            primitives,
-            filterEntry.fxLayerW,
-            filterEntry.fxLayerH,
-            filterEntry.fxMaxDisplaceScale,
-            filterEntry.fxUseBackdropDisplace,
-          );
-        }
-        return `<filter id="${id}" color-interpolation-filters="sRGB" x="-25%" y="-25%" width="150%" height="150%">${primitives}</filter>`;
-      })
-      .join("");
-    // filterStr は CSS token（blur 等）と url(#svg) 参照を順序通り含む完全 chain。
-    // url(#svg) は filtersMarkup の SVG <filter> を参照する。
-    const out = await rasterizeFilteredImage(dataUrl, w, h, filtersMarkup, filterStr);
-    return canvasToRasterBuffer(out);
   }
 
   private reapplyAdjustmentSuppression(adjustmentId: string, adjustZ: number): void {
