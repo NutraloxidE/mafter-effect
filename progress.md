@@ -6,6 +6,20 @@
 
 ---
 
+### 2026-06-26（Claude Opus）— 静的 HTML bundle の動画再生もっさり 真因修正 ✅
+
+- **症状**: 動画レイヤー入りコンポを §11.7 静的 HTML bundle に書き出すと、preview はスムーズなのに bundle player 上で動画がもっさり（実機では `<video>` が paused のまま currentTime=0 で完全停止することも）。
+- **真因**: bundle は動画 src を**相対 HTTP URL 直参照**（[imageAssetCache.ts](src/runtime/imageAssetCache.ts) `registerProjectUrls`）にしていた。`<video>` の再生/seek は HTTP byte-range (206) 対応サーバに依存し、range 非対応ホスト（多くの静的ホスティング・`file://`・range 非対応の簡易サーバ）では buffer/seek できず stall。preview は import 時に**ファイル全体を blob URL 化**（`decodeVideoEntry`）するため常にスムーズ＝経路差。
+- **修正**: bundle player でも video のみ「一度 `fetch()` して全体を in-memory blob URL 化」する（[imageAssetCache.ts](src/runtime/imageAssetCache.ts) `loadVideoBlobsFromUrls` 追加・[BundlePlayer.ts](src/player/BundlePlayer.ts) start で await）。単一 GET なので range 非対応ホストでも動き、preview と同一の in-memory 再生になる（INV-2）。画像は単一 GET で十分なため対象外（メモリ非肥大）。**ユーザーの仮説「preview と同じ経路を bundle に適用」通り。**
+- **スコープ**: video 型のみ・bundle 経路のみ。export（mp4/png）は `loadFromProject`（既に blob）経由で無変更。
+- **検証**:
+  - **新規 `verify-bundle-video-playback.mjs`**（恒久）: bundle を export→serve し `<video>.currentTime` を壁時計でサンプル。修正前 `paused=YES・playRate=0.00x`（停止）→ 修正後 `pausedSamples=0/20・playRate=1.00x`（native real-time play）。
+  - 無回帰: `npm test` 479 PASS / typecheck 緑 / `verify-bundle-export.mjs`（solid・非video）PASS / `verify-video-export-monotonic.mjs`（reversals=0・onTarget=25/25）/ `verify-video-export.mjs`（playerUi=0%）。
+  - `public/player.js` を `npm run build:player` で再ビルド済み。
+- **残**: export の絶対速度 ~380ms/frame（foreignObject ラスタ化由来・symptom B）は本件と独立で未対応のまま。
+
+---
+
 ## 現在のマイルストーン状態
 
 | マイルストーン | 状態 |

@@ -228,11 +228,22 @@ Phase 3 の `exportVideoStep` は連続フレームを `video.play()` で進め�
 - 結果: **reversals=0 / stuckFrames=0 / onTarget=25/25**、各フレーム ~3.3% の連続した動き。`npm test` 全 479 PASS、既存 `verify-video-export.mjs` 無回帰（playerUi=0%）。
 - 残: 1 フレーム ~320ms（foreignObject ラスタ化が主因）は symptom B として別タスク。
 
+## 解決2（2026-06-26 Claude Opus）— 静的 HTML bundle の動画再生もっさり
+
+上記は **MP4/PNG export**（foreignObject ラスタ化経路）の話。別途、**§11.7 静的 HTML bundle player** 上での動画再生が preview に比べてもっさり（実機では `<video>` が `paused` のまま `currentTime=0` で完全停止）という症状を修正した。
+
+- **真因**: bundle は動画 src を**相対 HTTP URL 直参照**（[rasterCapture/imageAssetCache.ts](../../src/runtime/imageAssetCache.ts) `registerProjectUrls`）にしていた。`<video>` の再生/seek は HTTP **byte-range (206)** 対応サーバに依存し、range 非対応ホスト（多くの静的ホスティング・`file://`・簡易サーバ）では buffer/seek できず stall。preview は import 時にファイル全体を **blob URL** 化（`decodeVideoEntry`）するため常にスムーズ＝**preview↔bundle の経路差**。
+- **修正**: bundle player でも video のみ「一度 `fetch()` して全体を in-memory **blob URL** 化」（`loadVideoBlobsFromUrls` 追加・[BundlePlayer.ts](../../src/player/BundlePlayer.ts) start で await）。単一 GET で range 非対応ホストでも動き、preview と同一再生（INV-2）。画像は単一 GET で十分なため対象外。
+- **検証**: 新規 `verify-bundle-video-playback.mjs`（恒久）で `playRate` を実測。修正前 `paused=YES/playRate=0.00x`（停止）→ 修正後 `pausedSamples=0/20・playRate=1.00x`（native real-time）。`npm test` 479 PASS・`verify-bundle-export`/`verify-video-export*` 無回帰・`public/player.js` 再ビルド済み。
+
+---
+
 ## ステータスまとめ
 
 | 項目 | 状態 |
 |------|------|
 | プレイヤー UI が焼き込まれる | **解消** |
+| 静的 HTML bundle の動画再生もっさり（HTTP range stall） | **解消**（video のみ blob URL 化・解決2） |
 | preview 再生のもっさり | **別途改善済み**（export とは別） |
 | export 出力のちらつき（戻り進み） | **解消**（play-step 廃止・決定論 seek） |
 | export 出力のもっさり（毎3フレーム重複） | **解消**（フレーム中央 seek） |

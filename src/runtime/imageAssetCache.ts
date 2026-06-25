@@ -121,6 +121,37 @@ export class ImageAssetCache {
       this.byId.set(asset.id, entry);
     }
   }
+
+  /**
+   * §11.7 bundle player の video のみ blob URL 化する。
+   * HTTP URL 直参照だと `<video>` の再生/seek が HTTP byte-range (206) 対応サーバに依存し、
+   * range 非対応のホスト（多くの静的ホスティング・`file://`）では buffer/seek できず stall = もっさり。
+   * 素材を一度だけ fetch し全体を in-memory blob 化することで、preview（`decodeVideoEntry`）と
+   * 同じ「ファイル全体がメモリにある」再生になり native play がなめらかになる（INV-2）。
+   * 画像は単一 GET で十分なので対象外（base64/blob 化でメモリを膨らませない）。
+   */
+  async loadVideoBlobsFromUrls(
+    project: Project,
+    urlForPath: (path: string) => string,
+  ): Promise<void> {
+    for (const asset of project.assets) {
+      if (asset.kind !== "video") continue;
+      try {
+        const resp = await fetch(urlForPath(asset.path));
+        if (!resp.ok) continue;
+        const buf = new Uint8Array(await resp.arrayBuffer());
+        const mime =
+          (typeof asset.meta?.mime === "string" ? asset.meta.mime : null) ??
+          videoMimeFromPath(asset.path);
+        const entry = decodeVideoEntry(buf, mime, asset.meta);
+        this.byPath.set(asset.path, entry);
+        this.byId.set(asset.id, entry);
+        this.blobUrls.add(entry.url);
+      } catch {
+        /* fetch 失敗時は registerProjectUrls の HTTP URL のままフォールバック */
+      }
+    }
+  }
 }
 
 export function mimeFromPath(path: string): string {

@@ -72,6 +72,8 @@ export class BundlePlayer {
     const urlForPath = (path: string) => assetUrlForBundle(this.manifest, path);
     await this.fontCache.loadFromProject(project, this.fs);
     this.imageCache.registerProjectUrls(project, urlForPath);
+    // video のみ blob URL 化（HTTP range 非対応サーバでの stall = もっさり回避・preview と同一再生）。
+    await this.imageCache.loadVideoBlobsFromUrls(project, urlForPath);
     await this.loadBundleFonts(project, urlForPath);
     await this.loadBuiltinFonts(urlForPath);
 
