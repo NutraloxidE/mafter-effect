@@ -20,7 +20,7 @@
 // 立てず exportChain をレイヤメタ（__exportLayer）として付与し、コンテナに __nestedComposite を付ける。
 // 調整も blend も無いネスト comp は従来どおり親の単一 capture に含める（3D 文脈保持の高速経路）。
 
-import { captureElementToCanvas, flattenShadow, inlineCanvasBitmaps, svgToDataUrl } from "./rasterCapture";
+import { captureElementToCanvas, flattenShadow, inlineExportMedia, svgToDataUrl } from "./rasterCapture";
 import { canvasToRasterBuffer } from "./pixelSort";
 import { processRasterChainAsync } from "./rasterProcessAsync";
 import { applyFilterChainToBuffer, type FilterRegion } from "./effectRaster";
@@ -138,7 +138,7 @@ export async function captureLayerWithPerspective(
 ): Promise<HTMLCanvasElement> {
   const cloned = flattenShadow(layerDiv) as HTMLElement;
   cloned.setAttribute("xmlns", XHTML);
-  await inlineCanvasBitmaps(cloned, layerDiv);
+  await inlineExportMedia(cloned, layerDiv);
   return rasterizeClonedLayer(cloned, perspective, perspectiveOrigin, nw, nh);
 }
 
@@ -209,7 +209,7 @@ async function captureLayerNode(
   const cloned = flattenShadow(layerDiv) as HTMLElement;
   cloned.setAttribute("xmlns", XHTML);
   // 先に live canvas を inline（クローンと live は同一構造なので index 整合）。差し替えは後。
-  await inlineCanvasBitmaps(cloned, layerDiv);
+  await inlineExportMedia(cloned, layerDiv);
 
   // live ↔ clone の composite コンテナを document order で対応付け（同一構造なので index 一致）。
   const liveAll = [...layerDiv.querySelectorAll(`[${NESTED_COMPOSITE_ATTR}="1"]`)] as ExportTaggedElement[];

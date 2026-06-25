@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { syncVideoElementTime, videoSeekThresholdSec } from "../src/runtime/videoElementSync";
+import { syncVideoElementTime, videoSeekThresholdSec, waitForVideoFrame } from "../src/runtime/videoElementSync";
 
 function mockVideo(currentTime = 0, paused = true): HTMLVideoElement {
   return {
@@ -54,5 +54,19 @@ describe("syncVideoElementTime", () => {
     const video = mockVideo(1, false);
     syncVideoElementTime(video, 1, 30, { playbackMode: false });
     expect(video.pause).toHaveBeenCalled();
+  });
+});
+
+describe("waitForVideoFrame", () => {
+  it("resolves immediately when frame data is ready", async () => {
+    const video = {
+      readyState: 2,
+      videoWidth: 1920,
+      videoHeight: 1080,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    } as unknown as HTMLVideoElement;
+    await expect(waitForVideoFrame(video, 100)).resolves.toBeUndefined();
+    expect(video.addEventListener).not.toHaveBeenCalled();
   });
 });

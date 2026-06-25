@@ -17,7 +17,7 @@ import { canvasToRasterBuffer, rasterBufferToCanvas } from "./pixelSort";
 import { processRasterChainAsync } from "./rasterProcessAsync";
 import { applyFilterChainToBuffer } from "./effectRaster";
 import { resolveEffectChain } from "./effectChain";
-import { syncVideoElementTime } from "./videoElementSync";
+import { syncVideoElementTime, waitForVideoFrame } from "./videoElementSync";
 import type { ExportChain, ExportLayer, NestedCompositeMeta, ExportTaggedElement } from "./exportComposite";
 import type { EffectFilter } from "./plugin";
 import type { BlendMode } from "../core/schema";
@@ -288,6 +288,14 @@ export class DomRenderer implements Renderer {
   async flushRasterEffects(): Promise<void> {
     if (this.rasterPending.size === 0) return;
     await Promise.all([...this.rasterPending]);
+  }
+
+  /** export 前に video seek / decode 完了を待つ（foreignObject は video を描けない）。 */
+  async flushVideoFrames(): Promise<void> {
+    if (!this.root) return;
+    const videos = [...this.root.querySelectorAll("video")];
+    if (videos.length === 0) return;
+    await Promise.all(videos.map((v) => waitForVideoFrame(v)));
   }
 
   /**
@@ -1450,6 +1458,7 @@ function updateComponentEl(
         video.muted = true;
         video.playsInline = true;
         video.preload = "auto";
+        video.controls = false;
       }
       const trimStart = (props["trimStart"] as number | undefined) ?? 0;
       const t = Math.max(0, (hostFrame - hostInPoint) / fps + trimStart / fps);
@@ -1476,6 +1485,7 @@ function createComponentEl(type: string): HTMLElement {
   }
   if (type === "video") {
     const video = document.createElement("video");
+    video.controls = false;
     video.style.cssText = "position:absolute;top:0;left:0;pointer-events:none";
     return video;
   }

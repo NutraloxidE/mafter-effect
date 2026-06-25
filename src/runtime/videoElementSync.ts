@@ -1,5 +1,37 @@
 /** preview 再生と scrub/export で video 要素の時刻同期方針を切り替える。 */
 
+const DEFAULT_VIDEO_FRAME_WAIT_MS = 5000;
+/** HTMLMediaElement.HAVE_CURRENT_DATA — 定数直書き（node テスト環境に HTMLMediaElement が無い） */
+const HAVE_CURRENT_DATA = 2;
+
+/** export 前に video の seek / decode が完了するのを待つ（foreignObject は video を描けないため）。 */
+export function waitForVideoFrame(
+  video: HTMLVideoElement,
+  timeoutMs = DEFAULT_VIDEO_FRAME_WAIT_MS,
+): Promise<void> {
+  return new Promise((resolve) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const cleanup = () => {
+      if (timer !== undefined) clearTimeout(timer);
+      video.removeEventListener("seeked", done);
+      video.removeEventListener("loadeddata", done);
+      video.removeEventListener("loadedmetadata", done);
+    };
+    const done = () => {
+      cleanup();
+      resolve();
+    };
+    if (video.readyState >= HAVE_CURRENT_DATA && video.videoWidth > 0) {
+      done();
+      return;
+    }
+    timer = setTimeout(done, timeoutMs);
+    video.addEventListener("seeked", done, { once: true });
+    video.addEventListener("loadeddata", done, { once: true });
+    video.addEventListener("loadedmetadata", done, { once: true });
+  });
+}
+
 export interface VideoElementSyncOptions {
   /** true = タイムライン再生中（ネイティブ decode に任せる） */
   playbackMode: boolean;

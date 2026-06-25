@@ -1,5 +1,7 @@
 // DOM → canvas ラスタ化（exporter §11.4 と共有・foreignObject 経路）
 
+import { waitForVideoFrame } from "./videoElementSync";
+
 /** Shadow DOM を持つノードを再帰的に clone し、shadowRoot の内容を inline に展開する。 */
 export function flattenShadow(node: Node): Node {
   if (!(node instanceof Element)) return node.cloneNode(true);
@@ -55,6 +57,50 @@ export async function inlineCanvasBitmaps(cloned: HTMLElement, source: HTMLEleme
     node.replaceWith(img);
   }
   await Promise.all(loads);
+}
+
+/**
+ * foreignObject シリアライズ前に video の現在フレームを img に焼き込む。
+ * SVG foreignObject は <video> を描画できずブラウザのプレイヤー UI が出るため。
+ */
+export async function inlineVideoFrames(cloned: HTMLElement, source: HTMLElement): Promise<void> {
+  const sources = [...source.querySelectorAll("video")];
+  const clones = [...cloned.querySelectorAll("video")];
+  const loads: Promise<void>[] = [];
+  for (let i = 0; i < clones.length; i++) {
+    const node = clones[i];
+    const srcVideo = sources[i];
+    if (!(node instanceof HTMLVideoElement) || !(srcVideo instanceof HTMLVideoElement)) continue;
+    await waitForVideoFrame(srcVideo);
+    const vw = srcVideo.videoWidth;
+    const vh = srcVideo.videoHeight;
+    if (vw <= 0 || vh <= 0) continue;
+    const canvas = document.createElement("canvas");
+    canvas.width = vw;
+    canvas.height = vh;
+    canvas.getContext("2d")!.drawImage(srcVideo, 0, 0, vw, vh);
+    const img = document.createElement("img");
+    img.setAttribute("width", String(vw));
+    img.setAttribute("height", String(vh));
+    const style = node.getAttribute("style");
+    if (style) img.setAttribute("style", style);
+    const url = canvas.toDataURL("image/png");
+    loads.push(
+      new Promise<void>((res, rej) => {
+        img.onload = () => res();
+        img.onerror = () => rej(new Error("video inline img load failed"));
+        img.src = url;
+      }),
+    );
+    node.replaceWith(img);
+  }
+  await Promise.all(loads);
+}
+
+/** canvas / video を foreignObject 用の静止画に差し替える。 */
+export async function inlineExportMedia(cloned: HTMLElement, source: HTMLElement): Promise<void> {
+  await inlineCanvasBitmaps(cloned, source);
+  await inlineVideoFrames(cloned, source);
 }
 
 /** SVG 文字列を tainted にならない data: URL に変換する（UTF-8 → base64）。 */
@@ -130,7 +176,7 @@ export async function captureElementToCanvas(
 
   const cloned = flattenShadow(element) as HTMLElement;
   cloned.setAttribute("xmlns", "http://www.w3.org/1999/xhtml");
-  await inlineCanvasBitmaps(cloned, element);
+  await inlineExportMedia(cloned, element);
 
   const serializer = new XMLSerializer();
   const htmlStr = serializer.serializeToString(cloned);

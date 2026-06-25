@@ -204,6 +204,7 @@ async function runPngSeq(
 
     // レイヤ直付け raster（通常レイヤの displacement 等）の完了のみ待つ。調整合成は compositeExportFrame が行う。
     await renderer.flushRasterEffects();
+    await renderer.flushVideoFrames();
     // DOM が描画される次ティックまで待つ
     await nextTick();
 
@@ -415,6 +416,7 @@ async function encodeVideoFrames(
 
     // レイヤ直付け raster の完了のみ待つ。調整合成は compositeExportFrame が行う。
     await renderer.flushRasterEffects();
+    await renderer.flushVideoFrames();
     await nextTick();
 
     const canvas = await compositeExportFrame(renderer, nw, nh, w, h, bg);
