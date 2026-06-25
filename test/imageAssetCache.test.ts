@@ -69,4 +69,29 @@ describe("ImageAssetCache", () => {
     expect(cache.getUrl("01ASSET00000000000000001")).toMatch(/^data:image\/png;base64,/);
     expect(cache.getSize("01ASSET00000000000000001")).toEqual({ width: 1, height: 1 });
   });
+
+  it("loadFromProject builds blob URL for video assets", async () => {
+    const fs = new MemoryFs();
+    const bytes = new Uint8Array([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70]);
+    await fs.write("assets/vid1.mp4", bytes);
+
+    const project = createProject({ name: "Test" });
+    project.assets = [
+      {
+        id: "01ASSET00000000000000002",
+        path: "assets/vid1.mp4",
+        kind: "video",
+        meta: { width: 1920, height: 1080, duration: 5, mime: "video/mp4" },
+      },
+    ];
+
+    const cache = new ImageAssetCache();
+    await cache.loadFromProject(project, fs);
+
+    const url = cache.getUrl("01ASSET00000000000000002");
+    expect(url).toMatch(/^blob:/);
+    expect(cache.getSize("01ASSET00000000000000002")).toEqual({ width: 1920, height: 1080 });
+    cache.evictAsset("01ASSET00000000000000002");
+    expect(cache.getUrl("01ASSET00000000000000002")).toBeNull();
+  });
 });

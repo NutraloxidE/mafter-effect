@@ -20,6 +20,8 @@ export function ProjectPanel() {
   const addAudioLayer = useEditorStore((s) => s.addAudioLayer);
   const importImageAsset = useEditorStore((s) => s.importImageAsset);
   const addImageLayer = useEditorStore((s) => s.addImageLayer);
+  const importVideoAsset = useEditorStore((s) => s.importVideoAsset);
+  const addVideoLayer = useEditorStore((s) => s.addVideoLayer);
   const removeAsset = useEditorStore((s) => s.removeAsset);
   const selectObjects = useEditorStore((s) => s.selectObjects);
   const newProject = useEditorStore((s) => s.newProject);
@@ -34,6 +36,7 @@ export function ProjectPanel() {
   const fileInput = useRef<HTMLInputElement>(null);
   const audioInput = useRef<HTMLInputElement>(null);
   const imageInput = useRef<HTMLInputElement>(null);
+  const videoInput = useRef<HTMLInputElement>(null);
 
   const [showExport, setShowExport] = useState(false);
   const [showNewConfirm, setShowNewConfirm] = useState(false);
@@ -117,6 +120,14 @@ export function ProjectPanel() {
     const assetId = await importImageAsset(file);
     if (assetId) {
       const layerId = addImageLayer(assetId, file.name.replace(/\.[^.]+$/, ""));
+      if (layerId) selectObjects([layerId]);
+    }
+  };
+
+  const onImportVideo = async (file: File) => {
+    const assetId = await importVideoAsset(file);
+    if (assetId) {
+      const layerId = addVideoLayer(assetId, file.name.replace(/\.[^.]+$/, ""));
       if (layerId) selectObjects([layerId]);
     }
   };
@@ -225,21 +236,27 @@ export function ProjectPanel() {
         {/* Footage / Assets section */}
         <SectionHeader label="Footage">
           <button onClick={() => imageInput.current?.click()} style={miniBtn} title="画像ファイルをインポート">+ Image</button>
+          <button onClick={() => videoInput.current?.click()} style={miniBtn} title="動画ファイルをインポート">+ Video</button>
           <button onClick={() => audioInput.current?.click()} style={miniBtn} title="音声ファイルをインポート">+ Audio</button>
           <input ref={imageInput} type="file" accept="image/*" style={{ display: "none" }}
             onChange={(e) => { const f = e.target.files?.[0]; if (f) void onImportImage(f); e.target.value = ""; }} />
+          <input ref={videoInput} type="file" accept="video/*,.mp4,.webm,.mov,.m4v" style={{ display: "none" }}
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) void onImportVideo(f); e.target.value = ""; }} />
           <input ref={audioInput} type="file" accept="audio/*" style={{ display: "none" }}
             onChange={(e) => { const f = e.target.files?.[0]; if (f) void onImportAudio(f); e.target.value = ""; }} />
         </SectionHeader>
         {assets.length === 0 && <div style={{ padding: "4px 10px", color: "#444", fontSize: 10 }}>No footage</div>}
         {assets.map((a) => {
-          const isFootage = a.kind === "audio" || a.kind === "image";
+          const isFootage = a.kind === "audio" || a.kind === "image" || a.kind === "video";
           const onFootageClick = () => {
             if (a.kind === "audio") {
               const id = addAudioLayer(a.id);
               if (id) selectObjects([id]);
             } else if (a.kind === "image") {
               const id = addImageLayer(a.id);
+              if (id) selectObjects([id]);
+            } else if (a.kind === "video") {
+              const id = addVideoLayer(a.id);
               if (id) selectObjects([id]);
             }
           };
@@ -256,6 +273,9 @@ export function ProjectPanel() {
               } else if (a.kind === "image") {
                 e.dataTransfer.setData(DRAG_MIME, JSON.stringify({ kind: "image-asset", id: a.id }));
                 e.dataTransfer.effectAllowed = "copy";
+              } else if (a.kind === "video") {
+                e.dataTransfer.setData(DRAG_MIME, JSON.stringify({ kind: "video-asset", id: a.id }));
+                e.dataTransfer.effectAllowed = "copy";
               } else {
                 e.preventDefault();
               }
@@ -264,8 +284,8 @@ export function ProjectPanel() {
             onMouseEnter={(e) => (e.currentTarget.style.background = "#262626")}
             onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
           >
-            <span style={{ color: a.kind === "audio" ? "#a88" : a.kind === "image" ? "#8a8" : "#888" }}>
-              {a.kind === "audio" ? "♪" : a.kind === "image" ? "🖼" : "▭"}
+            <span style={{ color: a.kind === "audio" ? "#a88" : a.kind === "image" ? "#8a8" : a.kind === "video" ? "#88a" : "#888" }}>
+              {a.kind === "audio" ? "♪" : a.kind === "image" ? "🖼" : a.kind === "video" ? "▶" : "▭"}
             </span>
             <span style={{ flex: 1, color: "#aaa", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {a.path.split("/").pop() ?? a.id}

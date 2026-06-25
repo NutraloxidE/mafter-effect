@@ -1,5 +1,6 @@
 import type { Project } from "../core/schema";
 import type { FileSystem } from "../fs/FileSystem";
+import { videoMimeFromPath } from "./videoAssetProbe";
 
 export interface ImageSize {
   width: number;
@@ -30,10 +31,22 @@ const EXT_MIME: Record<string, string> = {
   bmp: "image/bmp",
 };
 
-/** asset 画像の data: URL と natural size キャッシュ（export taint 回避のため blob: は使わない）。 */
+let previewCacheRef: ImageAssetCache | null = null;
+
+/** PreviewPanel がマウント時に登録。Footage 削除で blob URL を即解放する。 */
+export function registerPreviewImageCache(cache: ImageAssetCache | null): void {
+  previewCacheRef = cache;
+}
+
+export function evictPreviewMediaAsset(assetId: string): void {
+  previewCacheRef?.evictAsset(assetId);
+}
+
+/** asset 画像の data: URL / 動画の blob: URL と natural size キャッシュ。 */
 export class ImageAssetCache {
   private readonly byId = new Map<string, ImageEntry>();
   private readonly byPath = new Map<string, ImageEntry>();
+  private readonly blobUrls = new Set<string>();
 
   getUrl(assetId: string): string | null {
     return this.byId.get(assetId)?.url ?? null;
@@ -54,14 +67,14 @@ export class ImageAssetCache {
     return null;
   }
 
-  /** project.assets の image を FS から読み込む。 */
+  /** project.assets の image / video を FS から読み込む。 */
   async loadFromProject(project: Project, fs: FileSystem, options?: ImageLoadOptions): Promise<void> {
     const proxyMaxDim = options?.proxyMaxDim;
     // proxy 設定ごとに別キャッシュ（full-res と縮小版の取り違えを防ぐ）。
-    const cacheKey = (path: string) => `${proxyMaxDim ?? "full"}|${path}`;
+    const cacheKey = (path: string, kind: string) => `${kind}|${proxyMaxDim ?? "full"}|${path}`;
     for (const asset of project.assets) {
-      if (asset.kind !== "image") continue;
-      const ck = cacheKey(asset.path);
+      if (asset.kind !== "image" && asset.kind !== "video") continue;
+      const ck = cacheKey(asset.path, asset.kind);
       if (this.byPath.has(ck)) {
         const entry = this.byPath.get(ck)!;
         this.byId.set(asset.id, entry);
@@ -71,13 +84,29 @@ export class ImageAssetCache {
         const buf = await fs.read(asset.path);
         const mime =
           (typeof asset.meta?.mime === "string" ? asset.meta.mime : null) ??
-          mimeFromPath(asset.path);
-        const entry = await decodeImageEntry(buf, mime, asset.meta, proxyMaxDim);
+          (asset.kind === "video" ? videoMimeFromPath(asset.path) : mimeFromPath(asset.path));
+        const entry = asset.kind === "video"
+          ? decodeVideoEntry(buf, mime, asset.meta)
+          : await decodeImageEntry(buf, mime, asset.meta, proxyMaxDim);
         this.byPath.set(ck, entry);
         this.byId.set(asset.id, entry);
+        if (entry.url.startsWith("blob:")) this.blobUrls.add(entry.url);
       } catch {
-        /* skip unreadable image */
+        /* skip unreadable asset */
       }
+    }
+  }
+
+  /** video blob URL を解放しキャッシュから除去する（Footage 削除時）。 */
+  evictAsset(assetId: string): void {
+    const entry = this.byId.get(assetId);
+    if (entry?.url.startsWith("blob:")) {
+      URL.revokeObjectURL(entry.url);
+      this.blobUrls.delete(entry.url);
+    }
+    this.byId.delete(assetId);
+    for (const [path, e] of this.byPath) {
+      if (e === entry) this.byPath.delete(path);
     }
   }
 
@@ -179,4 +208,15 @@ export async function probeImageFile(file: File): Promise<{ width: number; heigh
     return result;
   }
   return { width: 100, height: 100, mime };
+}
+
+function decodeVideoEntry(
+  buf: Uint8Array,
+  mime: string,
+  meta: Record<string, unknown> | undefined,
+): ImageEntry {
+  const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
+  const url = URL.createObjectURL(new Blob([ab], { type: mime }));
+  const size = ImageAssetCache.sizeFromMeta(meta) ?? { width: 100, height: 100 };
+  return { url, size };
 }

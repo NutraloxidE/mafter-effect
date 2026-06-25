@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { resolve, type ExpressionEvaluator } from "../../runtime/resolve";
 import { DomRenderer } from "../../runtime/DomRenderer";
 import { FontOutlineCache } from "../../runtime/fontOutlineCache";
-import { ImageAssetCache } from "../../runtime/imageAssetCache";
+import { ImageAssetCache, registerPreviewImageCache } from "../../runtime/imageAssetCache";
 import { ExpressionEngine } from "../../runtime/expressionEngine";
 import { HtmlCompPlayer } from "../../runtime/htmlComp";
 import { ModuleLoader } from "../../runtime/moduleLoader";
@@ -104,6 +104,11 @@ export function PreviewPanel() {
   const rendererRef = useRef<DomRenderer | null>(null);
   const fontCacheRef = useRef(new FontOutlineCache());
   const imageCacheRef = useRef(new ImageAssetCache());
+
+  useEffect(() => {
+    registerPreviewImageCache(imageCacheRef.current);
+    return () => registerPreviewImageCache(null);
+  }, []);
   const textQualityRef = useRef<"draft" | "precise">("draft");
   const [renderTick, setRenderTick] = useState(0);
   const frameRef = useRef(frame);

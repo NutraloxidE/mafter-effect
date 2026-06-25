@@ -1415,6 +1415,8 @@ function updateComponentEl(
     }
     case "video": {
       const video = el as HTMLVideoElement;
+      const fit = props["fit"] as string | undefined;
+      video.style.objectFit = (fit as "contain" | "cover" | "fill") ?? "contain";
       const assetId = props["asset"] as string | undefined;
       const src = assetId ? (imageCache?.getUrl(assetId) ?? "") : "";
       if (video.getAttribute("src") !== src) {

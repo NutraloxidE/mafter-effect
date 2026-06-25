@@ -660,6 +660,7 @@ interface ExportConfig {
 ### §11.4 video コンポーネント（MVP / best-effort）
 
 - `video` は `asset(video)` を参照し、表示フレームのソース時刻 = `(frame - host.inPoint)/fps + trimStart/fps`。
+- **asset メタ**: 動画 import 時に 1 回 probe して `asset.meta`（`width`/`height`/`duration`/`mime`）に記録する（image / audio と同型の任意 meta フィールド。§5 スキーマ非変更）。`duration` はタイムラインのソース尺マッピング（§21.3）とレイヤー追加時の既定 `outPoint` に使う。
 - 描画は `<video>` を対象時刻に **seek** して DomRenderer の対象 div に合成。ブラウザの seek はフレーム精度が不安定なので **`requestVideoFrameCallback` で実フレーム到達を待ち、許容誤差を明記**（browser export は best-effort）。
 - **canonical な完全一致は headless 経路（§16, M3.5）で担保**。INV-2 は「ソース時刻のマッピング＝決定論」を満たし、実デコードフレームの差はラスタ忠実度の範囲とする。
 - 音声トラック付き video の音は MVP では鳴らさない（`audio` レイヤで別途）。フレーム同期音声は §16。
@@ -930,13 +931,13 @@ type LayoutNode =
   - 各行は `name` ＋ kind バッジ ＋ `width×height @ fps` ＋ `duration`。
   - **timeline comp** の行クリック = そのコンポを**アクティブにする**（`setCurrentComp(id)`）。アクティブ行はハイライトする。
   - **html comp** の行クリック = §7 の `html` コンポーネントとして**現アクティブ comp のタイムラインに配置**する（既存 `addHtmlInstance`）。html comp は「タイムラインを持たない素材（footage/precomp 相当）」であり、それ単体を編集対象として開かない（§20.3）。
-- **Footage / Assets** — `project.assets`（audio / image / video / font / other）。クリックで該当レイヤーをアクティブ comp に追加できる（種別が対応するもの。MVP は audio）。
+- **Footage / Assets** — `project.assets`（audio / image / video / font / other）。クリックで該当レイヤーをアクティブ comp に追加できる（種別が対応するもの。MVP は audio / image / video）。
 
 操作:
 - **`+ Composition`**: 新規 timeline comp を作成（既定 1920×1080 @30fps / 5s, name `Comp N`）して即アクティブにする。
 - **`+ HTML Comp`**: 既存どおり html comp を作成（FS スターター生成）。
 - **コンポのリネーム / 削除**を提供する（§20.2）。
-- **Footage（audio / image）の削除**を提供する（§20.2b）。使用中の場合は確認ダイアログを出し、素材と参照レイヤーを 1 command（undo 可）で削除する。
+- **Footage（audio / image / video）の削除**を提供する（§20.2b）。使用中の場合は確認ダイアログを出し、素材と参照レイヤーを 1 command（undo 可）で削除する。
 - **`⬇ zip`（プロジェクト zip 書き出し）**: ブラウザダウンロード前に `saveToFs` → FS 走査 → JSZip 圧縮の前処理が走る。大きい `assets/*` では数秒以上かかるため、**Project パネルヘッダ内でインライン進行表示**する（ボタン `⬇ 準備中…` ＋ フェーズ文言: 保存中 / 読み込み中 n/m / 圧縮中 %）。§20.4b の「はい（保存）」経路でも同じ状態をモーダル内に表示する。
 
 ### §20.2 コンポジションの作成・切替・削除（store 操作）
@@ -960,11 +961,11 @@ setCurrentComp(id): void                // 既存。アクティブ comp を切�
 ### §20.2b Footage 削除（store 操作・確定 2026-06-24）
 
 ```ts
-removeAsset(assetId): void   // audio / image の Footage を削除（undo 可）
+removeAsset(assetId): void   // audio / image / video の Footage を削除（undo 可）
 ```
 
 **削除の不変条件（確定）:**
-- 対象は `project.assets` の `kind === "audio" | "image"` のみ（video / font / other は将来）。
+- 対象は `project.assets` の `kind === "audio" | "image" | "video"` のみ（font / other は将来）。
 - **参照レイヤーのカスケード削除**: 全 timeline comp を走査し、`audio` / `image` / `video` コンポーネントの `props.asset` が一致する `SceneObject` をまとめて削除する（1 command = 1 undo）。
 - 使用中の場合は Project パネルで確認ダイアログを表示する（レイヤー数を明示）。
 - FS の `assets/` ファイルは best-effort で削除する。audio の場合は decode バッファ・波形キャッシュも evict する。

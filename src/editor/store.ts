@@ -30,7 +30,8 @@ import { sampleScalar } from "../runtime/interpolate";
 import { ModuleLoader } from "../runtime/moduleLoader";
 import type { PluginContext, PluginManifest, EffectDef } from "../runtime/plugin";
 import { globalPluginRegistry } from "../runtime/pluginRegistry";
-import { probeImageFile } from "../runtime/imageAssetCache";
+import { probeImageFile, evictPreviewMediaAsset } from "../runtime/imageAssetCache";
+import { probeVideoFile } from "../runtime/videoAssetProbe";
 import {
   cmdAddObject,
   cmdDuplicateObjects,
@@ -51,6 +52,7 @@ import { loadWorkArea, saveWorkArea } from "./workAreaStorage";
 import { WAVEFORM_MODES, type WaveformMode } from "../audio/waveform";
 import { probeAudioMeta, evictAudioBuffer } from "./audioBufferCache";
 import { globalWaveformCache } from "../fs/WaveformCacheDb";
+import { videoLayerOutPoint } from "./videoLayerOutPoint";
 
 const WAVEFORM_MODE_KEY = "mafter:waveformMode";
 function loadWaveformMode(): WaveformMode {
@@ -213,7 +215,11 @@ export interface EditorStore {
   importImageAsset: (file: File) => Promise<string | null>;
   // image component を持つ SceneObject を追加する
   addImageLayer: (assetId: string, name?: string) => string | null;
-  // §20.1 Footage 削除（audio/image。参照レイヤーもまとめて削除・undo 可）
+  // 動画アセットをインポートして project.assets に追加する
+  importVideoAsset: (file: File) => Promise<string | null>;
+  // video component を持つ SceneObject を追加する
+  addVideoLayer: (assetId: string, name?: string) => string | null;
+  // §20.1 Footage 削除（audio/image/video。参照レイヤーもまとめて削除・undo 可）
   removeAsset: (assetId: string) => void;
 
   // M4: plugin ロード・管理
@@ -853,11 +859,64 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     return id;
   },
 
+  importVideoAsset: async (file) => {
+    const before = get().project;
+    if (!before) return null;
+    const id = newObjectId();
+    const ext = file.name.split(".").pop() ?? "mp4";
+    const assetPath = `${DIR_ASSETS}/${id}.${ext}`;
+    const buf = await file.arrayBuffer();
+    await fs.write(assetPath, new Uint8Array(buf));
+    let meta: Record<string, unknown> = {};
+    try {
+      const probe = await probeVideoFile(file);
+      meta = {
+        width: probe.width,
+        height: probe.height,
+        duration: probe.duration,
+        mime: probe.mime,
+      };
+    } catch {
+      /* meta optional */
+    }
+    const asset: AssetEntry = { id, path: assetPath, kind: "video", meta };
+    const after: Project = {
+      ...before,
+      assets: [...before.assets, asset].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+    };
+    get().applyCommand({ label: "Import Video", before, after });
+    return id;
+  },
+
+  addVideoLayer: (assetId, name) => {
+    const p = get().project;
+    const comp = p?.compositions.find((c) => c.id === get().currentCompId) as TimelineComposition | undefined;
+    if (!p || !comp) return null;
+    const asset = p.assets.find((a) => a.id === assetId);
+    if (!asset || asset.kind !== "video") return null;
+    const outPoint = videoLayerOutPoint(asset.meta, comp.fps, comp.duration);
+    const id = newObjectId();
+    const obj: SceneObject = {
+      id,
+      name: name ?? asset.path.split("/").pop() ?? "Video",
+      parent: null,
+      zOrder: nextZOrder(comp),
+      enabled: true,
+      inPoint: 0,
+      outPoint,
+      transform: defaultTransform(),
+      opacity: staticProp(1),
+      components: [{ type: "video", props: { asset: assetId, fit: "contain", trimStart: 0 } }],
+    };
+    cmdAddObject(get(), obj);
+    return id;
+  },
+
   removeAsset: (assetId) => {
     const before = get().project;
     if (!before) return;
     const asset = before.assets.find((a) => a.id === assetId);
-    if (!asset || (asset.kind !== "audio" && asset.kind !== "image")) return;
+    if (!asset || (asset.kind !== "audio" && asset.kind !== "image" && asset.kind !== "video")) return;
 
     const removedLayerIds = new Set<string>();
     const compositions = before.compositions.map((c) => {
@@ -897,6 +956,9 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       if (asset.kind === "audio") {
         evictAudioBuffer(assetId);
         globalWaveformCache.evict(assetId);
+      }
+      if (asset.kind === "video") {
+        evictPreviewMediaAsset(assetId);
       }
     })();
   },

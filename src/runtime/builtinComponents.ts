@@ -36,6 +36,18 @@ const IMAGE_COMPONENT_DEF: ComponentDef = {
   render() { /* DomRenderer */ },
 };
 
+const VIDEO_COMPONENT_DEF: ComponentDef = {
+  type: "video",
+  label: "Video",
+  previewBakeRequired: false,
+  params: [
+    { key: "asset", label: "Source", kind: "asset", default: "", animatable: false },
+    { key: "fit", label: "Fit", kind: "enum", default: "contain", animatable: false, options: ["contain", "cover", "fill"] },
+    { key: "trimStart", label: "Trim Start", kind: "scalar", default: 0, animatable: true, min: 0 },
+  ],
+  render() { /* DomRenderer */ },
+};
+
 /**
  * §6.5b カメラ（AE 準拠）。render は no-op — resolve() が props を読んで scene.camera を供給する。
  * 可変は zoom(px)。fov = 2·atan((compHeight/2)/zoom)。two-node は pointOfInterest を向く。
@@ -59,5 +71,6 @@ const CAMERA_COMPONENT_DEF: ComponentDef = {
 export function registerBuiltinComponents(): void {
   globalPluginRegistry.registerComponent(TEXT_COMPONENT_DEF);
   globalPluginRegistry.registerComponent(IMAGE_COMPONENT_DEF);
+  globalPluginRegistry.registerComponent(VIDEO_COMPONENT_DEF);
   globalPluginRegistry.registerComponent(CAMERA_COMPONENT_DEF);
 }

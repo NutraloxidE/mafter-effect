@@ -354,3 +354,18 @@ canvas 化結果は以降から見て通常の背面ピクセルと等価（zOrd
 
 - **要請**: ループ本体が `CLAUDE.md` / `alwaysApply` ルールに重複してシステムプロンプトを汚染しないよう隔離。
 - **変更**: 正本は `.claude/skills/implementation-loop/SKILL.md` のみ（一貫性ゲート・Playwright 手順・抽象要請の確認をスキルへ移設）。`CLAUDE.md` / `mafter-effect-agent.mdc` / `implementation-loop.mdc` / `debug-visual-render-bug.mdc` は**ポインタのみ**に縮小。ループ更新はスキルファイルだけ編集すればよい。
+
+### 2026-06-26（Cursor）— 動画 Footage インポート（image と同型 UX）
+
+- **要請**: 画像インポートと同じバイブスで動画を読み込み・タイムライン配置できるようにする。
+- **実装**:
+  - [videoAssetProbe.ts](src/runtime/videoAssetProbe.ts) — import 時 `width`/`height`/`duration`/`mime` を probe
+  - [imageAssetCache.ts](src/runtime/imageAssetCache.ts) — `loadFromProject` で video を blob URL 読み込み、`evictAsset` / `registerPreviewImageCache`
+  - [store.ts](src/editor/store.ts) — `importVideoAsset` / `addVideoLayer`（ソース尺で `outPoint` 自動トリム）、`removeAsset` に video 許可
+  - [ProjectPanel.tsx](src/editor/panels/ProjectPanel.tsx) / [TimelinePanel.tsx](src/editor/panels/TimelinePanel.tsx) — `+ Video`、DnD、OS ドロップ
+  - [builtinComponents.ts](src/runtime/builtinComponents.ts) — `VIDEO_COMPONENT_DEF`
+  - [DomRenderer.ts](src/runtime/DomRenderer.ts) — video に `fit`（objectFit）適用
+  - spec §11.4 / §20.1 / §20.2b 散文更新（§5 非変更）
+- **検証**: `npm run typecheck` 緑、`test/videoAssetProbe.test.ts` 追加、459 tests（`previewPlaybackLoop` 1件は既知フレーク）、`verify-video-import.mjs` PASS
+- **エッジケース検証（追補）**: `verify-video-import-edges.mjs`（12項目 PASS）— +Video ボタン / Footage クリック配置 / blob キャッシュ / 再生トグル / 1回再生停止 / **レイヤーカット（in·out + trimStart）** / **途中スクラブ・途中から再生**。ユニット: `test/videoLayerOutPoint.test.ts`・`imageAssetCache` video blob
+- **スコープ外（別タスク）**: export 時 `requestVideoFrameCallback` による seek 精度改善、動画内蔵音声

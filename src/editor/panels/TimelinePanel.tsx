@@ -123,6 +123,8 @@ export function TimelinePanel() {
   const importAudioAsset = useEditorStore((s) => s.importAudioAsset);
   const addImageLayer = useEditorStore((s) => s.addImageLayer);
   const importImageAsset = useEditorStore((s) => s.importImageAsset);
+  const importVideoAsset = useEditorStore((s) => s.importVideoAsset);
+  const addVideoLayer = useEditorStore((s) => s.addVideoLayer);
   const addPluginObject = useEditorStore((s) => s.addPluginObject);
   const addCompLayer = useEditorStore((s) => s.addCompLayer);
   const waveformMode = useEditorStore((s) => s.waveformMode);
@@ -285,7 +287,8 @@ export function TimelinePanel() {
     const droppedFiles = Array.from(e.dataTransfer.files);
     const audioFiles = droppedFiles.filter((f) => f.type.startsWith("audio/") || /\.(mp3|wav|ogg|flac|aac|m4a)$/i.test(f.name));
     const imageFiles = droppedFiles.filter((f) => f.type.startsWith("image/") || /\.(jpg|jpeg|png|webp|gif|bmp|svg)$/i.test(f.name));
-    if (audioFiles.length > 0 || imageFiles.length > 0) {
+    const videoFiles = droppedFiles.filter((f) => f.type.startsWith("video/") || /\.(mp4|webm|mov|m4v)$/i.test(f.name));
+    if (audioFiles.length > 0 || imageFiles.length > 0 || videoFiles.length > 0) {
       void (async () => {
         for (const file of audioFiles) {
           const assetId = await importAudioAsset(file);
@@ -298,6 +301,13 @@ export function TimelinePanel() {
           const assetId = await importImageAsset(file);
           if (assetId) {
             const layerId = addImageLayer(assetId, file.name.replace(/\.[^.]+$/, ""));
+            if (layerId) selectObjects([layerId]);
+          }
+        }
+        for (const file of videoFiles) {
+          const assetId = await importVideoAsset(file);
+          if (assetId) {
+            const layerId = addVideoLayer(assetId, file.name.replace(/\.[^.]+$/, ""));
             if (layerId) selectObjects([layerId]);
           }
         }
@@ -314,6 +324,7 @@ export function TimelinePanel() {
       if (item.kind === "html-comp" && item.id) newId = addHtmlInstance(item.id);
       else if (item.kind === "audio-asset" && item.id) newId = addAudioLayer(item.id);
       else if (item.kind === "image-asset" && item.id) newId = addImageLayer(item.id);
+      else if (item.kind === "video-asset" && item.id) newId = addVideoLayer(item.id);
       else if (item.kind === "plugin-component" && item.componentType) newId = addPluginObject(item.componentType);
       else if (item.kind === "timeline-comp" && item.id) newId = addCompLayer(item.id);
       if (newId) selectObjects([newId]);
