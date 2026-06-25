@@ -108,7 +108,7 @@ export async function exportComposition(
     // Live 調整は exportComposite.ts のオフDOM・ステートレス z 順コンポジタで背面 master に焼く。
     // exportCompositeMode 中、DomRenderer は調整レイヤーの live DOM を破壊せず effect chain を
     // entry.exportChain に保存するだけ（旧 forceAdjustmentRaster bake のちらつきを根絶）。
-    renderer.setPreviewRenderOptions({ exportCompositeMode: true });
+    renderer.setPreviewRenderOptions({ exportCompositeMode: true, exportVideoStep: true });
     const fontCache = new FontOutlineCache();
     const imageCache = new ImageAssetCache();
     await Promise.all([

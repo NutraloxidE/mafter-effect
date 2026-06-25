@@ -17,7 +17,7 @@ import { canvasToRasterBuffer, rasterBufferToCanvas } from "./pixelSort";
 import { processRasterChainAsync } from "./rasterProcessAsync";
 import { applyFilterChainToBuffer } from "./effectRaster";
 import { resolveEffectChain } from "./effectChain";
-import { syncVideoElementTime, waitForVideoFrame } from "./videoElementSync";
+import { EXPORT_VIDEO_TARGET_ATTR, syncVideoElementTime, waitForVideoFrame } from "./videoElementSync";
 import type { ExportChain, ExportLayer, NestedCompositeMeta, ExportTaggedElement } from "./exportComposite";
 import type { EffectFilter } from "./plugin";
 import type { BlendMode } from "../core/schema";
@@ -143,16 +143,20 @@ export class DomRenderer implements Renderer {
   private exportCompositeMode = false;
   /** preview 再生中は video を play() で進め、フレーム毎 seek を避ける。 */
   private previewVideoPlayback = false;
+  /** export 中は video を play ステップで進め、毎フレーム seek を避ける。 */
+  private exportVideoStep = false;
 
   setPreviewRenderOptions(opts: {
     holdLastRaster?: boolean;
     forceAdjustmentRaster?: boolean;
     exportCompositeMode?: boolean;
     previewVideoPlayback?: boolean;
+    exportVideoStep?: boolean;
   }): void {
     if (opts.holdLastRaster !== undefined) this.holdLastRaster = opts.holdLastRaster;
     if (opts.forceAdjustmentRaster !== undefined) this.forceAdjustmentRaster = opts.forceAdjustmentRaster;
     if (opts.exportCompositeMode !== undefined) this.exportCompositeMode = opts.exportCompositeMode;
+    if (opts.exportVideoStep !== undefined) this.exportVideoStep = opts.exportVideoStep;
     if (opts.previewVideoPlayback !== undefined) {
       if (this.previewVideoPlayback && !opts.previewVideoPlayback) {
         this.pauseAllVideos();
@@ -295,7 +299,11 @@ export class DomRenderer implements Renderer {
     if (!this.root) return;
     const videos = [...this.root.querySelectorAll("video")];
     if (videos.length === 0) return;
-    await Promise.all(videos.map((v) => waitForVideoFrame(v)));
+    await Promise.all(videos.map((v) => {
+      const raw = v.getAttribute(EXPORT_VIDEO_TARGET_ATTR);
+      const target = raw !== null && raw !== "" ? Number(raw) : undefined;
+      return waitForVideoFrame(v, Number.isFinite(target) ? target : undefined);
+    }));
   }
 
   /**
@@ -433,7 +441,7 @@ export class DomRenderer implements Renderer {
       const el = entry.children[i];
       if (el) {
         const hostInPoint = (c.props["_hostInPoint"] as number | undefined) ?? 0;
-        updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, frame, hostInPoint, this.currentComp?.fps ?? 30, this.previewVideoPlayback);
+        updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, frame, hostInPoint, this.currentComp?.fps ?? 30, this.previewVideoPlayback, this.exportVideoStep);
       }
 
       // Plugin component: registry から ComponentDef.render を呼ぶ（組み込み型は未登録でスキップ）
@@ -1238,7 +1246,7 @@ export class DomRenderer implements Renderer {
           }
           const el = createComponentEl(c.type);
           const hostInPoint = (c.props["_hostInPoint"] as number | undefined) ?? 0;
-          updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, childFrame, hostInPoint, childComp.fps, this.previewVideoPlayback);
+          updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, childFrame, hostInPoint, childComp.fps, this.previewVideoPlayback, this.exportVideoStep);
           div.appendChild(el);
         }
       }
@@ -1406,6 +1414,7 @@ function updateComponentEl(
   hostInPoint = 0,
   fps = 30,
   previewVideoPlayback = false,
+  exportVideoStep = false,
 ): void {
   switch (type) {
     case "solid": {
@@ -1462,7 +1471,12 @@ function updateComponentEl(
       }
       const trimStart = (props["trimStart"] as number | undefined) ?? 0;
       const t = Math.max(0, (hostFrame - hostInPoint) / fps + trimStart / fps);
-      syncVideoElementTime(video, t, fps, { playbackMode: previewVideoPlayback });
+      syncVideoElementTime(video, t, fps, { playbackMode: previewVideoPlayback, exportStep: exportVideoStep });
+      if (exportVideoStep) {
+        video.setAttribute(EXPORT_VIDEO_TARGET_ATTR, String(t));
+      } else {
+        video.removeAttribute(EXPORT_VIDEO_TARGET_ATTR);
+      }
       const size = assetId ? imageCache?.getSize(assetId) : null;
       if (size) {
         video.style.width = `${size.width}px`;

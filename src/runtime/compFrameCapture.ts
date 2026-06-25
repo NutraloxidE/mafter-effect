@@ -95,7 +95,7 @@ export async function createCompFrameCaptureContext(
   // §27.4 / §28.11 — このコンテキストは foreignObject で静止画化される経路（RAM Preview /
   // precomp raster cache / bundle bake）専用。backdrop-filter は foreignObject で焼けないため、
   // exporter.ts と同様に Live 調整を exportComposite.ts のオフDOM z 順コンポジタで背面 master に焼く。
-  renderer.setPreviewRenderOptions({ exportCompositeMode: true });
+  renderer.setPreviewRenderOptions({ exportCompositeMode: true, exportVideoStep: true });
   const fontCache = new FontOutlineCache();
   const imageCache = new ImageAssetCache();
   await Promise.all([

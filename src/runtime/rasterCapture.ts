@@ -1,7 +1,5 @@
 // DOM → canvas ラスタ化（exporter §11.4 と共有・foreignObject 経路）
 
-import { waitForVideoFrame } from "./videoElementSync";
-
 /** Shadow DOM を持つノードを再帰的に clone し、shadowRoot の内容を inline に展開する。 */
 export function flattenShadow(node: Node): Node {
   if (!(node instanceof Element)) return node.cloneNode(true);
@@ -62,45 +60,36 @@ export async function inlineCanvasBitmaps(cloned: HTMLElement, source: HTMLEleme
 /**
  * foreignObject シリアライズ前に video の現在フレームを img に焼き込む。
  * SVG foreignObject は <video> を描画できずブラウザのプレイヤー UI が出るため。
+ * flushVideoFrames 済み前提（ここでは二重 wait しない）。表示サイズで JPEG 化して export を軽くする。
  */
-export async function inlineVideoFrames(cloned: HTMLElement, source: HTMLElement): Promise<void> {
+export function inlineVideoFrames(cloned: HTMLElement, source: HTMLElement): void {
   const sources = [...source.querySelectorAll("video")];
   const clones = [...cloned.querySelectorAll("video")];
-  const loads: Promise<void>[] = [];
   for (let i = 0; i < clones.length; i++) {
     const node = clones[i];
     const srcVideo = sources[i];
     if (!(node instanceof HTMLVideoElement) || !(srcVideo instanceof HTMLVideoElement)) continue;
-    await waitForVideoFrame(srcVideo);
-    const vw = srcVideo.videoWidth;
-    const vh = srcVideo.videoHeight;
-    if (vw <= 0 || vh <= 0) continue;
+    const dw = srcVideo.clientWidth > 0 ? Math.round(srcVideo.clientWidth) : srcVideo.videoWidth;
+    const dh = srcVideo.clientHeight > 0 ? Math.round(srcVideo.clientHeight) : srcVideo.videoHeight;
+    if (dw <= 0 || dh <= 0) continue;
     const canvas = document.createElement("canvas");
-    canvas.width = vw;
-    canvas.height = vh;
-    canvas.getContext("2d")!.drawImage(srcVideo, 0, 0, vw, vh);
+    canvas.width = dw;
+    canvas.height = dh;
+    canvas.getContext("2d")!.drawImage(srcVideo, 0, 0, dw, dh);
     const img = document.createElement("img");
-    img.setAttribute("width", String(vw));
-    img.setAttribute("height", String(vh));
+    img.setAttribute("width", String(dw));
+    img.setAttribute("height", String(dh));
     const style = node.getAttribute("style");
     if (style) img.setAttribute("style", style);
-    const url = canvas.toDataURL("image/png");
-    loads.push(
-      new Promise<void>((res, rej) => {
-        img.onload = () => res();
-        img.onerror = () => rej(new Error("video inline img load failed"));
-        img.src = url;
-      }),
-    );
+    img.src = canvas.toDataURL("image/jpeg", 0.92);
     node.replaceWith(img);
   }
-  await Promise.all(loads);
 }
 
 /** canvas / video を foreignObject 用の静止画に差し替える。 */
 export async function inlineExportMedia(cloned: HTMLElement, source: HTMLElement): Promise<void> {
   await inlineCanvasBitmaps(cloned, source);
-  await inlineVideoFrames(cloned, source);
+  inlineVideoFrames(cloned, source);
 }
 
 /** SVG 文字列を tainted にならない data: URL に変換する（UTF-8 → base64）。 */

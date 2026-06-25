@@ -61,6 +61,7 @@
 
 ## 既知のバグ・未解決課題
 
+- **§11.7 HTML bundle — MP4 入りコンポの再生もっさり（優先度高）**: 動画 Footage（`component.type === "video"`）を含む timeline comp を **HTML bundle（§11.7）で書き出し、player で再生**すると preview より重く・カクついて感じる（MP4 export のもっさり issue と同型の症状が bundle 再生経路でも報告）。bundle は video を bake せず live `<video>` + 同梱 mp4 で再生する設計だが、現状は **Preview パネルで直した `previewVideoPlayback`（`video.play()` でネイティブ decode に任せる）経路と完全には一致していない**可能性が高い（毎フレーム `renderFrame` → seek / DOM reconcile 由来のオーバーヘッド等）。**想定修正方針**: PreviewPanel / [videoElementSync.ts](src/runtime/videoElementSync.ts) と同様に BundlePlayer から `previewVideoPlayback: true` を再生中一貫適用し、停止・スクラブ時のみ seek（[BundlePlayer.ts](src/player/BundlePlayer.ts) は一部配線済みだが不十分の可能性）。関連: [doc/issue/video-footage-export-sluggish.md](doc/issue/video-footage-export-sluggish.md)（MP4 export 側の追跡 issue・症状は近いが経路は別）。
 - **§27.3 SVG 5 種の export 一致（INV-2）未検証**: wave/ripple/turbulent/linearWipe/angularWipe の preview↔export ピクセル parity（feImage href が foreignObject ラスタ経路で再現するか）。pixelSorter は検証済み。
 - **Issue B（[doc/distortion-effect-bugs.md](doc/distortion-effect-bugs.md)）**: turbulent プレビュー左端グレー枠の歪み漏れ。未着手。
 - **Issue C / fastTurbulent centroid**: 強 amount で centroid ~6–8px ドリフト残（[effectRouting.ts](src/runtime/effectRouting.ts) で self-capture raster 統一後も残るチューニング課題）。
@@ -82,8 +83,9 @@
 
 ## Next steps（次のセッションでやること）
 
-**優先順位: 既知バグ修正 > 手動回帰 > 新機能。**
+**優先順位: 既知バグ修正（**動画 bundle もっさり含む**）> 手動回帰 > 新機能。**
 
+0. **§11.7 HTML bundle — MP4 入りコンポの再生もっさり（優先度高）** — 動画 Footage 入り comp を HTML bundle 書き出し → player 再生で preview より重い。Preview 経路と同じ `previewVideoPlayback` + `video.play()` 方式に揃えれば治りそう（[videoElementSync.ts](src/runtime/videoElementSync.ts) / [BundlePlayer.ts](src/player/BundlePlayer.ts) / [DomRenderer.ts](src/runtime/DomRenderer.ts)）。`verify-video-import-edges.mjs` の preview 系 + bundle player 実機で before/after 計測。MP4 export 側は [doc/issue/video-footage-export-sluggish.md](doc/issue/video-footage-export-sluggish.md) で別追跡。
 1. **手動回帰（残）** — §25 Preview（直接操作・ズーム・オーバーレイ・animated KF 書き戻し）/ §24 Ease パネル（F9 メニュー・グラフエディタとの SSoT 共有）。
 2. **verify スクリプト更新** — `verify-preview-cache.mjs` / `verify-effects.mjs` を現行 UX（cache 既定 OFF・project ロード手順）に合わせて修正。
 3. **§27 INV-2 export parity** — SVG 5 種（wave/ripple/turbulent/wipe）の preview↔export ピクセル検証。Issue B / fastTurbulent centroid チューニング。
@@ -370,9 +372,48 @@ canvas 化結果は以降から見て通常の背面ピクセルと等価（zOrd
 - **エッジケース検証（追補）**: `verify-video-import-edges.mjs`（12項目 PASS）— +Video ボタン / Footage クリック配置 / blob キャッシュ / 再生トグル / 1回再生停止 / **レイヤーカット（in·out + trimStart）** / **途中スクラブ・途中から再生**。ユニット: `test/videoLayerOutPoint.test.ts`・`imageAssetCache` video blob
 - **スコープ外（別タスク）**: export 時 `requestVideoFrameCallback` による seek 精度改善、動画内蔵音声
 
+### 2026-06-26（Cursor）— HTML bundle：MP4 入りコンポの再生もっさりを優先タスク化
+
+- **ユーザー要請**: MP4 が入ったコンポジットを HTML bundle で書き出すと再生がもっさる件を、優先度高めで progress に記録。
+- **記録先**: 「既知のバグ・未解決課題」+ Next steps **#0（優先度高）**。想定修正方針 = Preview 経路と同様の `previewVideoPlayback`（`video.play()` でネイティブ decode）に揃える。
+- **未着手**（実装・verify は次セッション）。
+
 ### 2026-06-26（Cursor）— 動画 preview 再生のもっさり感修正
 
 - **症状**: 動画レイヤー入りコンポの再生が、通常コンポより重く・カクついて感じる。
 - **真因**: DomRenderer が毎フレーム `video.currentTime` で seek していた。さらに 0.05s 閾値のため 30fps では約2フレームに1回しか更新されず、見た目も15fps相当に。
 - **修正**: [videoElementSync.ts](src/runtime/videoElementSync.ts) — preview 再生中は `video.play()` でネイティブ decode に任せ、停止/スクラブ/export は半フレーム閾値で seek。`setPreviewRenderOptions({ previewVideoPlayback })` を PreviewPanel / BundlePlayer から配線。
 - **検証**: `test/videoElementSync.test.ts` 7件、`verify-video-import-edges.mjs` 12/12 PASS
+
+### 2026-06-26（Cursor）— 動画レイヤー export（foreignObject + もっさり修正）
+
+- **症状**: 動画入りコンポの書き出しでブラウザ標準の video プレイヤー UI が出る。修正後は映像は出るが書き出し動画がもっさり。
+- **真因（UI）**: SVG `foreignObject` は `<video>` を描画できない → clone 側でフレームを img 化が必要。
+- **真因（もっさり）**: `waitForVideoFrame` が `readyState` だけ見て seek 完了前に capture → 古いフレームを繰り返し焼く。加えて毎フレーム full-res PNG インライン + 二重 wait で export が重い。
+- **修正**:
+  - [rasterCapture.ts](src/runtime/rasterCapture.ts) — `inlineVideoFrames`（clone のみ img 化）、`inlineExportMedia`
+  - [videoElementSync.ts](src/runtime/videoElementSync.ts) — `waitForVideoFrame`: `seeking` → `seeked` → `requestVideoFrameCallback`（rVFC 未応答時 400ms フォールバック）
+  - [DomRenderer.ts](src/runtime/DomRenderer.ts) — `flushVideoFrames()`、`controls=false`
+  - export 経路（[exporter.ts](src/runtime/exporter.ts) / [compFrameCapture.ts](src/runtime/compFrameCapture.ts)）で capture 前に `flushVideoFrames`
+  - インラインは表示サイズ + JPEG（二重 wait 削除）
+- **もっさり追補（export play-step）**:
+  - `exportVideoStep` — 連続フレームは `play()` でデコードを進め、逆行・大ジャンプのみ seek（毎フレーム seek の 400ms+ を回避）
+  - `waitForVideoFrame(video, targetSec)` — ターゲット時刻に乗るまでポーリング + rVFC
+  - exporter / compFrameCapture で `exportVideoStep: true`
+- **検証**: `test/videoElementSync.test.ts` 12件、`verify-video-export.mjs` PASS（avg ~139ms/frame、以前 ~472ms）。**ユーザー手動確認は未解消** → [doc/issue/video-footage-export-sluggish.md](doc/issue/video-footage-export-sluggish.md)
+
+### 2026-06-26（Claude Opus）— 動画 export ちらつき（戻り進み）・もっさり 真因修正 ✅
+
+- **症状（更新）**: export play-step 後、出力が「戻ったり進んだりちらつく」「もっさりより悪化」（ユーザー報告）。
+- **真因1（ちらつき = 前後振動）**: `exportVideoStep` の `play()`。play は**実時間進行**のため export ループの離散フレーム処理とズレ、ターゲットを行き過ぎ→逆行 seek→再度行き過ぎ、でキャプチャフレームが前後に振動。INV-2（フレーム決定論）違反。
+  → **修正**: `syncVideoElementExportStep` を `play()` 廃止し**各フレーム決定論 seek**に（[videoElementSync.ts](src/runtime/videoElementSync.ts)）。
+- **真因2（もっさり = 1/3 フレーム重複）**: フレーム境界 `k/fps` ちょうどへの seek は float 丸めで currentTime が境界をわずかに下回り、**前フレームが選ばれる**（k≡2 mod 3 等で毎3フレーム重複 → 実質20fps化）。タイムベース 1/15360 で `2/30*15360=1023.99…→floor 1023→frame1`。
+  → **修正**: `videoSeekTargetSec(target, fps) = target + 0.5/fps`（**フレーム区間中央へ seek**）。scrub（preview 停止）と export 双方で共有＝preview↔export 同一フレーム表示（INV-2 単一の正）。
+- **真因3（stale capture）**: `waitForVideoFrame` が seek 直後の古い present で resolve。
+  → **修正**: `waitPresentedFrame` で rVFC の `mediaTime ≈ target` を満たす present まで待機（present budget 300ms フォールバック）。
+- **スコープ**: 変更は `videoElementSync.ts` のみ（export step / scrub seek / present wait）。preview **再生**（`play()`）は不変。`rasterCapture` / `DomRenderer` / `exporter` は無変更。
+- **検証**:
+  - `test/videoElementSync.test.ts` 14件 PASS、`npm test` 全 479 PASS、typecheck 緑。
+  - **新規 `verify-video-export-monotonic.mjs`**（恒久）: 連続フレームを順に書き出し `<video>.currentTime`／フレーム間差分を測定し **reversals=0・stuckFrames=0・onTarget=25/25** を確認。旧 `verify-video-export.mjs` は静的な劣化アセット（`video_test.mp4` 自体が旧プレイヤーUIバグの焼き込み＋ほぼ静止）で**動き検出が無効**だったため、ffmpeg `testsrc2` で生成した動く素材 `for-debug-data/video_motion.mp4`（`ffmpeg -f lavfi -i testsrc2=size=1280x720:rate=30:duration=3 -pix_fmt yuv420p`）を使用。`VERIFY_VIDEO` で差し替え可。
+  - 既存 `verify-video-export.mjs` PASS（playerUi=0%・非blank 無回帰）。
+- **残（別タスク・symptom B）**: 1フレーム ~320ms は foreignObject ラスタ化（~290ms）が主因で本修正と独立。高速化は「video を foreignObject 外で直接 canvas 合成 / WebCodecs」案（issue §未試行 #1/#2）。出力の動き（symptom A）は解消。
