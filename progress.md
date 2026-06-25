@@ -258,3 +258,54 @@ canvas 化結果は以降から見て通常の背面ピクセルと等価（zOrd
   2. [store.ts](src/editor/store.ts) — `addCompLayer` の初期 `outPoint` を上記ヘルパに差し替え（`inPoint=0`, `trimStart=0` 既定）。
 - **spec**: §23.4a 新設（散文・§5/INV 不変）。
 - **検証**: `test/precomp.test.ts`（ヘルパ 4 件 + store 配置尺）/ typecheck 緑 / Playwright（450f 親 + 150f 子 → `outPoint=150` PASS）。
+
+### 2026-06-25（Cursor）— MP4 export 調整レイヤー parity（§27.4.1 / Comp 10）
+
+- **症状**: プレビュー/HTML bundle は正しいが MP4 で Live 調整レイヤー（blur / fastTurbulent）が効かない／弱い。Comp 10（for-debug-data）で再現。
+- **真因**: (1) export の `forceAdjustmentRaster` 経路で複数 Live 調整の backdrop capture が **並列起動**（`Promise.all`）し z 順積層が preview compositor と一致しない。(2) foreignObject が `backdrop-filter` / `preserve-3d` 非対応（設計上の export 制約）。
+- **Fix**:
+  1. [DomRenderer.ts](src/runtime/DomRenderer.ts) — `flushExportComposite()` 追加: 非調整 raster を `flushRasterEffects` で待った後、Live 調整 bake を **zOrder 直列キュー**（`exportAdjustmentQueue`）で実行。`trackRasterWork()` で `forceAdjustmentRaster && isAdjustment` のみ直列化。
+  2. 調整 backdrop capture — `captureAdjustmentBackdrop()` + threeD 下位層の snapshot→img 置換（foreignObject 3D flatten 緩和）。
+  3. [exporter.ts](src/runtime/exporter.ts) — `flushRasterEffects` → `flushExportComposite` に差替。
+  4. 検証 — `verify-comp10-export-parity.mjs`（for-debug-data zip → Comp 10）、`verify-export-adjustment.mjs` に `forceAdjustmentRaster` 追加。
+- **検証**: typecheck / 458 tests 緑 / `verify-comp10-export-parity.mjs` PASS（f7 完全一致、f0 export blur 検出）。
+- **follow-up**: f100 等で上位数位レイヤー（z>14）が計測域を覆うため edgeStd 比較だけでは偽陽性/偽陰性あり。preview パネル screenshot 比較の強化、§23.3d ネスト内調整 export。
+
+### 2026-06-25（Cursor）— Live 調整 export 経路修正（preview 真・Comp 10 消える問題）
+
+- **症状**: MP4 export で Live 調整レイヤーのエフェクト発動時に下位コンテンツ（3D ネスト comp 等）が消える。通常レイヤー直付け effect は問題なし。preview / HTML bundle は正しい。
+- **spec 上の真**:
+  - **preview / HTML bundle** = Live 調整の `backdrop-filter` 経路が正（§27.4 INV-2）。
+  - **mp4/png** = 見た目は preview と一致すべき。旧 spec の `auto_raster_mp4`（Live 調整を comp 背面 capture へ強制 bake）は、foreignObject が `backdrop-filter` 非対応という前提だったが、**最終 root capture では Chromium で live backdrop が preview と一致**（Comp 10 f100 で実測 0% diff）。
+  - **Raster 調整**（`adjustmentMode="raster"`）= 常に capture bake が正。
+- **真因**: exporter の `forceAdjustmentRaster: true` が Live 調整を comp 背面 bake + `reapplyAdjustmentSuppression`（下位レイヤー `visibility:hidden`）へ強制。3D ネスト comp の bake が壊れ、調整 canvas だけが残りコンテンツが消えた。
+- **Fix**:
+  1. [exporter.ts](src/runtime/exporter.ts) — `forceAdjustmentRaster` 削除。Live 調整は preview 同様 `backdrop-filter` + `flushRasterEffects`。
+  2. [DomRenderer.ts](src/runtime/DomRenderer.ts) — Raster 調整専用の直列 bake は維持（`shouldSerialExportAdjustment`）。`prepareAdjustmentBackdropForCapture` で multi-pass 時に suppressed 下位を再表示しない（§27.4.1）。
+  3. 検証 — `verify-comp10-export-parity.mjs` / `verify-export-adjustment.mjs` を preview↔export ピクセル diff に更新。
+- **検証**: typecheck / 458 tests 緑 / Comp 10 f0/f7/f100/f145 diff 0% / 単純 blur 調整 diff 0% / f100 screenshot 目視一致。
+- **follow-up**: `auto_raster_mp4` spec 散文（§27.4）を実測結果に合わせて更新検討。foreignObject で live backdrop が効かないケースの parity 検出→フォールバック bake。
+
+### 2026-06-25（Cursor）— Live 調整 export 経路修正 → **未解消**（issue doc 更新）
+
+- **ユーザー確認**: 「消える」症状は直ったが **調整レイヤー effect が MP4 で効かなくなった**。
+- **整理**: foreignObject は `backdrop-filter` 非対応 → bake（`forceAdjustmentRaster`）が必要。現行は bake を外したため effect 欠落。旧 bake は 3D ネスト comp で壊れて「消える」。
+- **trade-off**: A=live backdrop（effect ✗ / 表示 ✓） vs B=bake（effect ✓ / 表示 ✗ when broken）。目標は B を直して exporter に戻す。
+- **検証の誤り**: `verify-comp10-export-parity.mjs` が同一 offscreen 経路同士比較で 0% — Preview パネル vs MP4 の一致を証明していなかった。
+- **記録**: [doc/issue/mp4-live-adjustment-layer-parity.md](doc/issue/mp4-live-adjustment-layer-parity.md) を現状に合わせて更新（状態=未解消）。
+
+### 2026-06-25（Sonnet）— MP4 Live 調整 parity **解消**（bake 復帰 + 真因＝3D flatten 除去）
+
+- **方針**: bake 経路 B を復帰（ユーザー確認済み）。getDisplayMedia 案は INV-2 非決定性リスクで不採用。
+- **実機局在化（empirical, debug-visual-render-bug）** — Comp 10 f100 を 3 経路で capture し真因を特定:
+  - A `forceAdjustmentRaster:false`（旧）: blue diamond **写る**（blueRatio 0.069）→ **foreignObject は 3D ネスト comp を焼ける**（doc の「foreignObject 3D 非対応」前提は誤り）。
+  - B `forceAdjustmentRaster:true`（bake 現状）: **grey 一色・content 消失**（blueRatio 0）。
+  - flatten を切ると B = blueRatio 0.126（content 復活 + effect 適用）。
+  - **真因**: `snapshotThreeDSubtreesBelow`（3D 下位 subtree を capture→img 置換）が **それ自体コンテンツを空 img に潰していた**。flatten こそが「消える」原因だった。
+- **Fix**:
+  1. [exporter.ts](src/runtime/exporter.ts) — `forceAdjustmentRaster:true` 復帰 + `flushRasterEffects`→`flushExportComposite`（MP4 / PNG 連番 両経路）。
+  2. [compFrameCapture.ts](src/runtime/compFrameCapture.ts) — 同種欠陥（RAM Preview / precomp raster / bundle bake が `flushRasterEffects` のみ）を同様に修正。
+  3. [DomRenderer.ts](src/runtime/DomRenderer.ts) — `snapshotThreeDSubtreesBelow` / `hasNestedCameraRig` / `data-has-camera-rig` マーカーを**全削除**。`captureAdjustmentBackdrop` は root を直接 capture（foreignObject が 3D も焼く）。
+  4. 検証スクリプト — `verify-comp10-export-parity.mjs` / `verify-export-adjustment.mjs` を **実 Preview パネル screenshot vs export(bake)** に書換（旧版は同一 offscreen 経路同士で無意味）。判定は pixel-diff ではなく **中央走査線 std（効果シグネチャ）**（消失時 export std が崩れる／pixel-diff は blank の方が小さく出るため不適）。Preview 取得用に PreviewPanel に `data-testid="preview-canvas-root"` 追加。
+- **検証**: typecheck / 458 tests 緑 / `verify-comp10-export-parity.mjs` PASS（f100 export std 2.9→23.9 ≈ preview 30）/ `verify-export-adjustment.mjs` PASS（blur ぼけ縁 mid=96）/ 回帰 verify 全 PASS（verify-nested-3d-camera, verify-3d-camera, verify-export-bake, verify-export-filter, verify-fast-export-parity, verify-comp19-adjustment）/ f100 export 画像で content+blur 目視確認。
+- **follow-up**: §27.4 spec 散文の「foreignObject は preserve-3d 非対応 → 3D 個別 capture 必要」記述が実測と矛盾（root capture で 3D も焼ける）。spec 更新は §5/INV 不変なので Cursor 主導で可。

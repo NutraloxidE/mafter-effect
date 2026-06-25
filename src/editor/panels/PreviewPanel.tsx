@@ -1004,6 +1004,7 @@ export function PreviewPanel() {
             >
               <div
                 ref={containerRef}
+                data-testid="preview-canvas-root"
                 style={{
                   position: "absolute",
                   top: 0,

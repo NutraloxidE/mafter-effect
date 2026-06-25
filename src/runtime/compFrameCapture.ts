@@ -92,6 +92,10 @@ export async function createCompFrameCaptureContext(
   const player = new HtmlCompPlayer(htmlLoader);
   const renderer = new DomRenderer();
   renderer.setHtmlPlayer(player);
+  // §27.4 / §28.11 — このコンテキストは captureElementToCanvas（foreignObject）で静止画化される
+  // 経路（RAM Preview / precomp raster cache / bundle bake）専用。backdrop-filter は foreignObject
+  // で焼けないため、exporter.ts と同様に Live 調整も comp 背面 capture の bake 経路へ回す。
+  renderer.setPreviewRenderOptions({ forceAdjustmentRaster: true });
   const fontCache = new FontOutlineCache();
   const imageCache = new ImageAssetCache();
   await Promise.all([
@@ -140,7 +144,7 @@ export async function captureCompFramePng(
   frame: number,
 ): Promise<Uint8Array> {
   ctx.renderer.renderFrame(resolve(comp, frame, { expressions: ctx.evaluator }), frame);
-  await ctx.renderer.flushRasterEffects();
+  await ctx.renderer.flushExportComposite();
   await nextTick();
   const bg = compBackground(comp);
   const canvas = await captureElementToCanvas(

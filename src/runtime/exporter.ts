@@ -105,8 +105,10 @@ export async function exportComposition(
     const player = new HtmlCompPlayer(htmlLoader);
     const renderer = new DomRenderer();
     renderer.setHtmlPlayer(player);
-    // §27.4 auto_raster_mp4 — Live調整の backdrop-filter は foreignObject ラスタ化で消えるため、
-    // mp4/png export では Live調整も comp 背面 capture へ回して見た目を維持する。
+    // §27.4 / INV-2 — captureElementToCanvas（foreignObject）は backdrop-filter 非対応のため、
+    // Live 調整も export では comp 背面 capture + filter 適用の bake 経路（forceAdjustmentRaster）
+    // を使い preview と同じ見た目を再現する。3D ネスト comp（カメラリグ）下地は
+    // captureAdjustmentBackdrop 内の data-has-camera-rig 検出 + 個別 flatten で対応済み。
     renderer.setPreviewRenderOptions({ forceAdjustmentRaster: true });
     const fontCache = new FontOutlineCache();
     const imageCache = new ImageAssetCache();
@@ -251,7 +253,7 @@ async function runPngSeq(
     renderer.renderFrame(resolve(comp, frame, { expressions: evaluator }), frame);
     onProgress({ phase: "render", frame: fi, totalFrames, message: `Frame ${fi + 1}/${totalFrames}` });
 
-    await renderer.flushRasterEffects();
+    await renderer.flushExportComposite();
     // DOM が描画される次ティックまで待つ
     await nextTick();
 
@@ -461,7 +463,7 @@ async function encodeVideoFrames(
     renderer.renderFrame(resolve(comp, frame, { expressions: evaluator }), frame);
     onProgress({ phase: "render", frame: fi, totalFrames, message: `Rendering frame ${fi + 1}/${totalFrames}` });
 
-    await renderer.flushRasterEffects();
+    await renderer.flushExportComposite();
     await nextTick();
 
     const canvas = await captureRendererFrame(renderer, nw, nh, w, h, bg);

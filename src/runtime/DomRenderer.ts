@@ -89,6 +89,8 @@ interface ObjectEntry {
   fxUseBackdropDisplace: boolean;
   /** §5.4d 現フレームの描画モード（capture コンポジタが参照） */
   blendMode: BlendMode;
+  /** §6.5b export 調整 backdrop capture 用（threeD 層のスナップショット化） */
+  threeD: boolean;
 }
 
 interface RasterWorkItem {
@@ -124,6 +126,8 @@ export class DomRenderer implements Renderer {
   /** §27.4 auto_raster_mp4 — mp4/png export 時に Live調整も comp 背面 capture へ回す
    *  （backdrop-filter は foreignObject ラスタ化で消えるため）。web bundle/preview では false。 */
   private forceAdjustmentRaster = false;
+  /** §27.4.1 export — Live 調整 bake を zOrder 直列化（preview compositor 相当） */
+  private exportAdjustmentQueue: Promise<void> = Promise.resolve();
 
   setPreviewRenderOptions(opts: {
     holdLastRaster?: boolean;
@@ -178,6 +182,10 @@ export class DomRenderer implements Renderer {
   renderFrame(scene: ResolvedScene, frame: Frame): void {
     if (!this.root) return;
 
+    if (this.forceAdjustmentRaster) {
+      this.exportAdjustmentQueue = Promise.resolve();
+    }
+
     this.compHasAdjustmentDisplace = scene.objects.some(
       (o) =>
         o.isAdjustment === true &&
@@ -217,9 +225,11 @@ export class DomRenderer implements Renderer {
           fxMaxDisplaceScale: 0,
           fxUseBackdropDisplace: false,
           blendMode: "normal",
+          threeD: false,
         };
         this.entries.set(obj.id, entry);
       }
+      entry.threeD = obj.threeD === true;
       this.applyObject(entry, obj, frame);
     }
 
@@ -249,6 +259,70 @@ export class DomRenderer implements Renderer {
   async flushRasterEffects(): Promise<void> {
     if (this.rasterPending.size === 0) return;
     await Promise.all([...this.rasterPending]);
+  }
+
+  /**
+   * §11.2 / §27.4.1 — mp4/png export 用 composite flush。
+   * 非調整 raster を並列待ちした後、Live 調整 bake（forceAdjustmentRaster）を zOrder 直列キューで待つ。
+   */
+  async flushExportComposite(): Promise<void> {
+    await this.flushRasterEffects();
+    await this.exportAdjustmentQueue;
+  }
+
+  private trackRasterWork(work: Promise<void>, serialExportAdjustment: boolean): void {
+    const tracked = work.finally(() => {
+      if (!serialExportAdjustment) this.rasterPending.delete(tracked);
+    });
+    if (serialExportAdjustment) {
+      this.exportAdjustmentQueue = this.exportAdjustmentQueue.then(() => tracked);
+    } else {
+      this.rasterPending.add(tracked);
+    }
+  }
+
+  /** §27.4.1 — 調整 backdrop capture 前の visibility。確定済み（suppressed）下位は再表示しない。 */
+  private prepareAdjustmentBackdropForCapture(
+    adjustObjId: string,
+    adjustZ: number,
+  ): { hiddenForCapture: HTMLElement[]; restoreCaptureVisibility: () => void } {
+    const hiddenForCapture: HTMLElement[] = [];
+
+    for (const [id, other] of this.entries) {
+      const z = parseInt(other.div.style.zIndex, 10);
+      if (id === adjustObjId || z <= adjustZ) continue;
+      hiddenForCapture.push(other.div);
+      other.div.style.visibility = "hidden";
+    }
+    const selfEntry = this.entries.get(adjustObjId);
+    if (selfEntry) {
+      hiddenForCapture.push(selfEntry.div);
+      selfEntry.div.style.visibility = "hidden";
+    }
+
+    for (const [id, other] of this.entries) {
+      const z = parseInt(other.div.style.zIndex, 10);
+      if (id === adjustObjId || z >= adjustZ) continue;
+      if (other.suppressedForAdjustment !== null) {
+        other.div.style.visibility = "hidden";
+        continue;
+      }
+      other.div.style.visibility = "visible";
+    }
+
+    return {
+      hiddenForCapture,
+      restoreCaptureVisibility: () => {
+        for (const div of hiddenForCapture) div.style.visibility = "";
+      },
+    };
+  }
+
+  private shouldSerialExportAdjustment(obj: ResolvedObject): boolean {
+    return (
+      obj.isAdjustment === true &&
+      (obj.adjustmentMode === "raster" || this.forceAdjustmentRaster === true)
+    );
   }
 
   dispose(): void {
@@ -517,10 +591,7 @@ export class DomRenderer implements Renderer {
         const work = obj.isAdjustment
           ? this.runAdjustmentSvgDisplacePipeline(entry, obj, ctx, filterStr, allSvgFilters, rasterRunKey)
           : this.runDirectSvgDisplacePipeline(entry, obj, ctx, filterStr, allSvgFilters, rasterRunKey);
-        const tracked = work.finally(() => {
-          this.rasterPending.delete(tracked);
-        });
-        this.rasterPending.add(tracked);
+        this.trackRasterWork(work, this.shouldSerialExportAdjustment(obj));
         return;
       }
       this.clearRasterOverlay(entry);
@@ -545,10 +616,7 @@ export class DomRenderer implements Renderer {
     const work = obj.isAdjustment
       ? this.runAdjustmentRasterPipeline(entry, obj, ctx, rasterChain, postFilterStr, postSvgFilters, rasterRunKey)
       : this.runRasterPipeline(entry, obj, ctx, rasterChain, postFilterStr, postSvgFilters, rasterRunKey);
-    const tracked = work.finally(() => {
-      this.rasterPending.delete(tracked);
-    });
-    this.rasterPending.add(tracked);
+    this.trackRasterWork(work, this.shouldSerialExportAdjustment(obj));
   }
 
   private pushFilterPiece(
@@ -728,25 +796,7 @@ export class DomRenderer implements Renderer {
       (entry.div.style as CSSStyleDeclaration & { webkitBackdropFilter?: string }).webkitBackdropFilter = "";
     }
 
-    const hiddenForCapture: HTMLElement[] = [];
-    const restoreCaptureVisibility = (): void => {
-      for (const div of hiddenForCapture) div.style.visibility = "";
-    };
-
-    for (const [id, other] of this.entries) {
-      const z = parseInt(other.div.style.zIndex, 10);
-      if (id !== obj.id && z < adjustZ) {
-        other.div.style.visibility = "visible";
-      }
-    }
-    for (const [id, other] of this.entries) {
-      const z = parseInt(other.div.style.zIndex, 10);
-      if (id === obj.id || z <= adjustZ) continue;
-      hiddenForCapture.push(other.div);
-      other.div.style.visibility = "hidden";
-    }
-    hiddenForCapture.push(entry.div);
-    entry.div.style.visibility = "hidden";
+    const { restoreCaptureVisibility } = this.prepareAdjustmentBackdropForCapture(obj.id, adjustZ);
 
     try {
       const propsHash = entry.fxSig;
@@ -762,7 +812,7 @@ export class DomRenderer implements Renderer {
         return;
       }
 
-      const canvas = await captureElementToCanvas(this.root, w, h, "transparent");
+      const canvas = await this.captureAdjustmentBackdrop(w, h);
       restoreCaptureVisibility();
 
       let buffer = canvasToRasterBuffer(canvas);
@@ -794,6 +844,18 @@ export class DomRenderer implements Renderer {
     } finally {
       if (entry.rasterInFlightKey === rasterRunKey) entry.rasterInFlightKey = null;
     }
+  }
+
+  /**
+   * §11.2 export — 調整レイヤーの背面 capture。
+   * captureElementToCanvas（foreignObject）は CSS 3D transform / perspective も含めて root を
+   * そのままラスタ化できる（Comp 10 f100 のネスト 3D comp で実証済み）。かつて下位 3D 層を
+   * 個別 capture→img 置換していたが、それ自体が 3D コンテンツを空 img に潰し「消える」症状の
+   * 原因だった。root を直接 capture すればコンテンツも effect も preview に一致する。
+   */
+  private async captureAdjustmentBackdrop(w: number, h: number): Promise<HTMLCanvasElement> {
+    if (!this.root) throw new Error("captureAdjustmentBackdrop: no root");
+    return captureElementToCanvas(this.root, w, h, "transparent");
   }
 
   private async applyCssSvgFilterToBuffer(
@@ -989,26 +1051,7 @@ export class DomRenderer implements Renderer {
     const adjustZ = Math.round(obj.zOrder * BASE_Z);
 
     entry.rasterInFlightKey = rasterRunKey;
-    const hiddenForCapture: HTMLElement[] = [];
-    const restoreCaptureVisibility = (): void => {
-      for (const div of hiddenForCapture) div.style.visibility = "";
-    };
-
-    for (const [id, other] of this.entries) {
-      const z = parseInt(other.div.style.zIndex, 10);
-      if (id !== obj.id && z < adjustZ) {
-        other.div.style.visibility = "visible";
-      }
-    }
-
-    for (const [id, other] of this.entries) {
-      const z = parseInt(other.div.style.zIndex, 10);
-      if (id === obj.id || z <= adjustZ) continue;
-      hiddenForCapture.push(other.div);
-      other.div.style.visibility = "hidden";
-    }
-    hiddenForCapture.push(entry.div);
-    entry.div.style.visibility = "hidden";
+    const { restoreCaptureVisibility } = this.prepareAdjustmentBackdropForCapture(obj.id, adjustZ);
 
     try {
       const propsHash = entry.fxSig;
@@ -1024,7 +1067,7 @@ export class DomRenderer implements Renderer {
         return;
       }
 
-      const canvas = await captureElementToCanvas(this.root, w, h, "transparent");
+      const canvas = await this.captureAdjustmentBackdrop(w, h);
       restoreCaptureVisibility();
 
       let buffer = canvasToRasterBuffer(canvas);
