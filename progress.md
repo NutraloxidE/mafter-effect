@@ -332,6 +332,18 @@ canvas 化結果は以降から見て通常の背面ピクセルと等価（zOrd
 - **修正**: [exportComposite.ts](src/runtime/exportComposite.ts) を **per-layer + perspective ラッパ**方式に変更（`captureLayerWithPerspective`: 各レイヤを `perspective`/`perspective-origin` = root と同値の div に入れて capture）。2D 層は perspective 無影響、3D 層は正しく射影。blend は `globalCompositeOperation`、調整は master に chain 適用。調整も blend も無いフレームは root 一括 capture の高速経路。
 - **検証**: typecheck / 458 tests / build 緑。`verify-comp10-export-parity.mjs` に **camera 保持検査**追加 → f100 で per-layer+persp std=37.1 == root std=37.1（rel 0.0% / pixel diff 0.00%）＝カメラ完全保持。ちらつき seq≡iso=0.000% 継続。f100 export 目視でコンテンツが perspective 射影＋blur されているのを確認。回帰 verify 全 PASS（export-bake / export-filter / fast-export-parity / 3d-camera / nested-3d-camera / export-adjustment / comp19-adjustment）。
 
+#### 追補（2026-06-26 Opus）— **ネスト comp 内の調整レイヤーが export で焼けない**バグも修正
+
+- **症状**: Comp 19 → Comp 10（調整5枚=blur/fastTurbulentDisplace）をネストした状態で **Comp 19 を書き出すと、子 Comp 10 内の調整 effect が適用されない**（preview では効くが mp4/png で消える・ユーザー報告 `for-debug-data/Comp_20.mp4`）。
+- **真因**: ネスト comp は `renderNestedComp` で live 描画され、子の調整は CSS `backdrop-filter`。親 export の `compositeExportFrame` は子 comp を**1枚の通常レイヤーとして foreignObject capture** していたため、§27.4 と同じ理由で **`backdrop-filter` が落ちて子の調整が消える**。さらに調整専用 comp は `compNeedsAutoPreviewCache` の raster 対象でないため preview rasterizer でも拾われない。exporter は nestedCompRasterizer も持たない。
+- **修正方針（spec §27.4.1 軸1「precomp は1枚に合成・確定してから親が1レイヤーとして扱う」に準拠）**: ネスト comp が（再帰的に）調整を含むなら、**子 comp 自身の座標系で同じオフDOM・ステートレス z 順コンポジタに掛けて1枚へ確定**してから親へ置く（再帰・depth ≤ 4）。**何段ネストしても**各段で調整が確定する。
+- **実装**:
+  1. [effectChain.ts](src/runtime/effectChain.ts)（新規） — `resolveEffectChain`（pre/raster/post の token・svg defs・rasterChain 構築を純関数化）。top-level `applyEffects` とネスト export タグ付けで共有（chain が2本にならない・INV-2）。
+  2. [DomRenderer.ts](src/runtime/DomRenderer.ts) — `applyEffects` を `resolveEffectChain` へ集約。`renderNestedComp` は `exportCompositeMode` 時、調整 div に `backdrop-filter` を立てず **解決済み chain を `div.__exportLayer`** に、コンテナに **`__nestedComposite` + `data-nested-composite` 属性**を付与。`frameHasNestedComposite` / `hasNestedComposite()` 追加（高速経路の除外判定）。
+  3. [exportComposite.ts](src/runtime/exportComposite.ts) — `compositeContainer`（コンテナを子座標系で z 順合成）+ `captureLayerNode`（レイヤ subtree に composite 必要なネスト comp があれば、子を先に確定 → **クローン側でコンテナ中身を確定画像 `<img>` に差し替え**てから capture・live DOM 非破壊）を相互再帰。fast path 判定に `hasNestedComposite()` を追加。
+- **検証**: typecheck / 458 tests / build 緑。新 `verify-comp19-nested-export.mjs`（恒久・回帰用）で **新経路 `compositeExportFrame` vs 旧高速経路 `captureElementToCanvas(root)`（=backdrop 落ち）を対照**: Comp 19 f0/f100 + **WRAP→19→10 の depth-2** すべて PASS（子の blur が焼け flat はシャープ＝旧バグ・edge↓最大75.5%・目視確認）。`hasNestedComposite=true`。回帰 verify 全 PASS（comp10-export-parity の flicker 0%/camera 保持・nested-3d-camera・3d-camera・export-adjustment・export-bake・export-filter・fast-export-parity・comp19-adjustment preview backdrop）。
+- **carve-out**: 調整も CSS blend も持たないネスト comp は従来どおり親の単一 capture に含めて焼く（3D 文脈保持の高速経路・無回帰）。
+
 ### 2026-06-25（Cursor）— 実装ループスキル化 + エージェントプロンプト追記
 
 - **要請**: 直近の修正メソッド・思考フレームワーク・一連の流れを抽象化し、新機能/バグ修正時にエージェントが参照する統合ループとしてスキル化。

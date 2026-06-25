@@ -12,6 +12,13 @@
 // いない」フレームが混入する（＝カメラのちらつき）。これを避けるため、各レイヤを **root と同じ
 // perspective / perspective-origin を持つラッパ div** に入れて capture する。実測で root 一括 capture と
 // 一致（同一 std）し、2D 層には無影響（perspective は 2D transform を変えない）。
+//
+// §23.3d / §27.4.1 軸1 ネスト comp: foreignObject ラスタ化は `backdrop-filter` を落とすため、ネスト
+// comp 内の調整レイヤーは親の単一 capture では消える。そこで「調整 / CSS blend を含むネスト comp」は
+// 子 comp 自身の座標系で同じ z 順コンポジタに**再帰的に**掛けて1枚の画像へ確定（precomp = 1枚・
+// non-collapse）してから親レイヤーへ置く。renderNestedComp は export 時、調整 div に backdrop-filter を
+// 立てず exportChain をレイヤメタ（__exportLayer）として付与し、コンテナに __nestedComposite を付ける。
+// 調整も blend も無いネスト comp は従来どおり親の単一 capture に含める（3D 文脈保持の高速経路）。
 
 import { captureElementToCanvas, flattenShadow, inlineCanvasBitmaps, svgToDataUrl } from "./rasterCapture";
 import { canvasToRasterBuffer } from "./pixelSort";
@@ -23,6 +30,9 @@ import type { ResolvedEffect } from "./resolved";
 import type { BlendMode } from "../core/schema";
 
 const XHTML = "http://www.w3.org/1999/xhtml";
+
+/** ネスト comp コンテナに付与する属性。`"1"` = 子内に調整 / CSS blend があり再帰合成が必要。 */
+export const NESTED_COMPOSITE_ATTR = "data-nested-composite";
 
 /** §27.4 調整レイヤーの解決済み effect chain（exportComposite が背面 master に適用する）。 */
 export interface ExportChain {
@@ -48,12 +58,32 @@ export interface ExportLayer {
   exportChain: ExportChain | null;
 }
 
-/** getExportLayers / hasAdjustmentLayers / hasCssBlendLayers を備えた最小レンダラ面。 */
+/** §23.3d ネスト comp コンテナのメタ（renderNestedComp が export 時に付与）。 */
+export interface NestedCompositeMeta {
+  /** true = 子内に調整 / CSS blend（または再帰的に持つ子）があり、子を1枚へ確定する必要がある。 */
+  needsComposite: boolean;
+  perspective: string;
+  perspectiveOrigin: string;
+  width: number;
+  height: number;
+  /** 子 comp 背景（"transparent" or rgba(...)）。 */
+  background: string;
+}
+
+/** export 合成のため DomRenderer / renderNestedComp が DOM 要素に付与するメタ。 */
+export interface ExportTaggedElement extends HTMLElement {
+  __exportLayer?: ExportLayer;
+  __nestedComposite?: NestedCompositeMeta;
+}
+
+/** getExportLayers / hasAdjustmentLayers / hasCssBlendLayers / hasNestedComposite を備えた最小レンダラ面。 */
 export interface ExportCompositeSource {
   getRoot(): HTMLElement | null;
   getExportLayers(): ExportLayer[];
   hasAdjustmentLayers(): boolean;
   hasCssBlendLayers(): boolean;
+  /** 現フレームに「再帰合成が必要なネスト comp」があるか（高速経路を外す判定）。 */
+  hasNestedComposite(): boolean;
 }
 
 function makeCanvas(w: number, h: number): HTMLCanvasElement {
@@ -63,21 +93,14 @@ function makeCanvas(w: number, h: number): HTMLCanvasElement {
   return c;
 }
 
-/**
- * レイヤ div を root と同じ perspective context のラッパに入れて 1 枚 capture する（transparent 背景）。
- * `perspective` が空（カメラ無し）ならラッパ無しで素の capture。3D 層は perspective で射影され、
- * 2D 層（z=0 transform）は無影響。canvas ビットマップは live の layer div から inline（クローンは空のため）。
- */
-export async function captureLayerWithPerspective(
-  layerDiv: HTMLElement,
+/** cloned レイヤを perspective ラッパ + foreignObject SVG 経由で 1 枚 canvas にラスタ化する。 */
+async function rasterizeClonedLayer(
+  cloned: HTMLElement,
   perspective: string,
   perspectiveOrigin: string,
   nw: number,
   nh: number,
 ): Promise<HTMLCanvasElement> {
-  const cloned = flattenShadow(layerDiv) as HTMLElement;
-  cloned.setAttribute("xmlns", XHTML);
-  await inlineCanvasBitmaps(cloned, layerDiv);
   const inner = new XMLSerializer().serializeToString(cloned);
   const content = perspective
     ? `<div xmlns="${XHTML}" style="position:absolute;top:0;left:0;width:${nw}px;height:${nh}px;`
@@ -99,6 +122,114 @@ export async function captureLayerWithPerspective(
   const canvas = makeCanvas(nw, nh);
   canvas.getContext("2d")!.drawImage(img, 0, 0);
   return canvas;
+}
+
+/**
+ * レイヤ div を root と同じ perspective context のラッパに入れて 1 枚 capture する（transparent 背景）。
+ * `perspective` が空（カメラ無し）ならラッパ無しで素の capture。3D 層は perspective で射影され、
+ * 2D 層（z=0 transform）は無影響。canvas ビットマップは live の layer div から inline（クローンは空のため）。
+ */
+export async function captureLayerWithPerspective(
+  layerDiv: HTMLElement,
+  perspective: string,
+  perspectiveOrigin: string,
+  nw: number,
+  nh: number,
+): Promise<HTMLCanvasElement> {
+  const cloned = flattenShadow(layerDiv) as HTMLElement;
+  cloned.setAttribute("xmlns", XHTML);
+  await inlineCanvasBitmaps(cloned, layerDiv);
+  return rasterizeClonedLayer(cloned, perspective, perspectiveOrigin, nw, nh);
+}
+
+/** root 直下から見て「他の composite コンテナに含まれない」最外殻の composite コンテナだけを返す。 */
+function outermostComposites(root: HTMLElement): ExportTaggedElement[] {
+  const all = [...root.querySelectorAll(`[${NESTED_COMPOSITE_ATTR}="1"]`)] as ExportTaggedElement[];
+  return all.filter((el) => !all.some((other) => other !== el && other.contains(el)));
+}
+
+/** ネスト comp コンテナ直下の __exportLayer 子を z 昇順で返す。 */
+function readContainerLayers(container: HTMLElement): ExportLayer[] {
+  const layers: { layer: ExportLayer; z: number }[] = [];
+  for (const child of [...container.children] as HTMLElement[]) {
+    const meta = (child as ExportTaggedElement).__exportLayer;
+    if (!meta) continue;
+    layers.push({ layer: meta, z: Number(child.style.zIndex) || 0 });
+  }
+  layers.sort((a, b) => a.z - b.z);
+  return layers.map((l) => l.layer);
+}
+
+/**
+ * §23.3d / §27.4.1 軸1 — ネスト comp コンテナを子 comp 自身の座標系で1枚へ確定する（再帰）。
+ * 子内の調整は背面 master へ焼かれ、子レイヤの blend / 深い子 comp も解決される。
+ */
+async function compositeContainer(
+  container: HTMLElement,
+  meta: NestedCompositeMeta,
+): Promise<HTMLCanvasElement> {
+  const nw = Math.max(1, Math.round(meta.width));
+  const nh = Math.max(1, Math.round(meta.height));
+  const master = makeCanvas(nw, nh);
+  const mctx = master.getContext("2d")!;
+  if (meta.background !== "transparent") {
+    mctx.fillStyle = meta.background;
+    mctx.fillRect(0, 0, nw, nh);
+  }
+  for (const layer of readContainerLayers(container)) {
+    if (layer.isAdjustment) {
+      if (layer.exportChain) await applyAdjustmentToMaster(master, layer.exportChain, nw, nh);
+      continue;
+    }
+    const sub = await captureLayerNode(layer.div, meta.perspective, meta.perspectiveOrigin, nw, nh);
+    mctx.globalCompositeOperation = blendModeToCompositeOp(layer.blendMode);
+    mctx.drawImage(sub, 0, 0);
+  }
+  mctx.globalCompositeOperation = "source-over";
+  return master;
+}
+
+/**
+ * 通常レイヤを capture する。レイヤ subtree に「再帰合成が必要なネスト comp」があれば、
+ * そのコンテナを子座標系で先に確定 → クローン側でコンテナ中身を確定画像 <img> に差し替えてから
+ * capture する（live DOM 非破壊・ステートレス）。無ければ従来の perspective capture。
+ */
+async function captureLayerNode(
+  layerDiv: HTMLElement,
+  perspective: string,
+  perspectiveOrigin: string,
+  nw: number,
+  nh: number,
+): Promise<HTMLCanvasElement> {
+  const liveComposites = outermostComposites(layerDiv);
+  if (liveComposites.length === 0) {
+    return captureLayerWithPerspective(layerDiv, perspective, perspectiveOrigin, nw, nh);
+  }
+
+  const cloned = flattenShadow(layerDiv) as HTMLElement;
+  cloned.setAttribute("xmlns", XHTML);
+  // 先に live canvas を inline（クローンと live は同一構造なので index 整合）。差し替えは後。
+  await inlineCanvasBitmaps(cloned, layerDiv);
+
+  // live ↔ clone の composite コンテナを document order で対応付け（同一構造なので index 一致）。
+  const liveAll = [...layerDiv.querySelectorAll(`[${NESTED_COMPOSITE_ATTR}="1"]`)] as ExportTaggedElement[];
+  const cloneAll = [...cloned.querySelectorAll(`[${NESTED_COMPOSITE_ATTR}="1"]`)] as HTMLElement[];
+  for (let i = 0; i < liveAll.length; i++) {
+    const lc = liveAll[i]!;
+    if (!liveComposites.includes(lc)) continue; // 最外殻のみ（内側は compositeContainer の再帰で解決）
+    const cmeta = lc.__nestedComposite;
+    const cloneContainer = cloneAll[i];
+    if (!cmeta || !cloneContainer) continue;
+    const sub = await compositeContainer(lc, cmeta);
+    const img = document.createElement("img");
+    img.setAttribute("src", sub.toDataURL("image/png"));
+    img.setAttribute("width", String(Math.max(1, Math.round(cmeta.width))));
+    img.setAttribute("height", String(Math.max(1, Math.round(cmeta.height))));
+    img.setAttribute("style", "position:absolute;top:0;left:0;width:100%;height:100%;object-fit:fill");
+    cloneContainer.replaceChildren(img);
+  }
+
+  return rasterizeClonedLayer(cloned, perspective, perspectiveOrigin, nw, nh);
 }
 
 /**
@@ -129,9 +260,11 @@ async function applyAdjustmentToMaster(
 /**
  * 1 フレームを comp ネイティブ解像度 (nw×nh) で合成し、必要なら (w×h) へスケールした canvas を返す。
  *
- * - 調整レイヤーも CSS blend も無ければ単一ショット root capture（最速・3D 深度 / perspective 完全保持）。
+ * - 調整レイヤーも CSS blend も「再帰合成が必要なネスト comp」も無ければ単一ショット root capture
+ *   （最速・3D 深度 / perspective 完全保持）。
  * - それ以外は z 昇順に各レイヤを perspective ラッパ付きで個別 capture → master へ blend 合成、
- *   調整レイヤー到達点で master（= 確定背面）に effect chain を適用。live DOM 非破壊・ステートレス。
+ *   調整レイヤー到達点で master（= 確定背面）に effect chain を適用。ネスト comp 内の調整は
+ *   captureLayerNode が子座標系で再帰的に確定する。live DOM 非破壊・ステートレス。
  */
 export async function compositeExportFrame(
   src: ExportCompositeSource,
@@ -144,8 +277,8 @@ export async function compositeExportFrame(
   const root = src.getRoot();
   if (!root) throw new Error("compositeExportFrame: no root");
 
-  // 高速経路: 調整も blend も無いフレームは root を 1 枚 capture（全レイヤ・3D・perspective 保持）。
-  if (!src.hasAdjustmentLayers() && !src.hasCssBlendLayers()) {
+  // 高速経路: 調整も blend も再帰合成も無いフレームは root を 1 枚 capture（全レイヤ・3D・perspective 保持）。
+  if (!src.hasAdjustmentLayers() && !src.hasCssBlendLayers() && !src.hasNestedComposite()) {
     return captureElementToCanvas(root, nw, nh, bg, w, h);
   }
 
@@ -164,7 +297,7 @@ export async function compositeExportFrame(
       if (layer.exportChain) await applyAdjustmentToMaster(master, layer.exportChain, nw, nh);
       continue;
     }
-    const sub = await captureLayerWithPerspective(layer.div, perspective, perspectiveOrigin, nw, nh);
+    const sub = await captureLayerNode(layer.div, perspective, perspectiveOrigin, nw, nh);
     mctx.globalCompositeOperation = blendModeToCompositeOp(layer.blendMode);
     mctx.drawImage(sub, 0, 0);
   }

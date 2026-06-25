@@ -16,7 +16,8 @@ import { captureElementToCanvas } from "./rasterCapture";
 import { canvasToRasterBuffer, rasterBufferToCanvas } from "./pixelSort";
 import { processRasterChainAsync } from "./rasterProcessAsync";
 import { applyFilterChainToBuffer } from "./effectRaster";
-import type { ExportChain, ExportLayer } from "./exportComposite";
+import { resolveEffectChain } from "./effectChain";
+import type { ExportChain, ExportLayer, NestedCompositeMeta, ExportTaggedElement } from "./exportComposite";
 import type { EffectFilter } from "./plugin";
 import type { BlendMode } from "../core/schema";
 import { isCssBlendMode } from "./blendCompose";
@@ -125,6 +126,8 @@ export class DomRenderer implements Renderer {
   private nestedCompRasterizer: NestedCompRasterizer | null = null;
   /** 現フレームに adjustment + displacement がある（下位 overflow 方針用） */
   private compHasAdjustmentDisplace = false;
+  /** §23.3d export — 現フレームに再帰合成が必要なネスト comp があるか（exportComposite 高速経路の除外判定）。 */
+  private frameHasNestedComposite = false;
   /** §6.5b per-object カメラ前置行列 = translate(cx,cy,P)·view。3D 層にのみ掛ける。null = カメラなし。 */
   private cameraPre: Mat4 | null = null;
   /** §27.12 hold-last raster（full displacement 用）。 */
@@ -202,6 +205,9 @@ export class DomRenderer implements Renderer {
         o.isAdjustment === true &&
         (o.effects ?? []).some((e) => e.enabled && DISPLACEMENT_EFFECT_TYPES.has(e.type)),
     );
+
+    // §23.3d export — renderNestedComp が「再帰合成が必要なネスト comp」を見つけたら true にする。
+    this.frameHasNestedComposite = false;
 
     // camera / perspective (§6.5 / §6.5b)
     this.cameraPre = this.setupCameraRig(this.root, scene);
@@ -496,6 +502,11 @@ export class DomRenderer implements Renderer {
     return false;
   }
 
+  /** §23.3d — 現フレームに「再帰合成が必要なネスト comp」があるか（exportComposite の経路選択用）。 */
+  hasNestedComposite(): boolean {
+    return this.frameHasNestedComposite;
+  }
+
   /** §27.4.1 — exportComposite 用の z 昇順レイヤ列。調整レイヤーは effect chain 付き。 */
   getExportLayers(): ExportLayer[] {
     const layers = [...this.entries.values()].map((e) => ({
@@ -536,28 +547,14 @@ export class DomRenderer implements Renderer {
           frame,
         };
 
-    let fxMaxDisplaceScale = 0;
-    let hasDisplacementFx = false;
-    for (const effect of effects) {
-      if (!effect.enabled) continue;
-      if (!DISPLACEMENT_EFFECT_TYPES.has(effect.type)) continue;
-      hasDisplacementFx = true;
-      const p = effect.props;
-      const scale =
-        effect.type === "wave" ||
-        effect.type === "ripple" ||
-        effect.type === "fastWave" ||
-        effect.type === "fastRipple"
-          ? Math.max(0, typeof p["amplitude"] === "number" ? p["amplitude"] : 0)
-          : Math.max(0, typeof p["amount"] === "number" ? p["amount"] : 0);
-      fxMaxDisplaceScale = Math.max(fxMaxDisplaceScale, scale);
-    }
+    const chain = resolveEffectChain(effects, ctx, `fx-${obj.id}`);
+    const { preTokens, postTokens, preSvgFilters, postSvgFilters, rasterChain } = chain;
     entry.fxLayerW = Math.max(1, Math.round(ctx.width));
     entry.fxLayerH = Math.max(1, Math.round(ctx.height));
-    entry.fxMaxDisplaceScale = fxMaxDisplaceScale;
-    entry.fxUseBackdropDisplace = obj.isAdjustment === true && hasDisplacementFx;
+    entry.fxMaxDisplaceScale = chain.fxMaxDisplaceScale;
+    entry.fxUseBackdropDisplace = obj.isAdjustment === true && chain.hasDisplacementFx;
 
-    if (hasDisplacementFx && !obj.isAdjustment) {
+    if (chain.hasDisplacementFx && !obj.isAdjustment) {
       entry.div.style.width = `${entry.fxLayerW}px`;
       entry.div.style.height = `${entry.fxLayerH}px`;
       entry.div.style.overflow = this.compHasAdjustmentDisplace ? "hidden" : "visible";
@@ -573,32 +570,6 @@ export class DomRenderer implements Renderer {
       entry.fxSig = fxSig;
       entry.rasterCompletedKey = null;
       entry.rasterInFlightKey = null;
-    }
-
-    const preTokens: string[] = [];
-    const postTokens: string[] = [];
-    const preSvgFilters: { id: string; primitives: string }[] = [];
-    const postSvgFilters: { id: string; primitives: string }[] = [];
-    const rasterChain: RasterWorkItem[] = [];
-    let inRasterSection = false;
-    let preSvgIndex = 0;
-    let postSvgIndex = 0;
-
-    for (const effect of effects) {
-      if (!effect.enabled) continue;
-      const def = globalPluginRegistry.getEffectDef(effect.type);
-      if (!def) continue;
-      const piece = def.apply(effect.props, ctx);
-      if (!piece) continue;
-
-      if (piece.kind === "raster") {
-        inRasterSection = true;
-        rasterChain.push({ effect, def });
-      } else if (inRasterSection) {
-        this.pushFilterPiece(piece, postTokens, postSvgFilters, `fx-${obj.id}-post-${postSvgIndex++}`);
-      } else {
-        this.pushFilterPiece(piece, preTokens, preSvgFilters, `fx-${obj.id}-pre-${preSvgIndex++}`);
-      }
     }
 
     // §27.4 export — オフDOM コンポジタ（exportComposite.ts）が背面 master へ焼くための解決済み chain を保存。
@@ -1202,6 +1173,8 @@ export class DomRenderer implements Renderer {
 
     // 毎フレーム再描画（Phase 1 簡易実装。html/plugin comp は対象外）
     container.innerHTML = "";
+    // §23.3d export — この comp（再帰的に）に調整レイヤーがあれば子座標系で1枚へ確定する必要がある。
+    let needsComposite = false;
     for (const obj of childScene.objects) {
       const div = document.createElement("div");
       const xform = objectWorldTransformWithCamera(cameraPre, obj);
@@ -1224,6 +1197,8 @@ export class DomRenderer implements Renderer {
               const parentFps = (c.props["_parentFps"] as number) ?? childComp.fps;
               const nestedFrame = compChildFrame(childFrame, inPoint, trimStart, nestedComp.duration, parentFps, nestedComp.fps);
               this.renderNestedComp(innerEl, nestedComp, nestedFrame, depth + 1);
+              // §23.3d: 深い子に調整があれば、この comp も親の単一 capture では焼けない（再帰合成へ）。
+              if ((innerEl as ExportTaggedElement).__nestedComposite?.needsComposite) needsComposite = true;
               div.appendChild(innerEl);
             }
             continue;
@@ -1237,8 +1212,57 @@ export class DomRenderer implements Renderer {
       container.appendChild(div);
       // §23.3a: トップレベルと挙動を揃える（ラスタ無し・append 後に実測サイズで filter region 決定）。
       setBlendModeStyle(div, obj.blendMode, obj.opacity);
-      // §23.3d: 調整は backdrop-filter（region=comp 寸法）、通常は filter（region=実測 div）。
-      this.applyNestedLiveEffects(div, obj, childFrame, childComp.width, childComp.height);
+
+      if (this.exportCompositeMode) {
+        // §23.3d export — backdrop-filter は foreignObject で落ちるため、調整は live に立てず
+        // 解決済み chain をレイヤメタに保存し、exportComposite が子座標系で背面 master へ焼く。
+        let exportChain: ExportChain | null = null;
+        if (isAdj) {
+          const ctx = { width: childComp.width, height: childComp.height, frame: childFrame };
+          const ec = resolveEffectChain(obj.effects ?? [], ctx, `nfx-${obj.id}`);
+          exportChain = {
+            preFilterStr: ec.preTokens.join(" "),
+            preSvgFilters: ec.preSvgFilters,
+            postFilterStr: ec.postTokens.join(" "),
+            postSvgFilters: ec.postSvgFilters,
+            rasterChain: ec.rasterChain,
+            region: {
+              fxLayerW: Math.max(1, Math.round(childComp.width)),
+              fxLayerH: Math.max(1, Math.round(childComp.height)),
+              fxMaxDisplaceScale: ec.fxMaxDisplaceScale,
+              fxUseBackdropDisplace: ec.hasDisplacementFx,
+            },
+            frame: childFrame,
+          };
+          needsComposite = true;
+        } else {
+          // 通常レイヤーの live filter は foreignObject で焼けるので従来どおり適用。
+          this.applyNestedLiveEffects(div, obj, childFrame, childComp.width, childComp.height);
+        }
+        (div as ExportTaggedElement).__exportLayer = {
+          div,
+          blendMode: obj.blendMode,
+          isAdjustment: isAdj,
+          exportChain,
+        };
+      } else {
+        // preview: 調整は backdrop-filter（region=comp 寸法）、通常は filter（region=実測 div）。
+        this.applyNestedLiveEffects(div, obj, childFrame, childComp.width, childComp.height);
+      }
+    }
+
+    if (this.exportCompositeMode) {
+      const meta: NestedCompositeMeta = {
+        needsComposite,
+        perspective: container.style.perspective,
+        perspectiveOrigin: container.style.perspectiveOrigin || "50% 50%",
+        width: childComp.width,
+        height: childComp.height,
+        background: childComp.background ? rgbaCss(childComp.background) : "transparent",
+      };
+      (container as ExportTaggedElement).__nestedComposite = meta;
+      container.setAttribute("data-nested-composite", needsComposite ? "1" : "0");
+      if (needsComposite) this.frameHasNestedComposite = true;
     }
   }
 

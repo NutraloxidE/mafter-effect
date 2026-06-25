@@ -256,3 +256,10 @@ effect 欠落・消失が直った後、**MP4 がちらつく**症状が残っ�
 - **局在化**（`verify-diag-capture.mjs`、f100）: root 一括=std37.1（正）/ per-layer 無 perspective=std70.1（カメラ落ち）/ **per-layer を root と同じ perspective ラッパで包む=std37.1（root と pixel 一致）**。
 - **修正**: [exportComposite.ts](../../src/runtime/exportComposite.ts) を **per-layer + perspective ラッパ**（`captureLayerWithPerspective`）方式へ。各レイヤを `perspective`/`perspective-origin` = root と同値の div に入れて capture（2D 層は無影響、3D 層は正しく射影）。調整も blend も無いフレームは root 一括の高速経路。
 - **検証**: `verify-comp10-export-parity.mjs` に camera 保持検査追加 → f100 で per-layer+persp std=37.1 == root std=37.1（diff 0.00%）。ちらつき seq≡iso=0.000% 継続。回帰 verify 全 PASS + 458 tests。
+
+## 追補3（2026-06-26 Opus）— ネスト comp 内の調整レイヤーが export で焼けない
+
+- **症状**: 親 comp（Comp 19）が子 comp（Comp 10, 調整5枚）をネストした状態で**親を書き出すと子の調整が消える**（preview では効く・`for-debug-data/Comp_20.mp4`）。
+- **真因**: ネスト comp は `renderNestedComp` で live 描画され子の調整は CSS `backdrop-filter`。親 export の `compositeExportFrame` は子 comp を**1枚の通常レイヤーとして foreignObject capture** → §27.4 と同じく `backdrop-filter` が落ちて子の調整が消える。調整専用 comp は `compNeedsAutoPreviewCache` 対象外で preview rasterizer も拾わず、exporter は nestedCompRasterizer も持たない（＝この経路だけ壊れる）。
+- **修正（spec §27.4.1 軸1 準拠・再帰）**: ネスト comp が再帰的に調整を含むなら、子 comp を**子自身の座標系で同じステートレス z 順コンポジタに掛けて1枚へ確定**してから親へ置く（depth ≤ 4・何段でも）。`resolveEffectChain` を切り出し top-level と共有（INV-2）。`renderNestedComp` は export 時に調整 div へ backdrop を立てず chain を `__exportLayer` に、コンテナに `data-nested-composite` を付与。`captureLayerNode`/`compositeContainer` が相互再帰し、クローン側でコンテナ中身を確定画像 `<img>` に差し替えてから capture（live DOM 非破壊）。
+- **検証**: `verify-comp19-nested-export.mjs`（恒久）で **新経路 vs 旧高速経路 root capture（backdrop 落ち）を対照**。Comp 19 f0/f100 + **WRAP→19→10 depth-2** 全 PASS（子 blur が焼け flat はシャープ・edge↓最大75.5%・目視）。回帰 verify 全 PASS。
