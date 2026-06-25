@@ -98,8 +98,10 @@ description: Mafter Effect で新機能実装・バグ修正・視覚/レンダ�
 | mount 後の編集だけ効かない | stale スナップショット・effect 未再実行 |
 | 強さに比例してずれる | 座標系・filter region・素材の平均バイアス |
 | 前フレームに依存してちらつく | ステートフル DOM 操作・async 競合 |
+| **メディア要素が「戻ったり進んだりちらつく」** | **export ループに `play()`（実時間進行）が混ざっている**。export は離散フレーム処理なので、ターゲットを行き過ぎ→逆行 seek→再度行き過ぎ、で前後に振動する。export は常に決定論 seek（pause + 目的フレームへ seek）に統一する。 |
+| **メディアの動きが間引かれる（n フレームに1回重複）** | **フレーム境界 `k/fps` ちょうどへ seek している**。float 丸めで `currentTime` が境界をわずかに下回り前フレームが選ばれる（タイムベースによっては毎 2〜3 フレームに1回再現）。`target + 0.5/fps`（フレーム区間の**中央**）へ seek するよう直す。scrub と export で同じ seek 先を共有すること（INV-2）。 |
 
-過去事例: [doc/issue/mp4-live-adjustment-layer-parity.md](../../../doc/issue/mp4-live-adjustment-layer-parity.md)
+過去事例: [doc/issue/mp4-live-adjustment-layer-parity.md](../../../doc/issue/mp4-live-adjustment-layer-parity.md)、[doc/issue/video-footage-export-sluggish.md](../../../doc/issue/video-footage-export-sluggish.md)（export の `play()` 振動 + フレーム境界 float 丸めの2真因）
 
 ## Phase 3 — 実装原則
 
@@ -245,5 +247,6 @@ Phase 5
 | reparent + KF | 1 KF だけ補正 → 全 KF frame で world 保持 | 純関数テスト + Playwright |
 | video export 正常化 | foreignObject は `<video>` 不可 → 共有 capture 変更 | 型別 `inlineVideoFrames`/`exportVideoStep` + 既存 export 無回帰 |
 | Fast displacement ドリフト | host rect 偽陽性 → ink centroid へ | implement-visual-effect の経路統一 |
+| video export ちらつき・もっさり再発 | `exportVideoStep` の `play()`＝実時間進行が export の離散フレーム処理とズレ前後振動／`k/fps` ちょうど seek が float 丸めで前フレーム選択（毎2〜3フレーム重複） | `play()` 廃止し決定論 seek／seek 先を `target+0.5fps`（フレーム中央）に統一・scrub と共有。**静止画に近い既存検証アセットは動き検出に使えない**ため `ffmpeg testsrc2` 等で動く素材を別途用意して検証 |
 
 詳細は各 issue 節・下位スキルの worked example を参照。
