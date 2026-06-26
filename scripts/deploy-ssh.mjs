@@ -334,6 +334,47 @@ function isSftpUnavailable(error) {
   return /subsystem:\s*sftp/i.test(message) || /sftp\s+not\s+available/i.test(message);
 }
 
+function formatBytes(bytes) {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+const UPLOAD_PROGRESS_STEP = 1024 * 1024;
+
+function logUploadProgress(transferred, total, progressState) {
+  const clamped = Math.min(transferred, total);
+  if (clamped >= total && progressState.lastLogged >= total) {
+    return;
+  }
+  if (clamped - progressState.lastLogged < UPLOAD_PROGRESS_STEP && clamped < total) {
+    return;
+  }
+  progressState.lastLogged = clamped;
+  const pct = Math.min(100, Math.round((clamped / total) * 100));
+  console.log(
+    `[deploy:ssh] Upload progress: ${formatBytes(clamped)} / ${formatBytes(total)} (${pct}%)`
+  );
+}
+
+function formatDeployError(error, options) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/ETIMEDOUT|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH/i.test(message)) {
+    return [
+      `Cannot reach ${options.user}@${options.host}:${options.port} (${message})`,
+      "Check:",
+      `- SSH server / tunnel is up on port ${options.port}`,
+      `- Manual test: ssh -p ${options.port} ${options.user}@${options.host}`,
+      "- Firewall, VPN, or ISP may block outbound connections to this port",
+    ].join("\n");
+  }
+  return message;
+}
+
 async function loadPrivateKey(identityPath) {
   if (!identityPath) {
     return undefined;
@@ -350,7 +391,9 @@ async function connectSsh(options) {
     username: options.user,
     password: options.password || undefined,
     privateKey,
-    readyTimeout: 30000,
+    readyTimeout: 60000,
+    keepaliveInterval: 10000,
+    keepaliveCountMax: 3,
   };
 
   let lastError;
@@ -413,7 +456,7 @@ function execRemote(client, command, captureStdout = false) {
   });
 }
 
-function execRemoteWithStdin(client, command, stdin) {
+function execRemoteWithStdin(client, command, stdin, { onUploadComplete } = {}) {
   return new Promise((resolve, reject) => {
     client.exec(command, (error, stream) => {
       if (error) {
@@ -422,8 +465,12 @@ function execRemoteWithStdin(client, command, stdin) {
       }
 
       let stderr = "";
+      let uploadCompleteNotified = false;
 
       stream.on("error", (streamError) => reject(streamError));
+      // Remote commands may write to stdout; if we do not drain it, the pipe
+      // buffer fills and the remote process blocks forever (classic SSH deadlock).
+      stream.on("data", () => {});
       stream.stderr.on("data", (chunk) => {
         const text = chunk.toString();
         stderr += text;
@@ -439,14 +486,30 @@ function execRemoteWithStdin(client, command, stdin) {
       });
 
       const chunkSize = 32 * 1024;
+      const total = stdin.length;
+      const progressState = { lastLogged: 0 };
       let offset = 0;
-      function writeNext() {
-        if (offset >= stdin.length) {
+
+      function finishUpload() {
+        if (!uploadCompleteNotified) {
+          uploadCompleteNotified = true;
+          onUploadComplete?.();
+        }
+        if (stream.writableNeedDrain) {
+          stream.once("drain", () => stream.end());
+        } else {
           stream.end();
+        }
+      }
+
+      function writeNext() {
+        if (offset >= total) {
+          finishUpload();
           return;
         }
         const chunk = stdin.subarray(offset, offset + chunkSize);
         offset += chunk.length;
+        logUploadProgress(offset, total, progressState);
         if (!stream.write(chunk)) {
           stream.once("drain", writeNext);
         } else {
@@ -470,9 +533,9 @@ function openSftp(client) {
   });
 }
 
-function sftpFastPut(sftp, localPath, remotePath) {
+function sftpFastPut(sftp, localPath, remotePath, options = {}) {
   return new Promise((resolve, reject) => {
-    sftp.fastPut(localPath, remotePath, (error) => {
+    sftp.fastPut(localPath, remotePath, options, (error) => {
       if (error) {
         reject(error);
       } else {
@@ -494,7 +557,12 @@ function sftpWriteFile(sftp, remotePath, content) {
 async function uploadDirectoryViaSftp(client, localRoot, remoteRoot) {
   const files = await collectLocalFiles(localRoot);
   const directories = new Set([remoteRoot]);
+  let totalBytes = 0;
+  const filesWithSize = [];
   for (const file of files) {
+    const fileStat = await stat(file.localPath);
+    totalBytes += fileStat.size;
+    filesWithSize.push({ ...file, size: fileStat.size });
     directories.add(path.posix.dirname(path.posix.join(remoteRoot, file.remotePath)));
   }
 
@@ -506,18 +574,30 @@ async function uploadDirectoryViaSftp(client, localRoot, remoteRoot) {
       .join(" ")}`
   );
 
+  console.log(
+    `[deploy:ssh] Uploading ${formatBytes(totalBytes)} via SFTP to ${remoteRoot}... (may take a few minutes)`
+  );
+
   const sftp = await openSftp(client);
   try {
-    for (const file of files) {
+    const progressState = { lastLogged: 0 };
+    let transferredBeforeCurrentFile = 0;
+    for (const file of filesWithSize) {
       const remoteFilePath = path.posix.join(remoteRoot, file.remotePath);
-      await sftpFastPut(sftp, file.localPath, remoteFilePath);
+      await sftpFastPut(sftp, file.localPath, remoteFilePath, {
+        step: (transferred) => {
+          logUploadProgress(transferredBeforeCurrentFile + transferred, totalBytes, progressState);
+        },
+      });
+      transferredBeforeCurrentFile += file.size;
+      logUploadProgress(transferredBeforeCurrentFile, totalBytes, progressState);
     }
   } finally {
     sftp.end();
   }
 }
 
-async function uploadDirectoryViaTar(options, localRoot, remotePath) {
+async function uploadDirectoryViaTarOnClient(client, localRoot, remotePath) {
   const tempDir = await mkdtemp(path.join(tmpdir(), "mafter-deploy-"));
   const tarPath = path.join(tempDir, "bundle.tar.gz");
 
@@ -526,16 +606,27 @@ async function uploadDirectoryViaTar(options, localRoot, remotePath) {
     await runLocalCommand("tar", ["-czf", tarPath, "-C", localRoot, "."]);
     const archive = await readFile(tarPath);
 
-    const remoteHome = await withSsh(options, (client) =>
-      execRemote(client, 'printf %s "$HOME"', true)
-    );
+    const remoteHome = await execRemote(client, 'printf %s "$HOME"', true);
     const remoteRoot = resolveRemotePath(remotePath, remoteHome);
+    const remoteArchive = path.posix.join(remoteHome, ".mafter-deploy", "bundle.tar.gz");
+    await execRemote(
+      client,
+      `mkdir -p ${shellQuote(remoteRoot)} ${shellQuote(path.posix.dirname(remoteArchive))}`
+    );
 
-    await withSsh(options, (client) => execRemote(client, `mkdir -p ${shellQuote(remoteRoot)}`));
+    console.log(
+      `[deploy:ssh] Uploading ${formatBytes(archive.length)} to ${remoteArchive}... (may take a few minutes)`
+    );
+    await execRemoteWithStdin(client, `cat > ${shellQuote(remoteArchive)}`, archive, {
+      onUploadComplete: () => {
+        console.log("[deploy:ssh] Upload finished, waiting for remote file write...");
+      },
+    });
 
-    console.log(`[deploy:ssh] Uploading ${archive.length} bytes via tar stream to ${remoteRoot}...`);
-    await withSsh(options, (client) =>
-      execRemoteWithStdin(client, `tar xzf - -C ${shellQuote(remoteRoot)}`, archive)
+    console.log(`[deploy:ssh] Extracting archive into ${remoteRoot}...`);
+    await execRemote(
+      client,
+      `tar xzf ${shellQuote(remoteArchive)} -C ${shellQuote(remoteRoot)} && rm -f ${shellQuote(remoteArchive)}`
     );
   } finally {
     await rm(tempDir, { recursive: true, force: true });
@@ -545,7 +636,6 @@ async function uploadDirectoryViaTar(options, localRoot, remotePath) {
 async function uploadDirectory(client, localRoot, remotePath) {
   const remoteHome = await execRemote(client, 'printf %s "$HOME"', true);
   const remoteRoot = resolveRemotePath(remotePath, remoteHome);
-  console.log(`[deploy:ssh] Uploading via SFTP to ${remoteRoot}...`);
   await uploadDirectoryViaSftp(client, localRoot, remoteRoot);
 }
 
@@ -657,24 +747,33 @@ async function main() {
     );
   }
 
-  try {
-    await withSsh(options, (client) => uploadDirectory(client, localPath, options.remotePath));
-  } catch (error) {
-    if (!isSftpUnavailable(error)) {
-      throw error;
+  await withSsh(options, async (client) => {
+    try {
+      await uploadDirectory(client, localPath, options.remotePath);
+    } catch (error) {
+      if (!isSftpUnavailable(error)) {
+        throw error;
+      }
+      console.log("[deploy:ssh] SFTP unavailable, falling back to tar stream upload...");
+      await uploadDirectoryViaTarOnClient(client, localPath, options.remotePath);
     }
-    console.log("[deploy:ssh] SFTP unavailable, falling back to tar stream upload...");
-    await uploadDirectoryViaTar(options, localPath, options.remotePath);
-  }
 
-  if (options.serve) {
-    await withSsh(options, (client) => configureRemoteServer(client, options, remoteShellTarget));
-  }
+    if (options.serve) {
+      await configureRemoteServer(client, options, remoteShellTarget);
+    }
+  });
 
   console.log(`Deployment completed: ${localPath} -> ${options.user}@${options.host}:${options.remotePath}`);
 }
 
-main().catch((error) => {
-  console.error(`[deploy:ssh] ${error instanceof Error ? error.message : String(error)}`);
+main().catch(async (error) => {
+  let options = { user: "", host: "", port: "" };
+  try {
+    const envValues = await readDotEnv(path.resolve(process.cwd(), ".env"));
+    options = splitUserFromHost(mergeOptions(parseArgs(process.argv.slice(2)), envValues));
+  } catch {
+    // ignore option parse errors in the failure path
+  }
+  console.error(`[deploy:ssh] ${formatDeployError(error, options)}`);
   process.exitCode = 1;
 });
