@@ -7,6 +7,7 @@ export const DIR_COMPOSITIONS = "compositions";
 export const DIR_SCRIPTS = "scripts";
 export const DIR_PRESETS = "presets";
 export const DIR_PRESETS_EASING = "presets/easing";
+export const DIR_PRESETS_EXPRESSIONS = "presets/expressions";
 export const DIR_PLUGINS = "plugins";
 
 export function compositionDir(compId: string): string {
@@ -15,6 +16,11 @@ export function compositionDir(compId: string): string {
 
 export function scriptPath(objectId: string, param: string): string {
   return `${DIR_SCRIPTS}/${objectId}/${param}.js`;
+}
+
+/** §9 Phase 0.5 — 共有 expression プリセット脚本（全レイヤーで path 共有） */
+export function presetExpressionScriptPath(presetId: string): string {
+  return `${DIR_PRESETS_EXPRESSIONS}/${presetId}.js`;
 }
 
 export function pluginDir(pluginId: string): string {

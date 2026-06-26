@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { sampleAny, sampleScalar, sampleVec3 } from "../../runtime/interpolate";
-import type { AnimatedProp, BlendMode, Component, Easing, EffectInstance, ParamDescriptor, RGBA, SceneObject, ThreeDMode, Transform, Vec3 } from "../../core/schema";
+import type { AnimatedProp, BlendMode, Component, Easing, EffectInstance, ExpressionPresetInstance, ParamDescriptor, RGBA, SceneObject, ThreeDMode, Transform, Vec3 } from "../../core/schema";
 import { BLEND_MODES } from "../../core/schema";
 import {
   currentTimelineComp,
@@ -16,6 +16,15 @@ import { globalPluginRegistry } from "../../runtime/pluginRegistry";
 import { groupEffectsForPicker } from "../effectCategories";
 import { BakerBadge } from "../bakerLabel";
 import { BackgroundControl } from "./BackgroundControl";
+import {
+  buildDefaultPresetProps,
+  EXPRESSION_PRESET_LIST,
+  EXPRESSION_PRESETS,
+  parsePresetMarker,
+  presetIdFromExpressionPath,
+  type ExpressionPresetId,
+  type ExpressionPresetParam,
+} from "../expressionPresets";
 
 const EASING_PRESETS: { label: string; easing: Easing }[] = [
   { label: "Linear", easing: { type: "linear" } },
@@ -76,7 +85,11 @@ export function InspectorPanel() {
   const selectedIds = useEditorStore((s) => s.selectedObjectIds);
   const updateObject = useEditorStore((s) => s.updateObject);
   const updateObjects = useEditorStore((s) => s.updateObjects);
-  const addWiggleExpression = useEditorStore((s) => s.addWiggleExpression);
+  const addExpressionPreset = useEditorStore((s) => s.addExpressionPreset);
+  const removeExpressionPreset = useEditorStore((s) => s.removeExpressionPreset);
+  const toggleExpressionPreset = useEditorStore((s) => s.toggleExpressionPreset);
+  const getFs = useEditorStore((s) => s.getFs);
+  const projectRevision = useEditorStore((s) => s.projectRevision);
   const setPreviewQualityEditing = useEditorStore((s) => s.setPreviewQualityEditing);
   const setPreviewOverride = useEditorStore((s) => s.setPreviewOverride);
   const clearPreviewOverride = useEditorStore((s) => s.clearPreviewOverride);
@@ -98,7 +111,9 @@ export function InspectorPanel() {
 
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [addEffectOpen, setAddEffectOpen] = useState(false);
+  const [addExprPresetOpen, setAddExprPresetOpen] = useState(false);
   const [highlightEffectId, setHighlightEffectId] = useState<string | null>(null);
+  const [legacyPresetIds, setLegacyPresetIds] = useState<Partial<Record<ExpressionPresetParam, ExpressionPresetId>>>({});
   const effectRowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const panelScrollRef = useRef<HTMLDivElement>(null);
 
@@ -110,6 +125,47 @@ export function InspectorPanel() {
 
   const comp = currentTimelineComp(project, compId);
   const obj = comp?.objects.find((o) => o.id === selectedIds[0]);
+
+  useEffect(() => {
+    if (!obj) {
+      setLegacyPresetIds({});
+      return;
+    }
+    let cancelled = false;
+    const fs = getFs();
+
+    void (async () => {
+      const next: Partial<Record<ExpressionPresetParam, ExpressionPresetId>> = {};
+      const persistedParams = new Set(
+        (obj.expressionPresets ?? []).map((p) => EXPRESSION_PRESETS[p.presetId as ExpressionPresetId]?.param).filter(Boolean),
+      );
+
+      const readParam = async (param: ExpressionPresetParam, ex: { path: string; enabled: boolean } | undefined) => {
+        if (!ex?.enabled || persistedParams.has(param)) return;
+        const fromPath = presetIdFromExpressionPath(ex.path);
+        if (fromPath) {
+          next[param] = fromPath;
+          return;
+        }
+        try {
+          const id = parsePresetMarker(await fs.readText(ex.path));
+          if (id) next[param] = id;
+        } catch { /* file missing */ }
+      };
+
+      await readParam("position", obj.transform.position.expression);
+      await readParam("scale", obj.transform.scale.expression);
+      if (!cancelled) setLegacyPresetIds(next);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    obj,
+    getFs,
+    projectRevision,
+  ]);
 
   const toggleExpanded = (section: string) => {
     const key = obj ? `${obj.id}:${section}` : `${compId}:${section}`;
@@ -266,21 +322,15 @@ export function InspectorPanel() {
     }
   };
 
-  const posExprOn = obj.transform.position.expression?.enabled === true;
-  const toggleWiggle = () => {
-    if (posExprOn) {
-      updateObject(obj.id, {
-        transform: {
-          ...obj.transform,
-          position: {
-            ...obj.transform.position,
-            expression: { ...obj.transform.position.expression!, enabled: false },
-          },
-        },
-      }, "Disable wiggle");
-    } else {
-      void addWiggleExpression(obj.id);
-    }
+  const foldoutKey = (section: string) => `${obj.id}:${section}`;
+
+  const handleAddExpressionPreset = (presetId: ExpressionPresetId) => {
+    setAddExprPresetOpen(false);
+    void addExpressionPreset(obj.id, presetId);
+    setExpanded((prev) => ({
+      ...prev,
+      [foldoutKey("expressions")]: true,
+    }));
   };
 
   // §5.4b/§6.5b 3D & カメラ
@@ -310,7 +360,66 @@ export function InspectorPanel() {
     updateObject(obj.id, { components: next }, label);
   };
 
-  const foldoutKey = (section: string) => `${obj.id}:${section}`;
+  const legacyInstances: ExpressionPresetInstance[] = Object.entries(legacyPresetIds).flatMap(([param, presetId]) => {
+    if (!presetId) return [];
+    const p = EXPRESSION_PRESETS[presetId];
+    const ex =
+      p.param === "position" ? obj.transform.position.expression : obj.transform.scale.expression;
+    return [{
+      id: `legacy-${param}`,
+      presetId,
+      enabled: ex?.enabled === true,
+      props: buildDefaultPresetProps(presetId),
+    }];
+  });
+
+  const expressionInstances: ExpressionPresetInstance[] = [
+    ...(obj.expressionPresets ?? []),
+    ...legacyInstances.filter(
+      (leg) => !(obj.expressionPresets ?? []).some(
+        (p) => EXPRESSION_PRESETS[p.presetId as ExpressionPresetId]?.param
+          === EXPRESSION_PRESETS[leg.presetId as ExpressionPresetId]?.param,
+      ),
+    ),
+  ];
+
+  const handleRemoveExpression = (inst: ExpressionPresetInstance) => {
+    if (inst.id.startsWith("legacy-")) {
+      const preset = EXPRESSION_PRESETS[inst.presetId as ExpressionPresetId];
+      if (preset.param === "position") {
+        const { expression: _ex, ...posRest } = obj.transform.position;
+        updateObject(obj.id, { transform: { ...obj.transform, position: posRest } }, `Remove ${preset.label}`);
+      } else {
+        const { expression: _ex, ...scaleRest } = obj.transform.scale;
+        updateObject(obj.id, { transform: { ...obj.transform, scale: scaleRest } }, `Remove ${preset.label}`);
+      }
+      return;
+    }
+    removeExpressionPreset(obj.id, inst.id);
+  };
+
+  const handleToggleExpression = (inst: ExpressionPresetInstance, enabled: boolean) => {
+    if (inst.id.startsWith("legacy-")) {
+      const preset = EXPRESSION_PRESETS[inst.presetId as ExpressionPresetId];
+      const ex = preset.param === "position" ? obj.transform.position.expression : obj.transform.scale.expression;
+      if (!ex) return;
+      if (preset.param === "position") {
+        updateObject(
+          obj.id,
+          { transform: { ...obj.transform, position: { ...obj.transform.position, expression: { ...ex, enabled } } } },
+          enabled ? `Enable ${preset.label}` : `Disable ${preset.label}`,
+        );
+      } else {
+        updateObject(
+          obj.id,
+          { transform: { ...obj.transform, scale: { ...obj.transform.scale, expression: { ...ex, enabled } } } },
+          enabled ? `Enable ${preset.label}` : `Disable ${preset.label}`,
+        );
+      }
+      return;
+    }
+    toggleExpressionPreset(obj.id, inst.id, enabled);
+  };
 
   const handleAddEffect = (type: string) => {
     const effectId = addEffect(obj.id, type);
@@ -703,13 +812,86 @@ export function InspectorPanel() {
         })}
       </InspectorFoldout>
 
-      <InspectorFoldout label="Expression" expanded={isExpanded("expression")} onToggle={() => toggleExpanded("expression")}>
+      <InspectorFoldout label="Expressions" expanded={isExpanded("expressions")} onToggle={() => toggleExpanded("expressions")}>
         <button
-          style={{ ...btnStyle, fontSize: 10, color: posExprOn ? "#f0c040" : "#bbb", borderColor: posExprOn ? "#aa7" : "#444" }}
-          onClick={toggleWiggle}
+          type="button"
+          onClick={() => setAddExprPresetOpen((o) => !o)}
+          style={{ ...btnStyle, width: "100%", marginBottom: 8, fontSize: 11 }}
         >
-          {posExprOn ? "● Wiggle Position (on)" : "○ Wiggle Position"}
+          {addExprPresetOpen ? "▾ Expression を選択" : "+ Expression を追加"}
         </button>
+        {addExprPresetOpen && (
+          <div style={{ marginBottom: 10, padding: "6px 4px", background: "#2a3340", border: "1px solid #5a8fd0", borderRadius: 4 }}>
+            {EXPRESSION_PRESET_LIST.map((preset) => (
+              <button
+                key={preset.id}
+                type="button"
+                onClick={() => handleAddExpressionPreset(preset.id)}
+                style={{
+                  display: "block",
+                  width: "100%",
+                  background: "transparent",
+                  border: "none",
+                  color: "#ddd",
+                  padding: "6px 8px",
+                  textAlign: "left",
+                  cursor: "pointer",
+                  fontSize: 11,
+                  borderRadius: 3,
+                }}
+                onMouseEnter={(ev) => { ev.currentTarget.style.background = "#3a5068"; }}
+                onMouseLeave={(ev) => { ev.currentTarget.style.background = "transparent"; }}
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
+        )}
+        {expressionInstances.length === 0 && !addExprPresetOpen && (
+          <div style={{ color: "#666", fontSize: 10, marginBottom: 6, padding: "0 2px" }}>
+            Expression なし — 上のボタンから追加
+          </div>
+        )}
+        {expressionInstances.map((inst) => {
+          const def = EXPRESSION_PRESETS[inst.presetId as ExpressionPresetId];
+          const label = def?.label ?? inst.presetId;
+          const sectionKey = `expr:${inst.id}`;
+          const isLegacy = inst.id.startsWith("legacy-");
+          return (
+            <div key={inst.id} style={{ marginBottom: 4 }}>
+              <InspectorFoldout
+                label={`${inst.enabled ? "●" : "○"} ${label}${isLegacy ? " (legacy)" : ""}`}
+                expanded={isExpanded(sectionKey)}
+                onToggle={() => toggleExpanded(sectionKey)}
+              >
+                <div style={{ display: "flex", gap: 4, marginBottom: 6 }}>
+                  <button
+                    onClick={() => handleToggleExpression(inst, !inst.enabled)}
+                    style={{ ...btnStyle, fontSize: 10 }}
+                  >
+                    {inst.enabled ? "Disable" : "Enable"}
+                  </button>
+                  <button
+                    onClick={() => handleRemoveExpression(inst)}
+                    style={{ ...btnStyle, fontSize: 10, color: "#f66" }}
+                  >
+                    ×
+                  </button>
+                </div>
+                <ExpressionPresetFields
+                  obj={obj}
+                  instance={inst}
+                  params={def?.params ?? []}
+                  frame={frame}
+                  readOnly={isLegacy}
+                  onMigrate={() => void addExpressionPreset(obj.id, inst.presetId as ExpressionPresetId)}
+                  updateObject={updateObject}
+                  previewPatch={previewPatch}
+                />
+              </InspectorFoldout>
+            </div>
+          );
+        })}
       </InspectorFoldout>
 
       <InspectorFoldout label="Keyframes" expanded={isExpanded("keyframes")} onToggle={() => toggleExpanded("keyframes")}>
@@ -768,6 +950,109 @@ export function InspectorPanel() {
         </Row>
       </InspectorFoldout>
     </div>
+  );
+}
+
+function ExpressionPresetFields({
+  obj,
+  instance,
+  params,
+  frame,
+  readOnly,
+  onMigrate,
+  updateObject,
+  previewPatch,
+}: {
+  obj: SceneObject;
+  instance: ExpressionPresetInstance;
+  params: ParamDescriptor[];
+  frame: number;
+  readOnly: boolean;
+  onMigrate: () => void;
+  updateObject: (id: string, patch: Partial<SceneObject>, label?: string) => void;
+  previewPatch: (patch: Partial<SceneObject>) => void;
+}) {
+  const props = instance.props;
+
+  const writePresets = (nextProps: ExpressionPresetInstance["props"], label: string) => {
+    if (readOnly) {
+      onMigrate();
+      return;
+    }
+    const next = (obj.expressionPresets ?? []).map((p) =>
+      p.id === instance.id ? { ...p, props: nextProps } : p,
+    );
+    updateObject(obj.id, { expressionPresets: next }, label);
+  };
+
+  const previewPresets = (nextProps: ExpressionPresetInstance["props"]) => {
+    if (readOnly) return;
+    previewPatch({
+      expressionPresets: (obj.expressionPresets ?? []).map((p) =>
+        p.id === instance.id ? { ...p, props: nextProps } : p,
+      ),
+    });
+  };
+
+  const writeAnim = <T,>(key: string, next: AnimatedProp<T>, label: string) => {
+    writePresets({ ...props, [key]: next }, label);
+  };
+
+  const previewAnim = <T,>(key: string, next: AnimatedProp<T>) => {
+    previewPresets({ ...props, [key]: next });
+  };
+
+  const toggleKf = (key: string, prop: AnimatedProp<unknown>) => {
+    if (readOnly) {
+      onMigrate();
+      return;
+    }
+    if (prop.keyframes.length > 0) writeAnim(key, { value: prop.value, keyframes: [] }, `Disable ${key} keyframes`);
+    else writeAnim(key, setKeyframe(prop, frame, prop.value, { type: "hold" }), `Enable ${key} keyframes`);
+  };
+
+  return (
+    <>
+      {readOnly && (
+        <div style={{ fontSize: 10, color: "#888", marginBottom: 6 }}>
+          旧形式 — パラメータ編集で新形式へ移行します
+        </div>
+      )}
+      {params.map((param) => {
+        const stored = props[param.key];
+        const raw =
+          stored === undefined && param.animatable
+            ? staticProp(param.default)
+            : stored;
+        if (!isAnimated(raw)) return null;
+        const val = sampleAny(raw, frame);
+        if (param.kind === "scalar" && typeof val === "number") {
+          return (
+            <AnimScalarRow
+              key={param.key}
+              label={param.label}
+              prop={raw as AnimatedProp<number>}
+              value={val}
+              frame={frame}
+              onToggle={() => toggleKf(param.key, raw)}
+              onCommit={(v) => {
+                if (readOnly) { onMigrate(); return; }
+                if (raw.keyframes.length > 0) writeAnim(param.key, setKeyframe(raw as AnimatedProp<number>, frame, v), `Edit ${param.label}`);
+                else writeAnim(param.key, { ...raw, value: v }, `Edit ${param.label}`);
+              }}
+              onLiveChange={(v) => {
+                if (readOnly) return;
+                previewAnim(param.key, raw.keyframes.length > 0 ? setKeyframe(raw as AnimatedProp<number>, frame, v) : { ...raw, value: v });
+              }}
+              min={param.min}
+              max={param.max}
+              step={param.step}
+            />
+          );
+        }
+        return null;
+      })}
+    </>
   );
 }
 

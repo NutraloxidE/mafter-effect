@@ -600,6 +600,7 @@ interface ExprObjectView {
 - **参照空間（確定）**: `comp.object(x).position` 等は **local 値**。world/comp 空間は `toWorld()/toComp()` で明示取得（§9 の `ExprObjectView`）。
 - **MVP は main thread 実行**（反復速度優先）。worker offload は §16。
 - **相互参照**: 依存グラフを frame ごとにトポロジカルソートして解決。循環はプロジェクトエラーにする。
+- **Inspector プリセット（散文・Phase 0.5）**: `SceneObject.expressionPresets[]` にインスタンス（`presetId` / `enabled` / `props`）。UI は Effect 同型（+追加・disable・×・param scrub/KF）。脚本は共有 FS パス `presets/expressions/<presetId>.js`（write-if-absent）。評価時 `ctx.presetParams` に frame 解決済み props を注入。legacy `scripts/<objectId>/` + `@mafter:preset` は読取互換（開いただけでは project を書き換えない）。
 
 ---
 

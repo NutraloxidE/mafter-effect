@@ -17,6 +17,7 @@ import type {
   BlendMode,
   Easing,
   EffectInstance,
+  ExpressionPresetInstance,
   Frame,
   HtmlComposition,
   Keyframe,
@@ -30,7 +31,7 @@ import type {
   TimelineComposition,
 } from "../core/schema";
 import { IndexedDbFs } from "../fs/IndexedDbFs";
-import { compositionDir, DIR_ASSETS, pluginEntryPath, pluginManifestPath, scriptPath } from "../core/paths";
+import { compositionDir, DIR_ASSETS, pluginEntryPath, pluginManifestPath } from "../core/paths";
 import { compLayerDefaultOutPoint, compWouldCreateCycle } from "../runtime/compLayer";
 import { rescaleCompFps, resizeCompCentered } from "./compEdit";
 import { registerBuiltinComponents } from "../runtime/builtinComponents";
@@ -62,6 +63,15 @@ import { WAVEFORM_MODES, type WaveformMode } from "../audio/waveform";
 import { probeAudioMeta, evictAudioBuffer } from "./audioBufferCache";
 import { globalWaveformCache } from "../fs/WaveformCacheDb";
 import { videoLayerOutPoint } from "./videoLayerOutPoint";
+import {
+  EXPRESSION_PRESETS,
+  buildDefaultPresetProps,
+  ensureAllPresetScripts,
+  ensurePresetScript,
+  presetScriptPath,
+  type ExpressionPresetId,
+} from "./expressionPresets";
+import { bindExpressionFs } from "./expressionModuleHub";
 
 const WAVEFORM_MODE_KEY = "mafter:waveformMode";
 function loadWaveformMode(): WaveformMode {
@@ -84,6 +94,7 @@ registerBuiltinEffects();
 // §17: プロジェクトデータの正は FS（IndexedDbFs）。ストアはその投影。
 
 const fs = new IndexedDbFs("mafter-effect-fs");
+bindExpressionFs(fs);
 const pluginLoader = new ModuleLoader(fs);
 
 // §12 サンプルプラグイン JS（gradient-rect component）。installSamplePlugin() で FS に書き込む。
@@ -223,8 +234,10 @@ export interface EditorStore {
   addHtmlComp: (name?: string) => Promise<string | null>;
   // M2: HTML comp を現タイムラインに html component オブジェクトとして配置する
   addHtmlInstance: (compId: string) => string | null;
-  // M2: 選択プロパティに wiggle expression を付与する（FS に式ファイルを書き込む）
-  addWiggleExpression: (objectId: string) => Promise<void>;
+  // §9 Phase 0.5: expression プリセット（Effect 同型 UI + param KF）
+  addExpressionPreset: (objectId: string, presetId: ExpressionPresetId) => Promise<void>;
+  removeExpressionPreset: (objectId: string, instanceId: string) => void;
+  toggleExpressionPreset: (objectId: string, instanceId: string, enabled: boolean) => void;
   // M3: 音声アセットをインポートして project.assets に追加する
   importAudioAsset: (file: File) => Promise<string | null>;
   // M3: audio component を持つ SceneObject を追加する
@@ -340,6 +353,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         previewOverride: null,
       });
       await get().loadPlugins();
+      await ensureAllPresetScripts(fs);
     } catch {
       // FS に project.json が無い場合など: 新規作成
       get().newProject();
@@ -733,25 +747,132 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     return id;
   },
 
-  addWiggleExpression: async (objectId) => {
+  addExpressionPreset: async (objectId, presetId) => {
+    const before = get().project;
+    const comp = currentTimelineComp(before, get().currentCompId);
+    const obj = comp?.objects.find((o) => o.id === objectId);
+    const preset = EXPRESSION_PRESETS[presetId];
+    if (!before || !comp || !obj || !preset) return;
+
+    await ensurePresetScript(fs, presetId);
+
+    const filtered = (obj.expressionPresets ?? []).filter((p) => {
+      const def = EXPRESSION_PRESETS[p.presetId as ExpressionPresetId];
+      return def?.param !== preset.param;
+    });
+
+    const instance: ExpressionPresetInstance = {
+      id: newObjectId(),
+      presetId,
+      enabled: true,
+      props: buildDefaultPresetProps(presetId),
+    };
+
+    const path = presetScriptPath(presetId);
+    const exprRef = { path, enabled: true as const };
+    const expressionPresets = [...filtered, instance];
+
+    if (preset.param === "position") {
+      get().updateObject(
+        objectId,
+        {
+          expressionPresets,
+          transform: {
+            ...obj.transform,
+            position: { ...obj.transform.position, expression: exprRef },
+          },
+        },
+        `Add ${preset.label}`,
+      );
+    } else {
+      get().updateObject(
+        objectId,
+        {
+          expressionPresets,
+          transform: {
+            ...obj.transform,
+            scale: { ...obj.transform.scale, expression: exprRef },
+          },
+        },
+        `Add ${preset.label}`,
+      );
+    }
+  },
+
+  removeExpressionPreset: (objectId, instanceId) => {
     const before = get().project;
     const comp = currentTimelineComp(before, get().currentCompId);
     const obj = comp?.objects.find((o) => o.id === objectId);
     if (!before || !comp || !obj) return;
-    // §9 expression ファイル: scripts/<objectId>/position.js（純関数 default export）
-    const path = scriptPath(objectId, "position");
-    await fs.write(
-      path,
-      `// Mafter Effect expression — wiggle position (§9)\nexport default (ctx) => ctx.wiggle(2, 60);\n`,
-    );
-    const nextObj: SceneObject = {
-      ...obj,
-      transform: {
-        ...obj.transform,
-        position: { ...obj.transform.position, expression: { path, enabled: true } },
-      },
+
+    const inst = obj.expressionPresets?.find((p) => p.id === instanceId);
+    if (!inst) return;
+    const preset = EXPRESSION_PRESETS[inst.presetId as ExpressionPresetId];
+    if (!preset) return;
+
+    const expressionPresets = (obj.expressionPresets ?? []).filter((p) => p.id !== instanceId);
+    const patch: Partial<SceneObject> = {
+      expressionPresets: expressionPresets.length > 0 ? expressionPresets : undefined,
     };
-    get().updateObject(objectId, { transform: nextObj.transform }, "Add wiggle expression");
+
+    if (preset.param === "position") {
+      const { expression: _ex, ...posRest } = obj.transform.position;
+      patch.transform = { ...obj.transform, position: posRest };
+    } else {
+      const { expression: _ex, ...scaleRest } = obj.transform.scale;
+      patch.transform = { ...obj.transform, scale: scaleRest };
+    }
+
+    get().updateObject(objectId, patch, `Remove ${preset.label}`);
+  },
+
+  toggleExpressionPreset: (objectId, instanceId, enabled) => {
+    const before = get().project;
+    const comp = currentTimelineComp(before, get().currentCompId);
+    const obj = comp?.objects.find((o) => o.id === objectId);
+    if (!before || !comp || !obj) return;
+
+    const inst = obj.expressionPresets?.find((p) => p.id === instanceId);
+    if (!inst) return;
+    const preset = EXPRESSION_PRESETS[inst.presetId as ExpressionPresetId];
+    if (!preset) return;
+
+    const expressionPresets = (obj.expressionPresets ?? []).map((p) =>
+      p.id === instanceId ? { ...p, enabled } : p,
+    );
+
+    const path =
+      (preset.param === "position"
+        ? obj.transform.position.expression?.path
+        : obj.transform.scale.expression?.path) ?? presetScriptPath(inst.presetId as ExpressionPresetId);
+
+    const exprRef = { path, enabled: enabled as boolean };
+
+    if (preset.param === "position") {
+      get().updateObject(
+        objectId,
+        {
+          expressionPresets,
+          transform: {
+            ...obj.transform,
+            position: { ...obj.transform.position, expression: exprRef },
+          },
+        },
+        enabled ? `Enable ${preset.label}` : `Disable ${preset.label}`,
+      );
+    } else {
+      get().updateObject(
+        objectId,
+        {
+          expressionPresets,
+          transform: {
+            ...obj.transform,
+            scale: { ...obj.transform.scale, expression: exprRef },
+          },
+        },
+        enabled ? `Enable ${preset.label}` : `Disable ${preset.label}`,
+      );
+    }
   },
 
   addSolid: (name) => {

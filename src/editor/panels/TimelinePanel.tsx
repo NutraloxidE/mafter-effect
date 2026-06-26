@@ -34,6 +34,7 @@ import type {
 import { sampleAny, sampleScalar, sampleVec3 } from "../../runtime/interpolate";
 import { activeCameraAt } from "../../runtime/resolve";
 import { globalPluginRegistry } from "../../runtime/pluginRegistry";
+import { EXPRESSION_PRESETS, type ExpressionPresetId } from "../expressionPresets";
 import { previewCacheService } from "../previewCacheService";
 import { framesToSegments } from "../cacheSegments";
 import { precompChildToParentFrame } from "../../cache/precompFrameKey";
@@ -415,6 +416,7 @@ export function TimelinePanel() {
       let touchedTransform = false;
       const compMods = new Map<number, Map<string, AnimatedProp<unknown>>>();
       const effectMods = new Map<string, Map<string, AnimatedProp<unknown>>>();
+      const exprPresetMods = new Map<string, Map<string, AnimatedProp<unknown>>>();
       for (const [path, newKfs] of pm) {
         const prop = getPropByPath(obj, path);
         const merged = [
@@ -442,6 +444,14 @@ export function TimelinePanel() {
           const key = rest.slice(dot + 1);
           if (!effectMods.has(effectId)) effectMods.set(effectId, new Map());
           effectMods.get(effectId)!.set(key, nextProp);
+        } else if (path.startsWith("expressionPresets.")) {
+          const rest = path.slice("expressionPresets.".length);
+          const dot = rest.indexOf(".");
+          if (dot < 0) continue;
+          const instanceId = rest.slice(0, dot);
+          const key = rest.slice(dot + 1);
+          if (!exprPresetMods.has(instanceId)) exprPresetMods.set(instanceId, new Map());
+          exprPresetMods.get(instanceId)!.set(key, nextProp);
         }
       }
       if (touchedTransform) patch.transform = transform;
@@ -457,6 +467,13 @@ export function TimelinePanel() {
           const kv = effectMods.get(e.id);
           if (!kv) return e;
           return { ...e, props: { ...e.props, ...Object.fromEntries(kv) } };
+        });
+      }
+      if (exprPresetMods.size > 0 && obj.expressionPresets) {
+        patch.expressionPresets = obj.expressionPresets.map((p) => {
+          const kv = exprPresetMods.get(p.id);
+          if (!kv) return p;
+          return { ...p, props: { ...p.props, ...Object.fromEntries(kv) } };
         });
       }
       patches.push({ id: objId, patch });
@@ -673,6 +690,15 @@ export function TimelinePanel() {
       const key = rest.slice(dot + 1);
       patch.effects = (obj.effects ?? []).map((e) =>
         e.id === effectId ? { ...e, props: { ...e.props, [key]: next } } : e,
+      );
+    } else if (propPath.startsWith("expressionPresets.")) {
+      const rest = propPath.slice("expressionPresets.".length);
+      const dot = rest.indexOf(".");
+      if (dot < 0) return;
+      const instanceId = rest.slice(0, dot);
+      const key = rest.slice(dot + 1);
+      patch.expressionPresets = (obj.expressionPresets ?? []).map((p) =>
+        p.id === instanceId ? { ...p, props: { ...p.props, [key]: next } } : p,
       );
     } else return;
     updateObject(objId, patch, label);
@@ -2187,6 +2213,41 @@ function LayerRow(props: LayerRowProps) {
               );
             });
           })}
+          {(obj.expressionPresets ?? []).map((inst) => {
+            const def = EXPRESSION_PRESETS[inst.presetId as ExpressionPresetId];
+            if (!def) return null;
+            return Object.entries(inst.props).map(([key, val]) => {
+              if (!isAnimatedProp(val)) return null;
+              const param = def.params.find((p) => p.key === key);
+              if (param && !param.animatable) return null;
+              const label = param?.label ?? key;
+              const kind: ParamKind = param?.kind ?? "scalar";
+              const animated = val.keyframes.length > 0;
+              if (!showInMode(expandMode, animated, animated || val.value !== (param?.default ?? 0))) return null;
+              return (
+                <PropRowExpression
+                  key={`expr_${inst.id}_${key}`}
+                  obj={obj}
+                  instanceId={inst.id}
+                  propKey={key}
+                  label={`${def.label}: ${label}`}
+                  kind={kind}
+                  frame={frame}
+                  kfShift={kfPreviewShift}
+                  selectedKfs={selectedKfs}
+                  kfDrag={kfDrag}
+                  beginKfDrag={beginKfDrag}
+                  onKfRightClick={onKfRightClick}
+                  onUpdate={onUpdate}
+                  onPreviewPatch={onPreviewPatch}
+                  frameToPercent={frameToPercent}
+                  graphMode={graphMode}
+                  viewRange={viewRange}
+                  onSetProp={onSetProp}
+                />
+              );
+            });
+          })}
         </div>
       )}
     </div>
@@ -2539,6 +2600,71 @@ function PropRowEffect({
         <span style={{ fontSize: 10, color: "#aaa" }}>
           {Math.round((sampled as RGBA).r * 255)},{Math.round((sampled as RGBA).g * 255)},{Math.round((sampled as RGBA).b * 255)}
         </span>
+      ) : (
+        <span style={{ color: "#777", fontSize: 10 }}>{kind}</span>
+      )}
+    </PropRowShell>
+  );
+}
+
+function PropRowExpression({
+  obj, instanceId, propKey, label, kind, frame, kfShift, selectedKfs, kfDrag, beginKfDrag, onKfRightClick, onUpdate, onPreviewPatch, frameToPercent, graphMode, viewRange, onSetProp,
+}: {
+  obj: SceneObject; instanceId: string; propKey: string; label: string; kind: ParamKind;
+  frame: Frame; kfShift: number;
+  selectedKfs: Set<string>; kfDrag: KfDragState | null;
+  beginKfDrag: (objId: string, path: PropPath, frame: number, e: React.MouseEvent) => void;
+  onKfRightClick: (key: string, x: number, y: number) => void;
+  onUpdate: (id: string, patch: Partial<SceneObject>, label?: string) => void;
+  onPreviewPatch?: (id: string, patch: Partial<SceneObject>) => void;
+  frameToPercent: (f: number) => number;
+  graphMode: boolean; viewRange: { start: number; end: number };
+  onSetProp: (objId: string, path: PropPath, next: AnimatedProp<unknown>, label: string) => void;
+}) {
+  const inst = obj.expressionPresets?.find((p) => p.id === instanceId);
+  if (!inst) return null;
+  const rawVal = inst.props[propKey];
+  if (!isAnimatedProp(rawVal)) return null;
+  const prop = rawVal;
+  const animated = prop.keyframes.length > 0;
+  const sampled = sampleAny(prop, frame);
+  const propPath = `expressionPresets.${instanceId}.${propKey}`;
+  const presetDef = EXPRESSION_PRESETS[inst.presetId as ExpressionPresetId];
+  const paramDef = presetDef?.params.find((p) => p.key === propKey);
+
+  const writeProp = (next: AnimatedProp<unknown>, lbl: string) => {
+    const nextPresets = (obj.expressionPresets ?? []).map((p) =>
+      p.id === instanceId ? { ...p, props: { ...p.props, [propKey]: next } } : p,
+    );
+    onUpdate(obj.id, { expressionPresets: nextPresets }, lbl);
+  };
+
+  const previewProp = (next: AnimatedProp<unknown>) => {
+    if (!onPreviewPatch) return;
+    onPreviewPatch(obj.id, {
+      expressionPresets: (obj.expressionPresets ?? []).map((p) =>
+        p.id === instanceId ? { ...p, props: { ...p.props, [propKey]: next } } : p,
+      ),
+    });
+  };
+
+  const toggleStopwatch = () => {
+    if (animated) writeProp({ value: prop.value, keyframes: [] }, `Disable ${propKey} keyframes`);
+    else writeProp(setKeyframe(prop as AnimatedProp<unknown>, frame, prop.value, { type: "linear" } as Easing), `Enable ${propKey} keyframes`);
+  };
+
+  return (
+    <PropRowShell label={label} animated={animated} onStopwatch={toggleStopwatch} prop={prop} frame={frame} kfShift={kfShift} objId={obj.id} propPath={propPath} selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onKfRightClick={onKfRightClick} frameToPercent={frameToPercent} graphMode={graphMode} viewRange={viewRange} onSetProp={onSetProp}>
+      {kind === "scalar" && typeof sampled === "number" ? (
+        <NumberField value={sampled} onCommit={(num) => {
+          if (!Number.isFinite(num)) return;
+          if (animated) writeProp(setKeyframe(prop as AnimatedProp<unknown>, frame, num, { type: "linear" } as Easing), `Edit ${propKey}`);
+          else writeProp({ ...prop, value: num }, `Edit ${propKey}`);
+        }} onLiveChange={(num) => {
+          if (!Number.isFinite(num)) return;
+          if (animated) previewProp(setKeyframe(prop as AnimatedProp<unknown>, frame, num, { type: "linear" } as Easing));
+          else previewProp({ ...prop, value: num });
+        }} min={paramDef?.min} max={paramDef?.max} step={paramDef?.step} />
       ) : (
         <span style={{ color: "#777", fontSize: 10 }}>{kind}</span>
       )}

@@ -13,7 +13,11 @@ import { ExpressionEngine } from "../src/runtime/expressionEngine";
 import { MockModuleLoader } from "../src/runtime/moduleLoader";
 import { HtmlCompPlayer } from "../src/runtime/htmlComp";
 import { defaultTransform, staticProp, vec3 } from "../src/core/props";
-import type { HtmlComposition, TimelineComposition } from "../src/core/schema";
+import type { HtmlComposition, TimelineComposition, Vec3 } from "../src/core/schema";
+import {
+  EXPRESSION_PRESETS,
+  parsePresetMarker,
+} from "../src/editor/expressionPresets";
 
 // ─── seededRandom ────────────────────────────────────────────────────────────
 
@@ -272,6 +276,159 @@ describe("ExpressionEngine — module evaluation (§9)", () => {
     expect(view.position.x).toBeCloseTo(100);
     expect(view.position.y).toBeCloseTo(200);
     expect(view.opacity).toBeCloseTo(1);
+  });
+});
+
+// ─── Expression presets (Inspector §9) ─────────────────────────────────────────
+
+describe("expression presets — marker parse", () => {
+  it("parsePresetMarker reads @mafter:preset from preset scripts", () => {
+    expect(parsePresetMarker(EXPRESSION_PRESETS["wiggle-position"].script)).toBe("wiggle-position");
+    expect(parsePresetMarker(EXPRESSION_PRESETS["oscillate-position"].script)).toBe("oscillate-position");
+    expect(parsePresetMarker(EXPRESSION_PRESETS["pulse-scale"].script)).toBe("pulse-scale");
+  });
+
+  it("parsePresetMarker returns null for unknown or missing marker", () => {
+    expect(parsePresetMarker("// no marker\nexport default (ctx) => ctx.value;")).toBeNull();
+    expect(parsePresetMarker("// @mafter:preset unknown-id")).toBeNull();
+  });
+});
+
+describe("expression presets — oscillate / pulse evaluation (§9, INV-1)", () => {
+  type Ctx = { time: number; value: Vec3 };
+
+  const oscillateFn = (ctx: Ctx): Vec3 => ({
+    ...ctx.value,
+    y: ctx.value.y + Math.sin(ctx.time * Math.PI * 2) * 30,
+  });
+
+  const pulseFn = (ctx: Ctx): Vec3 => {
+    const m = 1 + 0.1 * Math.sin(ctx.time * Math.PI * 2 * 2);
+    return { x: ctx.value.x * m, y: ctx.value.y * m, z: ctx.value.z };
+  };
+
+  function makeObjWithPositionExpr(id: string): TimelineComposition["objects"][0] {
+    return {
+      id,
+      name: id,
+      parent: null,
+      zOrder: 1,
+      enabled: true,
+      inPoint: 0,
+      outPoint: 100,
+      transform: {
+        ...defaultTransform(),
+        position: {
+          value: vec3(0, 100, 0),
+          keyframes: [],
+          expression: { path: `scripts/${id}/position.js`, enabled: true },
+        },
+      },
+      opacity: staticProp(1),
+      components: [],
+    };
+  }
+
+  function makeObjWithScaleExpr(id: string): TimelineComposition["objects"][0] {
+    return {
+      id,
+      name: id,
+      parent: null,
+      zOrder: 1,
+      enabled: true,
+      inPoint: 0,
+      outPoint: 100,
+      transform: {
+        ...defaultTransform(),
+        scale: {
+          value: vec3(1, 1, 1),
+          keyframes: [],
+          expression: { path: `scripts/${id}/scale.js`, enabled: true },
+        },
+      },
+      opacity: staticProp(1),
+      components: [],
+    };
+  }
+
+  it("oscillate: frame 0 has zero Y offset (sin(0)=0)", async () => {
+    const loader = new MockModuleLoader();
+    loader.register("scripts/obj/position.js", oscillateFn);
+    const engine = new ExpressionEngine(loader);
+    const comp = makeComp([makeObjWithPositionExpr("obj")]);
+    await engine.prepare(comp);
+    const evaluator = engine.makeEvaluator(comp);
+    const result = evaluator({
+      path: "scripts/obj/position.js",
+      frame: 0,
+      fps: 30,
+      value: vec3(0, 100, 0),
+      objectId: "obj",
+    }) as Vec3;
+    expect(result.y).toBeCloseTo(100);
+  });
+
+  it("oscillate: non-zero frame changes Y deterministically", async () => {
+    const loader = new MockModuleLoader();
+    loader.register("scripts/obj/position.js", oscillateFn);
+    const engine = new ExpressionEngine(loader);
+    const comp = makeComp([makeObjWithPositionExpr("obj")]);
+    await engine.prepare(comp);
+    const evaluator = engine.makeEvaluator(comp);
+    const at7 = evaluator({
+      path: "scripts/obj/position.js",
+      frame: 7,
+      fps: 30,
+      value: vec3(0, 100, 0),
+      objectId: "obj",
+    }) as Vec3;
+    const at7again = evaluator({
+      path: "scripts/obj/position.js",
+      frame: 7,
+      fps: 30,
+      value: vec3(0, 100, 0),
+      objectId: "obj",
+    }) as Vec3;
+    expect(at7.y).toBeCloseTo(at7again.y);
+    expect(at7.y).not.toBeCloseTo(100, 1);
+  });
+
+  it("pulse: scale stays within ±10% of base (INV-1 deterministic)", async () => {
+    const loader = new MockModuleLoader();
+    loader.register("scripts/obj/scale.js", pulseFn);
+    const engine = new ExpressionEngine(loader);
+    const comp = makeComp([makeObjWithScaleExpr("obj")]);
+    await engine.prepare(comp);
+    const evaluator = engine.makeEvaluator(comp);
+    const base = vec3(1, 1, 1);
+    for (let f = 0; f < 60; f++) {
+      const r = evaluator({
+        path: "scripts/obj/scale.js",
+        frame: f,
+        fps: 30,
+        value: base,
+        objectId: "obj",
+      }) as Vec3;
+      expect(r.x).toBeGreaterThanOrEqual(0.9 - 0.001);
+      expect(r.x).toBeLessThanOrEqual(1.1 + 0.001);
+      expect(r.y).toBeGreaterThanOrEqual(0.9 - 0.001);
+      expect(r.y).toBeLessThanOrEqual(1.1 + 0.001);
+    }
+    const r0 = evaluator({
+      path: "scripts/obj/scale.js",
+      frame: 10,
+      fps: 30,
+      value: base,
+      objectId: "obj",
+    }) as Vec3;
+    const r0b = evaluator({
+      path: "scripts/obj/scale.js",
+      frame: 10,
+      fps: 30,
+      value: base,
+      objectId: "obj",
+    }) as Vec3;
+    expect(r0).toEqual(r0b);
   });
 });
 

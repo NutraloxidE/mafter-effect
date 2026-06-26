@@ -3,10 +3,10 @@ import { resolve, type ExpressionEvaluator } from "../../runtime/resolve";
 import { DomRenderer } from "../../runtime/DomRenderer";
 import { FontOutlineCache } from "../../runtime/fontOutlineCache";
 import { ImageAssetCache, registerPreviewImageCache } from "../../runtime/imageAssetCache";
-import { ExpressionEngine } from "../../runtime/expressionEngine";
 import { HtmlCompPlayer } from "../../runtime/htmlComp";
 import { ModuleLoader } from "../../runtime/moduleLoader";
 import { IndexedDbFs } from "../../fs/IndexedDbFs";
+import { getPreviewExpressionEngine } from "../expressionModuleHub";
 import { compositionDir } from "../../core/paths";
 import {
   compWithTransformOverride,
@@ -45,8 +45,7 @@ import type { HtmlComposition, SceneObject, TimelineComposition, Transform } fro
 import { PreviewViewerOverlay } from "./PreviewViewerOverlay";
 
 const _previewFs = new IndexedDbFs("mafter-effect-fs");
-const _previewLoader = new ModuleLoader(_previewFs);
-const _exprEngine = new ExpressionEngine(_previewLoader);
+const _exprEngine = getPreviewExpressionEngine();
 const _htmlLoader = new ModuleLoader(_previewFs);
 const _htmlPlayer = new HtmlCompPlayer(_htmlLoader);
 

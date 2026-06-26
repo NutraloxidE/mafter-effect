@@ -68,6 +68,14 @@ export interface EffectInstance {
   props: Record<string, AnimatedProp<unknown> | unknown>;
 }
 
+/** §9 Phase 0.5 — レイヤーに付いた expression プリセット（EffectInstance の軽量版） */
+export interface ExpressionPresetInstance {
+  id: string; // ULID (INV-6)
+  presetId: string;
+  enabled: boolean;
+  props: Record<string, AnimatedProp<unknown> | unknown>;
+}
+
 export type ParamKind =
   | "scalar"
   | "vec2"
@@ -102,6 +110,7 @@ export interface SceneObject {
   opacity: AnimatedProp<number>; // 0..1, 全 Object 共通
   components: Component[];
   effects?: EffectInstance[]; // 省略/[] = なし。配列順 = 適用順
+  expressionPresets?: ExpressionPresetInstance[]; // 省略/未設定 = なし（§9 Phase 0.5）
   isAdjustment?: boolean; // true = 調整レイヤー（§27.4）
   adjustmentMode?: "live" | "raster"; // §27.4 省略=live（backdrop-filter）。isAdjustment 時のみ有効
   isNull?: boolean; // true = Null レイヤー（§30）

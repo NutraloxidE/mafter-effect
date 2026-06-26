@@ -48,6 +48,11 @@ export function collectKfFrames(objects: SceneObject[], selectedIds: string[]): 
         if (isAnimatedProp(val)) val.keyframes.forEach((kf) => frameSet.add(kf.frame));
       }
     }
+    for (const inst of obj.expressionPresets ?? []) {
+      for (const val of Object.values(inst.props)) {
+        if (isAnimatedProp(val)) val.keyframes.forEach((kf) => frameSet.add(kf.frame));
+      }
+    }
   }
   return [...frameSet].sort((a, b) => a - b);
 }
@@ -74,6 +79,16 @@ export function getPropByPath(obj: SceneObject, path: PropPath): AnimatedProp<un
     const key = rest.slice(dot + 1);
     const effect = obj.effects?.find((e) => e.id === effectId);
     const val = effect?.props[key];
+    if (isAnimatedProp(val)) return val;
+  }
+  if (path.startsWith("expressionPresets.")) {
+    const rest = path.slice("expressionPresets.".length);
+    const dot = rest.indexOf(".");
+    if (dot < 0) return { value: 0, keyframes: [] };
+    const instanceId = rest.slice(0, dot);
+    const key = rest.slice(dot + 1);
+    const inst = obj.expressionPresets?.find((p) => p.id === instanceId);
+    const val = inst?.props[key];
     if (isAnimatedProp(val)) return val;
   }
   return { value: 0, keyframes: [] };
@@ -131,6 +146,7 @@ export function buildKfPatches(
     let touchedTransform = false;
     const compMods = new Map<number, Map<string, AnimatedProp<unknown>>>();
     const effectMods = new Map<string, Map<string, AnimatedProp<unknown>>>();
+    const exprPresetMods = new Map<string, Map<string, AnimatedProp<unknown>>>();
     for (const [path, frames] of pm) {
       const next = fn(getPropByPath(obj, path), frames);
       if (path === "opacity") {
@@ -154,6 +170,14 @@ export function buildKfPatches(
         const key = rest.slice(dot + 1);
         if (!effectMods.has(effectId)) effectMods.set(effectId, new Map());
         effectMods.get(effectId)!.set(key, next);
+      } else if (path.startsWith("expressionPresets.")) {
+        const rest = path.slice("expressionPresets.".length);
+        const dot = rest.indexOf(".");
+        if (dot < 0) continue;
+        const instanceId = rest.slice(0, dot);
+        const key = rest.slice(dot + 1);
+        if (!exprPresetMods.has(instanceId)) exprPresetMods.set(instanceId, new Map());
+        exprPresetMods.get(instanceId)!.set(key, next);
       }
     }
     if (touchedTransform) patch.transform = transform;
@@ -169,6 +193,13 @@ export function buildKfPatches(
         const kv = effectMods.get(e.id);
         if (!kv) return e;
         return { ...e, props: { ...e.props, ...Object.fromEntries(kv) } };
+      });
+    }
+    if (exprPresetMods.size > 0 && obj.expressionPresets) {
+      patch.expressionPresets = obj.expressionPresets.map((p) => {
+        const kv = exprPresetMods.get(p.id);
+        if (!kv) return p;
+        return { ...p, props: { ...p.props, ...Object.fromEntries(kv) } };
       });
     }
     patches.push({ id: objId, patch });

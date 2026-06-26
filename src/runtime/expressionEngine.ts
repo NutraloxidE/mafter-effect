@@ -1,5 +1,5 @@
 import type { AnimatedProp, Frame, ObjectId, TimelineComposition, Vec3 } from "../core/schema";
-import { sampleScalar, sampleVec3 } from "./interpolate";
+import { sampleAny, sampleScalar, sampleVec3 } from "./interpolate";
 import { identity, localMatrix, multiply } from "./mat4";
 import type { Mat4 } from "./mat4";
 import type { IModuleLoader } from "./moduleLoader";
@@ -44,6 +44,8 @@ export interface ExprContext<T> {
   readonly value: T;
   readonly thisObject: ExprObjectView;
   readonly comp: ExprCompView;
+  /** §9 Phase 0.5 — expressionPresets[].props を frame 解決済みで注入。未設定時は {} */
+  readonly presetParams: Readonly<Record<string, unknown>>;
   // 決定論ヘルパー (INV-1)
   random(seed?: number): number;
   wiggle(freq: number, amp: number, seed?: number): T;
@@ -161,6 +163,7 @@ function buildContext<T>(
   value: T,
   objectId: ObjectId,
   comp: TimelineComposition,
+  presetParams: Readonly<Record<string, unknown>> = {},
 ): ExprContext<T> {
   const thisObject = makeObjectView(objectId, comp, frame);
   const compView = makeCompView(comp, frame);
@@ -173,6 +176,7 @@ function buildContext<T>(
     value,
     thisObject,
     comp: compView,
+    presetParams,
 
     random(seed = frame): number {
       return seededOnce((seed * 9301 + 49297) >>> 0);
@@ -234,7 +238,8 @@ export class ExpressionEngine {
     return function evaluator({ path, frame, value, objectId }) {
       const fn = loaded.get(path);
       if (!fn) return value;
-      const ctx = buildContext(frame, fps, value, objectId, comp);
+      const presetParams = resolvePresetParams(comp, objectId, path, frame);
+      const ctx = buildContext(frame, fps, value, objectId, comp, presetParams);
       // Plugin expr helpers を ctx に注入（INV-1: plugin 側の責任で決定論を保証）
       const extras = globalPluginRegistry.getExprHelpers();
       const keys = Object.keys(extras);
@@ -291,4 +296,30 @@ function isAnimatedPropWithExpr(v: unknown): boolean {
     isAnimatedProp(v) &&
     (v as AnimatedProp<unknown>).expression !== undefined
   );
+}
+
+/** path から presetId を解決し、expressionPresets instance の props をサンプル。 */
+function resolvePresetParams(
+  comp: TimelineComposition,
+  objectId: ObjectId,
+  path: string,
+  frame: Frame,
+): Record<string, unknown> {
+  const presetId = presetIdFromPath(path);
+  if (!presetId) return {};
+  const obj = comp.objects.find((o) => o.id === objectId);
+  if (!obj?.expressionPresets) return {};
+  const inst = obj.expressionPresets.find((p) => p.presetId === presetId && p.enabled);
+  if (!inst) return {};
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(inst.props)) {
+    out[key] = sampleAny(inst.props[key], frame);
+  }
+  return out;
+}
+
+function presetIdFromPath(path: string): string | null {
+  const prefix = "presets/expressions/";
+  if (!path.startsWith(prefix) || !path.endsWith(".js")) return null;
+  return path.slice(prefix.length, -3);
 }
