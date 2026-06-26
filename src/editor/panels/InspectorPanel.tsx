@@ -884,7 +884,9 @@ export function InspectorPanel() {
                   params={def?.params ?? []}
                   frame={frame}
                   readOnly={isLegacy}
-                  onMigrate={() => void addExpressionPreset(obj.id, inst.presetId as ExpressionPresetId)}
+                  onMigrate={(propsOverrides) =>
+                    void addExpressionPreset(obj.id, inst.presetId as ExpressionPresetId, propsOverrides)
+                  }
                   updateObject={updateObject}
                   previewPatch={previewPatch}
                 />
@@ -968,7 +970,7 @@ function ExpressionPresetFields({
   params: ParamDescriptor[];
   frame: number;
   readOnly: boolean;
-  onMigrate: () => void;
+  onMigrate: (propsOverrides?: Record<string, unknown>) => void;
   updateObject: (id: string, patch: Partial<SceneObject>, label?: string) => void;
   previewPatch: (patch: Partial<SceneObject>) => void;
 }) {
@@ -1024,6 +1026,26 @@ function ExpressionPresetFields({
           stored === undefined && param.animatable
             ? staticProp(param.default)
             : stored;
+        if (param.kind === "enum" && !param.animatable) {
+          const val = typeof raw === "string" ? raw : String(param.default ?? "");
+          return (
+            <Row key={param.key} label={param.label}>
+              <select
+                value={val}
+                disabled={readOnly}
+                onChange={(e) => {
+                  if (readOnly) { onMigrate({ [param.key]: e.target.value }); return; }
+                  writePresets({ ...props, [param.key]: e.target.value }, `Edit ${param.label}`);
+                }}
+                style={selectStyle}
+              >
+                {(param.options ?? []).map((opt) => (
+                  <option key={opt} value={opt}>{opt}</option>
+                ))}
+              </select>
+            </Row>
+          );
+        }
         if (!isAnimated(raw)) return null;
         const val = sampleAny(raw, frame);
         if (param.kind === "scalar" && typeof val === "number") {

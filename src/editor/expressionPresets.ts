@@ -4,6 +4,7 @@ import type { AnimatedProp, ParamDescriptor } from "../core/schema";
 import { presetExpressionScriptPath } from "../core/paths";
 import { staticProp } from "../core/props";
 import type { IndexedDbFs } from "../fs/IndexedDbFs";
+import { invalidateExpressionPath } from "./expressionModuleHub";
 
 export type ExpressionPresetId = "wiggle-position" | "oscillate-position" | "pulse-scale";
 
@@ -85,6 +86,7 @@ export default (ctx) => {
     param: "scale",
     label: "Pulse Scale",
     params: [
+      { key: "waveform", label: "Waveform", kind: "enum", default: "sine", animatable: false, options: ["sine", "triangle", "square", "sawtooth"] },
       { key: "amount", label: "Amount", kind: "scalar", default: 0.1, animatable: true, min: 0, step: 0.01 },
       { key: "frequency", label: "Frequency", kind: "scalar", default: 2, animatable: true, min: 0, step: 0.1 },
     ],
@@ -93,7 +95,26 @@ export default (ctx) => {
 export default (ctx) => {
   const amount = ctx.presetParams.amount ?? 0.1;
   const freq = ctx.presetParams.frequency ?? 2;
-  const m = 1 + amount * Math.sin(ctx.time * Math.PI * 2 * freq);
+  const waveform = ctx.presetParams.waveform ?? "sine";
+  const phase = ctx.time * freq;
+  const t = phase - Math.floor(phase);
+  let w;
+  switch (waveform) {
+    case "triangle":
+      w = 1 - 4 * Math.abs(t - 0.5);
+      break;
+    case "square":
+      w = Math.sin(phase * Math.PI * 2) >= 0 ? 1 : -1;
+      break;
+    case "sawtooth":
+      w = 2 * t - 1;
+      break;
+    case "sine":
+    default:
+      w = Math.sin(phase * Math.PI * 2);
+      break;
+  }
+  const m = 1 + amount * w;
   return { x: ctx.value.x * m, y: ctx.value.y * m, z: ctx.value.z };
 };
 `,
@@ -120,14 +141,18 @@ export function buildDefaultPresetProps(presetId: ExpressionPresetId): Record<st
   return props;
 }
 
-/** 共有脚本を FS に write-if-absent（決定論的・冪等）。 */
+/** 共有脚本を FS に同期（正本と異なるとき上書き・初回は作成）。 */
 export async function ensurePresetScript(fs: IndexedDbFs, presetId: ExpressionPresetId): Promise<void> {
   const path = presetScriptPath(presetId);
+  const canonical = EXPRESSION_PRESETS[presetId].script;
   try {
-    await fs.readText(path);
+    const existing = await fs.readText(path);
+    if (existing === canonical) return;
   } catch {
-    await fs.write(path, EXPRESSION_PRESETS[presetId].script);
+    // missing — fall through to write
   }
+  await fs.write(path, canonical);
+  invalidateExpressionPath(path);
 }
 
 /** 全プリセット脚本を write-if-absent。 */

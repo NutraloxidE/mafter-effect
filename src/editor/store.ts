@@ -235,7 +235,11 @@ export interface EditorStore {
   // M2: HTML comp を現タイムラインに html component オブジェクトとして配置する
   addHtmlInstance: (compId: string) => string | null;
   // §9 Phase 0.5: expression プリセット（Effect 同型 UI + param KF）
-  addExpressionPreset: (objectId: string, presetId: ExpressionPresetId) => Promise<void>;
+  addExpressionPreset: (
+    objectId: string,
+    presetId: ExpressionPresetId,
+    propsOverrides?: Record<string, unknown>,
+  ) => Promise<void>;
   removeExpressionPreset: (objectId: string, instanceId: string) => void;
   toggleExpressionPreset: (objectId: string, instanceId: string, enabled: boolean) => void;
   // M3: 音声アセットをインポートして project.assets に追加する
@@ -747,7 +751,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     return id;
   },
 
-  addExpressionPreset: async (objectId, presetId) => {
+  addExpressionPreset: async (objectId, presetId, propsOverrides) => {
     const before = get().project;
     const comp = currentTimelineComp(before, get().currentCompId);
     const obj = comp?.objects.find((o) => o.id === objectId);
@@ -765,7 +769,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       id: newObjectId(),
       presetId,
       enabled: true,
-      props: buildDefaultPresetProps(presetId),
+      props: { ...buildDefaultPresetProps(presetId), ...propsOverrides },
     };
 
     const path = presetScriptPath(presetId);

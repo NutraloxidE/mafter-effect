@@ -418,11 +418,17 @@ export function PreviewPanel() {
     const allTimelineComps = (project?.compositions ?? []).filter(
       (c): c is TimelineComposition => c.kind === "timeline",
     );
+    const liveComp = (c: TimelineComposition): TimelineComposition =>
+      (useEditorStore.getState().project?.compositions.find(
+        (x) => x.id === c.id && x.kind === "timeline",
+      ) as TimelineComposition | undefined) ?? c;
+    const makeLiveEvaluator = (c: TimelineComposition) =>
+      _exprEngine.makeEvaluator(c, () => liveComp(c));
     void Promise.all([
       Promise.all(allTimelineComps.map((c) => _exprEngine.prepare(c))).then(() => {
-        evaluatorRef.current = _exprEngine.makeEvaluator(comp);
+        evaluatorRef.current = makeLiveEvaluator(comp);
         rendererRef.current?.setCompEvaluators(
-          new Map(allTimelineComps.map((c) => [c.id, _exprEngine.makeEvaluator(c)])),
+          new Map(allTimelineComps.map((c) => [c.id, makeLiveEvaluator(c)])),
         );
       }),
       _htmlPlayer.prepare(htmlComps, (id) => `${compositionDir(id)}/script.js`),

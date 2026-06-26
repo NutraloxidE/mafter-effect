@@ -459,3 +459,16 @@ canvas 化結果は以降から見て通常の背面ピクセルと等価（zOrd
   - [PreviewPanel.tsx](src/editor/panels/PreviewPanel.tsx) — 共有 expression loader 経由
   - spec §9 散文追記、`test/expr.test.ts` に marker / 評価テスト
 - **検証**: `npm run typecheck`、`npm test`（expr プリセットテスト含む）
+
+### 2026-06-27（Cursor）— Pulse Scale 波形プルダウン
+
+- **要請**: pulse scale インスペクタで波形形状をプルダウン選択（KF 不要）。
+- **実装**: [expressionPresets.ts](src/editor/expressionPresets.ts) — `waveform` enum（sine / triangle / square / sawtooth・非アニメ）+ 脚本の波形分岐。`ensurePresetScript` を正本同期（既存 FS も起動時更新）。[InspectorPanel.tsx](src/editor/panels/InspectorPanel.tsx) `ExpressionPresetFields` に enum 行（Effect 同型）。`test/expressionPresetInstance.test.ts` に waveform 注入・形状テスト追加。
+- **検証**: `npm test` expressionPresetInstance 7 PASS / typecheck 緑。
+
+### 2026-06-27（Cursor）— Pulse Scale 波形プルダウンが効かない 修正
+
+- **症状**: Waveform を変えてもプレビューが sine のまま。
+- **真因 (2)**: (1) `makeEvaluator(comp)` が comp をクロージャ固定 → Inspector で `expressionPresets.props` を更新しても評価時は古い props。(2) 脚本更新後 `ModuleLoader` キャッシュ未破棄 → 旧 pulse-scale.js（波形分岐なし）が動き続ける。legacy 表示は readOnly で enum 変更が migrate デフォルトのみ。
+- **修正**: `makeEvaluator(comp, resolveComp?)` + PreviewPanel で store から live comp 参照。`ensurePresetScript` 書込時に `invalidateExpressionPath`。legacy enum 変更は migrate 時に選択波形を `propsOverrides` で渡す。
+- **検証**: `test/expressionPresetInstance.test.ts` live props テスト追加・typecheck 緑。

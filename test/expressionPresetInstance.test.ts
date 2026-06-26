@@ -7,6 +7,7 @@ import { ExpressionEngine } from "../src/runtime/expressionEngine";
 import { MockModuleLoader } from "../src/runtime/moduleLoader";
 import {
   buildDefaultPresetProps,
+  EXPRESSION_PRESETS,
   presetIdFromExpressionPath,
   presetScriptPath,
 } from "../src/editor/expressionPresets";
@@ -138,5 +139,117 @@ describe("ExpressionEngine presetParams", () => {
     }) as Vec3;
     expect(result.x).toBeCloseTo(100, 5);
     expect(result.y).toBeCloseTo(200, 5);
+  });
+});
+
+describe("pulse-scale waveform param", () => {
+  it("buildDefaultPresetProps includes static waveform", () => {
+    const props = buildDefaultPresetProps("pulse-scale");
+    expect(props.waveform).toBe("sine");
+    expect(props.amount).toEqual(staticProp(0.1));
+  });
+
+  it("passes waveform string via presetParams", async () => {
+    const comp = makeComp();
+    const obj = comp.objects[0]!;
+    const path = presetScriptPath("pulse-scale");
+    obj.expressionPresets = [
+      {
+        id: "01EXPRPRESET0002",
+        presetId: "pulse-scale",
+        enabled: true,
+        props: {
+          ...buildDefaultPresetProps("pulse-scale"),
+          waveform: "square",
+        },
+      },
+    ];
+    obj.transform.scale = {
+      value: vec3(1, 1, 1),
+      keyframes: [],
+      expression: { path, enabled: true },
+    };
+
+    let capturedWaveform: unknown;
+    const loader = new MockModuleLoader();
+    loader.register(path, (ctx: { presetParams: Record<string, unknown>; value: Vec3 }) => {
+      capturedWaveform = ctx.presetParams.waveform;
+      return ctx.value;
+    });
+    const engine = new ExpressionEngine(loader);
+    await engine.prepare(comp);
+    const evaluator = engine.makeEvaluator(comp);
+    evaluator({ path, frame: 0, fps: 30, value: vec3(1, 1, 1), objectId: obj.id });
+    expect(capturedWaveform).toBe("square");
+  });
+
+  it("waveform shapes modulate scale deterministically (INV-1)", async () => {
+    const src = EXPRESSION_PRESETS["pulse-scale"].script;
+    const url = `data:text/javascript,${encodeURIComponent(src)}`;
+    const mod = (await import(/* @vite-ignore */ url)) as { default: (ctx: {
+      time: number;
+      value: Vec3;
+      presetParams: Record<string, unknown>;
+    }) => Vec3 };
+    const pulseFn = mod.default;
+    const base = vec3(100, 100, 0);
+    const ctx = (time: number, waveform: string) => ({
+      time,
+      value: base,
+      presetParams: { amount: 0.1, frequency: 1, waveform },
+    });
+
+    // freq=1 → period 1s. triangle peaks at t=0.5; square/sine at quarter period
+    const trianglePeak = pulseFn(ctx(0.5, "triangle"));
+    expect(trianglePeak.x).toBeCloseTo(110, 5);
+
+    const squareHigh = pulseFn(ctx(0.1, "square"));
+    expect(squareHigh.x).toBeCloseTo(110, 5);
+    const squareLow = pulseFn(ctx(0.6, "square"));
+    expect(squareLow.x).toBeCloseTo(90, 5);
+
+    const saw = pulseFn(ctx(0.25, "sawtooth"));
+    expect(saw.x).toBeCloseTo(95, 5);
+
+    const sine = pulseFn(ctx(0.25, "sine"));
+    expect(sine.x).toBeCloseTo(110, 5);
+
+    const again = pulseFn(ctx(0.25, "sine"));
+    expect(sine).toEqual(again);
+  });
+
+  it("makeEvaluator resolveComp picks up live preset prop edits", async () => {
+    let comp = makeComp();
+    const obj = comp.objects[0]!;
+    const path = presetScriptPath("pulse-scale");
+    obj.expressionPresets = [
+      {
+        id: "01EXPRPRESET0003",
+        presetId: "pulse-scale",
+        enabled: true,
+        props: { ...buildDefaultPresetProps("pulse-scale"), waveform: "sine" },
+      },
+    ];
+    obj.transform.scale = {
+      value: vec3(1, 1, 1),
+      keyframes: [],
+      expression: { path, enabled: true },
+    };
+
+    const captured: string[] = [];
+    const loader = new MockModuleLoader();
+    loader.register(path, (ctx: { presetParams: Record<string, unknown> }) => {
+      captured.push(String(ctx.presetParams.waveform));
+      return vec3(1, 1, 0);
+    });
+    const engine = new ExpressionEngine(loader);
+    await engine.prepare(comp);
+    const evaluator = engine.makeEvaluator(comp, () => comp);
+
+    evaluator({ path, frame: 0, fps: 30, value: vec3(1, 1, 1), objectId: obj.id });
+    const inst = obj.expressionPresets![0]!;
+    inst.props = { ...inst.props, waveform: "square" };
+    evaluator({ path, frame: 0, fps: 30, value: vec3(1, 1, 1), objectId: obj.id });
+    expect(captured).toEqual(["sine", "square"]);
   });
 });

@@ -230,16 +230,24 @@ export class ExpressionEngine {
     );
   }
 
-  /** preload 済みモジュールを使う sync ExpressionEvaluator を返す（resolve に渡す）。 */
-  makeEvaluator(comp: TimelineComposition): ExpressionEvaluator {
+  /**
+   * preload 済みモジュールを使う sync ExpressionEvaluator を返す（resolve に渡す）。
+   * `resolveComp` を渡すと評価時に最新 comp を参照（preview の param 編集用）。
+   * export / bundle は省略可（comp 固定で決定論を保つ）。
+   */
+  makeEvaluator(
+    comp: TimelineComposition,
+    resolveComp?: () => TimelineComposition,
+  ): ExpressionEvaluator {
     const loaded = this.loaded;
-    const fps = comp.fps;
+    const getComp = resolveComp ?? (() => comp);
 
     return function evaluator({ path, frame, value, objectId }) {
       const fn = loaded.get(path);
       if (!fn) return value;
-      const presetParams = resolvePresetParams(comp, objectId, path, frame);
-      const ctx = buildContext(frame, fps, value, objectId, comp, presetParams);
+      const c = getComp();
+      const presetParams = resolvePresetParams(c, objectId, path, frame);
+      const ctx = buildContext(frame, c.fps, value, objectId, c, presetParams);
       // Plugin expr helpers を ctx に注入（INV-1: plugin 側の責任で決定論を保証）
       const extras = globalPluginRegistry.getExprHelpers();
       const keys = Object.keys(extras);
