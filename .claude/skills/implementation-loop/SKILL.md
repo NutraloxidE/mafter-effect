@@ -186,6 +186,31 @@ worked example（2026-06-26）: 動画 export で `inlineVideoFrames` + `exportV
 **バグ修正時**: まず本スキル（Phase 0–2）で地図化 → 視覚系なら `debug-visual-render-bug` の
 measure-don't-theorize ループを **Phase 4 全体を通して**回す。
 
+### 4e. Expression / runtime 変更時の player.js 再ビルド（必須・エージェントが自動実行）
+
+HTML bundle export（§11.7）は [`public/player.js`](../../../public/player.js) を zip にそのまま埋め込む。
+mp4 / webm / preview は `src/runtime` を Vite が直接 import するため **player.js は HTML bundle 専用**。
+
+#### 再ビルド要否（エクスプレッション追加時）
+
+| 変更 | `npm run build:player` |
+|------|------------------------|
+| ユーザー脚本 `scripts/<objectId>/*.js` のみ | 不要（manifest `textFiles`） |
+| 既存 `ExprContext`（`wiggle` / `presetParams` / `time` 等）だけの新プリセット脚本 | 不要（export 時 zip 注入） |
+| **ランタイム側** — 評価エンジン・ctx・helper・配線の追加/変更 | **必須** |
+
+ランタイム側の例: `expressionEngine.ts` / `exprHelpers.ts` / `resolve.ts` / エンジンから import される expression ヘルパ / `src/player/**`。
+
+#### エージェント手順（完了判定の一部 — 口頭リマインド不可）
+
+`src/player` または上記ランタイム側を編集したセッションでは、Phase 4 の typecheck/test の後・完了宣言の前に:
+
+1. **エージェント自身が** `npm run build:player` を実行する（失敗時は修正して再実行）。
+2. `public/player.js` が更新され、[test/playerBuildFreshness.test.ts](../../../test/playerBuildFreshness.test.ts) が通る状態にする。
+3. expression ランタイム変更なら HTML bundle 経路（該当 verify または bundle export）で新機能が効くことを確認する。
+
+Claude Code hook（`rebuild-player-if-needed.mjs`）は Cursor では効かない。**Cursor 含む全エージェントが shell で実行する**こと。
+
 ## Phase 5 — 固定・記録・後始末
 
 1. **純関数を unit test で固定** — ピクセル直テストが難しい箇所は下層の式・定数・region 生成を抽出。
@@ -215,6 +240,7 @@ Phase 4
 - [ ] Playwright 実機で再現・修正を確認
 - [ ] 経路間 parity（該当時）— 同一経路同士だけの比較で終えていない
 - [ ] 新型 export 正常化（該当時）— 型別オプトイン・既存 export シナリオ無回帰（4c-2）
+- [ ] **expression ランタイム / src/player / player が import する src/runtime を触った → エージェントが `npm run build:player` を自動実行済み**（ユーザー脚本・既存 ctx のみのプリセット脚本は除外。playerBuildFreshness 緑）
 - [ ] 視覚系: debug-visual-render-bug を実行した
 - [ ] エフェクト系: implement-visual-effect を実行した（該当時）
 - [ ] 新型: add-layer-component-type チェックリスト完了（該当時）
@@ -236,6 +262,7 @@ Phase 5
 - 経路分解せず compositor 全体を書き換える。
 - 使い捨て verify スクリプトを大量にコミットしたままにする。
 - バグ修正で下位スキル（特に debug-visual-render-bug）をスキップする。
+- expression ランタイムを変えて `npm run build:player` をユーザー任せにする（エージェントが shell で実行する）。
 
 ## この repo の worked example（要約）
 

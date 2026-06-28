@@ -181,6 +181,41 @@ Zustand ストアは **IndexedDbFs の投影**（§17）。UI はストア、zip
 
 詳細チェックリストは [.claude/skills/add-layer-component-type/SKILL.md](.claude/skills/add-layer-component-type/SKILL.md) の export 節と [.claude/skills/implementation-loop/SKILL.md](.claude/skills/implementation-loop/SKILL.md) Phase 4c を参照。
 
+### bundle player の再ビルド（必須・「動画は出るが新機能だけ効かない」事故の防止）
+
+Web bundle export（§11.7）は **ビルド済み成果物 [`public/player.js`](public/player.js)** を zip にそのまま埋め込む（[`bundleExporter.ts`](src/runtime/bundleExporter.ts) の `loadPlayerScript`）。`src/player/` または **`src/runtime/`（player が import する範囲＝expression / resolve / DomRenderer 等ほぼ全部）** を変えたら、`public/player.js` を**再ビルドしない限り HTML 書き出しには古い player が乗る**。症状は「動画は出るが、追加した機能（例: expression preset の wiggle）だけ HTML 出力で無音で効かない」。
+
+**mp4 / webm / PNG export と preview は `src/runtime` を直接 import するため player.js 不要。** player.js が関係するのは **HTML bundle export のみ**。
+
+#### エクスプレッション追加時 — 再ビルド要否
+
+| 変更内容 | `npm run build:player` |
+|----------|------------------------|
+| ユーザー脚本（`scripts/<objectId>/*.js`）のみ | **不要**（zip の `textFiles` に同梱） |
+| 既存 `ExprContext` API だけで書く新プリセット脚本（`builtinExpressionPresetScripts.ts` の文字列追加等） | **不要**（export 時に脚本を zip 注入） |
+| **ランタイム側** — 評価エンジン・ctx・helper の追加/変更 | **必須** |
+
+ランタイム側の典型例（いずれかを触ったら再ビルド）:
+
+- `src/runtime/expressionEngine.ts`（`ExprContext` / `presetParams` / `resolvePresetParams` 等）
+- `src/runtime/exprHelpers.ts`（`wiggle` / `random` 等）
+- `src/runtime/resolve.ts`（expression 評価の配線）
+- `src/runtime/pulseScaleWave.ts` 等、**エンジンから import される** expression 用ヘルパ
+- `src/player/`（`BundlePlayer` 等）
+
+#### エージェント必須 — 実装完了前に自動実行
+
+**Cursor / Claude Code / その他エージェントは、上記「ランタイム側」に該当する編集を行ったセッションでは、タスク完了扱いにする前に必ず `npm run build:player` を実行すること。** ユーザーへの口頭リマインドだけでは不十分（hook は Claude Code 経由のみ・Cursor では効かない）。
+
+手順（implementation-loop Phase 4 と一体）:
+
+1. ランタイム変更のコミット/保存後、**エージェント自身が** `npm run build:player` を実行する（失敗時は修正して再実行）。
+2. `public/player.js` が更新されたことを確認する（`playerBuildFreshness` が通る状態）。
+3. HTML bundle 経路を触った/ expression ランタイムを触った場合は bundle export 検証も行う。
+
+- **再ビルドコマンド**: `npm run build:player`（`npm run build` にも含まれるが、dev 中は個別に回す）。
+- **多層防御（実装済み）**: ① Claude Code hook（[.claude/hooks/rebuild-player-if-needed.mjs](.claude/hooks/rebuild-player-if-needed.mjs)）— Cursor では効かない。② export 直前 dev 鮮度ガード（`PLAYER_FRESHNESS_MARKER`）。③ [test/playerBuildFreshness.test.ts](test/playerBuildFreshness.test.ts)。
+
 ---
 
 ## 参照

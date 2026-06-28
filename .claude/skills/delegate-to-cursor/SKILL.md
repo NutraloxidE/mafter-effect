@@ -24,7 +24,7 @@ CLI 経由で実行する手段。**ユーザーから明示的に委任を頼�
 
 ```
 <task>: 何を実装するか（spec の節番号を含める）
-<acceptance>: 受け入れ条件（npm run typecheck / npm test / npm run build を緑にする等）
+<acceptance>: 受け入れ条件（npm run typecheck / npm test / npm run build を緑にする等。expression ランタイム変更時は npm run build:player 済みで public/player.js 更新）
 <constraints>: spec/CLAUDE.md のスキーマ・不変条件は変更しない。曖昧・未確定の挙動を見つけたら実装で「事実上の仕様」にせず、変更せずに報告して止める。
 ```
 
@@ -50,6 +50,7 @@ git diff <base-branch>..HEAD --stat
 ```
 
 - 緑が確認できない場合はマージしない。差分の内容（spec/CLAUDE.md が変更されていないか、INV-1〜6 を破っていないか）を確認する。
+- **expression ランタイム / `src/player` / player が import する `src/runtime` を触った差分**では、`public/player.js` が `npm run build:player` で更新されていること（[test/playerBuildFreshness.test.ts](mdc:test/playerBuildFreshness.test.ts) 緑）をレビュー必須項目に含める。未実行ならマージ前に worktree で実行させる。
 - UI/レンダリングに触る変更なら、`.claude/skills/implementation-loop/SKILL.md` の Playwright 実機検証が Cursor 側で行われたか diff・ログから確認する。
 
 ### 4. マージはユーザーに確認してから

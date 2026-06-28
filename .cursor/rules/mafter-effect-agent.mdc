@@ -77,3 +77,17 @@ alwaysApply: true
 - **preview 最適化と export 決定論**はモード分岐を維持（一方の修正で他方のフレーム精度・速度を壊さない）
 
 詳細チェックリスト: [.claude/skills/add-layer-component-type/SKILL.md](mdc:.claude/skills/add-layer-component-type/SKILL.md) §E、実装ループ Phase 4c-2。アーキテクチャ・マイルストーンは `CLAUDE.md` と `doc/mafter-effect-spec.md` を参照。
+
+### Expression / runtime 変更時の `npm run build:player`（エージェント必須・自動実行）
+
+HTML bundle export（§11.7）は zip にビルド済み [`public/player.js`](mdc:public/player.js) を埋め込む。mp4/webm/preview は `src/runtime` 直 import のため player.js 不要。
+
+**エージェントは、次に該当する編集をしたセッションで、完了前に必ず `npm run build:player` を自分で実行する**（ユーザーへのリマインドのみは不可）:
+
+- `src/runtime/expressionEngine.ts` / `exprHelpers.ts` / `resolve.ts` 等の **expression 評価ランタイム**
+- 新エクスプレッションの **ctx API・helper・presetParams 配線** をランタイムに追加したとき
+- `src/player/` または player が import する `src/runtime/**` の変更
+
+**再ビルド不要**: ユーザー脚本（`scripts/`）のみ、既存 `ExprContext` API だけの新プリセット脚本（`presets/expressions/*.js` 文字列）。
+
+詳細・手順: `CLAUDE.md`「bundle player の再ビルド」、[.claude/skills/implementation-loop/SKILL.md](mdc:.claude/skills/implementation-loop/SKILL.md) Phase 4e。
