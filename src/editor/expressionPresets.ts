@@ -28,7 +28,12 @@ export function parsePresetMarker(source: string): ExpressionPresetId | null {
   const m = PRESET_MARKER_RE.exec(source);
   if (!m) return null;
   const id = m[1];
-  if (id === "wiggle-position" || id === "oscillate-position" || id === "pulse-scale") {
+  if (
+    id === "wiggle-position"
+    || id === "oscillate-position"
+    || id === "orbit-position"
+    || id === "pulse-scale"
+  ) {
     return id;
   }
   return null;
@@ -39,7 +44,12 @@ export function presetIdFromExpressionPath(path: string): ExpressionPresetId | n
   const prefix = "presets/expressions/";
   if (!path.startsWith(prefix) || !path.endsWith(".js")) return null;
   const id = path.slice(prefix.length, -3);
-  if (id === "wiggle-position" || id === "oscillate-position" || id === "pulse-scale") {
+  if (
+    id === "wiggle-position"
+    || id === "oscillate-position"
+    || id === "orbit-position"
+    || id === "pulse-scale"
+  ) {
     return id;
   }
   return null;
@@ -67,6 +77,17 @@ export const EXPRESSION_PRESETS: Record<ExpressionPresetId, ExpressionPresetDef>
     ],
     script: builtinExpressionPresetScript("oscillate-position"),
   },
+  "orbit-position": {
+    id: "orbit-position",
+    param: "position",
+    label: "Orbit Position",
+    params: [
+      { key: "radius", label: "Radius", kind: "scalar", default: 80, animatable: true, min: 0, step: 1 },
+      { key: "frequency", label: "Frequency", kind: "scalar", default: 0.5, animatable: true, min: 0, step: 0.1 },
+      { key: "phase", label: "Phase (°)", kind: "scalar", default: 0, animatable: true, step: 1 },
+    ],
+    script: builtinExpressionPresetScript("orbit-position"),
+  },
   "pulse-scale": {
     id: "pulse-scale",
     param: "scale",
@@ -86,6 +107,7 @@ export const EXPRESSION_PRESETS: Record<ExpressionPresetId, ExpressionPresetDef>
 export const EXPRESSION_PRESET_LIST: ExpressionPresetDef[] = [
   EXPRESSION_PRESETS["wiggle-position"],
   EXPRESSION_PRESETS["oscillate-position"],
+  EXPRESSION_PRESETS["orbit-position"],
   EXPRESSION_PRESETS["pulse-scale"],
 ];
 

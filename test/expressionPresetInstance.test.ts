@@ -267,3 +267,40 @@ describe("pulse-scale waveform param", () => {
     expect(captured).toEqual(["sine", "square"]);
   });
 });
+
+describe("orbit-position circular motion (§9, INV-1)", () => {
+  it("buildDefaultPresetProps includes radius, frequency, phase", () => {
+    const props = buildDefaultPresetProps("orbit-position");
+    expect(props.radius).toEqual(staticProp(80));
+    expect(props.frequency).toEqual(staticProp(0.5));
+    expect(props.phase).toEqual(staticProp(0));
+  });
+
+  it("moves on a circle deterministically", async () => {
+    const src = EXPRESSION_PRESETS["orbit-position"].script;
+    const url = `data:text/javascript,${encodeURIComponent(src)}`;
+    const mod = (await import(/* @vite-ignore */ url)) as { default: (ctx: {
+      time: number;
+      value: Vec3;
+      presetParams: Record<string, unknown>;
+    }) => Vec3 };
+    const orbitFn = mod.default;
+    const base = vec3(200, 150, 0);
+    const ctx = (time: number) => ({
+      time,
+      value: base,
+      presetParams: { radius: 80, frequency: 1, phase: 0 },
+    });
+
+    const at0 = orbitFn(ctx(0));
+    expect(at0.x).toBeCloseTo(280, 5);
+    expect(at0.y).toBeCloseTo(150, 5);
+
+    const atQuarter = orbitFn(ctx(0.25));
+    expect(atQuarter.x).toBeCloseTo(200, 5);
+    expect(atQuarter.y).toBeCloseTo(230, 5);
+
+    const again = orbitFn(ctx(0.25));
+    expect(atQuarter).toEqual(again);
+  });
+});

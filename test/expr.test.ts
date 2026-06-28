@@ -285,6 +285,7 @@ describe("expression presets — marker parse", () => {
   it("parsePresetMarker reads @mafter:preset from preset scripts", () => {
     expect(parsePresetMarker(EXPRESSION_PRESETS["wiggle-position"].script)).toBe("wiggle-position");
     expect(parsePresetMarker(EXPRESSION_PRESETS["oscillate-position"].script)).toBe("oscillate-position");
+    expect(parsePresetMarker(EXPRESSION_PRESETS["orbit-position"].script)).toBe("orbit-position");
     expect(parsePresetMarker(EXPRESSION_PRESETS["pulse-scale"].script)).toBe("pulse-scale");
   });
 
