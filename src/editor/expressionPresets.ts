@@ -4,9 +4,13 @@ import type { AnimatedProp, ParamDescriptor } from "../core/schema";
 import { presetExpressionScriptPath } from "../core/paths";
 import { staticProp } from "../core/props";
 import type { IndexedDbFs } from "../fs/IndexedDbFs";
+import {
+  builtinExpressionPresetScript,
+  type BuiltinExpressionPresetId,
+} from "../runtime/builtinExpressionPresetScripts";
 import { invalidateExpressionPath } from "./expressionModuleHub";
 
-export type ExpressionPresetId = "wiggle-position" | "oscillate-position" | "pulse-scale";
+export type ExpressionPresetId = BuiltinExpressionPresetId;
 
 export type ExpressionPresetParam = "position" | "scale";
 
@@ -51,15 +55,7 @@ export const EXPRESSION_PRESETS: Record<ExpressionPresetId, ExpressionPresetDef>
       { key: "amplitude", label: "Amplitude", kind: "scalar", default: 60, animatable: true, min: 0, step: 1 },
       { key: "seed", label: "Seed", kind: "scalar", default: 0, animatable: true, step: 1 },
     ],
-    script: `// Mafter Effect expression — wiggle position (§9)
-// @mafter:preset wiggle-position
-export default (ctx) => {
-  const f = ctx.presetParams.frequency ?? 2;
-  const a = ctx.presetParams.amplitude ?? 60;
-  const s = ctx.presetParams.seed ?? 0;
-  return ctx.wiggle(f, a, s);
-};
-`,
+    script: builtinExpressionPresetScript("wiggle-position"),
   },
   "oscillate-position": {
     id: "oscillate-position",
@@ -69,17 +65,7 @@ export default (ctx) => {
       { key: "amplitude", label: "Amplitude", kind: "scalar", default: 30, animatable: true, min: 0, step: 1 },
       { key: "frequency", label: "Frequency", kind: "scalar", default: 1, animatable: true, min: 0, step: 0.1 },
     ],
-    script: `// Mafter Effect expression — oscillate position (§9)
-// @mafter:preset oscillate-position
-export default (ctx) => {
-  const amp = ctx.presetParams.amplitude ?? 30;
-  const freq = ctx.presetParams.frequency ?? 1;
-  return {
-    ...ctx.value,
-    y: ctx.value.y + Math.sin(ctx.time * Math.PI * 2 * freq) * amp,
-  };
-};
-`,
+    script: builtinExpressionPresetScript("oscillate-position"),
   },
   "pulse-scale": {
     id: "pulse-scale",
@@ -87,37 +73,13 @@ export default (ctx) => {
     label: "Pulse Scale",
     params: [
       { key: "waveform", label: "Waveform", kind: "enum", default: "sine", animatable: false, options: ["sine", "triangle", "square", "sawtooth"] },
+      { key: "polarity", label: "Polarity", kind: "enum", default: "+", animatable: false, options: ["+", "-"] },
+      { key: "bend", label: "Bend", kind: "scalar", default: 0, animatable: true, min: -1, max: 1, step: 0.001 },
+      { key: "phase", label: "Phase (°)", kind: "scalar", default: 0, animatable: true, min: 0, step: 1 },
       { key: "amount", label: "Amount", kind: "scalar", default: 0.1, animatable: true, min: 0, step: 0.01 },
       { key: "frequency", label: "Frequency", kind: "scalar", default: 2, animatable: true, min: 0, step: 0.1 },
     ],
-    script: `// Mafter Effect expression — pulse scale (§9)
-// @mafter:preset pulse-scale
-export default (ctx) => {
-  const amount = ctx.presetParams.amount ?? 0.1;
-  const freq = ctx.presetParams.frequency ?? 2;
-  const waveform = ctx.presetParams.waveform ?? "sine";
-  const phase = ctx.time * freq;
-  const t = phase - Math.floor(phase);
-  let w;
-  switch (waveform) {
-    case "triangle":
-      w = 1 - 4 * Math.abs(t - 0.5);
-      break;
-    case "square":
-      w = Math.sin(phase * Math.PI * 2) >= 0 ? 1 : -1;
-      break;
-    case "sawtooth":
-      w = 2 * t - 1;
-      break;
-    case "sine":
-    default:
-      w = Math.sin(phase * Math.PI * 2);
-      break;
-  }
-  const m = 1 + amount * w;
-  return { x: ctx.value.x * m, y: ctx.value.y * m, z: ctx.value.z };
-};
-`,
+    script: builtinExpressionPresetScript("pulse-scale"),
   },
 };
 

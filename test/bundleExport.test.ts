@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { presetExpressionScriptPath } from "../src/core/paths";
 import type { Project, TimelineComposition } from "../src/core/schema";
 import {
   collectBundleDependencies,
   componentNeedsBake,
   canonicalBundleProject,
 } from "../src/runtime/bundleCollect";
+import { injectBuiltinExpressionPresetScripts } from "../src/runtime/builtinExpressionPresetScripts";
 import { findBakeTargets } from "../src/runtime/bundleBake";
 import { globalPluginRegistry } from "../src/runtime/pluginRegistry";
 import { registerBuiltinComponents } from "../src/runtime/builtinComponents";
@@ -202,5 +204,88 @@ describe("bundleCollect", () => {
     const p = minimalProject([]);
     const c = canonicalBundleProject(p);
     expect(c.compositions[0]?.id).toBe("01COMPROOT0000000000000001");
+  });
+
+  it("collects builtin expression preset script paths (§9 Phase 0.5)", () => {
+    const presetPath = presetExpressionScriptPath("wiggle-position");
+    const project = minimalProject([
+      {
+        id: "01OBJ00000000000000000004",
+        name: "Wiggle",
+        parent: null,
+        zOrder: 1,
+        enabled: true,
+        inPoint: 0,
+        outPoint: 90,
+        transform: {
+          anchor: { value: { x: 0, y: 0, z: 0 }, keyframes: [] },
+          position: {
+            value: { x: 0, y: 0, z: 0 },
+            keyframes: [],
+            expression: { path: presetPath, enabled: true },
+          },
+          rotation: { value: { x: 0, y: 0, z: 0 }, keyframes: [] },
+          scale: { value: { x: 1, y: 1, z: 1 }, keyframes: [] },
+        },
+        opacity: { value: 1, keyframes: [] },
+        components: [{ type: "solid", props: { color: { value: { r: 1, g: 0, b: 0, a: 1 }, keyframes: [] } } }],
+        expressionPresets: [
+          {
+            id: "01EXPRINST00000000000001",
+            presetId: "wiggle-position",
+            enabled: true,
+            props: {
+              frequency: { value: 2, keyframes: [] },
+              amplitude: { value: 60, keyframes: [] },
+              seed: { value: 0, keyframes: [] },
+            },
+          },
+        ],
+      },
+    ]);
+    const deps = collectBundleDependencies(project, "01COMPROOT0000000000000001");
+    expect(deps.textPaths.has(presetPath)).toBe(true);
+  });
+
+  it("injectBuiltinExpressionPresetScripts fills manifest textFiles without FS", () => {
+    const presetPath = presetExpressionScriptPath("oscillate-position");
+    const project = minimalProject([
+      {
+        id: "01OBJ00000000000000000005",
+        name: "Osc",
+        parent: null,
+        zOrder: 1,
+        enabled: true,
+        inPoint: 0,
+        outPoint: 90,
+        transform: {
+          anchor: { value: { x: 0, y: 0, z: 0 }, keyframes: [] },
+          position: {
+            value: { x: 0, y: 0, z: 0 },
+            keyframes: [],
+            expression: { path: presetPath, enabled: true },
+          },
+          rotation: { value: { x: 0, y: 0, z: 0 }, keyframes: [] },
+          scale: { value: { x: 1, y: 1, z: 1 }, keyframes: [] },
+        },
+        opacity: { value: 1, keyframes: [] },
+        components: [{ type: "solid", props: { color: { value: { r: 0, g: 1, b: 0, a: 1 }, keyframes: [] } } }],
+        expressionPresets: [
+          {
+            id: "01EXPRINST00000000000002",
+            presetId: "oscillate-position",
+            enabled: true,
+            props: {
+              amplitude: { value: 30, keyframes: [] },
+              frequency: { value: 1, keyframes: [] },
+            },
+          },
+        ],
+      },
+    ]);
+    const textFiles: Record<string, string> = {};
+    injectBuiltinExpressionPresetScripts(project, textFiles);
+    expect(textFiles[presetPath]).toContain("@mafter:preset oscillate-position");
+    expect(textFiles[presetPath]).toContain("presetParams");
   });
 });

@@ -28,3 +28,13 @@ export interface BundleBootConfig {
   stage: HTMLElement;
   manifest: BundleManifest;
 }
+
+/**
+ * export 時に `public/player.js` の鮮度を sanity check するためのマーカー文字列。
+ * player が必ず出力に含む安定トークンで、最新の機能配線を表す。`src/player`・`src/runtime`
+ * を変えて player を再ビルドし忘れると、古い `public/player.js` がそのまま zip に埋め込まれ、
+ * 「動画は出るが新機能（expression preset 等）だけ無音で効かない」事故になる。これを export
+ * 直前に検出する。最終防御は実ビルド一致を見る test/playerBuildFreshness.test.ts。
+ * player の expression/preset 配線を変えたら、このマーカーも最新機能を表す安定トークンに更新する。
+ */
+export const PLAYER_FRESHNESS_MARKER = "presetParams";

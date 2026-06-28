@@ -11,6 +11,7 @@ import {
   presetIdFromExpressionPath,
   presetScriptPath,
 } from "../src/editor/expressionPresets";
+import { pulseModulation } from "../src/runtime/pulseScaleWave";
 import { newObjectId } from "../src/core/ids";
 
 function makeComp(): TimelineComposition {
@@ -143,9 +144,12 @@ describe("ExpressionEngine presetParams", () => {
 });
 
 describe("pulse-scale waveform param", () => {
-  it("buildDefaultPresetProps includes static waveform", () => {
+  it("buildDefaultPresetProps includes static waveform and bend", () => {
     const props = buildDefaultPresetProps("pulse-scale");
     expect(props.waveform).toBe("sine");
+    expect(props.polarity).toBe("+");
+    expect(props.bend).toEqual(staticProp(0));
+    expect(props.phase).toEqual(staticProp(0));
     expect(props.amount).toEqual(staticProp(0.1));
   });
 
@@ -216,6 +220,16 @@ describe("pulse-scale waveform param", () => {
 
     const again = pulseFn(ctx(0.25, "sine"));
     expect(sine).toEqual(again);
+  });
+
+  it("sawtooth bend +/- warps ramp like Serum BEND (INV-1)", () => {
+    const t = 0.25;
+    const neutral = pulseModulation("sawtooth", 0, t);
+    const bendPlus = pulseModulation("sawtooth", 0.5, t);
+    const bendMinus = pulseModulation("sawtooth", -0.5, t);
+    expect(bendPlus).toBeGreaterThan(neutral);
+    expect(bendMinus).toBeLessThan(neutral);
+    expect(bendPlus - neutral).toBeGreaterThan(0.15);
   });
 
   it("makeEvaluator resolveComp picks up live preset prop edits", async () => {

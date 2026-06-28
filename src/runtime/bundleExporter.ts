@@ -7,13 +7,14 @@ import type { ExportConfig, Project, TimelineComposition } from "../core/schema"
 import type { FileSystem } from "../fs/FileSystem";
 import { applyBundleBake } from "./bundleBake";
 import { collectBundleDependencies } from "./bundleCollect";
+import { injectBuiltinExpressionPresetScripts } from "./builtinExpressionPresetScripts";
 import {
   BUILTIN_FONT_DIR,
   findBuiltinFontByFamily,
   fontUsesFamily,
   nearestBuiltinWeight,
 } from "./builtinFonts";
-import type { BundleBuiltinFont, BundleManifest } from "./bundleTypes";
+import { PLAYER_FRESHNESS_MARKER, type BundleBuiltinFont, type BundleManifest } from "./bundleTypes";
 import type { ProgressCallback } from "./exporter";
 
 export interface BundleExportResult {
@@ -42,15 +43,28 @@ function escapeHtml(s: string): string {
 }
 
 async function loadPlayerScript(): Promise<string> {
+  let text: string | undefined;
   try {
     const resp = await fetch("/player.js");
-    if (resp.ok) return await resp.text();
+    if (resp.ok) text = await resp.text();
   } catch {
     /* fall through */
   }
-  throw new Error(
-    "player.js not found. Run npm run build:player and ensure public/player.js exists.",
-  );
+  if (text === undefined) {
+    throw new Error(
+      "player.js not found. Run npm run build:player and ensure public/player.js exists.",
+    );
+  }
+  // 再ビルド忘れガード（dev のみ）: 古い player.js を zip に埋めて
+  // 「動画は出るが expression preset 等の新機能だけ効かない」事故を export 前に止める。
+  const env = (import.meta as unknown as { env?: { DEV?: boolean } }).env;
+  if (env?.DEV && !text.includes(PLAYER_FRESHNESS_MARKER)) {
+    throw new Error(
+      `public/player.js is stale (missing "${PLAYER_FRESHNESS_MARKER}"). ` +
+        "Run: npm run build:player",
+    );
+  }
+  return text;
 }
 
 function buildIndexHtml(compName: string, manifestJson: string): string {
@@ -207,6 +221,7 @@ export async function exportBundle(
   }
 
   const collected = await collectTextAndBinary(fs, deps.textPaths, deps.binaryPaths, deps.livePluginIds);
+  injectBuiltinExpressionPresetScripts(bundleProject, collected.textFiles);
 
   // §26.3.2 使用された built-in フォントを public/fonts から取得し zip 同梱する。
   const builtinFontUse = collectBuiltinFontUsage(bundleProject);

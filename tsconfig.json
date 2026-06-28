@@ -25,5 +25,5 @@
     "types": ["vitest/globals"]
   },
   "include": ["src", "test"],
-  "exclude": ["src/fs/NodeCacheFs.ts"]
+  "exclude": ["src/fs/NodeCacheFs.ts", "test/playerBuildFreshness.test.ts"]
 }

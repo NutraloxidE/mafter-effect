@@ -13,6 +13,7 @@ import type {
   TimelineComposition,
 } from "../core/schema";
 import { globalPluginRegistry } from "./pluginRegistry";
+import { collectExpressionPresetScriptPaths } from "./builtinExpressionPresetScripts";
 
 export interface BundleCollectResult {
   timelineCompIds: Set<string>;
@@ -125,6 +126,7 @@ export function collectBundleDependencies(
     if (!isTimelineComp(comp)) continue;
     timelineCompIds.add(compId);
 
+    collectExpressionPresetScriptPaths(comp, textPaths);
     for (const obj of comp.objects) {
       collectExpressionPaths(obj, textPaths);
       collectObjectAssets(obj, project, binaryPaths);
