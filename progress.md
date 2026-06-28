@@ -491,3 +491,9 @@ canvas 化結果は以降から見て通常の背面ピクセルと等価（zOrd
 - **要請**: Bend を 0.1 倍細かくスクラブ / Phase 360°+ オフセット / Polarity 反転。
 - **実装**: `phase`（°・KF 可・min 0・上限なし）`polarity` enum（`+`/`-`）追加。[pulseScaleWave.ts](src/runtime/pulseScaleWave.ts) `pulseCycleT`・`polaritySign`。Bend 行のみ `ScrubNumber speed=0.1`（1px=0.1）。プレビューに φ°・polarity 表示。
 - **検証**: `test/pulseScaleWave.test.ts` 5件・typecheck 緑。
+
+### 2026-06-28（Cursor）— Orbit Position エクスプレッション追加
+
+- **要請**: 実用的なエクスプレッションをもう 1 個追加。
+- **実装**: `orbit-position` — 基準位置を中心に円運動。パラメータ: `radius`（既定 80）/ `frequency`（既定 0.5 Hz）/ `phase`（°・KF 可）。既存 `ctx` API のみ・ランタイム変更なし → `build:player` 不要。
+- **検証**: `test/expressionPresetInstance.test.ts` orbit 2件・`test/expr.test.ts` marker 更新・11+27 tests PASS。
