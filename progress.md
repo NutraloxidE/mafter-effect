@@ -70,6 +70,7 @@
   - **追補（2026-06-25・ネスト fps 真因修正）**: 上記の `compChildFrame` fps 化だけでは**実機で 2 倍速が直っていなかった**。真因は DomRenderer が親 fps を **`this.currentComp.fps`（mount 時スナップショット）** から取っていたため、マウント後の fps 変更や comp 切替で stale 値（=子と同じ fps）になり 1:1 へ退行していた。**修正**: [resolve.ts](src/runtime/resolve.ts) が comp コンポーネントに **`_parentFps`（解決中 comp の fps）を注入**し、[DomRenderer.ts](src/runtime/DomRenderer.ts) の両呼び出しが `c.props["_parentFps"]` を使用（`this.currentComp.fps` 依存を撤廃・nested-of-nested も resolve(childComp) が childComp.fps を注入）。**実機検証**（`verify-nested-fps.mjs`: 60fps 親に 30fps 子をネスト → 親フレーム 0/30/60/120 で実効 childFrame 0/15/30/60＝**1 倍速**・以前は 0/30/60/120 の 2 倍速）。`test/precomp.test.ts` に `_parentFps` 注入ケース追加。431 tests / typecheck / build 緑。
 - **§5.6/§21.1 Duration・タイムコードを AE `H:MM:SS:FF` 表示へ（2026-06-25・spec §5.6/§21.1 追記済み・スキーマ/INV 不変・UI/表示層のみ）**: ユーザー要請「Duration 指定を AE 形式に（frame は具体的だが人間に分かりにくい）」+「タイムラインパネル右上の数字も同フォーマットに」。**内部値は INV-5 どおり整数 Frame のまま**（§5 型変更なし）、見た目だけ変換。**(A) 純関数** = [timecode.ts](src/editor/timecode.ts) `framesToTimecode`（frame→`H:MM:SS:FF`・MM/SS/FF 2桁ゼロ詰め・H 非ゼロ詰め・fps 依存）/ `parseTimecode`（`:`または`;`区切り右詰め解釈: 4=H:MM:SS:FF / 3=MM:SS:FF / 2=SS:FF / **1=生フレーム数**・桁あふれ自然繰上げ・負数/非数値拒否）。**(B) Duration 入力** = [TimecodeScrub.tsx](src/editor/TimecodeScrub.tsx)（従来 ScrubNumber の drag UX 維持＝1px/frame、click で timecode テキスト編集）。[InspectorPanel.tsx](src/editor/panels/InspectorPanel.tsx) の Duration 行を ScrubNumber→TimecodeScrub に差替（`fps` prop 追加）。**(C) タイムライン統一** = [TimelinePanel.tsx](src/editor/panels/TimelinePanel.tsx) のローカル `framesToTimecode`（SMPTE 2桁時）を撤去し共有 `framesToTimecode` を import。右上の生フレーム `F{frame} / {duration}` → `timecode / timecode`（title に旧 `F..` 併記）。toolbar 現在時刻・ルーラー目盛りも同じ共有実装に。**§21.1 を SMPTE `HH:MM:SS:FF`→AE `H:MM:SS:FF` に改定**（唯一の共有実装明記）。**スコープ外（未変更）**: Preview パネル上部 toolbar の timecode（別パネル・2桁時のまま）。**テスト**（`test/timecode.test.ts` 13 件: format/parse/round-trip/fps 依存/拒否）+ **実機検証**（`verify-duration-timecode.mjs`: 30fps/150f→`0:00:05:00`・setCompFps(60)で dur 300 維持 `0:00:05:00` PASS / `verify-timeline-shot.mjs`: 右上 `0:00:01:15 / 0:00:05:00` 表示確認）。446 tests / typecheck / build 緑。
 - **§9 Expression Phase 0.5（2026-06-26）**: `SceneObject.expressionPresets[]`（Effect 同型 UI + param KF）+ 共有 FS 脚本 `presets/expressions/<presetId>.js`（write-if-absent）+ `ctx.presetParams` 注入。Inspector: +追加/disable/× + ExpressionPresetFields。Timeline: `expressionPresets.<id>.<key>` 行。legacy `@mafter:preset` + per-object script は読取専用表示（編集で新形式へ）。**498 tests** / typecheck 緑。
+- **§11.7 HTML bundle — expression preset 未同梱バグ修正（2026-06-26）**: Phase 0.5 の共有脚本 `presets/expressions/*.js` が bundle の `manifest.textFiles` に入らず player の ModuleLoader が null → expression 無視（動画 export は FS 直読のため正常）。**修正**: [builtinExpressionPresetScripts.ts](src/runtime/builtinExpressionPresetScripts.ts) に脚本正本を集約、[bundleCollect.ts](src/runtime/bundleCollect.ts) で path 収集、[bundleExporter.ts](src/runtime/bundleExporter.ts) で FS 未存在時に `injectBuiltinExpressionPresetScripts` で manifest へ埋め込み。`test/bundleExport.test.ts` +2 件。
 
 ---
 
@@ -472,3 +473,21 @@ canvas 化結果は以降から見て通常の背面ピクセルと等価（zOrd
 - **真因 (2)**: (1) `makeEvaluator(comp)` が comp をクロージャ固定 → Inspector で `expressionPresets.props` を更新しても評価時は古い props。(2) 脚本更新後 `ModuleLoader` キャッシュ未破棄 → 旧 pulse-scale.js（波形分岐なし）が動き続ける。legacy 表示は readOnly で enum 変更が migrate デフォルトのみ。
 - **修正**: `makeEvaluator(comp, resolveComp?)` + PreviewPanel で store から live comp 参照。`ensurePresetScript` 書込時に `invalidateExpressionPath`。legacy enum 変更は migrate 時に選択波形を `propsOverrides` で渡す。
 - **検証**: `test/expressionPresetInstance.test.ts` live props テスト追加・typecheck 緑。
+
+### 2026-06-27（Cursor）— Pulse Scale Bend +/-（Serum 風位相ワープ）
+
+- **要請**: のこぎり等の波形に対し Bend -/0/+ でランプを凹/直線/凸に歪める（Serum BEND +/- 相当）。
+- **実装**: [expressionPresets.ts](src/editor/expressionPresets.ts) — `bend` scalar（-1..1・KF 可・既定 0）。`bendPhase(t,bend)` = bend>0 なら `t^(1/(1+bend))`（急上昇→緩やか）、bend<0 なら `t^(1-bend)`（緩やか→急上昇）。全 waveform の周期位相 `t` に適用後に形状評価。
+- **検証**: sawtooth で bend+ > neutral > bend- を単体テスト固定。
+
+### 2026-06-27（Cursor）— Bend 視認性改善（強度 4x + 波形プレビュー）
+
+- **症状**: Bend を動かしてもプレビュー上で効いているか分かりにくい。
+- **修正**: (1) `bendPhase` の指数を `PULSE_BEND_GAIN=4` で強化（±0.5 でも明確な差）。(2) [pulseScaleWave.ts](src/runtime/pulseScaleWave.ts) に数学を集約し脚本・UI・テストで共有。(3) Inspector Pulse Scale に **1 周期 SVG プレビュー**（緑=変調曲線・赤=現在位相・sawtooth 推奨表示）。スクラブ中は previewOverride を反映。
+- **検証**: `test/pulseScaleWave.test.ts` 3件・typecheck 緑。
+
+### 2026-06-27（Cursor）— Pulse Scale Phase / Polarity + Bend 細スクラブ
+
+- **要請**: Bend を 0.1 倍細かくスクラブ / Phase 360°+ オフセット / Polarity 反転。
+- **実装**: `phase`（°・KF 可・min 0・上限なし）`polarity` enum（`+`/`-`）追加。[pulseScaleWave.ts](src/runtime/pulseScaleWave.ts) `pulseCycleT`・`polaritySign`。Bend 行のみ `ScrubNumber speed=0.1`（1px=0.1）。プレビューに φ°・polarity 表示。
+- **検証**: `test/pulseScaleWave.test.ts` 5件・typecheck 緑。
