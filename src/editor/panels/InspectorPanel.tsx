@@ -7,7 +7,8 @@ import {
   setKeyframe,
   useEditorStore,
 } from "../store";
-import { staticProp } from "../../core/props";
+import { EXPRESSED_VALUE_COLOR, isPropExpressed, staticProp } from "../../core/props";
+import { pulseCycleT, pulseModulation } from "../../runtime/pulseScaleWave";
 import { ColorSwatch, isRgba } from "../ColorSwatch";
 import { BUNDLED_FONTS, WEB_SAFE_FONTS, isKnownFont } from "../fontList";
 import { ScrubNumber } from "../ScrubNumber";
@@ -455,24 +456,28 @@ export function InspectorPanel() {
           onChange={(v, dp) => setVec3Kf("position", v, dp)}
           onLiveChange={(v) => previewPatch({ transform: buildTransformPreview("position", v) })}
           hasKf={obj.transform.position.keyframes.length > 0}
+          expressed={isPropExpressed(obj.transform.position)}
           speeds={{ x: 1, y: 1, z: 1 }}
         />
         <Vec3Row label="Anchor" vals={anchor}
           onChange={(v, dp) => setVec3Kf("anchor", v, dp)}
           onLiveChange={(v) => previewPatch({ transform: buildTransformPreview("anchor", v) })}
           hasKf={obj.transform.anchor.keyframes.length > 0}
+          expressed={isPropExpressed(obj.transform.anchor)}
           speeds={{ x: 1, y: 1, z: 1 }}
         />
         <Vec3Row label="Rotation" vals={rot}
           onChange={(v, dp) => setVec3Kf("rotation", v, dp)}
           onLiveChange={(v) => previewPatch({ transform: buildTransformPreview("rotation", v) })}
           hasKf={obj.transform.rotation.keyframes.length > 0}
+          expressed={isPropExpressed(obj.transform.rotation)}
           speeds={{ x: 0.5, y: 0.5, z: 0.5 }}
         />
         <Vec3Row label="Scale" vals={scl}
           onChange={(v, dp) => setVec3Kf("scale", v, dp)}
           onLiveChange={(v) => previewPatch({ transform: buildTransformPreview("scale", v) })}
           hasKf={obj.transform.scale.keyframes.length > 0}
+          expressed={isPropExpressed(obj.transform.scale)}
           speeds={{ x: 0.01, y: 0.01, z: 0.01 }}
         />
         <Row label="Opacity">
@@ -493,7 +498,7 @@ export function InspectorPanel() {
             min={0}
             max={1}
             step={0.01}
-            style={numInputStyle}
+            style={numInputStyleFor(obj.opacity)}
           />
         </Row>
         <Row label="Blend Mode">
@@ -881,8 +886,10 @@ export function InspectorPanel() {
                 <ExpressionPresetFields
                   obj={obj}
                   instance={inst}
+                  presetId={inst.presetId as ExpressionPresetId}
                   params={def?.params ?? []}
                   frame={frame}
+                  fps={comp?.fps ?? 30}
                   readOnly={isLegacy}
                   onMigrate={(propsOverrides) =>
                     void addExpressionPreset(obj.id, inst.presetId as ExpressionPresetId, propsOverrides)
@@ -955,11 +962,95 @@ export function InspectorPanel() {
   );
 }
 
+function samplePresetStaticEnum(
+  props: ExpressionPresetInstance["props"],
+  key: string,
+  defaultVal: string,
+): string {
+  const raw = props[key];
+  return typeof raw === "string" ? raw : defaultVal;
+}
+
+function samplePresetScalar(
+  props: ExpressionPresetInstance["props"],
+  key: string,
+  defaultVal: number,
+  frame: number,
+): number {
+  const raw = props[key];
+  if (raw === undefined) return defaultVal;
+  if (typeof raw === "number") return raw;
+  if (isAnimated(raw)) {
+    const v = sampleAny(raw, frame);
+    return typeof v === "number" ? v : defaultVal;
+  }
+  return defaultVal;
+}
+
+/** Pulse Scale: 1 周期の変調カーブ（Bend の凹/凸を即確認）。 */
+function PulseScaleWavePreview({
+  props,
+  frame,
+  fps,
+}: {
+  props: ExpressionPresetInstance["props"];
+  frame: number;
+  fps: number;
+}) {
+  const waveform = samplePresetStaticEnum(props, "waveform", "sine");
+  const polarity = samplePresetStaticEnum(props, "polarity", "+");
+  const bend = samplePresetScalar(props, "bend", 0, frame);
+  const phase = samplePresetScalar(props, "phase", 0, frame);
+  const frequency = samplePresetScalar(props, "frequency", 2, frame);
+  const W = 168;
+  const H = 44;
+  const pad = 2;
+  const innerW = W - pad * 2;
+  const innerH = H - pad * 2;
+  const midY = pad + innerH / 2;
+  const pts: string[] = [];
+  const steps = 80;
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const w = pulseModulation(waveform, bend, t, polarity);
+    const x = pad + (i / steps) * innerW;
+    const y = midY - w * (innerH / 2 - 2);
+    pts.push(`${x.toFixed(1)},${y.toFixed(1)}`);
+  }
+  const timeSec = frame / Math.max(1, fps);
+  const cycleT = pulseCycleT(timeSec, frequency, phase);
+  const playX = pad + cycleT * innerW;
+  const bendLabel = bend === 0 ? "0" : bend > 0 ? `+${bend.toFixed(2)}` : bend.toFixed(2);
+
+  return (
+    <div style={{ marginBottom: 8 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, color: "#666", marginBottom: 3 }}>
+        <span>1 cycle · bend {bendLabel} · φ{phase.toFixed(0)}° · {polarity}</span>
+        <span style={{ color: waveform === "sawtooth" ? "#6ad4aa" : "#888" }}>
+          {waveform === "sawtooth" ? "bend が最も分かりやすい" : "sawtooth 推奨"}
+        </span>
+      </div>
+      <svg
+        width={W}
+        height={H}
+        style={{ display: "block", background: "#141414", borderRadius: 3, border: "1px solid #2a2a2a" }}
+        aria-label="Pulse scale waveform preview"
+      >
+        <line x1={pad} y1={midY} x2={W - pad} y2={midY} stroke="#2e2e2e" strokeWidth={1} />
+        <polyline points={pts.join(" ")} fill="none" stroke="#5ecfaa" strokeWidth={1.5} strokeLinejoin="round" />
+        <line x1={playX} y1={pad} x2={playX} y2={H - pad} stroke="#e07070" strokeWidth={1} opacity={0.85} />
+      </svg>
+    </div>
+  );
+}
+
 function ExpressionPresetFields({
   obj,
   instance,
+  presetId,
   params,
   frame,
+  fps,
   readOnly,
   onMigrate,
   updateObject,
@@ -967,14 +1058,21 @@ function ExpressionPresetFields({
 }: {
   obj: SceneObject;
   instance: ExpressionPresetInstance;
+  presetId: ExpressionPresetId;
   params: ParamDescriptor[];
   frame: number;
+  fps: number;
   readOnly: boolean;
   onMigrate: (propsOverrides?: Record<string, unknown>) => void;
   updateObject: (id: string, patch: Partial<SceneObject>, label?: string) => void;
   previewPatch: (patch: Partial<SceneObject>) => void;
 }) {
   const props = instance.props;
+  const previewOverride = useEditorStore((s) => s.previewOverride);
+  const displayProps =
+    previewOverride?.objectId === obj.id && previewOverride.patch.expressionPresets
+      ? previewOverride.patch.expressionPresets.find((p) => p.id === instance.id)?.props ?? props
+      : props;
 
   const writePresets = (nextProps: ExpressionPresetInstance["props"], label: string) => {
     if (readOnly) {
@@ -1019,6 +1117,13 @@ function ExpressionPresetFields({
         <div style={{ fontSize: 10, color: "#888", marginBottom: 6 }}>
           旧形式 — パラメータ編集で新形式へ移行します
         </div>
+      )}
+      {presetId === "pulse-scale" && (
+        <PulseScaleWavePreview
+          props={displayProps}
+          frame={frame}
+          fps={fps}
+        />
       )}
       {params.map((param) => {
         const stored = props[param.key];
@@ -1069,6 +1174,7 @@ function ExpressionPresetFields({
               min={param.min}
               max={param.max}
               step={param.step}
+              speed={param.key === "bend" ? 0.1 : undefined}
             />
           );
         }
@@ -1193,6 +1299,7 @@ function EffectFields({
               <ColorSwatch
                 label={param.label}
                 value={val}
+                expressed={isPropExpressed(raw)}
                 onLiveChange={(c) => previewAnim(param.key, raw.keyframes.length > 0 ? setKeyframe(raw as AnimatedProp<RGBA>, frame, c) : { ...raw, value: c })}
                 onCommit={(c) => {
                   if (raw.keyframes.length > 0) writeAnim(param.key, setKeyframe(raw as AnimatedProp<RGBA>, frame, c), `Edit ${param.label}`);
@@ -1363,6 +1470,7 @@ function TextComponentFields({
             <ColorSwatch
               label="Fill"
               value={colorVal}
+              expressed={isPropExpressed(colorProp)}
               onCommit={(v) => {
                 if (colorProp.keyframes.length > 0) writeAnim("color", setKeyframe(colorProp as AnimatedProp<RGBA>, frame, v), "Edit fill");
                 else writeAnim("color", { ...colorProp, value: v }, "Edit fill");
@@ -1384,6 +1492,7 @@ function TextComponentFields({
             <ColorSwatch
               label="Stroke"
               value={strokeColorVal}
+              expressed={isPropExpressed(strokeColorProp)}
               onCommit={(v) => {
                 if (strokeColorProp.keyframes.length > 0) writeAnim("strokeColor", setKeyframe(strokeColorProp as AnimatedProp<RGBA>, frame, v), "Edit stroke");
                 else writeAnim("strokeColor", { ...strokeColorProp, value: v }, "Edit stroke");
@@ -1622,6 +1731,7 @@ function SolidComponentFields({
         <ColorSwatch
           label="Fill"
           value={colorVal}
+          expressed={isPropExpressed(colorProp)}
           onCommit={(v) => {
             if (colorProp.keyframes.length > 0) writeAnim("color", setKeyframe(colorProp as AnimatedProp<RGBA>, frame, v), "Edit solid color");
             else writeAnim("color", { ...colorProp, value: v }, "Edit solid color");
@@ -1772,7 +1882,7 @@ function TextSourceInput({
         onCommit(v);
         commitBaseRef.current = v;
       }}
-      style={{ ...textAreaStyle, flex: 1 }}
+      style={{ ...textAreaStyle, flex: 1, ...(isPropExpressed(textProp) ? { color: EXPRESSED_VALUE_COLOR } : {}) }}
     />
   );
 }
@@ -1790,7 +1900,7 @@ function Stopwatch({ active, onClick }: { active: boolean; onClick: () => void }
 }
 
 function AnimScalarRow({
-  label, prop, value, onToggle, onCommit, onLiveChange, min, max, step,
+  label, prop, value, onToggle, onCommit, onLiveChange, min, max, step, speed,
 }: {
   label: string;
   prop: AnimatedProp<number>;
@@ -1804,6 +1914,7 @@ function AnimScalarRow({
   min?: number;
   max?: number;
   step?: number;
+  speed?: number;
 }) {
   return (
     <Row label={label}>
@@ -1815,7 +1926,8 @@ function AnimScalarRow({
         min={min}
         max={max}
         step={step}
-        style={numInputStyle}
+        speed={speed}
+        style={numInputStyleFor(prop)}
       />
     </Row>
   );
@@ -1874,15 +1986,17 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 }
 
 function Vec3Row({
-  label, vals, onChange, onLiveChange, hasKf, speeds,
+  label, vals, onChange, onLiveChange, hasKf, expressed, speeds,
 }: {
   label: string;
   vals: Vec3;
   onChange: (v: Vec3, deltaParts?: Partial<Vec3>) => void;
   onLiveChange?: (v: Vec3) => void;
   hasKf: boolean;
+  expressed?: boolean;
   speeds?: { x: number; y: number; z: number };
 }) {
+  const inputStyle = expressed ? { ...numInputStyle, color: EXPRESSED_VALUE_COLOR } : numInputStyle;
   const commit = (axis: "x" | "y" | "z", newVal: number, delta?: number) => {
     if (!Number.isFinite(newVal)) return;
     const v: Vec3 = { ...vals, [axis]: newVal };
@@ -1907,7 +2021,7 @@ function Vec3Row({
             onCommit={(v, d) => commit(ax, v, d)}
             onLiveChange={(v) => live(ax, v)}
             speed={speeds?.[ax] ?? 1}
-            style={numInputStyle}
+            style={inputStyle}
           />
         </label>
       ))}
@@ -1924,6 +2038,10 @@ const numInputStyle: React.CSSProperties = {
   fontSize: 11,
   fontVariantNumeric: "tabular-nums",
 };
+
+function numInputStyleFor(prop: AnimatedProp<unknown>): React.CSSProperties {
+  return isPropExpressed(prop) ? { ...numInputStyle, color: EXPRESSED_VALUE_COLOR } : numInputStyle;
+}
 
 const btnStyle: React.CSSProperties = {
   background: "#2a2a2a",

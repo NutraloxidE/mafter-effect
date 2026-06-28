@@ -10,6 +10,8 @@ export interface ColorSwatchProps {
   onLiveChange?: (next: RGBA) => void;
   onFocus?: () => void;
   onBlur?: () => void;
+  /** AE 風 — expression が値を上書きしているとき true */
+  expressed?: boolean;
 }
 
 function rgbaToHex(c: RGBA): string {
@@ -30,7 +32,7 @@ function rgbaEqual(a: RGBA, b: RGBA): boolean {
   return a.r === b.r && a.g === b.g && a.b === b.b && a.a === b.a;
 }
 
-export function ColorSwatch({ label, value, onCommit, onLiveChange, onFocus, onBlur }: ColorSwatchProps) {
+export function ColorSwatch({ label, value, onCommit, onLiveChange, onFocus, onBlur, expressed }: ColorSwatchProps) {
   const [draft, setDraft] = useState(value);
   const draftRef = useRef(value);
   const editingColorRef = useRef(false);
@@ -105,7 +107,7 @@ export function ColorSwatch({ label, value, onCommit, onLiveChange, onFocus, onB
         title="Alpha"
         style={{ width: 60 }}
       />
-      <span style={{ color: "#888", fontSize: 10, fontVariantNumeric: "tabular-nums" }}>
+      <span style={{ color: expressed ? "#f55" : "#888", fontSize: 10, fontVariantNumeric: "tabular-nums" }}>
         {Math.round(draft.a * 100)}%
       </span>
     </div>

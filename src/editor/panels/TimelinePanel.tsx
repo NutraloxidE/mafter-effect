@@ -13,6 +13,7 @@ import {
   type PropPath,
 } from "../keyframeEdit";
 import { currentTimelineComp, setKeyframe, useEditorStore } from "../store";
+import { EXPRESSED_VALUE_COLOR, isPropExpressed } from "../../core/props";
 import { framesToTimecode } from "../timecode";
 import { isRgba } from "../ColorSwatch";
 import { getLayerSourceExtent, shiftFootageSourceOffset, type LayerSourceExtent } from "../layerSourceOffset";
@@ -2484,9 +2485,9 @@ function PropRowVec3({
 
   return (
     <PropRowShell label={label} animated={animated} onStopwatch={toggleStopwatch} prop={prop} frame={frame} kfShift={kfShift} objId={obj.id} propPath={propPath} selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onKfRightClick={onKfRightClick} frameToPercent={frameToPercent} graphMode={graphMode} viewRange={viewRange} onSetProp={onSetProp}>
-      <NumberField value={v.x} onCommit={(n) => editAxis("x", n)} onLiveChange={(n) => previewAxis("x", n)} />
-      <NumberField value={v.y} onCommit={(n) => editAxis("y", n)} onLiveChange={(n) => previewAxis("y", n)} />
-      <NumberField value={v.z} onCommit={(n) => editAxis("z", n)} onLiveChange={(n) => previewAxis("z", n)} />
+      <NumberField value={v.x} onCommit={(n) => editAxis("x", n)} onLiveChange={(n) => previewAxis("x", n)} expressed={isPropExpressed(prop)} />
+      <NumberField value={v.y} onCommit={(n) => editAxis("y", n)} onLiveChange={(n) => previewAxis("y", n)} expressed={isPropExpressed(prop)} />
+      <NumberField value={v.z} onCommit={(n) => editAxis("z", n)} onLiveChange={(n) => previewAxis("z", n)} expressed={isPropExpressed(prop)} />
     </PropRowShell>
   );
 }
@@ -2533,7 +2534,7 @@ function PropRowOpacity({
 
   return (
     <PropRowShell label="不透明度" animated={animated} onStopwatch={toggleStopwatch} prop={prop} frame={frame} kfShift={kfShift} objId={obj.id} propPath="opacity" selectedKfs={selectedKfs} kfDrag={kfDrag} beginKfDrag={beginKfDrag} onKfRightClick={onKfRightClick} frameToPercent={frameToPercent} graphMode={graphMode} viewRange={viewRange} onSetProp={onSetProp}>
-      <NumberField value={v} onCommit={edit} onLiveChange={preview} min={0} max={1} step={0.01} />
+      <NumberField value={v} onCommit={edit} onLiveChange={preview} min={0} max={1} step={0.01} expressed={isPropExpressed(prop)} />
     </PropRowShell>
   );
 }
@@ -2595,9 +2596,9 @@ function PropRowEffect({
           if (!Number.isFinite(num)) return;
           if (animated) previewProp(setKeyframe(prop as AnimatedProp<unknown>, frame, num, { type: "linear" } as Easing));
           else previewProp({ ...prop, value: num });
-        }} min={paramDef?.min} max={paramDef?.max} step={paramDef?.step} />
+        }} min={paramDef?.min} max={paramDef?.max} step={paramDef?.step} expressed={isPropExpressed(prop)} />
       ) : kind === "color" && typeof sampled === "object" && sampled !== null && "r" in sampled ? (
-        <span style={{ fontSize: 10, color: "#aaa" }}>
+        <span style={{ fontSize: 10, color: isPropExpressed(prop) ? EXPRESSED_VALUE_COLOR : "#aaa" }}>
           {Math.round((sampled as RGBA).r * 255)},{Math.round((sampled as RGBA).g * 255)},{Math.round((sampled as RGBA).b * 255)}
         </span>
       ) : (
@@ -2729,7 +2730,7 @@ function PropRowComponent({
           if (!Number.isFinite(num)) return;
           if (animated) previewProp(setKeyframe(prop as AnimatedProp<unknown>, frame, num, { type: "linear" } as Easing));
           else previewProp({ ...prop, value: num });
-        }} min={paramDef?.min} max={paramDef?.max} step={paramDef?.step} />
+        }} min={paramDef?.min} max={paramDef?.max} step={paramDef?.step} expressed={isPropExpressed(prop)} />
       ) : kind === "string" && typeof sampled === "string" ? (
         <input
           value={sampled}
@@ -2738,10 +2739,17 @@ function PropRowComponent({
             if (animated) writeProp(setKeyframe(prop as AnimatedProp<unknown>, frame, v, { type: "hold" } as Easing), `Edit ${propKey}`);
             else writeProp({ ...prop, value: v }, `Edit ${propKey}`);
           }}
-          style={{ width: 100, fontSize: 10, background: "#222", border: "1px solid #444", color: "#ccc", padding: "1px 3px" }}
+          style={{
+            width: 100,
+            fontSize: 10,
+            background: "#222",
+            border: "1px solid #444",
+            color: isPropExpressed(prop) ? EXPRESSED_VALUE_COLOR : "#ccc",
+            padding: "1px 3px",
+          }}
         />
       ) : kind === "color" && typeof sampled === "object" && sampled !== null && "r" in sampled ? (
-        <span style={{ fontSize: 10, color: "#aaa" }}>
+        <span style={{ fontSize: 10, color: isPropExpressed(prop) ? EXPRESSED_VALUE_COLOR : "#aaa" }}>
           {Math.round((sampled as RGBA).r * 255)},{Math.round((sampled as RGBA).g * 255)},{Math.round((sampled as RGBA).b * 255)}
         </span>
       ) : kind === "bool" && typeof sampled === "boolean" ? (
@@ -3025,6 +3033,7 @@ function NumberField({
   min,
   max,
   step,
+  expressed,
 }: {
   value: number;
   onCommit: (v: number) => void;
@@ -3032,6 +3041,7 @@ function NumberField({
   min?: number;
   max?: number;
   step?: number;
+  expressed?: boolean;
 }) {
   return (
     <ScrubNumber
@@ -3048,7 +3058,7 @@ function NumberField({
         height: 18,
         background: "#111",
         border: "1px solid #333",
-        color: "#7fb8f0",
+        color: expressed ? EXPRESSED_VALUE_COLOR : "#7fb8f0",
         borderRadius: 2,
         padding: "1px 3px",
         fontSize: 11,

@@ -19,3 +19,10 @@ export function defaultTransform(): Transform {
     scale: staticProp(vec3(1, 1, 1)),
   };
 }
+
+/** AE 風 — 有効な expression が値を上書きしている AnimatedProp。 */
+export function isPropExpressed(prop: AnimatedProp<unknown>): boolean {
+  return prop.expression?.enabled === true;
+}
+
+export const EXPRESSED_VALUE_COLOR = "#f55";
