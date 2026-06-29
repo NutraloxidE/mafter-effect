@@ -1,4 +1,4 @@
-import type { Vec3 } from "../types";
+import type { Vec3 } from "../core/schema";
 
 const SCALE_LINK_EPS = 1e-6;
 

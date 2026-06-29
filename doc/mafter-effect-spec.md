@@ -687,6 +687,7 @@ interface ExportConfig {
 - 描画は `<video>` を対象時刻に **seek** して DomRenderer の対象 div に合成。ブラウザの seek はフレーム精度が不安定なので **`requestVideoFrameCallback` で実フレーム到達を待ち、許容誤差を明記**（browser export は best-effort）。
 - **canonical な完全一致は headless 経路（§16, M3.5）で担保**。INV-2 は「ソース時刻のマッピング＝決定論」を満たし、実デコードフレームの差はラスタ忠実度の範囲とする。
 - 音声トラック付き video の音は MVP では鳴らさない（`audio` レイヤで別途）。フレーム同期音声は §16。
+- **warm-up（再生レイテンシ回避・非直列化）**: §11.5 音声プリロードと対になる前倒し。preview / HTML bundle player は、編集中 comp の enabled video レイヤーを **idle 中（`requestIdleCallback`）に `<video>` を現フレームのソース時刻へ seek + decode（loadeddata 相当）まで warm-up** し、`assetId@frame` 粒度で primed 状態を共有キャッシュに記録する（多重 prime は inflight 去重）。再生開始時、全 video が warm-up 済みなら遅延ゼロで開始し、未完了の video がある場合のみ短時間（best-effort 上限）prime を待ってから再生する＝開幕の「他レイヤーは即描画されるが動画だけ遅れて登場」を防ぐ。warm-up は present（`requestVideoFrameCallback`）待ちをせず、再生ループは従来どおり軽量（毎フレーム seek しない）。**warm-up は preview/bundle player 専用で、export 経路（決定論 seek + `requestVideoFrameCallback` の present 待ち）は一切変更しない（INV-2 非干渉）。** warm-up 失敗は best-effort（再生開始時に再試行）で、Footage 削除時に primed 状態を破棄する。
 
 ### §11.5 audio コンポーネント（MVP / 最小）
 

@@ -44,6 +44,9 @@ import { CHECKERBOARD_STYLE } from "../checkerboardStyle";
 import type { HtmlComposition, SceneObject, TimelineComposition, Transform } from "../../core/schema";
 import { PreviewViewerOverlay } from "./PreviewViewerOverlay";
 
+/** §11.4 play gate: 動画 warm-up 未完了時に再生開始前へ許す最大待ち（best-effort 上限）。 */
+const PLAY_GATE_TIMEOUT_MS = 500;
+
 const _previewFs = new IndexedDbFs("mafter-effect-fs");
 const _exprEngine = getPreviewExpressionEngine();
 const _htmlLoader = new ModuleLoader(_previewFs);
@@ -589,32 +592,52 @@ export function PreviewPanel() {
       });
     };
 
-    if (!project || !hasAudioLayers(project, comp)) {
-      return startRafClock();
-    }
-
-    // 音声あり: AudioContext マスタークロック。decode は非同期なので、成功するまで stop ハンドルを保持。
     let cancelled = false;
-    let fallbackStop: (() => void) | null = null;
-    const clock = new PreviewAudioClock(project, comp, _previewFs, {
-      fps: cfg.fps,
-      loopStart: cfg.loopStart,
-      loopEnd: cfg.loopEnd,
-      loop: cfg.loop,
-      initialFrame: frameRef.current,
-      onFrameChange: (f) => setFrame(f),
-      onPlaybackEnd: () => setPlaying(false),
-      renderFrame,
-    });
-    void clock.start().then((ok) => {
-      if (cancelled) { clock.stop(); return; }
-      if (!ok) fallbackStop = startRafClock(); // decode 全失敗 → 無音 rAF
-    });
+    let stop: (() => void) | null = null;
+
+    const startClock = (): void => {
+      if (cancelled) return;
+      if (!project || !hasAudioLayers(project, comp)) {
+        stop = startRafClock();
+        return;
+      }
+      // 音声あり: AudioContext マスタークロック。decode は非同期なので、成功するまで stop ハンドルを保持。
+      let fallbackStop: (() => void) | null = null;
+      const clock = new PreviewAudioClock(project, comp, _previewFs, {
+        fps: cfg.fps,
+        loopStart: cfg.loopStart,
+        loopEnd: cfg.loopEnd,
+        loop: cfg.loop,
+        initialFrame: frameRef.current,
+        onFrameChange: (f) => setFrame(f),
+        onPlaybackEnd: () => setPlaying(false),
+        renderFrame,
+      });
+      void clock.start().then((ok) => {
+        if (cancelled) { clock.stop(); return; }
+        if (!ok) fallbackStop = startRafClock(); // decode 全失敗 → 無音 rAF
+      });
+      stop = () => {
+        clock.stop();
+        fallbackStop?.();
+      };
+    };
+
+    // §11.4 条件付き play gate: warm-up 済みなら遅延ゼロで即開始。未完了の動画があるときだけ
+    // 短時間（PLAY_GATE_TIMEOUT_MS 上限）prime を待ってから再生開始＝開幕の「動画だけ遅れて登場」を防ぐ。
+    const renderer = rendererRef.current;
+    if (renderer && !renderer.areMountedVideosPrimed(cfg.fps)) {
+      void renderer
+        .primeMountedVideos(cfg.fps, PLAY_GATE_TIMEOUT_MS)
+        .catch(() => {}) // best-effort: 失敗しても再生は始める
+        .then(startClock);
+    } else {
+      startClock();
+    }
 
     return () => {
       cancelled = true;
-      clock.stop();
-      fallbackStop?.();
+      stop?.();
     };
   }, [isPlaying, comp?.id, draftPlaybackActive, setFrame, setPlaying, performPreviewRender, project]);
 
@@ -632,6 +655,33 @@ export function PreviewPanel() {
       void loadAudioBuffer(assetId, () => _previewFs.read(asset.path)).catch(() => { /* 失敗は再生時に再試行 */ });
     }
   }, [project, comp?.id, comp?.objects]);
+
+  // §11.4: 編集中 comp に動画レイヤーがあれば、idle 中に <video> を現フレームへ seek + decode
+  // まで warm-up しておく（音声プリロード §11.5 と対）。Play 直後の「動画だけ遅れて登場」を防ぐ。
+  // 対象は編集中 comp の enabled video のみ（プロジェクト全体は対象外）。export 経路は不変（INV-2）。
+  useEffect(() => {
+    if (!project || !comp || isPlaying) return;
+    const hasVideo = comp.objects.some(
+      (o) => o.enabled && o.components.some((c) => c.type === "video"),
+    );
+    if (!hasVideo) return;
+    const renderer = rendererRef.current;
+    if (!renderer) return;
+    const fps = comp.fps;
+    const run = (): void => {
+      void renderer.primeMountedVideos(fps).catch(() => { /* 失敗は再生時に再試行 */ });
+    };
+    const ric = (window as Window & { requestIdleCallback?: (cb: () => void) => number })
+      .requestIdleCallback;
+    if (ric) {
+      const handle = ric(run);
+      const cancel = (window as Window & { cancelIdleCallback?: (h: number) => void })
+        .cancelIdleCallback;
+      return () => cancel?.(handle);
+    }
+    const handle = window.setTimeout(run, 200);
+    return () => window.clearTimeout(handle);
+  }, [project, comp?.id, comp?.objects, renderTick, frame, isPlaying]);
 
   // §25.2 解像度プロキシ: DomRenderer のラスタ解像度のみ変更（INV-2 scene 値不変）
   useEffect(() => {

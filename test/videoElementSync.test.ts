@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  primeVideoElement,
   syncVideoElementTime,
   videoSeekThresholdSec,
   waitForVideoFrame,
@@ -184,6 +185,50 @@ describe("syncVideoElementTime scrub seek coalescing", () => {
     Object.assign(h.video, { currentTime: center }); // settle が target に到達
     h.fireSeeked();
     expect(h.video.currentTime).toBe(center); // 余計な再 seek なし
+  });
+});
+
+describe("primeVideoElement", () => {
+  const halfFrame = videoSeekThresholdSec(30);
+
+  it("scrub-seeks to the target frame center and resolves true when data is ready", async () => {
+    const video = mockVideo(0, true);
+    await expect(primeVideoElement(video, 1, 30, 200)).resolves.toBe(true);
+    expect(video.currentTime).toBeCloseTo(1 + halfFrame, 6);
+    expect(video.play).not.toHaveBeenCalled();
+  });
+
+  it("returns true immediately when already at the frame and ready (no re-seek)", async () => {
+    const center = 1 + halfFrame;
+    const video = mockVideo(center, true);
+    await expect(primeVideoElement(video, 1, 30, 200)).resolves.toBe(true);
+    expect(video.currentTime).toBe(center);
+  });
+
+  it("waits for loadeddata before resolving when not yet decoded", async () => {
+    let dataCb: (() => void) | undefined;
+    const video = mockVideo(1, true, {
+      readyState: 0,
+      videoWidth: 0,
+      addEventListener: vi.fn((ev: string, cb: () => void) => {
+        if (ev === "loadeddata") dataCb = cb;
+      }),
+    });
+    const p = primeVideoElement(video, 1, 30, 500);
+    Object.assign(video, { readyState: 2, videoWidth: 1920 });
+    dataCb?.();
+    await expect(p).resolves.toBe(true);
+  });
+
+  it("resolves false on timeout when data never becomes ready", async () => {
+    const video = mockVideo(1, true, { readyState: 0, videoWidth: 0 });
+    await expect(primeVideoElement(video, 1, 30, 30)).resolves.toBe(false);
+  });
+
+  it("rejects negative / non-finite targets without seeking", async () => {
+    const video = mockVideo(0, true);
+    await expect(primeVideoElement(video, -1, 30, 50)).resolves.toBe(false);
+    expect(video.currentTime).toBe(0);
   });
 });
 

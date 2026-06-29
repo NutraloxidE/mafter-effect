@@ -66,18 +66,11 @@ function waitPresentedFrame(
 }
 
 /**
- * export 前に video の seek / decode / present が完了するのを待つ。
- * targetSec 指定時は target フレームが実際に提示されるまで待つ（古いフレーム capture 防止）。
+ * seek / decode の完了を待つ（currentTime が target に乗り data が揃うまで）。
+ * present（rVFC）待ちはしない。export の present 待ちと preview warm-up が共有する step 1。
+ * 戻り値: deadline 内に readyState >= HAVE_CURRENT_DATA && videoWidth > 0 に達したか。
  */
-export async function waitForVideoFrame(
-  video: HTMLVideoElement,
-  targetSec?: number,
-  timeoutMs = DEFAULT_VIDEO_FRAME_WAIT_MS,
-): Promise<void> {
-  const deadline = performance.now() + timeoutMs;
-  const fps = 30;
-
-  // 1. seek / decode の完了を待つ（currentTime が target に乗り data が揃うまで）。
+async function waitVideoDataReady(video: HTMLVideoElement, deadline: number): Promise<boolean> {
   while (performance.now() < deadline) {
     if (video.seeking) {
       await Promise.race([onceEvent(video, "seeked"), sleep(50)]);
@@ -91,12 +84,50 @@ export async function waitForVideoFrame(
       ]);
       continue;
     }
-    break;
+    return true;
   }
+  return video.readyState >= HAVE_CURRENT_DATA && video.videoWidth > 0;
+}
+
+/**
+ * export 前に video の seek / decode / present が完了するのを待つ。
+ * targetSec 指定時は target フレームが実際に提示されるまで待つ（古いフレーム capture 防止）。
+ */
+export async function waitForVideoFrame(
+  video: HTMLVideoElement,
+  targetSec?: number,
+  timeoutMs = DEFAULT_VIDEO_FRAME_WAIT_MS,
+): Promise<void> {
+  const deadline = performance.now() + timeoutMs;
+  const fps = 30;
+
+  // 1. seek / decode の完了を待つ（currentTime が target に乗り data が揃うまで）。
+  await waitVideoDataReady(video, deadline);
 
   // 2. target フレームが compositor に present されるまで待つ（drawImage が新フレームを得る）。
   const presentBudget = Math.min(PRESENT_WAIT_MS, Math.max(0, deadline - performance.now()));
   await waitPresentedFrame(video, targetSec, fps, presentBudget);
+}
+
+const DEFAULT_PRIME_TIMEOUT_MS = 800;
+
+/**
+ * preview warm-up（§11.4）: target 時刻へ scrub 同型 seek し、loadeddata（decode 済みフレーム）
+ * まで待つ。rVFC present 待ちはしない＝再生開始を遅らせない。export の決定論 seek（exportStep +
+ * waitForVideoFrame）は一切経由しない（INV-2 非干渉）。
+ * 成功 = deadline 内に readyState >= HAVE_CURRENT_DATA && videoWidth > 0。失敗は best-effort。
+ */
+export async function primeVideoElement(
+  video: HTMLVideoElement,
+  targetSec: number,
+  fps: number,
+  timeoutMs = DEFAULT_PRIME_TIMEOUT_MS,
+): Promise<boolean> {
+  if (!Number.isFinite(targetSec) || targetSec < 0) return false;
+  const deadline = performance.now() + Math.max(0, timeoutMs);
+  // 既に data 揃いなら syncVideoElementTime は半フレーム以内で再 seek せず即返る。
+  syncVideoElementTime(video, targetSec, fps, { playbackMode: false });
+  return waitVideoDataReady(video, deadline);
 }
 
 /**

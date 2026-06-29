@@ -17,7 +17,8 @@ import { canvasToRasterBuffer, rasterBufferToCanvas } from "./pixelSort";
 import { processRasterChainAsync } from "./rasterProcessAsync";
 import { applyFilterChainToBuffer } from "./effectRaster";
 import { resolveEffectChain } from "./effectChain";
-import { EXPORT_VIDEO_TARGET_ATTR, syncVideoElementTime, waitForVideoFrame } from "./videoElementSync";
+import { EXPORT_VIDEO_TARGET_ATTR, primeVideoElement, syncVideoElementTime, waitForVideoFrame } from "./videoElementSync";
+import { ensureVideosPrimed, peekVideoPrimed, type VideoPrimeTarget } from "./videoWarmupCache";
 import type { ExportChain, ExportLayer, NestedCompositeMeta, ExportTaggedElement } from "./exportComposite";
 import type { EffectFilter } from "./plugin";
 import type { BlendMode } from "../core/schema";
@@ -304,6 +305,54 @@ export class DomRenderer implements Renderer {
       const target = raw !== null && raw !== "" ? Number(raw) : undefined;
       return waitForVideoFrame(v, Number.isFinite(target) ? target : undefined);
     }));
+  }
+
+  /** §11.4 preview/bundle warm-up — マウント済み video 要素を列挙（ネスト comp 内も含む）。 */
+  forEachVideoElement(cb: (video: HTMLVideoElement, objectId: string) => void): void {
+    if (!this.root) return;
+    for (const v of this.root.querySelectorAll("video")) {
+      const host = (v as HTMLElement).closest("[data-object-id]") as HTMLElement | null;
+      cb(v, host?.dataset.objectId ?? "");
+    }
+  }
+
+  /**
+   * §11.4 preview/bundle warm-up — 現 DOM 上の各 video を dataset の target 時刻へ prime する。
+   * export 経路（exportStep + waitForVideoFrame の決定論 seek/present）とは無関係（INV-2 非干渉）。
+   * primed は videoWarmupCache に記録し再 prime を去重。全 video 成功で true。
+   */
+  async primeMountedVideos(fps: number, timeoutMs?: number): Promise<boolean> {
+    if (!this.root) return true;
+    const targets: VideoPrimeTarget[] = [];
+    this.forEachVideoElement((video) => {
+      const assetId = video.dataset.mafterVideoAsset;
+      const rawT = video.dataset.mafterTargetSec;
+      if (!assetId || rawT === undefined) return;
+      const targetSec = Number(rawT);
+      if (!Number.isFinite(targetSec)) return;
+      targets.push({
+        assetId,
+        targetSec,
+        fps,
+        prime: () => primeVideoElement(video, targetSec, fps, timeoutMs),
+      });
+    });
+    return ensureVideosPrimed(targets);
+  }
+
+  /** §11.4 — 現 DOM 上の全 video が現フレームで warm-up 済みか（play gate スキップ判定）。 */
+  areMountedVideosPrimed(fps: number): boolean {
+    if (!this.root) return true;
+    let allPrimed = true;
+    this.forEachVideoElement((video) => {
+      const assetId = video.dataset.mafterVideoAsset;
+      const rawT = video.dataset.mafterTargetSec;
+      if (!assetId || rawT === undefined) return;
+      const targetSec = Number(rawT);
+      if (!Number.isFinite(targetSec)) return;
+      if (!peekVideoPrimed(assetId, targetSec, fps)) allPrimed = false;
+    });
+    return allPrimed;
   }
 
   /**
@@ -1477,6 +1526,10 @@ function updateComponentEl(
       } else {
         video.removeAttribute(EXPORT_VIDEO_TARGET_ATTR);
       }
+      // §11.4 preview/bundle warm-up 用に現フレームの target 時刻と assetId を記録（export attr とは別）。
+      video.dataset.mafterTargetSec = String(t);
+      if (assetId) video.dataset.mafterVideoAsset = assetId;
+      else delete video.dataset.mafterVideoAsset;
       const size = assetId ? imageCache?.getSize(assetId) : null;
       if (size) {
         video.style.width = `${size.width}px`;

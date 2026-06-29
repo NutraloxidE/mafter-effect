@@ -61,6 +61,7 @@ import { buildGlyphDecomposeObjects, createCanvasMeasureContext, type GlyphDecom
 import { loadWorkArea, saveWorkArea } from "./workAreaStorage";
 import { WAVEFORM_MODES, type WaveformMode } from "../audio/waveform";
 import { probeAudioMeta, evictAudioBuffer } from "./audioBufferCache";
+import { evictVideoPrimed } from "../runtime/videoWarmupCache";
 import { globalWaveformCache } from "../fs/WaveformCacheDb";
 import { videoLayerOutPoint } from "./videoLayerOutPoint";
 import {
@@ -1168,6 +1169,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       }
       if (asset.kind === "video") {
         evictPreviewMediaAsset(assetId);
+        evictVideoPrimed(assetId);
       }
     })();
   },

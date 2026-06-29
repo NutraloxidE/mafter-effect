@@ -108,6 +108,10 @@ export class BundlePlayer {
     this.currentFrame = rangeStart;
     this.renderFrame(this.currentFrame);
 
+    // §11.4: 自動再生開始前に 1 回だけ動画を warm-up（seek + decode）。開幕の「動画だけ遅れて登場」を防ぐ。
+    // export ではなく live player 経路。失敗は best-effort（再生中に再試行）。
+    await this.renderer.primeMountedVideos(this.manifest.fps).catch(() => false);
+
     const hasAudio = hasAudioLayers(project, comp);
     if (hasAudio) {
       this.audioClock = new BundleAudioClock(

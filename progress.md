@@ -561,3 +561,18 @@ canvas 化結果は以降から見て通常の背面ピクセルと等価（zOrd
 - **要請**: Scale をスクラブするとき X/Y の比例維持（リンク）を切り替え可能に。
 - **実装**: store `scaleLinkEnabled`（既定 ON・非直列化）+ [linkedScale.ts](src/editor/linkedScale.ts) 純関数 + [InspectorPanel.tsx](src/editor/panels/InspectorPanel.tsx) `ScaleVec3Row`（⛓ ボタン）。リンク ON 時は X/Y スクラブで比例更新（Z は独立）。複数選択時もオブジェクトごとに ratio 適用。
 - **検証**: `test/linkedScale.test.ts` 6 件緑。
+
+### 2026-06-30（Opus）— 動画レイヤー preview/bundle warm-up（§11.4）
+
+- **背景**: ファイル読込（blob URL 化）は済むが decode 済みフレームは未保証。Play 直後 text/solid/image は即描画される一方 `<video>` は decode/present 待ちで数フレーム〜数百 ms 空白が出ていた（音声 §11.5 プリロードに相当する機構が動画に無かった）。
+- **実装**（spec §11.4 追記）:
+  - [videoElementSync.ts](src/runtime/videoElementSync.ts) — `primeVideoElement(video, targetSec, fps, timeoutMs)` 追加。scrub 同型 seek → loadeddata（decode）まで待つ（rVFC present 待ちはしない＝再生開始を遅らせない）。`waitForVideoFrame` の step1（seek/decode 待ち）を `waitVideoDataReady` に共通化。export 経路は不変（INV-2）。
+  - 新規 [videoWarmupCache.ts](src/runtime/videoWarmupCache.ts) — audioBufferCache と同型。`peekVideoPrimed` / `ensureVideosPrimed`（inflight 去重・成功時のみ記録）/ `evictVideoPrimed`。primed キーは `assetId@round(targetSec*fps)`（フレーム粒度）。DOM 非依存。
+  - [DomRenderer.ts](src/runtime/DomRenderer.ts) — video 更新時に `dataset.mafterTargetSec` / `dataset.mafterVideoAsset` 記録（export attr とは別）。`forEachVideoElement`（ネスト comp 内も走査）/ `primeMountedVideos(fps, timeoutMs)` / `areMountedVideosPrimed(fps)` 追加。
+  - [PreviewPanel.tsx](src/editor/panels/PreviewPanel.tsx) — ① idle warm-up useEffect（編集中 comp の enabled video を `requestIdleCallback` で prime）② 条件付き play gate（再生開始前、全 primed なら遅延ゼロ／未完了時のみ最大 500ms prime を待つ）。
+  - [BundlePlayer.ts](src/player/BundlePlayer.ts) — `start()` の初回 renderFrame 後・play 前に 1 回 `primeMountedVideos`。
+  - [store.ts](src/editor/store.ts) — `removeAsset`（video）で `evictVideoPrimed`。
+- **scope 外**: video proxy / 毎フレーム rVFC 同期 / export 経路変更 / ネスト専用ロジック（`forEachVideoElement` が nested video も拾う）。
+- **build:player**: 実行済み（src/runtime 変更のため必須）。
+- **検証**: `npm test` 550 件緑（typecheck 含む）。新規 unit: videoElementSync `primeVideoElement` 5 件 / videoWarmupCache 8 件。実機 [verify-video-warmup.mjs](verify-video-warmup.mjs) PASS（idle 後 readyState=4/videoWidth=1920、Play 後 3 フレーム以内も維持）。無回帰: verify-video-import / verify-bundle-video-playback / verify-video-export いずれも PASS。
+- **付随修正**: [linkedScale.ts](src/editor/linkedScale.ts) の壊れた import（`../types` → `../core/schema`）を修正（前コミットのタイポで typecheck/build をブロックしていた）。
