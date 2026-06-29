@@ -491,7 +491,8 @@ export function TimelinePanel() {
       setSelectedKfKeys(copied.map(({ objId, path, kf }) =>
         kfKey(objId, path, Math.max(0, Math.min(duration, kf.frame + offset))),
       ));
-      flashStatus(`📋 ${copied.length} キーフレームを F${frame} に貼り付け`);
+      // WIP: コピペ通知は上部ツールバーのレイアウトを分厚くするため一時無効。後でどうにかする必要がある。
+      // flashStatus(`📋 ${copied.length} キーフレームを F${frame} に貼り付け`);
     }
   };
 
@@ -512,7 +513,8 @@ export function TimelinePanel() {
     });
     const newIds = pasteObjects(shifted);
     if (newIds.length > 0) selectObjects(newIds);
-    flashStatus(`📋 ${shifted.length} レイヤーを F${frame} に貼り付け`);
+    // WIP: コピペ通知は上部ツールバーのレイアウトを分厚くするため一時無効。後でどうにかする必要がある。
+    // flashStatus(`📋 ${shifted.length} レイヤーを F${frame} に貼り付け`);
   };
 
   // §21.5 KF ダイヤの mousedown。
@@ -957,12 +959,16 @@ export function TimelinePanel() {
       if ((e.ctrlKey || e.metaKey) && (e.key === "c" || e.key === "C")) {
         if (selectedKfs.size > 0) {
           e.preventDefault();
-          flashStatus(`📋 ${copySelectedKfsToClipboard()} キーフレームをコピー`);
+          // WIP: コピペ通知は上部ツールバーのレイアウトを分厚くするため一時無効。後でどうにかする必要がある。
+          copySelectedKfsToClipboard();
+          // flashStatus(`📋 ${copySelectedKfsToClipboard()} キーフレームをコピー`);
           return;
         }
         if (selectedIds.length > 0) {
           e.preventDefault();
-          flashStatus(`📋 ${copySelectedLayersToClipboard()} レイヤーをコピー`);
+          // WIP: コピペ通知は上部ツールバーのレイアウトを分厚くするため一時無効。後でどうにかする必要がある。
+          copySelectedLayersToClipboard();
+          // flashStatus(`📋 ${copySelectedLayersToClipboard()} レイヤーをコピー`);
           return;
         }
         return;
@@ -974,14 +980,16 @@ export function TimelinePanel() {
           e.preventDefault();
           const n = copySelectedKfsToClipboard();
           applyMultiKfDelete(selectedKfs);
-          flashStatus(`✂ ${n} キーフレームをカット`);
+          // WIP: コピペ通知は上部ツールバーのレイアウトを分厚くするため一時無効。後でどうにかする必要がある。
+          // flashStatus(`✂ ${n} キーフレームをカット`);
           return;
         }
         if (selectedIds.length > 0) {
           e.preventDefault();
           const n = copySelectedLayersToClipboard();
           removeObjects(selectedIds);
-          flashStatus(`✂ ${n} レイヤーをカット`);
+          // WIP: コピペ通知は上部ツールバーのレイアウトを分厚くするため一時無効。後でどうにかする必要がある。
+          // flashStatus(`✂ ${n} レイヤーをカット`);
           return;
         }
         return;
@@ -1106,7 +1114,9 @@ export function TimelinePanel() {
           title="ビューを全尺表示 (\ / ¥ キー)"
         >fit</button>
         <span style={{ color: "#555", fontVariantNumeric: "tabular-nums" }} title={`F${frame} / ${duration}`}>{formatTimeWithBeat(frame, fps, bpm, beatsPerBar)} / {formatTimeWithBeat(duration, fps, bpm, beatsPerBar)}</span>
+        {/* WIP: コピペ通知は上部ツールバーのレイアウトを分厚くするため一時無効。後でどうにかする必要がある。
         {statusMsg && <span style={{ color: "#8d8", fontSize: 10, marginLeft: 4 }}>{statusMsg}</span>}
+        */}
       </div>
 
       {/* rows — ruler is sticky first-child so it shares the scroll container's content width with layer rows.
