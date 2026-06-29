@@ -63,6 +63,21 @@ describe("syncVideoElementTime", () => {
     expect(video.play).not.toHaveBeenCalled();
   });
 
+  it("does not resync on moderate decode-lag drift during playback", () => {
+    // target 1.0 との差 0.2s（旧 100ms 閾値超だが新 0.5s 未満）。旧 HW で問題化していた領域。
+    const video = mockVideo(0.8, false);
+    syncVideoElementTime(video, 1.0, 30, { playbackMode: true });
+    expect(video.currentTime).toBe(0.8);
+    expect(video.play).not.toHaveBeenCalled();
+  });
+
+  it("resyncs only when drift exceeds the large playback threshold", () => {
+    // 差 0.6s > 0.5s（ループ復帰・大ジャンプ相当）でのみ currentTime を矯正。
+    const video = mockVideo(0.4, false);
+    syncVideoElementTime(video, 1.0, 30, { playbackMode: true });
+    expect(video.currentTime).toBe(1.0);
+  });
+
   it("resyncs when drift is large during playback", () => {
     const video = mockVideo(0, false);
     syncVideoElementTime(video, 1, 30, { playbackMode: true });

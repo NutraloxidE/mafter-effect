@@ -6,6 +6,16 @@
 
 ---
 
+### 2026-06-30（Claude Opus）— 旧 HW での動画レイヤー再生スタッタ修正（対策 A）✅
+
+- **症状**: i7-3770（Ivy Bridge / HD 4000）で動画 Footage 入り comp を preview 再生すると、**動画の映像ピクセルだけがガクガク**。同 comp 内の text/solid/image/3D transform 等の他レイヤーはスムーズ。i7-11xxx では軽量。動画なし comp は問題なし。調査詳細は [doc/issue/video-preview-playback-stutter-old-hardware.md](doc/issue/video-preview-playback-stutter-old-hardware.md)。
+- **真因**: 他レイヤーはタイムライン同期（`resolve(frame)`→`matrix3d`）で滑らかだが、動画ピクセルだけが `<video>` のメディアクロック（`play()`）で進む二重時計。[videoElementSync.ts](src/runtime/videoElementSync.ts) の `playbackMode` が **ズレ > 3 フレーム（≈100ms）で `currentTime` seek**。旧 HW では decode が play() に追いつけず drift → seek → seek 後の present 復帰が遅く映像が飛ぶ → また遅れて seek、の**自己増殖 seek ループ**が映像 plane だけを荒らす。
+- **修正（対策 A・最小）**: 再生中の drift 矯正 seek 閾値を `frameSec * 3`（≈100ms）→ `PLAYBACK_RESYNC_THRESHOLD_SEC = 0.5s`（≈15f@30fps）へ大幅緩和。通常の decode lag はネイティブ `play()` 追従に任せ、本当の不連続（ループ復帰・大ジャンプ）でのみ `currentTime` 代入。pause→play 開始・scrub・export(`exportStep`) 経路は不変＝**INV-2 維持**。preview と HTML bundle は同一 `syncVideoElementTime` を通るため 1 か所修正で両方に適用。
+- **検証**: `videoElementSync.test.ts` に moderate drift(0.2s)非 seek / large drift(0.6s)再同期の固定テスト追加（全 19 PASS）。`public/player.js` 再ビルド済み（runtime 変更のため必須）。
+- **残（follow-up・未着手）**: 対策 **D**（プレビュー専用 video proxy 縮小で旧 iGPU decode 負荷減）、対策 **B**（rVFC で動画主導 clock・二重時計解消）。旧 HW 実機での before/after 体感確認はユーザー側手順を doc に記載。
+
+---
+
 ### 2026-06-29（Claude Opus）— 汎用コンテキストメニュー基盤の導入 ✅
 
 - **背景**: 右クリックメニューは KF 専用の ad-hoc 実装（[TimelinePanel.tsx](src/editor/panels/TimelinePanel.tsx) の `kfContextMenu` state＋外クリック useEffect＋イージング JSX ハードコード）しか無く、レイヤー/プロジェクトツリー等には未配線だった。AE パリティに向け、どのパネルからでも開ける単一コントローラ基盤を用意。

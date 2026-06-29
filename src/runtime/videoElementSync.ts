@@ -120,6 +120,14 @@ export function videoSeekThresholdSec(fps: number): number {
 }
 
 /**
+ * 再生中はネイティブ play() に任せ、本当の不連続（ループ復帰・大ジャンプ）でのみ再同期する閾値。
+ * 小さな decode lag drift で毎フレーム seek すると、旧 HW（例: Ivy Bridge / HD 4000）では
+ * seek 後の present 復帰が遅く、また遅れて seek… と自己増殖の seek ループ＝映像 plane の
+ * ガクつきになる。閾値を大きくして decode lag の追従は play() に委ね、seek 連鎖を断つ。
+ */
+const PLAYBACK_RESYNC_THRESHOLD_SEC = 0.5; // ≈15 frames @30fps
+
+/**
  * フレーム整列 target（k/fps）から **実際に seek すべき時刻** を返す。
  * 境界ちょうどへ seek すると float 丸めで currentTime が境界をわずかに下回り、
  * 前フレームが選ばれる（k≡2 mod 3 等で every-Nth 重複 = もっさり）。
@@ -168,7 +176,6 @@ export function syncVideoElementTime(
     return;
   }
 
-  const frameSec = 1 / Math.max(1, fps);
   const seekThreshold = videoSeekThresholdSec(fps);
 
   if (options.playbackMode) {
@@ -183,7 +190,10 @@ export function syncVideoElementTime(
       }
       return;
     }
-    if (Math.abs(video.currentTime - targetSec) > frameSec * 3) {
+    // 再生中は drift 矯正 seek をしない。本当の不連続（ループ復帰・大ジャンプ）でのみ
+    // 再同期し、通常の decode lag drift はネイティブ play() の追従に任せる（旧 HW の
+    // 自己増殖 seek ループ＝映像ガクつきを断つ）。
+    if (Math.abs(video.currentTime - targetSec) > PLAYBACK_RESYNC_THRESHOLD_SEC) {
       try {
         video.currentTime = targetSec;
       } catch {
