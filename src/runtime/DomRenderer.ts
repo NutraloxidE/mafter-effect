@@ -432,11 +432,19 @@ export class DomRenderer implements Renderer {
   private pauseAllVideos(): void {
     for (const entry of this.entries.values()) {
       for (const el of entry.children) {
-        if (el instanceof HTMLVideoElement && !el.paused) {
+        if (el instanceof HTMLVideoElement) {
+          // §11.4 停止時はミュートも戻す（次のスクラブ前の音漏れ防止）。
           try {
-            el.pause();
+            el.muted = true;
           } catch {
-            /* pause best-effort */
+            /* muted best-effort */
+          }
+          if (!el.paused) {
+            try {
+              el.pause();
+            } catch {
+              /* pause best-effort */
+            }
           }
         }
       }
@@ -1513,6 +1521,8 @@ function updateComponentEl(
       const src = assetId ? (imageCache?.getUrl(assetId) ?? "") : "";
       if (video.getAttribute("src") !== src) {
         video.src = src;
+        // §11.4 mute は syncVideoElementTime がモード別に制御（再生中のみアンミュート）。
+        // 初期状態は scrub 経路で muted=true になる。
         video.muted = true;
         video.playsInline = true;
         video.preload = "auto";
@@ -1520,6 +1530,9 @@ function updateComponentEl(
       }
       const trimStart = (props["trimStart"] as number | undefined) ?? 0;
       const t = Math.max(0, (hostFrame - hostInPoint) / fps + trimStart / fps);
+      // §11.4 内蔵音声の音量（resolve 済み scalar）。再生中のみ実際に鳴る（muted 制御は syncVideoElementTime）。
+      const gain = typeof props["gain"] === "number" ? (props["gain"] as number) : 1;
+      video.volume = Math.max(0, Math.min(1, gain));
       syncVideoElementTime(video, t, fps, { playbackMode: previewVideoPlayback, exportStep: exportVideoStep });
       if (exportVideoStep) {
         video.setAttribute(EXPORT_VIDEO_TARGET_ATTR, String(t));

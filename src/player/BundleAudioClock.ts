@@ -1,4 +1,5 @@
-import type { Frame, Project, TimelineComposition } from "../core/schema";
+import type { AnimatedProp, Frame, Project, TimelineComposition } from "../core/schema";
+import { readGainProp, sampleGain } from "../runtime/footageAudio";
 
 export interface AudioLayerSpec {
   objectId: string;
@@ -6,12 +7,13 @@ export interface AudioLayerSpec {
   inPoint: Frame;
   outPoint: Frame;
   trimStart: Frame;
-  gain: number;
+  gainProp: AnimatedProp<number>;
 }
 
 /** §11.7 — 音声マスタークロック。HTMLAudioElement で file:// 互換再生。 */
 export class BundleAudioClock {
   private readonly elements = new Map<string, HTMLAudioElement>();
+  private readonly gainByObjectId = new Map<string, AnimatedProp<number>>();
   private startWallMs = 0;
   private playing = false;
   private rafId: number | null = null;
@@ -34,7 +36,8 @@ export class BundleAudioClock {
       const audio = document.createElement("audio");
       audio.src = this.urlForPath(layer.assetPath);
       audio.preload = "auto";
-      audio.volume = Math.max(0, Math.min(1, layer.gain));
+      audio.volume = sampleGain(layer.gainProp, this.rangeStart);
+      this.gainByObjectId.set(layer.objectId, layer.gainProp);
       this.elements.set(layer.objectId, audio);
       try {
         await audio.play();
@@ -68,6 +71,26 @@ export class BundleAudioClock {
       }
     }
     this.tick();
+  }
+
+  /**
+   * autoplay がブラウザにブロックされた後、最初のユーザー操作で音声を現在位置から鳴らす。
+   * tick ループは再始動しない（play() を再呼び出しすると rAF が二重化するため）。
+   * 既に鳴っている要素は触らず、pause 中（autoplay 拒否）の要素だけ現在の再生位置へ seek して play する。
+   */
+  unlock(): void {
+    if (!this.playing) return;
+    // startWallMs からの経過秒 = rangeStart からの再生時間 = 各要素の currentTime（play() と同モデル）。
+    const elapsedSec = Math.max(0, (performance.now() - this.startWallMs) / 1000);
+    for (const el of this.elements.values()) {
+      if (!el.paused) continue;
+      try {
+        el.currentTime = elapsedSec;
+        void el.play();
+      } catch {
+        /* best-effort */
+      }
+    }
   }
 
   pause(): void {
@@ -112,9 +135,18 @@ export class BundleAudioClock {
       }
       return;
     }
+    this.applyGains(frame);
     this.onFrame?.(frame);
     this.rafId = requestAnimationFrame(this.tick);
   };
+
+  /** §11.5 — keyframed gain を毎 tick で反映（bundle は previewOverride なし・comp 固定）。 */
+  private applyGains(frame: number): void {
+    for (const [id, el] of this.elements) {
+      const prop = this.gainByObjectId.get(id);
+      if (prop) el.volume = sampleGain(prop, frame);
+    }
+  }
 }
 
 function collectAudioLayers(project: Project, comp: TimelineComposition): AudioLayerSpec[] {
@@ -127,7 +159,6 @@ function collectAudioLayers(project: Project, comp: TimelineComposition): AudioL
     if (typeof assetId !== "string") continue;
     const asset = project.assets.find((a) => a.id === assetId);
     if (!asset) continue;
-    const gain = typeof audioCmp.props["gain"] === "number" ? audioCmp.props["gain"] : 1;
     const trimStart = typeof audioCmp.props["trimStart"] === "number" ? audioCmp.props["trimStart"] : 0;
     out.push({
       objectId: obj.id,
@@ -135,7 +166,7 @@ function collectAudioLayers(project: Project, comp: TimelineComposition): AudioL
       inPoint: obj.inPoint,
       outPoint: obj.outPoint,
       trimStart,
-      gain,
+      gainProp: readGainProp(audioCmp.props["gain"]),
     });
   }
   return out;

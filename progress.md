@@ -576,3 +576,47 @@ canvas 化結果は以降から見て通常の背面ピクセルと等価（zOrd
 - **build:player**: 実行済み（src/runtime 変更のため必須）。
 - **検証**: `npm test` 550 件緑（typecheck 含む）。新規 unit: videoElementSync `primeVideoElement` 5 件 / videoWarmupCache 8 件。実機 [verify-video-warmup.mjs](verify-video-warmup.mjs) PASS（idle 後 readyState=4/videoWidth=1920、Play 後 3 フレーム以内も維持）。無回帰: verify-video-import / verify-bundle-video-playback / verify-video-export いずれも PASS。
 - **付随修正**: [linkedScale.ts](src/editor/linkedScale.ts) の壊れた import（`../types` → `../core/schema`）を修正（前コミットのタイポで typecheck/build をブロックしていた）。
+
+### 2026-06-30（Opus）— 動画内蔵音声の再生対応（§11.4）
+
+- **要請**: 仕様上「鳴らさない」としていた動画内蔵音声を、プレビュー・HTML bundle player・mp4/webm export の3経路で有効化（best-effort・スキーマ非変更）。
+- **spec**: §11.4 を更新（「鳴らさない」を撤回し preview/bundle は再生中のみアンミュート、export は audio と同一式で mux）。§11.5 / §16 表も「基本再生 + export mux 対応・keyframed gain/mixing は将来」に整理。§5 型 / INV / `project.json` は不変（`video` に `gain` 追加なし＝常に 1.0）。
+- **実装**:
+  - [videoElementSync.ts](src/runtime/videoElementSync.ts) — `syncVideoElementTime` に mute をモード別集約: playbackMode=再生中のみ `muted=false`、scrub/warm-up=`muted=true`（exportStep は従来どおり `muted=true`）。mute 制御の単一の正。
+  - [DomRenderer.ts](src/runtime/DomRenderer.ts) — `pauseAllVideos` で停止時に `muted=true` も戻す（スクラブ前の音漏れ防止）。src 設定時の初期 `muted=true` は sync が即上書きするため温存（防御的）。
+  - [exporter.ts](src/runtime/exporter.ts) — `buildAudioMix` を audio + video 内蔵音声の2系統に拡張。収集ロジックを純関数 `collectAudioMixSources(comp)` に抽出（video は `gain=1`・`trimStart` は props から）。decode/timing/`src.start` は audio と完全共有（`inPoint`/`outPoint`/`trimStart` 同一式）。decode 失敗は best-effort skip。
+- **scope 外（不変）**: `videoAssetProbe` の `muted`（メタ取得専用）/ export 決定論 video seek（`exportVideoStep`）/ `audio` レイヤー waveform・`PreviewAudioClock` / §5 スキーマ・INV。
+- **build:player**: 実行済み（src/runtime 変更のため必須・playerBuildFreshness 緑）。
+- **検証**: `npm test` 560 件緑（typecheck 含む）。新規 unit: videoElementSync mute 5 件 / [test/footageAudioMix.test.ts](test/footageAudioMix.test.ts) 6 件（collectAudioMixSources）。実機: [verify-video-audio-preview.mjs](verify-video-audio-preview.mjs) PASS（idle muted→playing unmuted→stopped muted）、[verify-video-audio-export.mjs](verify-video-audio-export.mjs) PASS（video 内蔵音声を decode→OfflineAudioContext mix で非ゼロ RMS 0.088）。無回帰: verify-video-export PASS。
+- **メモ**: full mp4 export（`exportComposition`）は headless で video inline-frame ループが極端に遅く実用検証不可のため、export verify は muxer に渡る AudioBuffer（buildAudioMix 内部と同型）を直接検証する方式にした。検証用 fixture `for-debug-data/video_with_audio.mp4`（ffmpeg testsrc2+sine, 音声トラック付き）を生成（既存 fixture は全て無音）。
+- **既知の制約**（spec §11.4 記載）: 複数 video 同時再生はブラウザ自動ミックス。audio レイヤー併用時、映像クロックは PreviewAudioClock/BundleAudioClock・video 音声はネイティブ再生（大ドリフト時のみ既存 resync）。mixing graph は §16 将来。
+
+### 2026-06-30（Opus）— audio / video の keyframed gain（音量）統一（§11.4 / §11.5）
+
+- **要請**: audio / video 内蔵音声に **キーフレーム可能な `gain`（0..1）** を統一し、Inspector・タイムライン・preview・export・bundle の全経路で音量制御。
+- **spec（承認済み §5 変更）**: §5.5 コンポーネント表で `audio.gain` を `AnimatedProp<number>` 化・`video` に `gain: AnimatedProp<number>`（既定 1）追加。§11.4 / §11.5 / §16 を keyframed gain 対応へ更新。後方互換: plain number は `readGainProp()` で `staticProp` 正規化。
+- **実装**:
+  - **新規** [footageAudio.ts](src/runtime/footageAudio.ts) — 純関数集約: `readGainProp`（正規化）/ `sampleGain`（clamp 0..1 sampler・全経路共有・INV-2）/ `collectFootageAudioSources`（audio+video 列挙・gainProp 付き）/ `scheduleGainAutomation`（export 用 1/fps 刻み `setValueAtTime`。`linearRamp` では hold/bezier と不一致のため `sampleScalar` フレーム刻みで `interpolate.ts` と同一曲線）。
+  - [builtinComponents.ts](src/runtime/builtinComponents.ts) — `AUDIO_COMPONENT_DEF` 新規登録（gain animatable, Volume ラベル）+ `VIDEO_COMPONENT_DEF` に gain。→ Timeline PropRow / graph / `setCompFps` リスケールが自動有効。
+  - [store.ts](src/editor/store.ts) — `addAudioLayer` / `addVideoLayer` の gain を `staticProp(1)` に。
+  - [exporter.ts](src/runtime/exporter.ts) — `buildAudioMix` を `collectFootageAudioSources` + `scheduleGainAutomation` に委譲（旧 `collectAudioMixSources` 撤去）。
+  - [DomRenderer.ts](src/runtime/DomRenderer.ts) `case "video"` — resolve 済み `props["gain"]` で `video.volume`（preview / bundle 自動・BundlePlayer は resolve 経由で追加配線不要）。
+  - [previewAudioClock.ts](src/editor/previewAudioClock.ts) — `PreparedLayer` に objectId / gainProp。`getComp`（[PreviewPanel.tsx](src/editor/panels/PreviewPanel.tsx) の `renderCompRef` 経由・previewOverride 含む）から **毎 tick で live gain を再評価**し `GainNode.gain.value` に反映（編集中スライダーが再生中に効く）。
+  - [BundleAudioClock.ts](src/player/BundleAudioClock.ts) — gainProp 保持・tick で `el.volume = sampleGain(...)`。
+  - [InspectorPanel.tsx](src/editor/panels/InspectorPanel.tsx) — ComponentDef 駆動の汎用 `ComponentFields`（EffectFields 同型・AnimScalarRow + ストップウォッチ + previewPatch）を追加し audio / video の Content に Volume を表示。
+- **build:player**: 実行済み（src/runtime / src/player 変更のため必須・playerBuildFreshness 緑）。
+- **検証**: `npm test` 569 件緑（typecheck 含む）。新規 unit: [footageGainAutomation.test.ts](test/footageGainAutomation.test.ts) 8 件（readGainProp / sampleGain / automation parity）、[footageAudioMix.test.ts](test/footageAudioMix.test.ts) 7 件（collectFootageAudioSources・animated gain）。実機: [verify-video-audio-export.mjs](verify-video-audio-export.mjs) PASS（gain=0.5 で mix RMS が満タン比 0.500）。Inspector に Volume 行が表示されることを Playwright で確認。
+- **既知の制約**: 複数 video 同時の個別 volume は効くがミキサー側クリッピングはブラウザ依存。animated `trimStart` の export mix 同期は本タスク前からの未対応（別 issue）。waveform 表示は gain 非反映（表示専用）。dB / 100% 超え / LUFS / mixing graph は §16 将来。
+- **メモ**: headless preview では `<video>` 要素が mount されないため [verify-video-audio-preview.mjs](verify-video-audio-preview.mjs) の `video.volume` アサーション（gain 反映）は環境制約で未実行（idle で要素検出不可・本変更前から）。DomRenderer の volume 配線は export parity（exact 0.5）+ typecheck + 単体 sampleGain で担保。
+
+### 2026-06-30（Opus）— HTML bundle の autoplay unlock（§11.4 / §11.7）
+
+- **要請**: HTML 書き出しの動画（`<video>` 要素）で「更新後にスペースバーを押さないと音が鳴らない」を解消し、スペース限定をやめて任意操作で鳴るようにしたい。
+- **原因**: ブラウザは「ユーザー操作なしの音声付き自動再生」をポリシーで禁止（MEI が高いと稀に通るため「なかったりする」ムラ）。boot 時の `play()` は拒否され無音。レンダリングループの `syncVideoElementTime` が毎フレーム `video.play()` を再試行するため、何らかのユーザー操作（偶々スペース）が入ると次の機会に成功して鳴る、という偶発的挙動だった。音声レイヤー単体（[BundleAudioClock](src/player/BundleAudioClock.ts)）は boot 時に一度しか `play()` せず再試行しないため、操作しても鳴らないギャップもあった。
+- **方針（ユーザー承認 Option A）**: 完全無操作の音声自動再生はブラウザ仕様上不可。boot で自動再生を試行しつつ、**最初の任意操作（pointerdown / keydown / touchstart）で音声+内蔵音声を確実に開始**する（オーバーレイなし・スペース限定撤廃・音声レイヤーも対象）。
+- **実装**:
+  - [BundlePlayer.ts](src/player/BundlePlayer.ts) — `installAutoplayUnlock()`: window に capture+passive で最初の 1 回だけ listener を張り、ユーザー操作のコールスタック内で `audioClock.unlock()` + `renderFrame(currentFrame)`（→ `syncVideoElementTime` がアンミュート `video.play()`）。dispose で確実に撤去。
+  - [BundleAudioClock.ts](src/player/BundleAudioClock.ts) — `unlock()`: tick ループを二重始動させず、pause 中（autoplay 拒否）の HTMLAudioElement だけ現在の再生位置（startWallMs からの経過秒）へ seek して `play()`。
+- **build:player**: 実行済み（src/player 変更・playerBuildFreshness 緑）。
+- **検証**: `npm test` 569 件緑。新規実機 [verify-bundle-autoplay-unlock.mjs](verify-bundle-autoplay-unlock.mjs)（Chromium `--autoplay-policy=document-user-activation-required` で autoplay ブロック）: 読み込み直後は `<video>` paused（ブロック確認）、**スペースバーではなく単純クリック 1 回**で playing & unmuted（volume 1）を確認。無回帰: verify-bundle-export PASS。
+- **既知の制約**: 完全無操作の音声自動再生はブラウザ（Chrome/Firefox/Safari）のポリシー上不可能。本実装は「最初の任意操作で確実に開始」が上限。MEI が高い環境では boot 時に無操作で鳴ることもある（ブラウザ依存）。

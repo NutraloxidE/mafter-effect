@@ -210,6 +210,12 @@ export function syncVideoElementTime(
   const seekThreshold = videoSeekThresholdSec(fps);
 
   if (options.playbackMode) {
+    // §11.4 video 内蔵音声: 再生中のみアンミュートしてネイティブ A/V 同期に委ねる。
+    try {
+      video.muted = false;
+    } catch {
+      /* muted best-effort */
+    }
     if (video.paused) {
       try {
         if (Math.abs(video.currentTime - targetSec) > seekThreshold) {
@@ -234,6 +240,12 @@ export function syncVideoElementTime(
     return;
   }
 
+  // §11.4 video 内蔵音声: スクラブ・停止・warm-up は決定論のため常にミュート。
+  try {
+    video.muted = true;
+  } catch {
+    /* muted best-effort */
+  }
   if (!video.paused) {
     try {
       video.pause();

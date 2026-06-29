@@ -650,8 +650,14 @@ export function InspectorPanel() {
         </InspectorFoldout>
       ) : (
         obj.components.map((comp, compIdx) => {
-          if (comp.type !== "text" && comp.type !== "solid") return null;
-          const label = globalPluginRegistry.getComponentDef(comp.type)?.label ?? comp.type;
+          const def = globalPluginRegistry.getComponentDef(comp.type);
+          if (
+            comp.type !== "text" &&
+            comp.type !== "solid" &&
+            comp.type !== "audio" &&
+            comp.type !== "video"
+          ) return null;
+          const label = def?.label ?? comp.type;
           const sectionKey = `component:${compIdx}:${comp.type}`;
           return (
             <InspectorFoldout
@@ -673,10 +679,21 @@ export function InspectorPanel() {
                   onDecomposeNull={() => decomposeGlyphs(obj.id, "keyframesOnNull")}
                   onDecomposeChild={() => decomposeGlyphs(obj.id, "keyframesOnChild")}
                 />
-              ) : (
+              ) : comp.type === "solid" ? (
                 <SolidComponentFields
                   obj={obj}
                   compIdx={compIdx}
+                  frame={frame}
+                  updateObject={updateObject}
+                  previewPatch={previewPatch}
+                  onEditFocus={() => setPreviewQualityEditing(true)}
+                  onEditBlur={() => setPreviewQualityEditing(false)}
+                />
+              ) : (
+                <ComponentFields
+                  obj={obj}
+                  compIdx={compIdx}
+                  params={def?.params ?? []}
                   frame={frame}
                   updateObject={updateObject}
                   previewPatch={previewPatch}
@@ -1357,6 +1374,116 @@ function EffectFields({
                 }}
               />
             </Row>
+          );
+        }
+        return null;
+      })}
+    </>
+  );
+}
+
+/**
+ * ComponentDef.params 駆動の汎用コンポーネント Inspector（audio / video の Volume 等）。
+ * EffectFields と同型: enum/bool は非 animatable 編集、scalar は AnimScalarRow + ストップウォッチ。
+ * asset / 非対応 kind は描画しない（タイムライン KF 行は ComponentDef + AnimatedProp で自動）。
+ */
+function ComponentFields({
+  obj,
+  compIdx,
+  params,
+  frame,
+  updateObject,
+  previewPatch,
+  onEditFocus,
+  onEditBlur,
+}: {
+  obj: SceneObject;
+  compIdx: number;
+  params: ParamDescriptor[];
+  frame: number;
+  updateObject: (id: string, patch: Partial<SceneObject>, label?: string) => void;
+  previewPatch: (patch: Partial<SceneObject>) => void;
+  onEditFocus?: () => void;
+  onEditBlur?: () => void;
+}) {
+  const props = obj.components[compIdx]?.props ?? {};
+
+  const writeProps = (nextProps: Component["props"], label: string) => {
+    const nextComponents = obj.components.map((c, i) =>
+      i === compIdx ? { ...c, props: nextProps } : c,
+    );
+    updateObject(obj.id, { components: nextComponents }, label);
+  };
+
+  const previewProps = (nextProps: Component["props"]) => {
+    previewPatch({
+      components: obj.components.map((c, i) =>
+        i === compIdx ? { ...c, props: nextProps } : c,
+      ),
+    });
+  };
+
+  const writeAnim = <T,>(key: string, next: AnimatedProp<T>, label: string) => {
+    writeProps({ ...props, [key]: next }, label);
+  };
+  const previewAnim = <T,>(key: string, next: AnimatedProp<T>) => {
+    previewProps({ ...props, [key]: next });
+  };
+  const toggleKf = (key: string, prop: AnimatedProp<unknown>) => {
+    if (prop.keyframes.length > 0) writeAnim(key, { value: prop.value, keyframes: [] }, `Disable ${key} keyframes`);
+    else writeAnim(key, setKeyframe(prop, frame, prop.value, { type: "hold" }), `Enable ${key} keyframes`);
+  };
+
+  return (
+    <>
+      {params.map((param) => {
+        // plain number で保存された既存 prop（旧 gain 等）は lazy に staticProp 化して扱う。
+        const stored = props[param.key];
+        const raw =
+          param.animatable && !isAnimated(stored)
+            ? staticProp(typeof stored === "number" ? stored : param.default)
+            : stored;
+
+        if (param.kind === "enum" && !param.animatable) {
+          const val = typeof raw === "string" ? raw : String(param.default ?? "");
+          return (
+            <Row key={param.key} label={param.label}>
+              <select
+                value={val}
+                onChange={(e) => writeProps({ ...props, [param.key]: e.target.value }, `Edit ${param.label}`)}
+                style={selectStyle}
+              >
+                {(param.options ?? []).map((opt) => (
+                  <option key={opt} value={opt}>{opt}</option>
+                ))}
+              </select>
+            </Row>
+          );
+        }
+        if (!isAnimated(raw)) return null;
+        const val = sampleAny(raw, frame);
+        if (param.kind === "scalar" && typeof val === "number") {
+          return (
+            <AnimScalarRow
+              key={param.key}
+              label={param.label}
+              prop={raw as AnimatedProp<number>}
+              value={val}
+              frame={frame}
+              onToggle={() => toggleKf(param.key, raw)}
+              onCommit={(v) => {
+                onEditBlur?.();
+                if (raw.keyframes.length > 0) writeAnim(param.key, setKeyframe(raw as AnimatedProp<number>, frame, v), `Edit ${param.label}`);
+                else writeAnim(param.key, { ...raw, value: v }, `Edit ${param.label}`);
+              }}
+              onLiveChange={(v) => {
+                onEditFocus?.();
+                previewAnim(param.key, raw.keyframes.length > 0 ? setKeyframe(raw as AnimatedProp<number>, frame, v) : { ...raw, value: v });
+              }}
+              min={param.min}
+              max={param.max}
+              step={param.step ?? 0.05}
+            />
           );
         }
         return null;

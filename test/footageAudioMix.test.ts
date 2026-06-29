@@ -1,0 +1,112 @@
+import { describe, expect, it } from "vitest";
+import { defaultTransform, staticProp } from "../src/core/props";
+import type { Component, SceneObject, TimelineComposition } from "../src/core/schema";
+import { collectFootageAudioSources, sampleGain } from "../src/runtime/footageAudio";
+
+function obj(id: string, components: Component[], enabled = true): SceneObject {
+  return {
+    id,
+    name: id,
+    parent: null,
+    zOrder: 1,
+    enabled,
+    inPoint: 0,
+    outPoint: 100,
+    transform: defaultTransform(),
+    opacity: staticProp(1),
+    components,
+  };
+}
+
+function comp(objects: SceneObject[]): TimelineComposition {
+  return {
+    id: "c0",
+    name: "c0",
+    kind: "timeline",
+    width: 1920,
+    height: 1080,
+    fps: 30,
+    duration: 100,
+    objects,
+  };
+}
+
+describe("collectFootageAudioSources (§11.4 / §11.5)", () => {
+  it("collects audio layers with their gainProp and trimStart (plain gain compat)", () => {
+    const sources = collectFootageAudioSources(
+      comp([obj("a", [{ type: "audio", props: { asset: "snd", gain: 0.5, trimStart: 7 } }])]),
+    );
+    expect(sources).toHaveLength(1);
+    expect(sources[0]).toMatchObject({ assetId: "snd", trimStart: 7, componentType: "audio" });
+    expect(sampleGain(sources[0]!.gainProp, 0)).toBe(0.5);
+  });
+
+  it("collects video layers with gainProp (defaults to 1 when absent)", () => {
+    const sources = collectFootageAudioSources(
+      comp([obj("v", [{ type: "video", props: { asset: "clip", trimStart: 3 } }])]),
+    );
+    expect(sources).toHaveLength(1);
+    expect(sources[0]).toMatchObject({ assetId: "clip", trimStart: 3, componentType: "video" });
+    expect(sampleGain(sources[0]!.gainProp, 0)).toBe(1);
+  });
+
+  it("reads an animated video gain", () => {
+    const sources = collectFootageAudioSources(
+      comp([
+        obj("v", [
+          {
+            type: "video",
+            props: {
+              asset: "clip",
+              gain: {
+                value: 0,
+                keyframes: [
+                  { frame: 0, value: 0, easing: { type: "linear" } },
+                  { frame: 30, value: 1, easing: { type: "linear" } },
+                ],
+              },
+            },
+          },
+        ]),
+      ]),
+    );
+    expect(sampleGain(sources[0]!.gainProp, 0)).toBe(0);
+    expect(sampleGain(sources[0]!.gainProp, 15)).toBeCloseTo(0.5, 6);
+    expect(sampleGain(sources[0]!.gainProp, 30)).toBe(1);
+  });
+
+  it("collects both audio and video layers together", () => {
+    const sources = collectFootageAudioSources(
+      comp([
+        obj("a", [{ type: "audio", props: { asset: "snd", gain: 1, trimStart: 0 } }]),
+        obj("v", [{ type: "video", props: { asset: "clip", trimStart: 0 } }]),
+      ]),
+    );
+    expect(sources.map((s) => s.assetId).sort()).toEqual(["clip", "snd"]);
+  });
+
+  it("skips disabled layers", () => {
+    const sources = collectFootageAudioSources(
+      comp([obj("v", [{ type: "video", props: { asset: "clip" } }], false)]),
+    );
+    expect(sources).toHaveLength(0);
+  });
+
+  it("skips layers without an asset", () => {
+    const sources = collectFootageAudioSources(
+      comp([
+        obj("v", [{ type: "video", props: {} }]),
+        obj("a", [{ type: "audio", props: {} }]),
+      ]),
+    );
+    expect(sources).toHaveLength(0);
+  });
+
+  it("defaults trimStart to 0 when absent", () => {
+    const sources = collectFootageAudioSources(
+      comp([obj("v", [{ type: "video", props: { asset: "clip" } }])]),
+    );
+    expect(sources[0]).toMatchObject({ trimStart: 0 });
+    expect(sampleGain(sources[0]!.gainProp, 0)).toBe(1);
+  });
+});

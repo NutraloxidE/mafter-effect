@@ -44,8 +44,23 @@ const VIDEO_COMPONENT_DEF: ComponentDef = {
     { key: "asset", label: "Source", kind: "asset", default: "", animatable: false },
     { key: "fit", label: "Fit", kind: "enum", default: "contain", animatable: false, options: ["contain", "cover", "fill"] },
     { key: "trimStart", label: "Trim Start", kind: "scalar", default: 0, animatable: true, min: 0 },
+    // §11.4 内蔵音声の音量（0..1, keyframe 可）。UI 表示名は Volume。
+    { key: "gain", label: "Volume", kind: "scalar", default: 1, animatable: true, min: 0, max: 1 },
   ],
   render() { /* DomRenderer */ },
+};
+
+const AUDIO_COMPONENT_DEF: ComponentDef = {
+  type: "audio",
+  label: "Audio",
+  previewBakeRequired: false,
+  params: [
+    { key: "asset", label: "Source", kind: "asset", default: "", animatable: false },
+    // §11.5 音量（0..1, keyframe 可）。UI 表示名は Volume。
+    { key: "gain", label: "Volume", kind: "scalar", default: 1, animatable: true, min: 0, max: 1 },
+    { key: "trimStart", label: "Trim Start", kind: "scalar", default: 0, animatable: true, min: 0 },
+  ],
+  render() { /* PreviewAudioClock / export mux */ },
 };
 
 /**
@@ -72,5 +87,6 @@ export function registerBuiltinComponents(): void {
   globalPluginRegistry.registerComponent(TEXT_COMPONENT_DEF);
   globalPluginRegistry.registerComponent(IMAGE_COMPONENT_DEF);
   globalPluginRegistry.registerComponent(VIDEO_COMPONENT_DEF);
+  globalPluginRegistry.registerComponent(AUDIO_COMPONENT_DEF);
   globalPluginRegistry.registerComponent(CAMERA_COMPONENT_DEF);
 }

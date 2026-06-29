@@ -1007,7 +1007,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       outPoint: comp.duration,
       transform: defaultTransform(),
       opacity: staticProp(1),
-      components: [{ type: "audio", props: { asset: assetId, gain: 1, trimStart: 0 } }],
+      components: [{ type: "audio", props: { asset: assetId, gain: staticProp(1), trimStart: 0 } }],
     };
     cmdAddObject(get(), obj);
     return id;
@@ -1113,7 +1113,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       outPoint,
       transform: defaultTransform(),
       opacity: staticProp(1),
-      components: [{ type: "video", props: { asset: assetId, fit: "contain", trimStart: 0 } }],
+      components: [{ type: "video", props: { asset: assetId, fit: "contain", trimStart: 0, gain: staticProp(1) } }],
     };
     cmdAddObject(get(), obj);
     return id;

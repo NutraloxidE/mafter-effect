@@ -56,6 +56,31 @@ describe("syncVideoElementTime", () => {
     expect(video.play).toHaveBeenCalled();
   });
 
+  it("unmutes the video during playback (§11.4 embedded audio)", () => {
+    const video = mockVideo(2, true, { muted: true });
+    syncVideoElementTime(video, 2, 30, { playbackMode: true });
+    expect(video.muted).toBe(false);
+    expect(video.play).toHaveBeenCalled();
+  });
+
+  it("keeps the video unmuted while already playing", () => {
+    const video = mockVideo(1, false, { muted: true });
+    syncVideoElementTime(video, 1 + 1 / 30, 30, { playbackMode: true });
+    expect(video.muted).toBe(false);
+  });
+
+  it("mutes the video on scrub", () => {
+    const video = mockVideo(0, true, { muted: false });
+    syncVideoElementTime(video, 1, 30, { playbackMode: false });
+    expect(video.muted).toBe(true);
+  });
+
+  it("mutes the video on export frame step", () => {
+    const video = mockVideo(0, true, { muted: false });
+    syncVideoElementTime(video, 1 / 30, 30, { playbackMode: false, exportStep: true });
+    expect(video.muted).toBe(true);
+  });
+
   it("does not seek every frame while playing", () => {
     const video = mockVideo(1, false);
     const before = video.currentTime;

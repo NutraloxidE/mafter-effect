@@ -612,6 +612,8 @@ export function PreviewPanel() {
         onFrameChange: (f) => setFrame(f),
         onPlaybackEnd: () => setPlaying(false),
         renderFrame,
+        // live gain（previewOverride / draftTransform を含む編集中の Volume を再生中に反映）。
+        getComp: () => renderCompRef.current ?? comp,
       });
       void clock.start().then((ok) => {
         if (cancelled) { clock.stop(); return; }

@@ -4,15 +4,17 @@
 // scene 解決値には一切影響しない（描画フレームの timing のみを音に合わせる）。
 
 import type { FileSystem } from "../fs/FileSystem";
-import type { Frame, Project, TimelineComposition } from "../core/schema";
+import type { AnimatedProp, Frame, Project, TimelineComposition } from "../core/schema";
 import { loadAudioBuffer, peekAudioBuffer } from "./audioBufferCache";
+import { readGainProp, sampleGain } from "../runtime/footageAudio";
 
 interface PreparedLayer {
+  objectId: string;
   buffer: AudioBuffer;
   inPoint: Frame;
   outPoint: Frame;
   trimStart: Frame;
-  gain: number;
+  gainProp: AnimatedProp<number>;
 }
 
 export interface PreviewAudioClockOptions {
@@ -25,6 +27,11 @@ export interface PreviewAudioClockOptions {
   onPlaybackEnd: () => void;
   /** Draft 再生時のみ渡す。直接 render する。未指定なら frame 変更だけ（React effect が描画）。 */
   renderFrame?: (frame: number) => void | Promise<void>;
+  /**
+   * 再生中に live comp を返す（previewOverride / draftTransform を含む）。
+   * 各 tick で gain を再評価し、編集中の Volume スライダーを再生中に反映する。未指定なら schedule 時のスナップショット。
+   */
+  getComp?: () => TimelineComposition;
 }
 
 /** comp 内の audio コンポーネントを集めてデコードする。1 つも無ければ null。 */
@@ -46,11 +53,12 @@ export async function prepareAudioLayers(
     const buffer = peekAudioBuffer(assetId) ?? (await loadAudioBuffer(assetId, () => fs.read(asset.path)));
     if (!buffer) continue;
     layers.push({
+      objectId: obj.id,
       buffer,
       inPoint: obj.inPoint,
       outPoint: obj.outPoint,
       trimStart: typeof cmp.props["trimStart"] === "number" ? (cmp.props["trimStart"] as number) : 0,
-      gain: typeof cmp.props["gain"] === "number" ? (cmp.props["gain"] as number) : 1,
+      gainProp: readGainProp(cmp.props["gain"]),
     });
   }
   return layers;
@@ -65,7 +73,7 @@ export async function prepareAudioLayers(
 export class PreviewAudioClock {
   private ctx: AudioContext | null = null;
   private layers: PreparedLayer[] = [];
-  private nodes: { src: AudioBufferSourceNode; gain: GainNode }[] = [];
+  private nodes: { src: AudioBufferSourceNode; gain: GainNode; objectId: string }[] = [];
   private playing = false;
   private rafId: number | null = null;
   private originCtxTime = 0;
@@ -123,11 +131,11 @@ export class PreviewAudioClock {
       const src = ctx.createBufferSource();
       src.buffer = layer.buffer;
       const gainNode = ctx.createGain();
-      gainNode.gain.value = Math.max(0, Math.min(1, layer.gain));
+      gainNode.gain.value = sampleGain(layer.gainProp, fromFrame);
       src.connect(gainNode);
       gainNode.connect(ctx.destination);
       src.start(whenSec, offsetSec, durSec);
-      this.nodes.push({ src, gain: gainNode });
+      this.nodes.push({ src, gain: gainNode, objectId: layer.objectId });
     }
   }
 
@@ -157,10 +165,22 @@ export class PreviewAudioClock {
     }
 
     const clamped = Math.max(loopStart, frame);
+    this.updateLiveGains(clamped);
     this.opts.onFrameChange(clamped);
     void this.opts.renderFrame?.(clamped);
     this.rafId = requestAnimationFrame(this.tick);
   };
+
+  /** 各 tick で live comp から gain を再評価し、編集中の Volume スライダーを再生中に反映する。 */
+  private updateLiveGains(frame: number): void {
+    const comp = this.opts.getComp?.() ?? this.comp;
+    for (const node of this.nodes) {
+      const obj = comp.objects.find((o) => o.id === node.objectId);
+      const cmp = obj?.components.find((c) => c.type === "audio");
+      const value = cmp ? sampleGain(cmp.props["gain"], frame) : node.gain.gain.value;
+      node.gain.gain.value = value;
+    }
+  }
 
   private stopNodes(): void {
     for (const { src } of this.nodes) {

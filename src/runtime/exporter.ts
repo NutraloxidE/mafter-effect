@@ -16,6 +16,7 @@ import { HtmlCompPlayer } from "./htmlComp";
 import { ModuleLoader } from "./moduleLoader";
 import { resolve, type ExpressionEvaluator } from "./resolve";
 import { compositeExportFrame } from "./exportComposite";
+import { collectFootageAudioSources, scheduleGainAutomation } from "./footageAudio";
 
 export type ExportPhase = "prepare" | "render" | "encode" | "audio" | "bake" | "pack" | "done" | "error";
 
@@ -442,7 +443,7 @@ interface AudioMixResult {
   numberOfChannels: number;
 }
 
-/** timeline の audio コンポーネントを OfflineAudioContext で mix する。 */
+/** timeline の audio / video 内蔵音声コンポーネントを OfflineAudioContext で mix する。 */
 async function buildAudioMix(
   project: Project,
   comp: TimelineComposition,
@@ -453,11 +454,8 @@ async function buildAudioMix(
 ): Promise<AudioMixResult | null> {
   if (typeof AudioContext === "undefined") return null;
 
-  // audio component を持つオブジェクトを収集
-  const audioLayers = comp.objects.filter((obj) =>
-    obj.enabled && obj.components.some((c) => c.type === "audio"),
-  );
-  if (audioLayers.length === 0) return null;
+  const mixSources = collectFootageAudioSources(comp);
+  if (mixSources.length === 0) return null;
 
   const durationSec = (endFrame - startFrame) / fps;
   const sampleRate = 44100;
@@ -465,11 +463,7 @@ async function buildAudioMix(
   const tmpCtx = new AudioContext();
 
   let anyLoaded = false;
-  for (const obj of audioLayers) {
-    const audioCmp = obj.components.find((c) => c.type === "audio");
-    if (!audioCmp) continue;
-    const assetId = audioCmp.props["asset"] as string | undefined;
-    if (!assetId) continue;
+  for (const { obj, assetId, trimStart, gainProp } of mixSources) {
     const asset = project.assets.find((a) => a.id === assetId);
     if (!asset) continue;
 
@@ -482,10 +476,11 @@ async function buildAudioMix(
     try {
       const sliced = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
       decoded = await tmpCtx.decodeAudioData(sliced as ArrayBuffer);
-    } catch { continue; }
+    } catch {
+      // 無音動画・非対応コンテナは best-effort でスキップ（§11.4）。
+      continue;
+    }
 
-    const trimStart = (audioCmp.props["trimStart"] as number | undefined) ?? 0;
-    const gain = (audioCmp.props["gain"] as number | undefined) ?? 1;
     const objStartSec = Math.max(0, (obj.inPoint - startFrame) / fps);
     const trimStartSec = trimStart / fps;
     // サブレンジ export 時: inPoint < startFrame の場合、レイヤーはすでに再生途中。
@@ -496,7 +491,13 @@ async function buildAudioMix(
     const src = offCtx.createBufferSource();
     src.buffer = decoded;
     const gainNode = offCtx.createGain();
-    gainNode.gain.value = Math.max(0, Math.min(1, gain));
+    // §11.5 — keyframed gain をフレーム刻み automation で再現（hold/bezier easing と一致）。
+    // automation は comp frame [startFrame, endFrame) を offline context 時刻に写像する。
+    scheduleGainAutomation(gainNode.gain, gainProp, {
+      fps,
+      exportStartFrame: startFrame,
+      exportEndFrame: endFrame,
+    });
     src.connect(gainNode);
     gainNode.connect(offCtx.destination);
 

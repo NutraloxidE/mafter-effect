@@ -284,15 +284,15 @@ interface ParamDescriptor {
 | `image`     | 画像アセット表示                   | `asset: AssetId`, `fit`              |
 | `shape`     | rect / ellipse（最小図形）          | `kind`, `fill: RGBA`, `radius`, `size: vec2` |
 | `html`      | HTML Composition（Model A, §7）     | `compId: CompId`, + comp が宣言した params |
-| `video`     | 動画アセット（best-effort, §11.4）   | `asset: AssetId`, `fit`, `trimStart: Frame` |
-| `audio`     | 音声アセット（最小, §11.5）          | `asset: AssetId`, `gain`, `trimStart: Frame` |
+| `video`     | 動画アセット（best-effort, §11.4）   | `asset: AssetId`, `fit`, `trimStart: Frame`, `gain: AnimatedProp<number>`（0..1, 既定 1） |
+| `audio`     | 音声アセット（最小, §11.5）          | `asset: AssetId`, `gain: AnimatedProp<number>`（0..1, 既定 1）, `trimStart: Frame` |
 | `camera`    | カメラ（comp に最大 1 つ active, §6.5） | `cameraType`, `pointOfInterest`, `zoom`, `focalLength`, `filmSize`, `near`, `far`（被写界深度は将来）, Transform で位置/向き |
 
 plugin はここに新しい type を追加できる（§12）。
 
 > **`camera` パラメータ（AE 準拠・段階導入, §6.5）**: `cameraType: "one-node" | "two-node"`（新規作成は **two-node 既定**）。`pointOfInterest: AnimatedProp<Vec3>`（two-node 時、常にこの注視点を向く＝auto-orient）。タイムライン可変は `zoom`(px)、設定値 `focalLength`(mm) / `filmSize` は zoom と相互導出（§6.5）。`near`/`far` はクリップ面。被写界深度（`depthOfField`/`focusDistance`/`aperture`/`blurLevel`）は将来（§6.5 / Phase 3）。one-node はカメラ Transform の rotation/Orientation で向きを決める。後方互換: 旧 `fov` のみのカメラは one-node・`zoom` を `fov` から導出して扱う。
 
-> **決定（覆し可）**: `video` と `audio` を MVP に入れた（音楽 MV 用途を想定）。ただし `video` は決定論シーク制約があり browser は best-effort（§11.4）。`audio` は最小（gain 静的・mix なし・export で mux、§11.5）。`compRef`（comp ネスト＝precomp）は曖昧さが大きいため **MVP から外し §16 将来**へ（プリコンポは時間マッピング/collapse 仕様が要るため）。
+> **決定（覆し可）**: `video` と `audio` を MVP に入れた（音楽 MV 用途を想定）。ただし `video` は決定論シーク制約があり browser は best-effort（§11.4）。`audio` / `video` 内蔵音声とも `gain` を **keyframe 可能な `AnimatedProp<number>`（0..1）** として持つ（mixing graph は §16 将来）。後方互換: 既存 `gain` が plain number でも `readGainProp()` が `staticProp` に正規化する。`compRef`（comp ネスト＝precomp）は曖昧さが大きいため **MVP から外し §16 将来**へ（プリコンポは時間マッピング/collapse 仕様が要るため）。
 
 > **`exportStrategy` の既定（確定）**: web bundle export 時、各 component type が既定を宣言する。**自動判定はしない**（任意の author JS が実用速度で web 実行できるかは静的に分からないため）。既定: `solid`/`text`/`shape`/`image`/`html`/`audio` → `live`、将来の WebGL/particle/3D → `bake`。**plugin（第三者）は既定 `bake`**（§12、配信時に第三者コードをエンドユーザに流さない安全側）。author は per-component で上書き可。`bake` 指定レイヤは export 時に headless 機構（§11.4 / M3.5）で部分 MP4/WebP 化してアセットに差し替える。
 
@@ -686,17 +686,20 @@ interface ExportConfig {
 - **asset メタ**: 動画 import 時に 1 回 probe して `asset.meta`（`width`/`height`/`duration`/`mime`）に記録する（image / audio と同型の任意 meta フィールド。§5 スキーマ非変更）。`duration` はタイムラインのソース尺マッピング（§21.3）とレイヤー追加時の既定 `outPoint` に使う。
 - 描画は `<video>` を対象時刻に **seek** して DomRenderer の対象 div に合成。ブラウザの seek はフレーム精度が不安定なので **`requestVideoFrameCallback` で実フレーム到達を待ち、許容誤差を明記**（browser export は best-effort）。
 - **canonical な完全一致は headless 経路（§16, M3.5）で担保**。INV-2 は「ソース時刻のマッピング＝決定論」を満たし、実デコードフレームの差はラスタ忠実度の範囲とする。
-- 音声トラック付き video の音は MVP では鳴らさない（`audio` レイヤで別途）。フレーム同期音声は §16。
+- **video 内蔵音声（best-effort・基本再生）**: 音声トラック付き video の内蔵音声を鳴らす。`video` は `gain: AnimatedProp<number>`（0..1, 既定 1, keyframe 可）を持つ（§5.5）。`audio` と同じ `sampleGain(gainProp, frame)` を全経路で共有する（INV-2）。
+  - **preview / HTML bundle player**: 再生中（`previewVideoPlayback`）のみ `<video>` をアンミュートし、ネイティブ A/V 同期に委ねる。スクラブ・停止・warm-up・export フレームステップは `muted=true`（決定論・オートプレイ制約の両立）。音量は `resolve()` 済みの `props["gain"]` を `video.volume = clamp(gain,0,1)` に毎フレーム反映する。
+  - **export**: video レイヤーの内蔵音声も §11.2 の mux 対象。`audio` レイヤーと**同一のタイミング式**（`inPoint`/`outPoint`/`trimStart`）で `decodeAudioData`→`OfflineAudioContext` に追加合成し、`gainProp` を §11.5 のフレーム刻み automation で `GainNode` に打つ。decode 失敗（無音動画・非対応コンテナ）は best-effort でスキップ。
+  - **既知の制約**: 複数 video が同時再生するとブラウザが音声を自動ミックス（個別 volume は効くがミキサー側のクリッピングはブラウザ依存）。`audio` レイヤーと内蔵音声付き video の併用時、映像クロックは `PreviewAudioClock`/`BundleAudioClock`、video 音声はネイティブ再生で、大きなドリフト時のみ既存 resync が働く（best-effort）。mixing graph は §16 将来。
 - **warm-up（再生レイテンシ回避・非直列化）**: §11.5 音声プリロードと対になる前倒し。preview / HTML bundle player は、編集中 comp の enabled video レイヤーを **idle 中（`requestIdleCallback`）に `<video>` を現フレームのソース時刻へ seek + decode（loadeddata 相当）まで warm-up** し、`assetId@frame` 粒度で primed 状態を共有キャッシュに記録する（多重 prime は inflight 去重）。再生開始時、全 video が warm-up 済みなら遅延ゼロで開始し、未完了の video がある場合のみ短時間（best-effort 上限）prime を待ってから再生する＝開幕の「他レイヤーは即描画されるが動画だけ遅れて登場」を防ぐ。warm-up は present（`requestVideoFrameCallback`）待ちをせず、再生ループは従来どおり軽量（毎フレーム seek しない）。**warm-up は preview/bundle player 専用で、export 経路（決定論 seek + `requestVideoFrameCallback` の present 待ち）は一切変更しない（INV-2 非干渉）。** warm-up 失敗は best-effort（再生開始時に再試行）で、Footage 削除時に primed 状態を破棄する。
 
 ### §11.5 audio コンポーネント（MVP / 最小）
 
-- `audio` は `asset(audio)` + `gain`（**静的, 0..1**）+ `trimStart`。タイムライン配置（inPoint/outPoint）で再生区間が決まる。
-- **preview（音声マスタークロック）**: 再生中はオーディオレイヤーが 1 つでもあれば `AudioContext.currentTime` を**マスタークロック**とし、`currentFrame = rangeStart + floor((ctx.currentTime − t0) · fps)` を毎 rAF で算出して `resolve`/描画する（§11.7 と同型・INV-8）。各レイヤーは `inPoint`/`outPoint`/`trimStart`/`gain` に従って `AudioBufferSourceNode` をスケジュールする。**スクラブ時・停止時は無音**。`AudioContext` の resume はユーザージェスチャ（再生ボタン）で行う。オーディオが無ければ従来の rAF 経過時間クロックを使う。
+- `audio` は `asset(audio)` + `gain`（**`AnimatedProp<number>`, 0..1, keyframe 可**）+ `trimStart`。タイムライン配置（inPoint/outPoint）で再生区間が決まる。後方互換: 既存 plain number の `gain` は `readGainProp()` で `staticProp` に正規化する。
+- **preview（音声マスタークロック）**: 再生中はオーディオレイヤーが 1 つでもあれば `AudioContext.currentTime` を**マスタークロック**とし、`currentFrame = rangeStart + floor((ctx.currentTime − t0) · fps)` を毎 rAF で算出して `resolve`/描画する（§11.7 と同型・INV-8）。各レイヤーは `inPoint`/`outPoint`/`trimStart` に従って `AudioBufferSourceNode` をスケジュールし、`gain` は毎 tick に live comp から `sampleGain(gainProp, currentFrame)` を再評価して `GainNode.gain.value` へ反映する（編集中スライダーが再生中に効く）。**スクラブ時・停止時は無音**。`AudioContext` の resume はユーザージェスチャ（再生ボタン）で行う。オーディオが無ければ従来の rAF 経過時間クロックを使う。
 - **プリロード（再生レイテンシ回避・非直列化）**: decode 済み `AudioBuffer` は **assetId をキーに共有メモリキャッシュ**へ常駐させる。編集中 comp に音声レイヤーがあれば事前に decode しておき、再生ボタンで decode 待ちなく即発音する。波形抽出（§11.5.1）・再生・duration メタ取得は**同一バッファを共有**し、大きなソースを多重 decode しない。
 - **asset.duration メタ**: 音声 import 時に 1 回 decode して尺（秒）を `asset.meta`（`duration`/`sampleRate`/`channels`）に記録する。`AssetEntry.meta` は既存の任意フィールド（image と同様）で **§5 スキーマ非変更**。波形のソース尺マッピング（§11.5.1・§21.3）はこの値を使う。未記録時のみ尺をレイヤー長へフォールバックする。
-- **export**: §11.2 のとおり mux（決定論・`OfflineAudioContext`）。
-- mixing graph / エフェクト / **keyframed gain** / video 内蔵音声同期は §16 将来。
+- **export**: §11.2 のとおり mux（決定論・`OfflineAudioContext`）。`gain` は keyframe を反映するため、export 区間を **1/fps 刻み**で `sampleScalar(gainProp, frame)` を評価し `GainNode.gain.setValueAtTime(mixSec, value)` をフレーム境界ごとに打つ（`linearRamp` では hold/bezier easing と一致しないため。`interpolate.ts` の `findSegment`/`easingFn` と完全同一曲線になる）。
+- video 内蔵音声は **基本再生 + export mux + keyframed gain を対応**（§11.4）。mixing graph / エフェクト / LUFS は §16 将来。
 
 #### §11.5.1 タイムライン波形表示（編集補助・非直列化）
 
@@ -825,7 +828,7 @@ SSoT 違反を避けるため、scope と正準性を分離する:
 | Expression（純関数・seeded） | **MVP (M2)** |
 | Project Save/Load / zip / Git 形式 | **MVP (M0)** |
 | Browser best-effort export（音声 mux 含む） | **MVP (M3)** |
-| video（best-effort）/ audio（最小・gain 静的）/ font | **MVP (M3)** |
+| video（best-effort）/ audio（最小・gain keyframe 可）/ font | **MVP (M3)** |
 | Undo/Redo（command + 逆 patch） | **MVP (M1)** |
 | Plugin API v1（フル） | **MVP (M4)** |
 | CSS-3D による 2.5D / 最小 Camera | **MVP（M1）** |
@@ -847,7 +850,9 @@ SSoT 違反を避けるため、scope と正準性を分離する:
 | Blender Camera / Depth Import（IO plugin） | 将来 |
 | Particle / Advanced Effects / 分散レンダリング / AI 編集支援 | 将来 |
 | comp/plugin JS のハードサンドボックス / CSP | 将来（セキュリティ硬化） |
-| keyframed gain / audio mixing / video 内蔵音声同期 | 将来 |
+| keyframed gain（audio / video 内蔵音声, §11.4 / §11.5） | **実装済み（0..1・全経路 `sampleGain` 共有）** |
+| audio mixing graph / エフェクト / LUFS | 将来 |
+| video 内蔵音声（基本再生 + export mux + keyframed gain, §11.4） | **実装済み（best-effort）** |
 | タイムライン波形表示（raw/donshari/transient, §11.5.1） | **実装済み（編集補助・非直列化）** |
 | エディタプレビューの音声再生（マスタークロック, §11.5） | **実装済み** |
 | OPFS アセット格納 / time remap / per-axis easing・expression | 将来 |

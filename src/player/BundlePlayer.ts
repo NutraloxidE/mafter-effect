@@ -37,6 +37,7 @@ export class BundlePlayer {
   private viewportEl: HTMLDivElement | null = null;
   private stageEl: HTMLDivElement | null = null;
   private resizeObserver: ResizeObserver | null = null;
+  private autoplayUnlock: (() => void) | null = null;
 
   constructor(private readonly config: BundleBootConfig) {
     this.manifest = config.manifest;
@@ -136,6 +137,42 @@ export class BundlePlayer {
     } else {
       this.play(rangeStart);
     }
+
+    // §11.4: ブラウザは「ユーザー操作なしの音声付き自動再生」を禁止するため、boot 時の
+    // play() は拒否されうる（音が出ない・動画は無音で進む）。最初の任意操作（クリック/キー/
+    // タップ）で音声+内蔵音声を確実に開始する。完全無操作の音声自動再生はブラウザ仕様上不可。
+    this.installAutoplayUnlock();
+  }
+
+  /**
+   * autoplay ブロック時の救済: window の最初のユーザー操作（pointerdown / keydown / touchstart）で
+   * 音声レイヤーと video 内蔵音声を現在の再生位置から鳴らす。スペースバー限定ではなく任意操作で効く。
+   * once 相当（最初の 1 回で listener を撤去）。ユーザー操作後はブラウザ制限が解除され、
+   * 以降のレンダリングループ内 video.play() も成功する。
+   */
+  private installAutoplayUnlock(): void {
+    if (this.autoplayUnlock || typeof window === "undefined") return;
+    const types = ["pointerdown", "keydown", "touchstart"] as const;
+    const handler = (): void => {
+      if (this.playing) {
+        // 音声レイヤー: pause 中（autoplay 拒否）の要素を現在位置から再生（tick は二重化しない）。
+        this.audioClock?.unlock();
+        // video 内蔵音声: ユーザー操作のコールスタック内で再描画 → syncVideoElementTime が
+        // アンミュート play() を呼ぶ（この文脈なら play が許可される）。
+        this.renderer.setPreviewRenderOptions({ previewVideoPlayback: true });
+        this.renderFrame(this.currentFrame);
+      }
+      this.removeAutoplayUnlock();
+    };
+    this.autoplayUnlock = () => {
+      for (const t of types) window.removeEventListener(t, handler, true);
+    };
+    for (const t of types) window.addEventListener(t, handler, { capture: true, passive: true });
+  }
+
+  private removeAutoplayUnlock(): void {
+    this.autoplayUnlock?.();
+    this.autoplayUnlock = null;
   }
 
   private async loadBundleFonts(
@@ -229,6 +266,7 @@ export class BundlePlayer {
 
   dispose(): void {
     this.pause();
+    this.removeAutoplayUnlock();
     this.audioClock?.dispose();
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;
