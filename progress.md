@@ -6,6 +6,20 @@
 
 ---
 
+### 2026-06-29（Claude Opus）— 汎用コンテキストメニュー基盤の導入 ✅
+
+- **背景**: 右クリックメニューは KF 専用の ad-hoc 実装（[TimelinePanel.tsx](src/editor/panels/TimelinePanel.tsx) の `kfContextMenu` state＋外クリック useEffect＋イージング JSX ハードコード）しか無く、レイヤー/プロジェクトツリー等には未配線だった。AE パリティに向け、どのパネルからでも開ける単一コントローラ基盤を用意。
+- **実装**:
+  - **新規 単一コントローラ**: [contextMenuStore.ts](src/editor/contextMenu/contextMenuStore.ts) — 軽量 Zustand（`open` / `openContextMenu(x,y,items)` / `closeContextMenu`）。プロジェクトデータ（FS 投影の useEditorStore）と分離した純 UI 状態。`ContextMenuItem = action | separator`（disabled/danger/icon/shortcut 対応）。
+  - **新規 描画ホスト**: [ContextMenuHost.tsx](src/editor/contextMenu/ContextMenuHost.tsx) — body ポータル描画。**画面端クランプ**（useLayoutEffect で実寸測定→補正）、外クリック/Esc/scroll/resize/blur で閉じる契機を1箇所に集約。[App.tsx](src/App.tsx) ルートに1つマウント。
+  - **KF メニュー移行**: TimelinePanel の `kfContextMenu` 一式を撤去し `openContextMenu` へ。**罠**: メニュー項目の onSelect クロージャは右クリック時点で store にスナップショットされ後続 re-render を読めない → `applyEasingToSelectedKfs(easing, keysOverride)` を追加し、`handleKfRightClick` で対象 KF 集合を明示キャプチャ（旧 JSX 都度レンダリング前提が崩れる）。
+  - **実例**: `LayerRow` ヘッダー行に `onContextMenu`（名前を変更/複製/レイヤーを分割/削除）。既存ストアアクション再利用（`duplicateSelected`/`splitSelected`/`removeObjects`/`selectObjects`）。未選択行は先に単独選択（AE 挙動）。KF 行とは別 div なので二重発火なし。
+- **検証**: 新規 [verify-context-menu.mjs](verify-context-menu.mjs) で (A) KF イージングメニュー表示＋Hold 適用＋閉じる (B) レイヤーメニュー 複製/削除→Undo/Esc/連続右クリックで1つだけ を実機 PASS。typecheck 緑。`public/player.js` 再ビルド不要（runtime 非依存・エディタ UI のみ）。
+- **残/非ゴール**: ラベル色などの**サブメニュー**（基盤の submenu 対応とセットで次タスク）、プロジェクトツリー/インスペクタ/プレビューへの配線（基盤導入済みなので `onContextMenu` 追加のみ）、メニュー項目のキーボードナビ。
+- **既知**: `test/projectBins.test.ts`（treeOrder 順序）が **flaky**（本変更と無関係・project tree シリアライズの非決定性）。要別途調査。
+
+---
+
 ### 2026-06-26（Claude Opus）— 静的 HTML bundle の動画再生もっさり 真因修正 ✅
 
 - **症状**: 動画レイヤー入りコンポを §11.7 静的 HTML bundle に書き出すと、preview はスムーズなのに bundle player 上で動画がもっさり（実機では `<video>` が paused のまま currentTime=0 で完全停止することも）。
@@ -520,3 +534,14 @@ canvas 化結果は以降から見て通常の背面ピクセルと等価（zOrd
 - **要請**: bpm≠0 のとき時間ルーラーを上下二分割（上=タイムコード / 下=BPM の Bar.Beat）。表示のみでタイムライン挙動は不変。
 - **実装**: [TimelinePanel.tsx](src/editor/panels/TimelinePanel.tsx) `Ruler` を二段化。上段=従来タイムコード目盛り（bpm 有効時は高さ 50%）／下段=**拍に整列した独自 Bar.Beat 目盛り**（拍/小節単位で適応間引き・小節頭は明色・中央分割線）。bpm 無効時は従来どおり単段。spec §21.1b 更新。
 - **検証**: typecheck 緑・実機 [verify-bpm-ruler.mjs](verify-bpm-ruler.mjs) で下段 Bar.Beat 目盛り（1.1/1.3/2.1…）描画・bpm=0 で単段化を確認。toolbar 併記（formatTimeWithBeat）は従来どおり維持。
+
+### 2026-06-29（Opus）— BPM ルーラー目盛り密度アップ
+
+- **要請**: 広い範囲を見ているときも BPM をもう少し細かく表示。
+- **実装**: [TimelinePanel.tsx](src/editor/panels/TimelinePanel.tsx) `Ruler` の下段拍目盛りの密度目安を `viewSpanBeats / 8` → `/ 16`（上段タイムコードより細かく）。全尺 60s でも 2 小節ごと（1.1/3.1/5.1…）まで表示・重なりなしを実機確認。
+
+### 2026-06-29（Cursor）— ⬆ zip インポート時の保存確認（§20.4b 拡張）
+
+- **要請**: `New` と同様に、別プロジェクト zip を開く（`⬆ zip`）前にも「保存しないと失われます」確認を出す。
+- **実装**: spec §20.4b を `New` / `⬆ zip` 共通に更新。[ProjectPanel.tsx](src/editor/panels/ProjectPanel.tsx) で `discardConfirmAction`（`new` | `import`）に統合し、`ProjectDiscardConfirm` モーダルを共有。`はい`＝zip 保存後に続行（import はファイル選択）、`いいえ`＝保存せず続行、`キャンセル`＝中止。
+- **build:player**: 不要（UI のみ）。
