@@ -294,6 +294,10 @@ export interface EditorStore {
   setCompFps: (fps: number) => void;
   /** §5.6 コンポ duration 変更（再生ヘッド超過時はクランプ）。 */
   setCompDuration: (duration: number) => void;
+  /** §21.1b 編集補助 BPM 設定（0 で無効化・beatsPerBar も undefined 化）。表示専用。 */
+  setCompBpm: (bpm: number) => void;
+  /** §21.1b 1 小節の拍数設定（bpm 無効時は no-op）。 */
+  setCompBeatsPerBar: (n: number) => void;
 
   // §5.4d 描画モード
   setBlendMode: (objId: string, mode: BlendMode) => void;
@@ -1600,6 +1604,42 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     };
     get().applyCommand({ label: `Comp Duration ${newDur}f`, before, after });
     if (get().currentFrame > newDur - 1) set({ currentFrame: newDur - 1 });
+  },
+
+  setCompBpm: (bpm) => {
+    const before = get().project;
+    if (!before) return;
+    const compId = get().currentCompId;
+    const target = before.compositions.find((c) => c.id === compId);
+    if (!target) return;
+    const v = Number.isFinite(bpm) ? Math.max(0, bpm) : 0;
+    const nextBpm = v > 0 ? v : undefined;
+    if ((target.bpm ?? 0) === (nextBpm ?? 0)) return;
+    const after: Project = {
+      ...before,
+      compositions: before.compositions.map((c) =>
+        c.id === compId
+          ? // 無効化時は beatsPerBar も落とす（§21.1b 正準化）。
+            { ...c, bpm: nextBpm, beatsPerBar: nextBpm !== undefined ? c.beatsPerBar : undefined }
+          : c,
+      ),
+    };
+    get().applyCommand({ label: nextBpm !== undefined ? `Set BPM ${nextBpm}` : "Clear BPM", before, after });
+  },
+
+  setCompBeatsPerBar: (n) => {
+    const before = get().project;
+    if (!before) return;
+    const compId = get().currentCompId;
+    const target = before.compositions.find((c) => c.id === compId);
+    if (!target || !(typeof target.bpm === "number" && target.bpm > 0)) return; // bpm 無効時 no-op
+    const v = Math.max(1, Math.round(n));
+    if ((target.beatsPerBar ?? 4) === v) return;
+    const after: Project = {
+      ...before,
+      compositions: before.compositions.map((c) => (c.id === compId ? { ...c, beatsPerBar: v } : c)),
+    };
+    get().applyCommand({ label: `Set Beats/Bar ${v}`, before, after });
   },
 }));
 

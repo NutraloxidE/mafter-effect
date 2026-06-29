@@ -180,6 +180,10 @@ export interface CompositionMeta {
   background?: RGBA;
   /** §20.5 Project Bin 整理用。省略 = ルート。resolve 非参照。 */
   binId?: string;
+  /** §21.1b 編集補助 BPM。0/省略 = 無効（タイムコードのみ）。表示専用・resolve 非参照。 */
+  bpm?: number;
+  /** §21.1b 1 小節の拍数。省略 = 4。bpm > 0 のときのみ意味を持つ。resolve 非参照。 */
+  beatsPerBar?: number;
 }
 
 export interface TimelineComposition extends CompositionMeta {

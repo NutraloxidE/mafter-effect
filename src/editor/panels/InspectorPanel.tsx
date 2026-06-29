@@ -13,6 +13,7 @@ import { ColorSwatch, isRgba } from "../ColorSwatch";
 import { BUNDLED_FONTS, WEB_SAFE_FONTS, isKnownFont } from "../fontList";
 import { ScrubNumber } from "../ScrubNumber";
 import { TimecodeScrub } from "../TimecodeScrub";
+import { formatBarBeat } from "../beatTimecode";
 import { globalPluginRegistry } from "../../runtime/pluginRegistry";
 import { groupEffectsForPicker } from "../effectCategories";
 import { BakerBadge } from "../bakerLabel";
@@ -104,6 +105,8 @@ export function InspectorPanel() {
   const resizeComp = useEditorStore((s) => s.resizeComp);
   const setCompFps = useEditorStore((s) => s.setCompFps);
   const setCompDuration = useEditorStore((s) => s.setCompDuration);
+  const setCompBpm = useEditorStore((s) => s.setCompBpm);
+  const setCompBeatsPerBar = useEditorStore((s) => s.setCompBeatsPerBar);
   const previewCamera = useEditorStore((s) => s.previewCamera);
   const setPreviewCamera = useEditorStore((s) => s.setPreviewCamera);
   const removeEffect = useEditorStore((s) => s.removeEffect);
@@ -232,6 +235,34 @@ export function InspectorPanel() {
               style={numInputStyle}
             />
           </Row>
+          <Row label="BPM">
+            <ScrubNumber
+              value={comp.bpm ?? 0}
+              onCommit={(v) => setCompBpm(v)}
+              min={0}
+              decimals={1}
+              step={1}
+              style={numInputStyle}
+            />
+            <span style={{ color: "#666", fontSize: 10, marginLeft: 2 }}>bpm</span>
+            {comp.bpm !== undefined && comp.bpm > 0 && (
+              <span style={{ color: "#7fb8f0", fontSize: 10, marginLeft: 6, fontVariantNumeric: "tabular-nums" }}>
+                {formatBarBeat(frame, comp.fps, comp.bpm, comp.beatsPerBar)}
+              </span>
+            )}
+          </Row>
+          {comp.bpm !== undefined && comp.bpm > 0 && (
+            <Row label="Beats / Bar">
+              <ScrubNumber
+                value={comp.beatsPerBar ?? 4}
+                onCommit={(v) => setCompBeatsPerBar(v)}
+                min={1}
+                decimals={0}
+                step={1}
+                style={numInputStyle}
+              />
+            </Row>
+          )}
           <Row label="Background">
             <BackgroundControl comp={comp} onChange={setCompBackground} />
           </Row>

@@ -52,6 +52,19 @@ function stripBinId<T extends { binId?: string }>(item: T): T {
   return item;
 }
 
+// §21.1b: bpm 無効（0/省略/非正）なら bpm・beatsPerBar を省略（byte 等価）。
+// bpm 有効でも beatsPerBar が既定 4 なら beatsPerBar のみ省略。timeline/html 両 kind に適用。
+function stripBpmMeta<T extends { bpm?: number; beatsPerBar?: number }>(comp: T): T {
+  const c = { ...comp };
+  if (!(typeof c.bpm === "number" && c.bpm > 0)) {
+    c.bpm = undefined;
+    c.beatsPerBar = undefined;
+  } else if (c.beatsPerBar === undefined || c.beatsPerBar === 4) {
+    c.beatsPerBar = undefined;
+  }
+  return c;
+}
+
 function canonicalizeBins(bins: ProjectBin[] | undefined): ProjectBin[] | undefined {
   if (!bins || bins.length === 0) return undefined;
   return [...bins].sort(byId);
@@ -88,9 +101,9 @@ export function canonicalizeProject(project: Project): Project {
         if (t.renderer3d === "classic") t.renderer3d = undefined;
         // §6.5: active camera は永続しない。旧 project.json の `activeCamera` はここで落とす（後方互換）。
         delete (t as { activeCamera?: unknown }).activeCamera;
-        return t;
+        return stripBpmMeta(t);
       }
-      return stripBinId({ ...comp });
+      return stripBpmMeta(stripBinId({ ...comp }));
     })
     .sort(byStringKey);
 

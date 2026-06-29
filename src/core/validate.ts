@@ -33,6 +33,7 @@ export function validateProject(raw: unknown): ValidationResult {
   let project = migrate(raw as Project, warnings);
 
   for (const comp of project.compositions) {
+    validateCompMeta(comp, warnings);
     if (comp.kind === "timeline") {
       validateTimeline(comp, warnings);
     }
@@ -67,6 +68,37 @@ function migrate(project: Project, warnings: string[]): Project {
     warnings.push(`migrated schemaVersion ${version - 1} → ${version}`);
   }
   return p as Project;
+}
+
+// §21.1b: 全 comp（timeline/html）共通の表示専用メタ検証。bpm/beatsPerBar を正規化。
+function validateCompMeta(
+  comp: { id: string; bpm?: number; beatsPerBar?: number },
+  warnings: string[],
+): void {
+  if (comp.bpm !== undefined) {
+    if (typeof comp.bpm !== "number" || !Number.isFinite(comp.bpm) || comp.bpm < 0) {
+      warnings.push(`comp ${comp.id}: invalid bpm ${String(comp.bpm)}; clearing`);
+      comp.bpm = undefined;
+      comp.beatsPerBar = undefined;
+    } else if (comp.bpm === 0) {
+      comp.bpm = undefined;
+      comp.beatsPerBar = undefined;
+    }
+  }
+  if (comp.beatsPerBar !== undefined) {
+    if (comp.bpm === undefined) {
+      comp.beatsPerBar = undefined; // bpm 無効時は無意味
+    } else if (
+      typeof comp.beatsPerBar !== "number" ||
+      !Number.isInteger(comp.beatsPerBar) ||
+      comp.beatsPerBar < 1
+    ) {
+      warnings.push(
+        `comp ${comp.id}: invalid beatsPerBar ${String(comp.beatsPerBar)}; using 4`,
+      );
+      comp.beatsPerBar = 4;
+    }
+  }
 }
 
 function validateTimeline(

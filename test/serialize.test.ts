@@ -67,6 +67,37 @@ describe("serializeProject", () => {
     expect(text.endsWith("\n\n")).toBe(false);
   });
 
+  it("omits bpm/beatsPerBar when bpm is unset or 0 (byte-equal to baseline)", () => {
+    const base = createProject({ now: "2026-01-01T00:00:00.000Z" });
+    const baseline = serializeProject(base);
+
+    const withZero: Project = structuredClone(base);
+    timeline(withZero).bpm = 0;
+    timeline(withZero).beatsPerBar = 4;
+    expect(serializeProject(withZero)).toBe(baseline);
+    expect(serializeProject(withZero)).not.toContain("bpm");
+  });
+
+  it("writes bpm but omits default beatsPerBar (4)", () => {
+    const base = createProject({ now: "2026-01-01T00:00:00.000Z" });
+    const p: Project = structuredClone(base);
+    timeline(p).bpm = 120;
+    timeline(p).beatsPerBar = 4;
+    const out = serializeProject(p);
+    expect(out).toContain('"bpm": 120');
+    expect(out).not.toContain("beatsPerBar");
+  });
+
+  it("writes non-default beatsPerBar when bpm > 0", () => {
+    const base = createProject({ now: "2026-01-01T00:00:00.000Z" });
+    const p: Project = structuredClone(base);
+    timeline(p).bpm = 90;
+    timeline(p).beatsPerBar = 3;
+    const out = serializeProject(p);
+    expect(out).toContain('"bpm": 90');
+    expect(out).toContain('"beatsPerBar": 3');
+  });
+
   it("serializes labelIndex when in range and strips invalid values", () => {
     const base = createProject({ now: "2026-01-01T00:00:00.000Z" });
     const p: Project = structuredClone(base);

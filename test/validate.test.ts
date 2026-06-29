@@ -48,6 +48,41 @@ describe("validateProject", () => {
     ).toThrow(ProjectError);
   });
 
+  it("normalizes invalid bpm/beatsPerBar meta (§21.1b)", () => {
+    const p = withObjects([obj("A", null)]);
+    const c = p.compositions[0] as TimelineComposition;
+    c.bpm = -5;
+    c.beatsPerBar = 4;
+    const { project, warnings } = validateProject(p);
+    const out = project.compositions[0] as TimelineComposition;
+    expect(out.bpm).toBeUndefined();
+    expect(out.beatsPerBar).toBeUndefined(); // stripped when bpm invalid
+    expect(warnings.some((w) => w.includes("invalid bpm"))).toBe(true);
+  });
+
+  it("coerces invalid beatsPerBar to 4 when bpm is valid", () => {
+    const p = withObjects([obj("A", null)]);
+    const c = p.compositions[0] as TimelineComposition;
+    c.bpm = 120;
+    c.beatsPerBar = 0;
+    const { project, warnings } = validateProject(p);
+    const out = project.compositions[0] as TimelineComposition;
+    expect(out.bpm).toBe(120);
+    expect(out.beatsPerBar).toBe(4);
+    expect(warnings.some((w) => w.includes("invalid beatsPerBar"))).toBe(true);
+  });
+
+  it("drops beatsPerBar when bpm is 0", () => {
+    const p = withObjects([obj("A", null)]);
+    const c = p.compositions[0] as TimelineComposition;
+    c.bpm = 0;
+    c.beatsPerBar = 3;
+    const { project } = validateProject(p);
+    const out = project.compositions[0] as TimelineComposition;
+    expect(out.bpm).toBeUndefined();
+    expect(out.beatsPerBar).toBeUndefined();
+  });
+
   it("refuses to load a newer schemaVersion", () => {
     const p = createProject({ now: "2026-01-01T00:00:00.000Z" });
     (p as { schemaVersion: number }).schemaVersion = 99;

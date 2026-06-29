@@ -15,6 +15,7 @@ import {
 import { currentTimelineComp, setKeyframe, useEditorStore } from "../store";
 import { EXPRESSED_VALUE_COLOR, isPropExpressed } from "../../core/props";
 import { framesToTimecode } from "../timecode";
+import { formatTimeWithBeat } from "../beatTimecode";
 import { isRgba } from "../ColorSwatch";
 import { getLayerSourceExtent, shiftFootageSourceOffset, type LayerSourceExtent } from "../layerSourceOffset";
 import { DRAG_MIME } from "./dragMime";
@@ -140,6 +141,9 @@ export function TimelinePanel() {
   const comp = currentTimelineComp(project, compId);
   const duration = comp?.duration ?? 150;
   const fps = comp?.fps ?? 30;
+  // §21.1b BPM 併記（無効時は undefined でタイムコードのみ）。
+  const bpm = comp?.bpm;
+  const beatsPerBar = comp?.beatsPerBar;
   const workArea = useMemo(
     () => (comp ? loadWorkArea(comp.id, comp.duration) : { inPoint: 0, outPoint: duration }),
     [comp, duration, workAreaRevision],
@@ -1027,7 +1031,7 @@ export function TimelinePanel() {
         {comp && <span style={{ color: "#9bd", fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>· {comp.name}</span>}
         {/* §21.1 SMPTE timecode */}
         <span data-testid="tl-timecode" style={{ color: "#7fb8f0", fontVariantNumeric: "tabular-nums", fontWeight: 600, marginLeft: 4 }}>
-          {framesToTimecode(frame, fps)}
+          {formatTimeWithBeat(frame, fps, bpm, beatsPerBar)}
         </span>
         <span style={{ color: "#555", fontSize: 10 }}>({fps.toFixed(2)} fps)</span>
         <div style={{ width: 8 }} />
@@ -1092,7 +1096,7 @@ export function TimelinePanel() {
           style={{ ...btnStyle, fontSize: 10, padding: "1px 5px" }}
           title="ビューを全尺表示 (\ / ¥ キー)"
         >fit</button>
-        <span style={{ color: "#555", fontVariantNumeric: "tabular-nums" }} title={`F${frame} / ${duration}`}>{framesToTimecode(frame, fps)} / {framesToTimecode(duration, fps)}</span>
+        <span style={{ color: "#555", fontVariantNumeric: "tabular-nums" }} title={`F${frame} / ${duration}`}>{formatTimeWithBeat(frame, fps, bpm, beatsPerBar)} / {formatTimeWithBeat(duration, fps, bpm, beatsPerBar)}</span>
         {statusMsg && <span style={{ color: "#8d8", fontSize: 10, marginLeft: 4 }}>{statusMsg}</span>}
       </div>
 
@@ -1131,7 +1135,7 @@ export function TimelinePanel() {
           >
             <WorkAreaBar workArea={workArea} duration={duration} frameToPercent={frameToPercent} />
             <PreviewCacheBar cachedFrames={cachedFrames} viewRange={viewRange} duration={duration} frameToPercent={frameToPercent} />
-            <Ruler viewRange={viewRange} duration={duration} fps={fps} frameToPercent={frameToPercent} />
+            <Ruler viewRange={viewRange} duration={duration} fps={fps} bpm={bpm} beatsPerBar={beatsPerBar} frameToPercent={frameToPercent} />
             <Playhead frame={frame} frameToPercent={frameToPercent} />
           </div>
         </div>
@@ -1637,10 +1641,12 @@ function WaveformOverlay({ audio, mode, fps, getFs, inPoint, outPoint, trimStart
   );
 }
 
-function Ruler({ viewRange, duration, fps, frameToPercent }: {
+function Ruler({ viewRange, duration, fps, bpm, beatsPerBar, frameToPercent }: {
   viewRange: { start: number; end: number };
   duration: number;
   fps: number;
+  bpm?: number;
+  beatsPerBar?: number;
   frameToPercent: (f: number) => number;
 }) {
   const viewSpan = viewRange.end - viewRange.start;
@@ -1653,19 +1659,63 @@ function Ruler({ viewRange, duration, fps, frameToPercent }: {
   const firstTick = Math.ceil(viewRange.start / stepFrames) * stepFrames;
   for (let f = firstTick; f <= Math.min(viewRange.end, duration); f += stepFrames) ticks.push(f);
 
+  // §21.1b: bpm 有効時はルーラーを上下二段にする（上＝タイムコード / 下＝Bar.Beat）。
+  // 下段は拍に整列した独自目盛り（タイムコード間隔だと中途半端な拍値になるため）。表示のみ。
+  const bpmActive = bpm !== undefined && bpm > 0;
+  const beatTicks: { left: number; label: string; isBar: boolean }[] = [];
+  if (bpmActive) {
+    const f0 = Math.max(1, Math.round(fps));
+    const bpb = Math.max(1, Math.round(beatsPerBar ?? 4));
+    const framesPerBeat = (f0 * 60) / (bpm as number);
+    // 拍ステップ候補: 1 拍 / 1 小節 / 数小節。表示幅から ~8 目盛りを目安に選ぶ。
+    const beatCandidates = Array.from(
+      new Set([1, 2, bpb, bpb * 2, bpb * 4, bpb * 8, bpb * 16]),
+    ).filter((v) => v > 0).sort((a, b) => a - b);
+    const viewSpanBeats = viewSpan / framesPerBeat;
+    const roughBeatStep = Math.max(1, viewSpanBeats / 8);
+    const stepBeats = beatCandidates.find((s) => s >= roughBeatStep) ?? bpb * 16;
+    const maxFrame = Math.min(viewRange.end, duration);
+    const firstBeat = Math.max(
+      0,
+      Math.ceil(viewRange.start / framesPerBeat / stepBeats) * stepBeats,
+    );
+    for (let b = firstBeat; b * framesPerBeat <= maxFrame + 1e-6; b += stepBeats) {
+      const beatIndex = Math.round(b);
+      const left = frameToPercent(beatIndex * framesPerBeat);
+      if (left < 0 || left > 100) continue;
+      const barNo = Math.floor(beatIndex / bpb) + 1;
+      const beatNo = (beatIndex % bpb) + 1;
+      beatTicks.push({ left, label: `${barNo}.${beatNo}`, isBar: beatNo === 1 });
+    }
+  }
+
   return (
     <>
       {ticks.map((f) => {
         const left = frameToPercent(f);
         if (left < 0 || left > 100) return null;
         return (
-          <div key={f} style={{ position: "absolute", left: `${left}%`, top: 0, height: "100%", borderLeft: "1px solid #3a3a3a", pointerEvents: "none" }}>
-            <span style={{ position: "absolute", left: 3, top: 2, fontSize: 9, color: "#777", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+          <div key={f} style={{ position: "absolute", left: `${left}%`, top: 0, height: bpmActive ? "50%" : "100%", borderLeft: "1px solid #3a3a3a", pointerEvents: "none" }}>
+            <span style={{ position: "absolute", left: 3, top: 1, fontSize: 9, color: "#777", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
               {framesToTimecode(f, fps)}
             </span>
           </div>
         );
       })}
+      {bpmActive && (
+        <>
+          {/* 中央分割線 */}
+          <div style={{ position: "absolute", left: 0, right: 0, top: "50%", borderTop: "1px solid #2f3a2f", pointerEvents: "none" }} />
+          {/* 下段: Bar.Beat（小節頭は明色） */}
+          {beatTicks.map((t, i) => (
+            <div key={`bb-${i}`} style={{ position: "absolute", left: `${t.left}%`, top: "50%", height: "50%", borderLeft: `1px solid ${t.isBar ? "#4a6a4a" : "#33402f"}`, pointerEvents: "none" }}>
+              <span style={{ position: "absolute", left: 3, bottom: 1, fontSize: 9, color: t.isBar ? "#7aa97a" : "#5d7a5d", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+                {t.label}
+              </span>
+            </div>
+          ))}
+        </>
+      )}
     </>
   );
 }

@@ -342,8 +342,15 @@ interface CompositionMeta {
   duration: Frame;          // 総フレーム数
   background?: RGBA;        // 未設定 = 透明。不透明 export（alpha 無）の最終ラスタ化時のみ黒でマット。bundle 再生・ネストコンポ合成は透明。
   binId?: string;           // §20.5 Project Bin。省略 = ルート。resolve 非参照。
+  bpm?: number;             // 編集補助 BPM。0/省略 = 無効（タイムコードのみ）。表示専用メタ・resolve 非参照（§21.1b）。
+  beatsPerBar?: number;     // 1 小節の拍数。省略 = 4。bpm > 0 のときのみ意味を持つ。resolve 非参照。
 }
 ```
+
+**BPM メタ（確定・2026-06-29）**: `bpm` / `beatsPerBar` は **編集補助の表示専用メタデータ**であり、`resolve()` / レンダラ / export / bundle は一切参照しない（INV-1/2/3/5 不変）。正準時間は整数 `Frame` のまま。
+- **直列化（§5.6-canon）**: `bpm` が `0` / 未設定 → `bpm`・`beatsPerBar` ともキー省略（既存 `project.json` **byte 等価**・INV-4）。`bpm > 0` かつ `beatsPerBar === 4`（既定）→ `beatsPerBar` のみ省略。
+- **validate（全 comp 対象）**: `bpm` が非数 / 負 → strip + warn。`bpm === 0` → undefined 化（`beatsPerBar` も strip）。`beatsPerBar < 1` / 非整数 → `4` に正規化 + warn。`bpm` 無効時の `beatsPerBar` は strip。
+- **編集 UI**: Inspector の **Composition** セクションで `bpm`（`ScrubNumber`・0 = オフ）と `beatsPerBar`（`bpm > 0` のときのみ表示）を編集（command・undo 可）。
 
 **背景色の編集 UI（確定・UI 層）**: `background` はコンポのプロパティであり、編集は **Inspector**（レイヤー未選択時の **Composition** セクション — 色スウォッチ + 透明トグル、`setCompBackground`・undo 可）。Preview の `⬚` チェッカー/黒トグルは **ビューア設定**（§25.2）であり背景値そのものではない。
 
@@ -1079,6 +1086,15 @@ AE タイムラインの機能を **Tier A〜D** に分け、本リビジョン�
 - 表示形式は **AE 既定 `H:MM:SS:FF`（non-drop）**。`f = round(fps)` とし、`FF = frame % f`、`SS = floor(frame/f) % 60`、`MM = floor(frame/(f*60)) % 60`、`H = floor(frame/(f*3600))`。`MM`/`SS`/`FF` は 2 桁ゼロ埋め、`H` は非ゼロ詰め（§5.6 Duration と同一フォーマット）。実装は `src/editor/timecode.ts` の `framesToTimecode` を**唯一の共有実装**として使う（タイムライン toolbar・ルーラー目盛り・現在時刻／尺の右上表示・Inspector Duration がすべて一致）。
 - **現在時刻／尺の右上表示（確定・2026-06-25）**: タイムラインパネル右上は従来の生フレーム `F{frame} / {duration}` ではなく `framesToTimecode(frame) / framesToTimecode(duration)` を表示する（クリック編集は持たない純表示）。
 - ドロップフレーム（`0;00;00;00`）は §16 将来（整数 fps では non-drop と一致するため MVP 不要）。
+
+### §21.1b BPM 併記表示（確定・2026-06-29）
+
+- **目的**: 音楽 MV 等で「今が何小節目・何拍目か」を編集中に把握する**非破壊の編集補助**。`bpm` / `beatsPerBar`（§5.6 CompositionMeta）を読み、タイムコードに `Bar.Beat` を**併記**する。内部時間・直列化・resolve・export には一切影響しない（INV-5 不変）。
+- **無効時（`bpm` 省略 or `0`）**: 従来どおりタイムコードのみ。表示は**完全無変更**（既存 verify 無回帰）。
+- **変換（純関数・`src/editor/beatTimecode.ts`）**: `totalBeats = (frame / f) * (bpm / 60)`（`f = round(fps)`）。`bar = floor(totalBeats / beatsPerBar) + 1`、`beat = floor(totalBeats mod beatsPerBar) + 1`（ともに 1 始まり）。拍境界の浮動小数誤差を避けるため `totalBeats` に微小 epsilon を加えてから floor する（例: 120 BPM @ 30fps で frame 60 = `2.1`）。`beatsPerBar` 省略 = 4。`bpm <= 0` は `null` を返し UI 側で併記を省く。
+- **併記形式（toolbar）**: `` `${framesToTimecode(...)} · ${bar.beat}` ``（` · ` 区切り）。タイムライン toolbar 現在時刻・右上 current/duration に適用。`framesToTimecode` は §21.1 の唯一実装を引き続き共有する。
+- **ルーラー二段表示（bpm > 0 のとき）**: 時間ルーラーを上下に二分割し、**上段＝タイムコード目盛り（従来どおり）／下段＝Bar.Beat 目盛り**を表示。下段は**拍に整列した独自目盛り**（タイムコード間隔のままだと中途半端な拍値になるため、拍/小節単位で適応的に間引く。小節頭は明色）。`bpm` 無効時は従来どおり上段タイムコードのみ（分割なし）。これは**表示のみ**で、スクラブ・KF・in/out 等タイムラインの挙動は一切変えない（INV-5 不変）。
+- **スコープ外（将来）**: 拍/小節へのスナップ、ルーラーの拍単位切替、Preview パネル併記、downbeat offset。
 
 ### §21.2 プロパティツリー（確定）
 
