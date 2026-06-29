@@ -1672,7 +1672,8 @@ function Ruler({ viewRange, duration, fps, bpm, beatsPerBar, frameToPercent }: {
       new Set([1, 2, bpb, bpb * 2, bpb * 4, bpb * 8, bpb * 16]),
     ).filter((v) => v > 0).sort((a, b) => a - b);
     const viewSpanBeats = viewSpan / framesPerBeat;
-    const roughBeatStep = Math.max(1, viewSpanBeats / 8);
+    // 下段は上段タイムコードより細かく（~16 目盛り目安）。広い範囲でも拍/小節が読める。
+    const roughBeatStep = Math.max(1, viewSpanBeats / 16);
     const stepBeats = beatCandidates.find((s) => s >= roughBeatStep) ?? bpb * 16;
     const maxFrame = Math.min(viewRange.end, duration);
     const firstBeat = Math.max(

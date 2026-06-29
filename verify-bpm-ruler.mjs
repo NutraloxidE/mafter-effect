@@ -19,13 +19,21 @@ await page.waitForFunction(() => {
 await page.evaluate(() => {
   const st = window.__mafterEditorStore.getState();
   st.setCompFps(30);
-  st.setCompDuration(240);
+  st.setCompDuration(1800); // 60s — wide range
   st.setCompBpm(120);
   st.setCompBeatsPerBar(4);
   st.selectObjects([]);
 });
 await page.waitForTimeout(400);
+// 全尺表示（fit）にして広い範囲での目盛り密度を見る。
+await page.getByText("fit", { exact: true }).click();
+await page.waitForTimeout(400);
 await page.screenshot({ path: "verify-bpm-ruler-on.png" });
+const wideLabels = await page.evaluate(() => {
+  const spans = Array.from(document.querySelectorAll("span"));
+  return spans.map((s) => s.textContent?.trim()).filter((t) => /^\d+\.\d+$/.test(t || ""));
+});
+console.log("wide-range bar.beat labels:", JSON.stringify(wideLabels.slice(0, 24)));
 
 // bpm=0 → single-tier (timecode only).
 await page.evaluate(() => window.__mafterEditorStore.getState().setCompBpm(0));
