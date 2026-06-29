@@ -497,3 +497,26 @@ canvas 化結果は以降から見て通常の背面ピクセルと等価（zOrd
 - **要請**: 実用的なエクスプレッションをもう 1 個追加。
 - **実装**: `orbit-position` — 基準位置を中心に円運動。パラメータ: `radius`（既定 80）/ `frequency`（既定 0.5 Hz）/ `phase`（°・KF 可）。既存 `ctx` API のみ・ランタイム変更なし → `build:player` 不要。
 - **検証**: `test/expressionPresetInstance.test.ts` orbit 2件・`test/expr.test.ts` marker 更新・11+27 tests PASS。
+
+### 2026-06-29（Opus）— コンポ BPM 併記表示（非破壊・編集補助・§21.1b）
+
+- **要請**: コンポに BPM/beatsPerBar を持たせ、タイムラインの時間表示に `Bar.Beat` を併記（音楽 MV 編集補助）。
+- **設計**: `bpm`/`beatsPerBar` を `CompositionMeta` に additive。表示専用メタで `resolve()`/export/bundle 非参照（INV-1/2/3/5 不変）。spec §5.6 + §21.1b 追記（SSoT 先行）。
+- **実装**:
+  - [schema.ts](src/core/schema.ts) `CompositionMeta` に `bpm?`/`beatsPerBar?`。
+  - [serialize.ts](src/core/serialize.ts) `stripBpmMeta`（bpm 無効=両キー省略=byte 等価 / 既定 beatsPerBar=4 省略）を **timeline・html 両分岐**に適用。
+  - [validate.ts](src/core/validate.ts) `validateCompMeta` を**全 comp**（timeline/html）で実行（負/非数 bpm strip・bpm=0 で beatsPerBar 落とし・不正 beatsPerBar→4）。
+  - [beatTimecode.ts](src/editor/beatTimecode.ts) 純関数 `formatBarBeat`/`formatTimeWithBeat`。拍境界の浮動小数誤差を epsilon でスナップ（frame 60@120BPM/30fps → "2.1"）。
+  - [store.ts](src/editor/store.ts) `setCompBpm`/`setCompBeatsPerBar`（command・undo 可・bpm 無効時 beatsPerBar no-op）。
+  - [InspectorPanel.tsx](src/editor/panels/InspectorPanel.tsx) Composition に BPM 行（+ライブ bar.beat）/ Beats per Bar 行（bpm>0 時のみ）。
+  - [TimelinePanel.tsx](src/editor/panels/TimelinePanel.tsx) toolbar 現在時刻・右上 current/duration・ルーラー目盛り（薄色付加）の 3 箇所で併記。
+- **添削で直した懸念**: ① validate がタイムライン comp しか回らない → 全 comp meta パス追加。② canonicalize の bpm 省略を両分岐に。③ `beats % beatsPerBar` の FP 誤差 → epsilon。④ 9px ルーラーのクラッタ → bar.beat を薄色化。
+- **検証**: `test/beatTimecode.test.ts`(7)・serialize byte 等価(3)・validate 正規化(3) 追加。`npm test` 526 PASS・typecheck 緑。実機 [verify-bpm-timeline.mjs](verify-bpm-timeline.mjs) で BPM トグルの併記出現/消滅・3/4 拍を確認（PASS）。
+- **build:player**: 不要（ランタイム非変更・`playerBuildFreshness` 緑）。
+- **スコープ外**: 拍/小節スナップ・ルーラー拍単位切替・Preview 併記・downbeat offset。
+
+### 2026-06-29（Opus）— BPM ルーラー二段表示
+
+- **要請**: bpm≠0 のとき時間ルーラーを上下二分割（上=タイムコード / 下=BPM の Bar.Beat）。表示のみでタイムライン挙動は不変。
+- **実装**: [TimelinePanel.tsx](src/editor/panels/TimelinePanel.tsx) `Ruler` を二段化。上段=従来タイムコード目盛り（bpm 有効時は高さ 50%）／下段=**拍に整列した独自 Bar.Beat 目盛り**（拍/小節単位で適応間引き・小節頭は明色・中央分割線）。bpm 無効時は従来どおり単段。spec §21.1b 更新。
+- **検証**: typecheck 緑・実機 [verify-bpm-ruler.mjs](verify-bpm-ruler.mjs) で下段 Bar.Beat 目盛り（1.1/1.3/2.1…）描画・bpm=0 で単段化を確認。toolbar 併記（formatTimeWithBeat）は従来どおり維持。
