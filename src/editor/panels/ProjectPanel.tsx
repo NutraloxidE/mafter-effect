@@ -44,7 +44,8 @@ export function ProjectPanel() {
   const videoInput = useRef<HTMLInputElement>(null);
 
   const [showExport, setShowExport] = useState(false);
-  const [showNewConfirm, setShowNewConfirm] = useState(false);
+  /** §20.4b: 現在プロジェクトを破棄する操作の保存確認（New / zip インポート） */
+  const [discardConfirmAction, setDiscardConfirmAction] = useState<"new" | "import" | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [deleteAssetId, setDeleteAssetId] = useState<string | null>(null);
   const [zipError, setZipError] = useState<string | null>(null);
@@ -92,19 +93,25 @@ export function ProjectPanel() {
     }
   };
 
-  // §20.4b: 新規プロジェクト時の保存確認ダイアログの 3 ボタン挙動。
-  const onNewSaveThenCreate = async () => {
+  // §20.4b: プロジェクト切替時の保存確認ダイアログの 3 ボタン挙動。
+  const closeDiscardConfirm = () => setDiscardConfirmAction(null);
+
+  const continueDiscardAction = () => {
+    if (discardConfirmAction === "new") {
+      newProject();
+    } else if (discardConfirmAction === "import") {
+      fileInput.current?.click();
+    }
+    closeDiscardConfirm();
+  };
+
+  const onDiscardConfirmSave = async () => {
     // web 版: zip ダウンロードで保存。
     // TODO(desktop): デスクトップ版では OS のファイルダイアログで保存先を指定して
     //   書き出す（File System Access API / Electron）。現状は web と同じ zip 経路に
     //   フォールバックする（§20.4b）。
     await onExportZip();
-    newProject();
-    setShowNewConfirm(false);
-  };
-  const onNewDiscardThenCreate = () => {
-    newProject();
-    setShowNewConfirm(false);
+    continueDiscardAction();
   };
 
   const onImportZip = async (file: File) => {
@@ -150,7 +157,7 @@ export function ProjectPanel() {
           {project?.meta.name ?? "No project"}
         </div>
         <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-          <button onClick={() => setShowNewConfirm(true)} disabled={zipBusy} style={btnStyleDisabled(zipBusy)}>New</button>
+          <button onClick={() => setDiscardConfirmAction("new")} disabled={zipBusy} style={btnStyleDisabled(zipBusy)}>New</button>
           <button onClick={() => void saveToFs()} disabled={zipBusy} style={btnStyleDisabled(zipBusy)}>Save</button>
           <button onClick={() => void loadFromFs()} disabled={zipBusy} style={btnStyleDisabled(zipBusy)}>Reload</button>
           <button onClick={() => void onExportZip()} disabled={zipBusy} style={btnStyleDisabled(zipBusy)}>
@@ -166,7 +173,7 @@ export function ProjectPanel() {
               zip 失敗: {zipError}
             </span>
           )}
-          <button onClick={() => fileInput.current?.click()} disabled={zipBusy} style={btnStyleDisabled(zipBusy)}>⬆ zip</button>
+          <button onClick={() => setDiscardConfirmAction("import")} disabled={zipBusy} style={btnStyleDisabled(zipBusy)}>⬆ zip</button>
           <input ref={fileInput} type="file" accept=".zip" style={{ display: "none" }}
             onChange={(e) => { const f = e.target.files?.[0]; if (f) void onImportZip(f); e.target.value = ""; }} />
         </div>
@@ -274,15 +281,16 @@ export function ProjectPanel() {
         />
       )}
 
-      {/* §20.4b: 新規プロジェクト保存確認ダイアログ */}
-      {showNewConfirm && (
-        <NewProjectConfirm
+      {/* §20.4b: プロジェクト切替時の保存確認ダイアログ */}
+      {discardConfirmAction && (
+        <ProjectDiscardConfirm
+          title={discardConfirmAction === "new" ? "新規プロジェクト" : "プロジェクトを開く"}
           projectName={project?.meta.name ?? "Untitled"}
           zipBusy={zipBusy}
           zipStatus={zipStatus}
-          onSave={() => { void onNewSaveThenCreate(); }}
-          onDiscard={onNewDiscardThenCreate}
-          onCancel={() => setShowNewConfirm(false)}
+          onSave={() => { void onDiscardConfirmSave(); }}
+          onDiscard={continueDiscardAction}
+          onCancel={closeDiscardConfirm}
         />
       )}
 
@@ -349,10 +357,11 @@ function DeleteFootageConfirm({
   );
 }
 
-// §20.4b: New 押下時の「保存しますか？」モーダル。ExportDialog と同じ overlay スタイル。
-function NewProjectConfirm({
-  projectName, zipBusy, zipStatus, onSave, onDiscard, onCancel,
+// §20.4b: New / ⬆ zip 押下時の「保存しますか？」モーダル。ExportDialog と同じ overlay スタイル。
+function ProjectDiscardConfirm({
+  title, projectName, zipBusy, zipStatus, onSave, onDiscard, onCancel,
 }: {
+  title: string;
   projectName: string;
   zipBusy: boolean;
   zipStatus: string | null;
@@ -368,7 +377,7 @@ function NewProjectConfirm({
     >
       <div style={confirmDialog} onClick={(e) => e.stopPropagation()}>
         <div style={{ fontWeight: "bold", fontSize: 13, color: "#ddd", marginBottom: 8 }}>
-          新規プロジェクト
+          {title}
         </div>
         <div style={{ color: "#bbb", lineHeight: 1.6, marginBottom: 16 }}>
           現在のプロジェクト「{projectName}」を保存しますか？<br />
