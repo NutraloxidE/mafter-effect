@@ -13,6 +13,7 @@ import { ColorSwatch, isRgba } from "../ColorSwatch";
 import { BUNDLED_FONTS, WEB_SAFE_FONTS, isKnownFont } from "../fontList";
 import { ScrubNumber } from "../ScrubNumber";
 import { TimecodeScrub } from "../TimecodeScrub";
+import { applyLinkedScaleDelta, applyLinkedScaleValue } from "../linkedScale";
 import { formatBarBeat } from "../beatTimecode";
 import { globalPluginRegistry } from "../../runtime/pluginRegistry";
 import { groupEffectsForPicker } from "../effectCategories";
@@ -107,6 +108,8 @@ export function InspectorPanel() {
   const setCompDuration = useEditorStore((s) => s.setCompDuration);
   const setCompBpm = useEditorStore((s) => s.setCompBpm);
   const setCompBeatsPerBar = useEditorStore((s) => s.setCompBeatsPerBar);
+  const scaleLinkEnabled = useEditorStore((s) => s.scaleLinkEnabled);
+  const setScaleLinkEnabled = useEditorStore((s) => s.setScaleLinkEnabled);
   const previewCamera = useEditorStore((s) => s.previewCamera);
   const setPreviewCamera = useEditorStore((s) => s.setPreviewCamera);
   const removeEffect = useEditorStore((s) => s.removeEffect);
@@ -296,6 +299,7 @@ export function InspectorPanel() {
     v: Vec3,
     deltaParts?: Partial<Vec3>,
     easing: Easing = { type: "linear" },
+    linkedScale = false,
   ) => {
     if (!comp) return;
 
@@ -313,11 +317,24 @@ export function InspectorPanel() {
           let value: Vec3;
           if (deltaParts) {
             const cur = sampleVec3(o.transform[key], frame);
-            value = {
-              x: cur.x + (deltaParts.x ?? 0),
-              y: cur.y + (deltaParts.y ?? 0),
-              z: cur.z + (deltaParts.z ?? 0),
-            };
+            if (linkedScale && key === "scale") {
+              const axis = (["x", "y", "z"] as const).find((ax) => deltaParts[ax] !== undefined);
+              if (axis !== undefined) {
+                value = applyLinkedScaleDelta(cur, axis, deltaParts[axis]!, true);
+              } else {
+                value = {
+                  x: cur.x + (deltaParts.x ?? 0),
+                  y: cur.y + (deltaParts.y ?? 0),
+                  z: cur.z + (deltaParts.z ?? 0),
+                };
+              }
+            } else {
+              value = {
+                x: cur.x + (deltaParts.x ?? 0),
+                y: cur.y + (deltaParts.y ?? 0),
+                z: cur.z + (deltaParts.z ?? 0),
+              };
+            }
           } else {
             value = v;
           }
@@ -504,8 +521,10 @@ export function InspectorPanel() {
           expressed={isPropExpressed(obj.transform.rotation)}
           speeds={{ x: 0.5, y: 0.5, z: 0.5 }}
         />
-        <Vec3Row label="Scale" vals={scl}
-          onChange={(v, dp) => setVec3Kf("scale", v, dp)}
+        <ScaleVec3Row label="Scale" vals={scl}
+          linked={scaleLinkEnabled}
+          onToggleLink={() => setScaleLinkEnabled(!scaleLinkEnabled)}
+          onChange={(v, dp) => setVec3Kf("scale", v, dp, { type: "linear" }, scaleLinkEnabled)}
           onLiveChange={(v) => previewPatch({ transform: buildTransformPreview("scale", v) })}
           hasKf={obj.transform.scale.keyframes.length > 0}
           expressed={isPropExpressed(obj.transform.scale)}
@@ -2012,6 +2031,68 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
     <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 4, flexWrap: "wrap" }}>
       <span style={{ color: "#666", width: 72, textAlign: "right", flexShrink: 0 }}>{label}</span>
       {children}
+    </div>
+  );
+}
+
+function ScaleVec3Row({
+  label, vals, linked, onToggleLink, onChange, onLiveChange, hasKf, expressed, speeds,
+}: {
+  label: string;
+  vals: Vec3;
+  linked: boolean;
+  onToggleLink: () => void;
+  onChange: (v: Vec3, deltaParts?: Partial<Vec3>) => void;
+  onLiveChange?: (v: Vec3) => void;
+  hasKf: boolean;
+  expressed?: boolean;
+  speeds?: { x: number; y: number; z: number };
+}) {
+  const inputStyle = expressed ? { ...numInputStyle, color: EXPRESSED_VALUE_COLOR } : numInputStyle;
+  const commit = (axis: "x" | "y" | "z", newVal: number, delta?: number) => {
+    if (!Number.isFinite(newVal)) return;
+    const v = applyLinkedScaleValue(vals, axis, newVal, linked);
+    const deltaParts = delta !== undefined ? ({ [axis]: delta } as Partial<Vec3>) : undefined;
+    onChange(v, deltaParts);
+  };
+
+  const live = (axis: "x" | "y" | "z", newVal: number) => {
+    if (!Number.isFinite(newVal) || !onLiveChange) return;
+    onLiveChange(applyLinkedScaleValue(vals, axis, newVal, linked));
+  };
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 4, flexWrap: "wrap" }}>
+      <span style={{ color: "#666", width: 72, textAlign: "right", flexShrink: 0 }}>{label}</span>
+      <button
+        type="button"
+        title={linked ? "Constrain proportions (XY)" : "Edit X/Y independently"}
+        onClick={onToggleLink}
+        style={{
+          ...btnStyle,
+          fontSize: 10,
+          padding: "1px 4px",
+          color: linked ? "#7c5" : "#888",
+          opacity: linked ? 1 : 0.55,
+          lineHeight: 1,
+          flexShrink: 0,
+        }}
+      >
+        {linked ? "⛓" : "⛓"}
+      </button>
+      <span style={{ color: hasKf ? "#f0c040" : "#555", fontSize: 9 }}>⬦</span>
+      {(["x", "y", "z"] as const).map((ax) => (
+        <label key={ax} style={{ display: "flex", alignItems: "center", gap: 2 }}>
+          <span style={{ color: "#555", fontSize: 10 }}>{ax.toUpperCase()}</span>
+          <ScrubNumber
+            value={vals[ax]}
+            onCommit={(v, d) => commit(ax, v, d)}
+            onLiveChange={(v) => live(ax, v)}
+            speed={speeds?.[ax] ?? 1}
+            style={inputStyle}
+          />
+        </label>
+      ))}
     </div>
   );
 }

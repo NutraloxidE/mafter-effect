@@ -150,6 +150,10 @@ export interface EditorStore {
   boxGizmoEnabled: boolean;
   setBoxGizmoEnabled: (enabled: boolean) => void;
 
+  /** Inspector Scale スクラブ時に X/Y を比例維持するか。グローバル・非直列化 */
+  scaleLinkEnabled: boolean;
+  setScaleLinkEnabled: (enabled: boolean) => void;
+
   // §11.5.1 タイムライン波形表示モード（グローバル・非直列化）
   waveformMode: WaveformMode;
   setWaveformMode: (mode: WaveformMode) => void;
@@ -314,6 +318,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   previewQuality: "draft",
   previewQualityEditing: false,
   boxGizmoEnabled: true,
+  scaleLinkEnabled: true,
   waveformMode: loadWaveformMode(),
   pluginsVersion: 0,
   undoStack: emptyStack(),
@@ -426,6 +431,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   setPreviewQuality: (mode) => set({ previewQuality: mode }),
   setPreviewQualityEditing: (editing) => set({ previewQualityEditing: editing }),
   setBoxGizmoEnabled: (enabled) => set({ boxGizmoEnabled: enabled }),
+  setScaleLinkEnabled: (enabled) => set({ scaleLinkEnabled: enabled }),
 
   setWaveformMode: (mode) => {
     try { localStorage.setItem(WAVEFORM_MODE_KEY, mode); } catch { /* ignore */ }

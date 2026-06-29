@@ -545,3 +545,9 @@ canvas 化結果は以降から見て通常の背面ピクセルと等価（zOrd
 - **要請**: `New` と同様に、別プロジェクト zip を開く（`⬆ zip`）前にも「保存しないと失われます」確認を出す。
 - **実装**: spec §20.4b を `New` / `⬆ zip` 共通に更新。[ProjectPanel.tsx](src/editor/panels/ProjectPanel.tsx) で `discardConfirmAction`（`new` | `import`）に統合し、`ProjectDiscardConfirm` モーダルを共有。`はい`＝zip 保存後に続行（import はファイル選択）、`いいえ`＝保存せず続行、`キャンセル`＝中止。
 - **build:player**: 不要（UI のみ）。
+
+### 2026-06-30（Cursor）— Inspector Scale リンクトグル
+
+- **要請**: Scale をスクラブするとき X/Y の比例維持（リンク）を切り替え可能に。
+- **実装**: store `scaleLinkEnabled`（既定 ON・非直列化）+ [linkedScale.ts](src/editor/linkedScale.ts) 純関数 + [InspectorPanel.tsx](src/editor/panels/InspectorPanel.tsx) `ScaleVec3Row`（⛓ ボタン）。リンク ON 時は X/Y スクラブで比例更新（Z は独立）。複数選択時もオブジェクトごとに ratio 適用。
+- **検証**: `test/linkedScale.test.ts` 6 件緑。
