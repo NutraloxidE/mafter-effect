@@ -112,6 +112,66 @@ describe("syncVideoElementTime", () => {
   });
 });
 
+describe("syncVideoElementTime scrub seek coalescing", () => {
+  const halfFrame = videoSeekThresholdSec(30);
+  /** seeking 中の <video> を模し、seeked リスナを1つだけ捕捉する。 */
+  function seekingVideo(currentTime = 0): {
+    video: HTMLVideoElement;
+    fireSeeked: () => void;
+    listenerCount: number;
+  } {
+    const state = { listenerCount: 0, cb: undefined as (() => void) | undefined };
+    const video = mockVideo(currentTime, true, {
+      seeking: true,
+      addEventListener: vi.fn((ev: string, cb: () => void) => {
+        if (ev === "seeked") {
+          state.listenerCount += 1;
+          state.cb = cb;
+        }
+      }),
+    });
+    return {
+      video,
+      fireSeeked: () => {
+        Object.assign(video, { seeking: false });
+        state.cb?.();
+      },
+      get listenerCount() {
+        return state.listenerCount;
+      },
+    };
+  }
+
+  it("does not assign currentTime while a seek is inflight", () => {
+    const h = seekingVideo(0);
+    syncVideoElementTime(h.video, 1, 30, { playbackMode: false });
+    expect(h.video.currentTime).toBe(0); // 重ね seek しない
+    expect(h.listenerCount).toBe(1); // seeked を1回だけ購読
+  });
+
+  it("coalesces a burst of scrub seeks into one, applying the latest target", () => {
+    const h = seekingVideo(0);
+    // 高速ドラッグを模して inflight 中に複数回呼ぶ
+    syncVideoElementTime(h.video, 1, 30, { playbackMode: false });
+    syncVideoElementTime(h.video, 2, 30, { playbackMode: false });
+    syncVideoElementTime(h.video, 3, 30, { playbackMode: false });
+    expect(h.video.currentTime).toBe(0); // まだ適用されない
+    expect(h.listenerCount).toBe(1); // リスナは貼り直さず1つ
+
+    h.fireSeeked(); // seek 完了 → 最新 target(3) に追従
+    expect(h.video.currentTime).toBeCloseTo(3 + halfFrame, 6);
+  });
+
+  it("does not re-apply on seeked when already at the latest target", () => {
+    const center = 1 + halfFrame;
+    const h = seekingVideo(0);
+    syncVideoElementTime(h.video, 1, 30, { playbackMode: false });
+    Object.assign(h.video, { currentTime: center }); // settle が target に到達
+    h.fireSeeked();
+    expect(h.video.currentTime).toBe(center); // 余計な再 seek なし
+  });
+});
+
 describe("waitForVideoFrame", () => {
   it("resolves when at target time", async () => {
     const video = mockVideo(1, true);

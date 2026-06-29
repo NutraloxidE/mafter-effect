@@ -99,6 +99,14 @@ export async function waitForVideoFrame(
   await waitPresentedFrame(video, targetSec, fps, presentBudget);
 }
 
+/**
+ * scrub 中の seek 詰まり対策。inflight seek 中に新しい currentTime 代入を重ねると
+ * デコーダの seek（キーフレーム検索→前方デコード）が積み上がってもっさりする。
+ * 要素ごとに最新の希望時刻だけ保持し、seeked 完了後に最新値へ1回だけ追従する。
+ * scrub 経路専用（export=決定論 seek+待ち / playback=native play はこの state を触らない）。
+ */
+const scrubSeekState = new WeakMap<HTMLVideoElement, { pending: number | null; listening: boolean }>();
+
 export interface VideoElementSyncOptions {
   /** true = タイムライン再生中（ネイティブ decode に任せる） */
   playbackMode: boolean;
@@ -194,11 +202,41 @@ export function syncVideoElementTime(
   }
   // scrub も export と同じフレーム中央へ seek（preview↔export で同一フレーム表示・INV-2）。
   const scrubTo = videoSeekTargetSec(targetSec, fps);
-  if (Math.abs(video.currentTime - scrubTo) > seekThreshold) {
-    try {
-      video.currentTime = scrubTo;
-    } catch {
-      /* seek best-effort */
+  if (Math.abs(video.currentTime - scrubTo) <= seekThreshold) {
+    return;
+  }
+  // inflight seek 中は currentTime を重ねず、最新の希望時刻だけ保持して seeked 後に追従する
+  // （高速ドラッグの N 回 seek を実質 1〜2 回に畳み込み、デコーダ詰まりを解消）。
+  if (video.seeking) {
+    const state = scrubSeekState.get(video) ?? { pending: null, listening: false };
+    state.pending = scrubTo;
+    if (!state.listening) {
+      state.listening = true;
+      const onSeeked = (): void => {
+        const s = scrubSeekState.get(video);
+        if (!s) return;
+        s.listening = false;
+        const next = s.pending;
+        s.pending = null;
+        // settle 後も最新 target からズレていれば 1 回だけ追従。
+        // この代入で再び seeking になっても、ドラッグ継続中の次の sync 呼び出しが
+        // 同じ機構で listener を貼り直して追従する。
+        if (next !== null && Math.abs(video.currentTime - next) > seekThreshold) {
+          try {
+            video.currentTime = next;
+          } catch {
+            /* seek best-effort */
+          }
+        }
+      };
+      video.addEventListener("seeked", onSeeked, { once: true });
     }
+    scrubSeekState.set(video, state);
+    return;
+  }
+  try {
+    video.currentTime = scrubTo;
+  } catch {
+    /* seek best-effort */
   }
 }
