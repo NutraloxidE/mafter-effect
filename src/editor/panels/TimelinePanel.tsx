@@ -13,6 +13,7 @@ import {
   type PropPath,
 } from "../keyframeEdit";
 import { currentTimelineComp, setKeyframe, useEditorStore } from "../store";
+import { useContextMenuStore, type ContextMenuItem } from "../contextMenu/contextMenuStore";
 import { EXPRESSED_VALUE_COLOR, isPropExpressed } from "../../core/props";
 import { framesToTimecode } from "../timecode";
 import { formatTimeWithBeat } from "../beatTimecode";
@@ -92,7 +93,6 @@ function showInMode(mode: ExpandMode, animated: boolean, modified: boolean): boo
 
 interface SelectBox { x0: number; y0: number; x1: number; y1: number }
 interface KfDragState { keys: Set<string>; delta: number }
-interface KfContextMenu { x: number; y: number }
 // P1-9: コピーしたKFデータ
 interface CopiedKf { objId: string; path: PropPath; kf: { frame: number; value: unknown; easing: Easing } }
 // P1-5: レイヤードラッグ状態
@@ -176,7 +176,6 @@ export function TimelinePanel() {
   const [expandMode, setExpandMode] = useState<Map<string, ExpandMode>>(new Map());
   const graphRef = useRef<HTMLDivElement>(null);
   const timelineContainerRef = useRef<HTMLDivElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
 
   const [dropActive, setDropActive] = useState(false);
   const selectedKfKeys = useEditorStore((s) => s.selectedKfKeys);
@@ -185,7 +184,8 @@ export function TimelinePanel() {
 
   const [kfDrag, setKfDrag] = useState<KfDragState | null>(null);
   const [box, setBox] = useState<SelectBox | null>(null);
-  const [kfContextMenu, setKfContextMenu] = useState<KfContextMenu | null>(null);
+  const openContextMenu = useContextMenuStore((s) => s.openContextMenu);
+  const closeContextMenu = useContextMenuStore((s) => s.closeContextMenu);
   const rowsRef = useRef<HTMLDivElement>(null);
   const dragMovedRef = useRef(false);
   const lastUPressRef = useRef<number>(0);
@@ -225,7 +225,7 @@ export function TimelinePanel() {
       setSelectedKfKeys([]);
       setExpandMode(new Map());
       setViewRange({ start: 0, end: duration });
-      setKfContextMenu(null);
+      closeContextMenu();
       layerDragRef.current = null;
       setLayerDrag(null);
       setBarDrag(null);
@@ -346,9 +346,12 @@ export function TimelinePanel() {
     });
 
   // P0-3: 選択 KF のイージングをまとめて変更（1 command）。
-  const applyEasingToSelectedKfs = (easing: Easing) => {
-    if (selectedKfs.size === 0) return;
-    const group = groupSelectedKfs(selectedKfs);
+  // keysOverride: コンテキストメニュー項目のクロージャが右クリック時点の対象 KF を保持するため
+  // （メニュー項目は基盤 store にスナップショットされ、後の selectedKfs 更新を読めない）。
+  const applyEasingToSelectedKfs = (easing: Easing, keysOverride?: Set<string>) => {
+    const keys = keysOverride ?? selectedKfs;
+    if (keys.size === 0) return;
+    const group = groupSelectedKfs(keys);
     const patches = buildKfPatches(objects, group, (prop, frames) => applyKfEasing(prop, frames, easing));
     updateObjects(patches, `Apply ${easing.type} easing`);
   };
@@ -733,10 +736,28 @@ export function TimelinePanel() {
     }
   };
 
-  // P0-3: KF 右クリックでコンテキストメニュー。
+  // P0-3: KF 右クリックでコンテキストメニュー（汎用基盤へ移行）。
   const handleKfRightClick = (key: string, x: number, y: number) => {
+    // 右クリック対象の KF を確定（未選択なら単独選択）。メニュー項目のクロージャは
+    // この時点のキー集合を明示的に保持する（後続の re-render を待たない）。
+    const targetKeys = selectedKfs.has(key) ? new Set(selectedKfs) : new Set([key]);
     if (!selectedKfs.has(key)) setSelectedKfKeys([key]);
-    setKfContextMenu({ x, y });
+    const easingMenu: { label: string; easing: Easing }[] = [
+      { label: "Linear          (Ctrl+F9)", easing: { type: "linear" } as Easing },
+      { label: "Easy Ease            (F9)", easing: EASY_EASE },
+      { label: "Ease In", easing: EASE_IN },
+      { label: "Ease Out", easing: EASE_OUT },
+      { label: "Hold         (Shift+F9)", easing: { type: "hold" } as Easing },
+    ];
+    const items: ContextMenuItem[] = easingMenu.map(({ label, easing }) => ({
+      kind: "action",
+      label,
+      icon: (
+        <span style={{ display: "inline-block", width: 10, height: 10, background: easingColor(easing), borderRadius: easing.type === "hold" ? 0 : "50%" }} />
+      ),
+      onSelect: () => applyEasingToSelectedKfs(easing, targetKeys),
+    }));
+    openContextMenu(x, y, items);
   };
 
   // §21.5 ラバーバンド選択。
@@ -1008,18 +1029,6 @@ export function TimelinePanel() {
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
-  // コンテキストメニューの外クリックで閉じる
-  useEffect(() => {
-    if (!kfContextMenu) return;
-    const close = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setKfContextMenu(null);
-      }
-    };
-    window.addEventListener("mousedown", close);
-    return () => window.removeEventListener("mousedown", close);
-  }, [kfContextMenu]);
-
   return (
     <div ref={timelineContainerRef} style={{ display: "flex", flexDirection: "column", height: "100%", background: "#1c1c1c", color: "#ccc", fontSize: 12, userSelect: "none" }}>
       {/* toolbar */}
@@ -1223,31 +1232,6 @@ export function TimelinePanel() {
         duration={duration}
         onViewChange={setViewRange}
       />
-
-      {/* P0-3: KF イージングコンテキストメニュー */}
-      {kfContextMenu && (
-        <div
-          ref={menuRef}
-          style={{ position: "fixed", left: kfContextMenu.x, top: kfContextMenu.y, zIndex: 9999, background: "#2a2a2a", border: "1px solid #444", borderRadius: 4, padding: 4, minWidth: 160, boxShadow: "0 4px 12px rgba(0,0,0,0.5)" }}
-        >
-          {[
-            { label: "Linear          (Ctrl+F9)", easing: { type: "linear" } as Easing },
-            { label: "Easy Ease            (F9)", easing: EASY_EASE },
-            { label: "Ease In",                   easing: EASE_IN },
-            { label: "Ease Out",                  easing: EASE_OUT },
-            { label: "Hold         (Shift+F9)", easing: { type: "hold" } as Easing },
-          ].map(({ label, easing }) => (
-            <button
-              key={label}
-              onMouseDown={(e) => { e.stopPropagation(); applyEasingToSelectedKfs(easing); setKfContextMenu(null); }}
-              style={menuItemStyle}
-            >
-              <span style={{ display: "inline-block", width: 10, height: 10, background: easingColor(easing), borderRadius: easing.type === "hold" ? 0 : "50%", marginRight: 6, verticalAlign: "middle" }} />
-              {label}
-            </button>
-          ))}
-        </div>
-      )}
     </div>
   );
 }
@@ -1979,6 +1963,30 @@ function ParentSelect({
 function LayerRow(props: LayerRowProps) {
   const { obj, index, frame, selected, expandMode, selectedKfs, kfDrag, isDropTarget, barDrag, graphMode, viewRange, cachedLocalFrames, cachedPrecompFrames, sourceExtent, audio, waveformMode, fps, getFs, onSetProp, beginKfDrag, beginLayerBarDrag, onKfRightClick, onToggleExpand, onSelectLayer, onRemove, onUpdate, onRename, labelTargetIds, onSetLabelIndex, onSetParent, allObjects, activeCameraId, onPreviewPatch, frameToPercent, onLayerDragStart, onLayerDragOver, onLayerDrop, onLayerDragEnd } = props;
   const [renaming, setRenaming] = useState(false);
+
+  // レイヤー行の右クリックメニュー（汎用基盤の実例）。既存ストアアクションを再利用する。
+  const openContextMenu = useContextMenuStore((s) => s.openContextMenu);
+  const selectObjects = useEditorStore((s) => s.selectObjects);
+  const selectedObjectIds = useEditorStore((s) => s.selectedObjectIds);
+  const duplicateSelected = useEditorStore((s) => s.duplicateSelected);
+  const splitSelected = useEditorStore((s) => s.splitSelected);
+  const removeObjects = useEditorStore((s) => s.removeObjects);
+
+  const handleRowContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    // 未選択行を右クリックしたら先に単独選択（AE 挙動）。複数選択中はその集合を維持。
+    if (!selected) selectObjects([obj.id]);
+    const targetIds = selected && selectedObjectIds.length > 0 ? selectedObjectIds : [obj.id];
+    const multi = targetIds.length > 1;
+    const items: ContextMenuItem[] = [
+      { kind: "action", label: "名前を変更", disabled: multi, onSelect: () => setRenaming(true) },
+      { kind: "action", label: multi ? `複製 (${targetIds.length})` : "複製", shortcut: "Ctrl+D", onSelect: () => duplicateSelected() },
+      { kind: "action", label: "レイヤーを分割", shortcut: "Ctrl+Shift+D", onSelect: () => splitSelected() },
+      { kind: "separator" },
+      { kind: "action", label: multi ? `削除 (${targetIds.length})` : "削除", danger: true, onSelect: () => removeObjects(targetIds) },
+    ];
+    openContextMenu(e.clientX, e.clientY, items);
+  };
   // P1-6: バードラッグのプレビューはパネル管理の barDrag から導出（複数選択を一括移動するため）。
   const dDelta = barDrag ? barDrag.delta : 0;
   const inPoint = barDrag && barDrag.mode !== "out" ? obj.inPoint + dDelta : obj.inPoint;
@@ -2022,7 +2030,7 @@ function LayerRow(props: LayerRowProps) {
       }}
     >
       {/* layer header row */}
-      <div style={{ display: "flex", alignItems: "stretch", background: rowBg }}>
+      <div style={{ display: "flex", alignItems: "stretch", background: rowBg }} onContextMenu={handleRowContextMenu}>
         {/* label column（幅は LABEL_W 固定。左端ストリップ = ラベル色） */}
         <div
           style={{ width: LABEL_W, boxSizing: "border-box", flexShrink: 0, display: "flex", alignItems: "stretch", borderRight: "1px solid #2a2a2a" }}
@@ -3178,18 +3186,6 @@ const btnStyle: React.CSSProperties = {
   fontSize: 11,
 };
 
-const menuItemStyle: React.CSSProperties = {
-  display: "block",
-  width: "100%",
-  background: "transparent",
-  border: "none",
-  color: "#ccc",
-  cursor: "pointer",
-  fontSize: 11,
-  padding: "4px 8px",
-  textAlign: "left",
-  borderRadius: 2,
-};
 
 const iconBtn: React.CSSProperties = {
   background: "transparent",

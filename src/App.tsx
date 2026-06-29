@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { WorkspaceLayout } from "./editor/WorkspaceLayout";
+import { ContextMenuHost } from "./editor/contextMenu/ContextMenuHost";
 import { defaultWorkspace, ensureEasePanelVisible, ensurePipelinePanelVisible, type LayoutNode, type WorkspaceState } from "./editor/layout";
 import { useEditorStore } from "./editor/store";
 
@@ -135,6 +136,9 @@ export function App() {
       <div style={{ flex: 1, overflow: "hidden" }}>
         <WorkspaceLayout node={workspace.layout} onSizesChange={handleSizesChange} onTabsChange={handleTabsChange} />
       </div>
+
+      {/* 単一コントローラのコンテキストメニュー描画ホスト（body ポータル） */}
+      <ContextMenuHost />
     </div>
   );
 }
