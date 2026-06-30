@@ -7,6 +7,8 @@ import { exportBundle } from "../runtime/bundleExporter";
 import { diagnoseVideoSupport, exportComposition, type ExportProgress } from "../runtime/exporter";
 import { findBakeTargets } from "../runtime/bundleBake";
 import { collectBundleDependencies } from "../runtime/bundleCollect";
+import { collectExportProxyJobs } from "../runtime/footagePlayback";
+import { useEditorStore } from "./store";
 import type { Project } from "../core/schema";
 
 interface Props {
@@ -71,13 +73,27 @@ export function ExportDialog({ project, compId, onClose }: Props) {
     };
 
     try {
+      // §11.4b export 前にレイヤー指定の proxy tier を生成保証（未生成は原本フォールバックにせず実体化）。
+      const ensureProxyTier = useEditorStore.getState().ensureProxyTier;
+      const proxyJobs = collectExportProxyJobs(project);
+      for (const job of proxyJobs) {
+        if (ctrl.signal.aborted) return;
+        setProgress({ phase: "render", frame: 0, totalFrames: 1, message: `Preparing ${job.quality} proxy…` });
+        const ok = await ensureProxyTier(job.assetId, job.quality);
+        if (!ok) {
+          setError(`プロキシ生成に失敗しました（asset ${job.assetId} / ${job.quality}）。`);
+          return;
+        }
+      }
+      // proxy 生成で meta.proxies が更新された最新 project を使う（cache がプロキシを読めるように）。
+      const exportProject = useEditorStore.getState().project ?? project;
       if (format === "html-bundle") {
-        const result = await exportBundle(project, compId, fs, cfg, setProgress, ctrl.signal);
+        const result = await exportBundle(exportProject, compId, fs, cfg, setProgress, ctrl.signal);
         const name = `${tl.name.replace(/\s+/g, "_")}_bundle.zip`;
         triggerDownload(result.blob, name);
         return;
       }
-      const result = await exportComposition(project, compId, fs, cfg, setProgress, ctrl.signal);
+      const result = await exportComposition(exportProject, compId, fs, cfg, setProgress, ctrl.signal);
       const ext = result.format === "png-seq" ? "zip" : result.format;
       const name = `${tl.name.replace(/\s+/g, "_")}.${ext}`;
       triggerDownload(result.blob, name);

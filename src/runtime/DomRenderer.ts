@@ -18,6 +18,7 @@ import { processRasterChainAsync } from "./rasterProcessAsync";
 import { applyFilterChainToBuffer } from "./effectRaster";
 import { resolveEffectChain } from "./effectChain";
 import { EXPORT_VIDEO_TARGET_ATTR, primeVideoElement, syncVideoElementTime, waitForVideoFrame } from "./videoElementSync";
+import { normalizeFootageQuality } from "./footageQuality";
 import { ensureVideosPrimed, peekVideoPrimed, type VideoPrimeTarget } from "./videoWarmupCache";
 import { KeyedElementPool } from "./videoElementPool";
 import type { ExportChain, ExportLayer, NestedCompositeMeta, ExportTaggedElement } from "./exportComposite";
@@ -1592,7 +1593,9 @@ function updateComponentEl(
       const fit = props["fit"] as string | undefined;
       video.style.objectFit = (fit as "contain" | "cover" | "fill") ?? "contain";
       const assetId = props["asset"] as string | undefined;
-      const src = assetId ? (imageCache?.getUrl(assetId) ?? "") : "";
+      // §11.4b 画質ティアに応じた映像ファイルを選択（プロキシ無→原本フォールバック）。音声は別経路で常に原本。
+      const quality = normalizeFootageQuality(props["footageQuality"]);
+      const src = assetId ? (imageCache?.getUrlForQuality(assetId, quality) ?? "") : "";
       if (video.getAttribute("src") !== src) {
         video.src = src;
         // §11.4 mute は syncVideoElementTime がモード別に制御（再生中のみアンミュート）。

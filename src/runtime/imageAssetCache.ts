@@ -1,6 +1,8 @@
 import type { Project } from "../core/schema";
 import type { FileSystem } from "../fs/FileSystem";
 import { videoMimeFromPath } from "./videoAssetProbe";
+import type { FootageQuality } from "./footageQuality";
+import { isProxyTier } from "./footageQuality";
 
 export interface ImageSize {
   width: number;
@@ -47,9 +49,23 @@ export class ImageAssetCache {
   private readonly byId = new Map<string, ImageEntry>();
   private readonly byPath = new Map<string, ImageEntry>();
   private readonly blobUrls = new Set<string>();
+  // §11.4b assetId → proxy tier → entry。映像のみ（音声は常に原本）。
+  private readonly proxyById = new Map<string, Map<string, ImageEntry>>();
 
   getUrl(assetId: string): string | null {
     return this.byId.get(assetId)?.url ?? null;
+  }
+
+  /**
+   * §11.4b 画質ティアに応じた映像 URL。プロキシ tier かつ読み込み済みならプロキシ、
+   * 無ければ原本（getUrl）へフォールバック（footagePlayback.resolveFootageVideoPath と同規則・INV-2）。
+   */
+  getUrlForQuality(assetId: string, quality: FootageQuality): string | null {
+    if (isProxyTier(quality)) {
+      const url = this.proxyById.get(assetId)?.get(quality)?.url;
+      if (url) return url;
+    }
+    return this.getUrl(assetId);
   }
 
   getSize(assetId: string): ImageSize | null {
@@ -94,7 +110,49 @@ export class ImageAssetCache {
       } catch {
         /* skip unreadable asset */
       }
+      // §11.4b video プロキシ（meta.proxies）も FS から読み込み proxyById に登録。
+      if (asset.kind === "video") {
+        await this.loadProxiesFromFs(asset.id, asset.meta, fs);
+      }
     }
+  }
+
+  /** §11.4b meta.proxies の各 tier ファイルを FS から読み blob URL 化して登録する。 */
+  private async loadProxiesFromFs(
+    assetId: string,
+    meta: Record<string, unknown> | undefined,
+    fs: FileSystem,
+  ): Promise<void> {
+    const proxies = meta?.proxies;
+    if (!proxies || typeof proxies !== "object") return;
+    for (const [tier, raw] of Object.entries(proxies as Record<string, unknown>)) {
+      const p = (raw ?? {}) as { path?: unknown; mime?: unknown };
+      const path = typeof p.path === "string" ? p.path : null;
+      if (!path) continue;
+      const ck = `proxy|${path}`;
+      let entry = this.byPath.get(ck);
+      if (!entry) {
+        try {
+          const buf = await fs.read(path);
+          const mime = typeof p.mime === "string" ? p.mime : videoMimeFromPath(path);
+          entry = decodeVideoEntry(buf, mime, meta);
+          this.byPath.set(ck, entry);
+          if (entry.url.startsWith("blob:")) this.blobUrls.add(entry.url);
+        } catch {
+          continue;
+        }
+      }
+      this.registerProxyEntry(assetId, tier, entry);
+    }
+  }
+
+  private registerProxyEntry(assetId: string, tier: string, entry: ImageEntry): void {
+    let m = this.proxyById.get(assetId);
+    if (!m) {
+      m = new Map();
+      this.proxyById.set(assetId, m);
+    }
+    m.set(tier, entry);
   }
 
   /** video blob URL を解放しキャッシュから除去する（Footage 削除時）。 */
@@ -108,17 +166,48 @@ export class ImageAssetCache {
     for (const [path, e] of this.byPath) {
       if (e === entry) this.byPath.delete(path);
     }
+    // §11.4b プロキシ blob も解放。
+    const proxies = this.proxyById.get(assetId);
+    if (proxies) {
+      for (const pe of proxies.values()) {
+        if (pe.url.startsWith("blob:")) {
+          URL.revokeObjectURL(pe.url);
+          this.blobUrls.delete(pe.url);
+        }
+        for (const [path, e] of this.byPath) {
+          if (e === pe) this.byPath.delete(path);
+        }
+      }
+      this.proxyById.delete(assetId);
+    }
   }
 
   /** §11.7 bundle player: 相対 URL で image / video を参照する。 */
   registerProjectUrls(project: Project, urlForPath: (path: string) => string): void {
     for (const asset of project.assets) {
       if (asset.kind !== "image" && asset.kind !== "video") continue;
-      const url = urlForPath(asset.path);
       const size = ImageAssetCache.sizeFromMeta(asset.meta) ?? { width: 100, height: 100 };
+      const url = urlForPath(asset.path);
       const entry = { url, size };
       this.byPath.set(asset.path, entry);
       this.byId.set(asset.id, entry);
+      // §11.4b バンドルに含まれる proxy も quality URL として登録（getUrlForQuality 用）。
+      this.forEachProxyMeta(asset, (tier, path) => {
+        this.registerProxyEntry(asset.id, tier, { url: urlForPath(path), size });
+      });
+    }
+  }
+
+  /** §11.4b meta.proxies を (tier, path) で走査する共通ヘルパ。 */
+  private forEachProxyMeta(
+    asset: { meta?: Record<string, unknown> },
+    cb: (tier: string, path: string) => void,
+  ): void {
+    const proxies = asset.meta?.proxies;
+    if (!proxies || typeof proxies !== "object") return;
+    for (const [tier, raw] of Object.entries(proxies as Record<string, unknown>)) {
+      const path = (raw as { path?: unknown })?.path;
+      if (typeof path === "string") cb(tier, path);
     }
   }
 
@@ -136,20 +225,31 @@ export class ImageAssetCache {
   ): Promise<void> {
     for (const asset of project.assets) {
       if (asset.kind !== "video") continue;
-      try {
-        const resp = await fetch(urlForPath(asset.path));
-        if (!resp.ok) continue;
-        const buf = new Uint8Array(await resp.arrayBuffer());
-        const mime =
-          (typeof asset.meta?.mime === "string" ? asset.meta.mime : null) ??
-          videoMimeFromPath(asset.path);
-        const entry = decodeVideoEntry(buf, mime, asset.meta);
+      const blobify = async (path: string, register: (entry: ImageEntry) => void) => {
+        try {
+          const resp = await fetch(urlForPath(path));
+          if (!resp.ok) return;
+          const buf = new Uint8Array(await resp.arrayBuffer());
+          const mime =
+            (typeof asset.meta?.mime === "string" ? asset.meta.mime : null) ??
+            videoMimeFromPath(path);
+          const entry = decodeVideoEntry(buf, mime, asset.meta);
+          register(entry);
+          this.blobUrls.add(entry.url);
+        } catch {
+          /* fetch 失敗時は registerProjectUrls の HTTP URL のままフォールバック */
+        }
+      };
+      await blobify(asset.path, (entry) => {
         this.byPath.set(asset.path, entry);
         this.byId.set(asset.id, entry);
-        this.blobUrls.add(entry.url);
-      } catch {
-        /* fetch 失敗時は registerProjectUrls の HTTP URL のままフォールバック */
-      }
+      });
+      // §11.4b proxy も blob 化（HTTP range 非対応ホストでもなめらか再生・INV-2）。
+      const proxyJobs: Promise<void>[] = [];
+      this.forEachProxyMeta(asset, (tier, path) => {
+        proxyJobs.push(blobify(path, (entry) => this.registerProxyEntry(asset.id, tier, entry)));
+      });
+      await Promise.all(proxyJobs);
     }
   }
 }

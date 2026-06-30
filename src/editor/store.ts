@@ -42,6 +42,16 @@ import type { PluginContext, PluginManifest, EffectDef } from "../runtime/plugin
 import { globalPluginRegistry } from "../runtime/pluginRegistry";
 import { probeImageFile, evictPreviewMediaAsset } from "../runtime/imageAssetCache";
 import { probeVideoFile } from "../runtime/videoAssetProbe";
+import { detectAnimatedRaster, type AnimatedRasterInfo } from "../runtime/animatedRasterDetect";
+import { buildAnimatedRasterProxy } from "../runtime/animatedRasterProxy";
+import { buildNativeVideoProxy } from "../runtime/footageVideoProxy";
+import {
+  isProxyTier,
+  normalizeFootageQuality,
+  type FootageQuality,
+  type ProxyTier,
+} from "../runtime/footageQuality";
+import { footageKindOf, getProxyEntry, resolveOriginalPath } from "../runtime/footagePlayback";
 import {
   cmdAddObject,
   cmdDuplicateObjects,
@@ -257,6 +267,12 @@ export interface EditorStore {
   addImageLayer: (assetId: string, name?: string) => string | null;
   // 動画アセットをインポートして project.assets に追加する
   importVideoAsset: (file: File) => Promise<string | null>;
+  // §11.4b アニメ WebP/GIF を animated-raster video asset として import（原本 + medium プロキシ）
+  importAnimatedRasterAsset: (file: File, info: AnimatedRasterInfo) => Promise<string | null>;
+  // §11.4b 指定 tier のプロキシを（無ければ）生成して meta.proxies に登録する
+  ensureProxyTier: (assetId: string, quality: FootageQuality) => Promise<boolean>;
+  // §11.4b animated-raster の medium proxy が無い（zip 再 import 後など）ものを再生成する
+  rehydrateAnimatedRasters: () => Promise<void>;
   // video component を持つ SceneObject を追加する
   addVideoLayer: (assetId: string, name?: string) => string | null;
   // §20.1 Footage 削除（audio/image/video。参照レイヤーもまとめて削除・undo 可）
@@ -368,9 +384,54 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       });
       await get().loadPlugins();
       await ensureAllPresetScripts(fs);
+      // §11.4b zip re-import 後など、animated-raster の medium proxy が無ければ再生成。
+      void get().rehydrateAnimatedRasters();
     } catch {
       // FS に project.json が無い場合など: 新規作成
       get().newProject();
+    }
+  },
+
+  // §11.4b animated-raster で path が原本 raster（webp/gif）のまま＝proxy 未生成のものを
+  // medium proxy へ再 hydrate する（zip 再 import 後・原本のみ復元された状態の復旧）。
+  rehydrateAnimatedRasters: async () => {
+    const p = get().project;
+    if (!p) return;
+    for (const asset of p.assets) {
+      if (asset.kind !== "video") continue;
+      if (footageKindOf(asset) !== "animated-raster") continue;
+      const lower = asset.path.toLowerCase();
+      const needsRebuild = lower.endsWith(".webp") || lower.endsWith(".gif");
+      if (!needsRebuild) continue;
+      try {
+        const bytes = await fs.read(asset.path);
+        const mime = lower.endsWith(".gif") ? "image/gif" : "image/webp";
+        const part = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+        const file = new File([part], asset.path.split("/").pop() ?? "src", { type: mime });
+        const info = await detectAnimatedRaster(file);
+        if (!info) continue;
+        const proxy = await buildAnimatedRasterProxy(file, info, "medium");
+        const proxyPath = `${DIR_ASSETS}/${asset.id}.medium.webm`;
+        await fs.write(proxyPath, proxy.bytes);
+        const cur = get().project;
+        if (!cur) return;
+        const next = {
+          ...cur,
+          assets: cur.assets.map((a) => a.id !== asset.id ? a : {
+            ...a,
+            path: proxyPath,
+            meta: {
+              ...(a.meta ?? {}),
+              originalPath: asset.path,
+              proxies: { medium: { path: proxyPath, mime: proxy.mime, width: proxy.width, height: proxy.height } },
+            },
+          }),
+        };
+        set((s) => ({ project: next, projectRevision: s.projectRevision + 1 }));
+        void saveProject(fs, next);
+      } catch {
+        /* 再生成失敗は best-effort（次回参照で再試行） */
+      }
     }
   },
 
@@ -1016,6 +1077,15 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   importImageAsset: async (file) => {
     const before = get().project;
     if (!before) return null;
+    // §11.4b アニメ WebP/GIF は video footage（animated-raster）として import しプロキシ生成。
+    try {
+      const rasterInfo = await detectAnimatedRaster(file);
+      if (rasterInfo) {
+        return await get().importAnimatedRasterAsset(file, rasterInfo);
+      }
+    } catch {
+      /* 検出失敗時は静止画として通常 import */
+    }
     const id = newObjectId();
     const ext = file.name.split(".").pop() ?? "png";
     const assetPath = `${DIR_ASSETS}/${id}.${ext}`;
@@ -1071,10 +1141,11 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const assetPath = `${DIR_ASSETS}/${id}.${ext}`;
     const buf = await file.arrayBuffer();
     await fs.write(assetPath, new Uint8Array(buf));
-    let meta: Record<string, unknown> = {};
+    let meta: Record<string, unknown> = { footageKind: "native" };
     try {
       const probe = await probeVideoFile(file);
       meta = {
+        footageKind: "native",
         width: probe.width,
         height: probe.height,
         duration: probe.duration,
@@ -1093,6 +1164,131 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     );
     get().applyCommand({ label: "Import Video", before, after });
     return id;
+  },
+
+  // §11.4b アニメ WebP/GIF を animated-raster video asset として import（原本保持 + medium プロキシ生成）。
+  importAnimatedRasterAsset: async (file, info) => {
+    const before = get().project;
+    if (!before) return null;
+    const id = newObjectId();
+    const ext = file.name.split(".").pop()?.toLowerCase() ?? "webp";
+    const originalPath = `${DIR_ASSETS}/${id}.${ext}`;
+    const buf = await file.arrayBuffer();
+    await fs.write(originalPath, new Uint8Array(buf));
+
+    // medium プロキシを生成（失敗時は原本を path にして後で lazy 再生成）。
+    let path = originalPath;
+    const proxies: Record<string, unknown> = {};
+    let proxyW = info.width;
+    let proxyH = info.height;
+    try {
+      const proxy = await buildAnimatedRasterProxy(file, info, "medium");
+      const proxyPath = `${DIR_ASSETS}/${id}.medium.webm`;
+      await fs.write(proxyPath, proxy.bytes);
+      proxies["medium"] = { path: proxyPath, mime: proxy.mime, width: proxy.width, height: proxy.height };
+      path = proxyPath;
+      proxyW = proxy.width;
+      proxyH = proxy.height;
+    } catch {
+      /* プロキシ生成失敗 → 原本を path に（DomRenderer は webp/gif を <video> 不可だが lazy 再生成で復帰） */
+    }
+
+    const meta: Record<string, unknown> = {
+      footageKind: "animated-raster",
+      originalPath,
+      width: info.width,
+      height: info.height,
+      duration: info.durationSec,
+      mime: "video/webm",
+      proxies,
+    };
+    void proxyW; void proxyH;
+    const asset: AssetEntry = { id, path, kind: "video", meta };
+    const after = registerNewProjectItem(
+      {
+        ...before,
+        assets: [...before.assets, asset].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+      },
+      { kind: "asset", id },
+    );
+    get().applyCommand({ label: "Import Animated Raster", before, after });
+    return id;
+  },
+
+  // §11.4b 指定 tier のプロキシを（無ければ）生成して meta.proxies に登録。生成済みなら即 true。
+  ensureProxyTier: async (assetId, quality) => {
+    const tier = normalizeFootageQuality(quality);
+    if (!isProxyTier(tier)) return true;
+    const p0 = get().project;
+    const asset0 = p0?.assets.find((a) => a.id === assetId);
+    if (!p0 || !asset0 || asset0.kind !== "video") return false;
+    if (getProxyEntry(asset0, tier)) return true;
+
+    // 原本を FS から読み出して File を再構成。
+    const originalPath = resolveOriginalPath(asset0);
+    let bytes: Uint8Array;
+    try {
+      bytes = await fs.read(originalPath);
+    } catch {
+      return false;
+    }
+    const origMime = typeof asset0.meta?.["mime"] === "string" ? (asset0.meta["mime"] as string) : "";
+    const kind = footageKindOf(asset0);
+    const fileMime = kind === "animated-raster"
+      ? (originalPath.toLowerCase().endsWith(".gif") ? "image/gif" : "image/webp")
+      : (origMime || "video/mp4");
+    const blobPart = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+    const file = new File([blobPart], originalPath.split("/").pop() ?? "src", { type: fileMime });
+
+    let proxyBytes: Uint8Array;
+    let proxyMime = "video/webm";
+    let pw = 0;
+    let ph = 0;
+    try {
+      if (kind === "animated-raster") {
+        const info = await detectAnimatedRaster(file);
+        if (!info) return false;
+        const proxy = await buildAnimatedRasterProxy(file, info, tier as ProxyTier);
+        proxyBytes = proxy.bytes; proxyMime = proxy.mime; pw = proxy.width; ph = proxy.height;
+      } else {
+        const proxy = await buildNativeVideoProxy(file, tier as ProxyTier);
+        proxyBytes = proxy.bytes; proxyMime = proxy.mime; pw = proxy.width; ph = proxy.height;
+      }
+    } catch {
+      return false;
+    }
+
+    const proxyPath = `${DIR_ASSETS}/${assetId}.${tier}.webm`;
+    try {
+      await fs.write(proxyPath, proxyBytes);
+    } catch {
+      return false;
+    }
+
+    // meta.proxies を更新（生成キャッシュなので undo スタックには積まない）。
+    const cur = get().project;
+    if (!cur) return false;
+    const next = {
+      ...cur,
+      assets: cur.assets.map((a) => {
+        if (a.id !== assetId) return a;
+        const existing = (a.meta?.proxies && typeof a.meta.proxies === "object")
+          ? (a.meta.proxies as Record<string, unknown>)
+          : {};
+        return {
+          ...a,
+          meta: {
+            ...(a.meta ?? {}),
+            proxies: { ...existing, [tier]: { path: proxyPath, mime: proxyMime, width: pw, height: ph } },
+          },
+        };
+      }),
+    };
+    set((s) => ({ project: next, projectRevision: s.projectRevision + 1 }));
+    void saveProject(fs, next);
+    // 画質切替に伴う warm-up のズレを防ぐため primed 状態を破棄。
+    evictVideoPrimed(assetId);
+    return true;
   },
 
   addVideoLayer: (assetId, name) => {
@@ -1157,11 +1353,23 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     }
 
     const assetPath = asset.path;
+    // §11.4b 原本 + 全プロキシファイルを FS から削除（path / originalPath / meta.proxies.*）。
+    const filesToDelete = new Set<string>([assetPath]);
+    if (typeof asset.meta?.["originalPath"] === "string") filesToDelete.add(asset.meta["originalPath"] as string);
+    const proxies = asset.meta?.["proxies"];
+    if (proxies && typeof proxies === "object") {
+      for (const raw of Object.values(proxies as Record<string, unknown>)) {
+        const pp = (raw as { path?: unknown })?.path;
+        if (typeof pp === "string") filesToDelete.add(pp);
+      }
+    }
     void (async () => {
-      try {
-        await fs.delete(assetPath);
-      } catch {
-        /* 掃除失敗は無視 */
+      for (const f of filesToDelete) {
+        try {
+          await fs.delete(f);
+        } catch {
+          /* 掃除失敗は無視 */
+        }
       }
       if (asset.kind === "audio") {
         evictAudioBuffer(assetId);

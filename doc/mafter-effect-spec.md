@@ -284,8 +284,8 @@ interface ParamDescriptor {
 | `image`     | 画像アセット表示                   | `asset: AssetId`, `fit`              |
 | `shape`     | rect / ellipse（最小図形）          | `kind`, `fill: RGBA`, `radius`, `size: vec2` |
 | `html`      | HTML Composition（Model A, §7）     | `compId: CompId`, + comp が宣言した params |
-| `video`     | 動画アセット（best-effort, §11.4）   | `asset: AssetId`, `fit`, `trimStart: Frame`, `gain: AnimatedProp<number>`（0..1, 既定 1） |
-| `audio`     | 音声アセット（最小, §11.5）          | `asset: AssetId`, `gain: AnimatedProp<number>`（0..1, 既定 1）, `trimStart: Frame` |
+| `video`     | 動画アセット（best-effort, §11.4）   | `asset: AssetId`, `fit`, `trimStart: Frame`, `gain: AnimatedProp<number>`（0..1, 既定 1）, `autoFade: bool`（既定 true, §11.5.2） |
+| `audio`     | 音声アセット（最小, §11.5）          | `asset: AssetId`, `gain: AnimatedProp<number>`（0..1, 既定 1）, `trimStart: Frame`, `autoFade: bool`（既定 true, §11.5.2） |
 | `camera`    | カメラ（comp に最大 1 つ active, §6.5） | `cameraType`, `pointOfInterest`, `zoom`, `focalLength`, `filmSize`, `near`, `far`（被写界深度は将来）, Transform で位置/向き |
 
 plugin はここに新しい type を追加できる（§12）。
@@ -687,11 +687,43 @@ interface ExportConfig {
 - 描画は `<video>` を対象時刻に **seek** して DomRenderer の対象 div に合成。ブラウザの seek はフレーム精度が不安定なので **`requestVideoFrameCallback` で実フレーム到達を待ち、許容誤差を明記**（browser export は best-effort）。
 - **canonical な完全一致は headless 経路（§16, M3.5）で担保**。INV-2 は「ソース時刻のマッピング＝決定論」を満たし、実デコードフレームの差はラスタ忠実度の範囲とする。
 - **video 内蔵音声（best-effort・基本再生）**: 音声トラック付き video の内蔵音声を鳴らす。`video` は `gain: AnimatedProp<number>`（0..1, 既定 1, keyframe 可）を持つ（§5.5）。`audio` と同じ `sampleGain(gainProp, frame)` を全経路で共有する（INV-2）。
-  - **preview / HTML bundle player**: 再生中（`previewVideoPlayback`）のみ `<video>` をアンミュートし、ネイティブ A/V 同期に委ねる。スクラブ・停止・warm-up・export フレームステップは `muted=true`（決定論・オートプレイ制約の両立）。音量は `resolve()` 済みの `props["gain"]` を `video.volume = clamp(gain,0,1)` に毎フレーム反映する。
+  - **preview / HTML bundle player**: 再生中（`previewVideoPlayback`）のみ `<video>` をアンミュートし、ネイティブ A/V 同期に委ねる。スクラブ・停止・warm-up・export フレームステップは `muted=true`（決定論・オートプレイ制約の両立）。音量は `resolve()` 済みの `props["gain"]` を `video.volume = clamp(gain,0,1)` に毎フレーム反映する。`resolve()` は video の `gain` に §11.5.2 の自動フェード（declick）エンベロープを乗算済みで返すため、要素ベースの音量制御でもカット端のポップが軽減される（best-effort・サブフレーム精度は要素の `volume` 粒度に依存）。
   - **export**: video レイヤーの内蔵音声も §11.2 の mux 対象。`audio` レイヤーと**同一のタイミング式**（`inPoint`/`outPoint`/`trimStart`）で `decodeAudioData`→`OfflineAudioContext` に追加合成し、`gainProp` を §11.5 のフレーム刻み automation で `GainNode` に打つ。decode 失敗（無音動画・非対応コンテナ）は best-effort でスキップ。
   - **既知の制約**: 複数 video が同時再生するとブラウザが音声を自動ミックス（個別 volume は効くがミキサー側のクリッピングはブラウザ依存）。`audio` レイヤーと内蔵音声付き video の併用時、映像クロックは `PreviewAudioClock`/`BundleAudioClock`、video 音声はネイティブ再生で、大きなドリフト時のみ既存 resync が働く（best-effort）。mixing graph は §16 将来。
 - **warm-up（再生レイテンシ回避・非直列化）**: §11.5 音声プリロードと対になる前倒し。preview / HTML bundle player は、編集中 comp の enabled video レイヤーを **idle 中（`requestIdleCallback`）に `<video>` を現フレームのソース時刻へ seek + decode（loadeddata 相当）まで warm-up** し、`assetId@frame` 粒度で primed 状態を共有キャッシュに記録する（多重 prime は inflight 去重）。再生開始時、全 video が warm-up 済みなら遅延ゼロで開始し、未完了の video がある場合のみ短時間（best-effort 上限）prime を待ってから再生する＝開幕の「他レイヤーは即描画されるが動画だけ遅れて登場」を防ぐ。warm-up は present（`requestVideoFrameCallback`）待ちをせず、再生ループは従来どおり軽量（毎フレーム seek しない）。**warm-up は preview/bundle player 専用で、export 経路（決定論 seek + `requestVideoFrameCallback` の present 待ち）は一切変更しない（INV-2 非干渉）。** warm-up 失敗は best-effort（再生開始時に再試行）で、Footage 削除時に primed 状態を破棄する。
   - **カット境界の `<video>` 要素再利用（デコードギャップ回避）**: 同一動画を分割して連結したタイムライン（隣接レイヤーが同一 `asset` を参照）では、カット境界でレイヤー（object id）が入れ替わる。DomRenderer の reconcile が離脱レイヤーの `<video>` を破棄し入場レイヤーに新規 `<video>` を生成すると、新要素のロード＋デコードが境界フレームに間に合わず**数フレーム空フレーム（映像のちらつき）と内蔵音声の再初期化（プチノイズ）**が出る。これを防ぐため、DomRenderer は離脱した `<video>` を破棄せず **`assetId` 単位の要素プール**へ退避（DOM から外すが参照・`src`・デコーダ状態を保持し、**再生は止めない**）し、入場レイヤーが同一アセットなら**プールの要素を再利用**する（src 同一のため再ロード・再デコード不要・現在時刻から映像も内蔵音声もシームレスに継続）。**退避時に `pause`/`mute` しないのが要点**: 同一フレームで再利用される要素を止めると内蔵音声が一瞬ミュート→再 seek→再 play で「音量が急落→急上昇」（ぶつ切り）になる。`<video>` は DOM から外しても再生継続する仕様を利用し、入場処理（reconcile の add パス）の後に**再利用されず残ったプール要素だけを `pause`+`mute`**（遅延静音）して離脱クリップの音漏れを防ぐ。同一アセットの2レイヤーが同フレームに同時存在（クロスディゾルブ等）する場合はプールが空になり新規生成へフォールバックする（要素の重複利用はしない）。この再利用は **preview / HTML bundle player 専用**で、export 経路は要素インスタンスが変わっても `waitForVideoFrame`/`flushVideoFrames` がデコード完了を待つため決定論は不変（INV-2 非干渉）。
+
+### §11.4b video footage quality（プロキシ・映像/音声分離）— Phase 1: 基盤
+
+全 `video` コンポーネントに **画質ティア（`footageQuality`）** を持たせ、編集・プレビュー・書き出しで使う**映像ファイル**を切り替える。重い実写や高解像アニメ素材を軽いプロキシで編集し、最終書き出しだけ原本に上げる用途（AE の Proxy / Render Quality 相当）。
+
+**§5 スキーマ非変更**: 本機能はすべて既存の freeform フィールドに載せる。新規 TS 型・INVARIANT・正準シリアライズ規則は追加しない。
+
+- **レイヤー prop**: `video.footageQuality`（enum, 既定 `"original"`, 非 animatable）。component props は freeform（§5.5）なので型変更なし。未設定の既存 project.json は `"original"` フォールバックで挙動不変（後方互換）。
+- **ティアと UI グループ**（[`footageQuality.ts`](src/runtime/footageQuality.ts)・英語ラベル v1）:
+
+  | グループ | tier 値 | friendly ラベル |
+  |----------|---------|------------------|
+  | Source | `original` | Original |
+  | Editing | `high` / `medium` / `low` | High / Medium / Low |
+  | Performance | `super_low` / `potato` / `garbage` | Super Low / Potato / Garbage (preview) |
+
+- **プロキシの保持場所**: 生成済みプロキシは `asset.meta.proxies: Record<tier, { path, mime, width, height }>` に記録する（`AssetEntry.meta` は既存任意フィールド・§5 非変更）。`asset.meta.footageKind`（`"native"` | `"animated-raster"`）と `asset.meta.originalPath`（プロキシを既定 `path` にする raster 用）も meta に載せる。
+- **映像/音声パス分離**（[`footagePlayback.ts`](src/runtime/footagePlayback.ts)・純関数）:
+  - `resolveFootageVideoPath(asset, quality)` — DomRenderer / export がデコードする**映像**ファイル path。要求 tier のプロキシが `meta.proxies` に無ければ原本（`meta.originalPath ?? path`）へフォールバック。
+  - `resolveFootageAudioPath(asset)` — **quality 非依存**。内蔵音声は常に**原本**から取る（`native` = `meta.originalPath ?? path`、`animated-raster` = なし）。プロキシ tier でも音声は劣化させない。
+  - INV-2: preview / browser export / bundle は同一の `resolveFootageVideoPath` を使う（解決値一致）。プロキシ tier 間のデコード差はラスタ忠実度の範囲（§11.4 と同じカーブアウト）。
+- **ストレージ 3 経路**（規約のみ・配線は後続 Phase）:
+
+  | 経路 | 含める映像ファイル | 備考 |
+  |------|--------------------|------|
+  | IndexedDbFs（編集中） | 原本 + `meta.proxies.*` | セッションキャッシュ |
+  | project zip（保存・再 import） | **原本のみ**（`meta.originalPath ?? path`） | プロキシは再 open / 初回参照で lazy 再生成。zip 内 project.json は raster の `path` を `originalPath` に戻し `meta.proxies` を省く正規化版 |
+  | bundle export | 各レイヤー `resolveFootageVideoPath(asset, layer.footageQuality)` の結果のみ | 全 `meta.proxies` は含めない。内蔵音声付き `native` は原本 path も同梱（音声 decode 用） |
+
+- **v1 既知制約**: ラスタ `original` の preview/bundle/export 映像は medium フォールバック（v2 で原本閾値）。GIF 可変 delay は等間隔 fps リサンプル。APNG は v2。transcode は編集用プロキシのため byte 一致を要求しない（INV-4 は原本 zip にのみ適用）。
+
+> **実装フェーズ（progress.md と一体）**: Phase 1 = 本節 spec + `footageQuality.ts` / `footagePlayback.ts`（純関数）+ `footageQuality` prop 登録 + 単体テスト（共有 capture パイプライン非変更＝既存 export 無回帰）。Phase 2 以降でプロキシ生成・cache の quality 解決・Inspector QualitySelect・zip 正規化・bundleCollect・内蔵音声抽出の clock 統合を順次配線する。
 
 ### §11.5 audio コンポーネント（MVP / 最小）
 
@@ -701,6 +733,18 @@ interface ExportConfig {
 - **asset.duration メタ**: 音声 import 時に 1 回 decode して尺（秒）を `asset.meta`（`duration`/`sampleRate`/`channels`）に記録する。`AssetEntry.meta` は既存の任意フィールド（image と同様）で **§5 スキーマ非変更**。波形のソース尺マッピング（§11.5.1・§21.3）はこの値を使う。未記録時のみ尺をレイヤー長へフォールバックする。
 - **export**: §11.2 のとおり mux（決定論・`OfflineAudioContext`）。`gain` は keyframe を反映するため、export 区間を **1/fps 刻み**で `sampleScalar(gainProp, frame)` を評価し `GainNode.gain.setValueAtTime(mixSec, value)` をフレーム境界ごとに打つ（`linearRamp` では hold/bezier easing と一致しないため。`interpolate.ts` の `findSegment`/`easingFn` と完全同一曲線になる）。
 - video 内蔵音声は **基本再生 + export mux + keyframed gain を対応**（§11.4）。mixing graph / エフェクト / LUFS は §16 将来。
+
+#### §11.5.2 カット端のポップ音防止 自動フェード（declick）
+
+クリップを**カットしただけ**でも、波形がゼロでない位置で始まる/終わるとカット端で振幅が不連続になり「プチッ」（ポップ／クリック）が鳴る。これを防ぐため、`video`/`audio` レイヤーの **in 端・out 端に既定 ON の極短い自動フェード**（declick）を `gain` に**乗算**で重ねる（ユーザーの `gain` キーフレーム／Volume スライダーの上に additive に乗る・置き換えない）。長さは既定 `90ms`（[`footageAutoFade.ts`](src/runtime/footageAutoFade.ts) `DEFAULT_AUTO_FADE_MS`）。レイヤー prop `autoFade: bool`（既定 `true`・非 animatable・freeform props ＝ **§5 型非変更**）で個別 OFF 可。未設定の既存 project.json は `true` フォールバックで挙動が滑らかになる（後方互換）。
+
+- **フェード形状（cubic-bezier「slow in / fast out」）**: エンベロープは線形ではなく cubic-bezier（`fadeEase` ≒ easeInCubic 制御点 `(0.32, 0, 0.67, 0)`）。in 端は**ゆっくり立ち上がり最後に速く**1 へ達し、out 端は**最初はゆっくり下がり最後に速く**0 へ切れる。端の傾きが緩いため、線形ランプで残りがちな境界のジッパーノイズ／段差感を抑える。全経路がこの同一カーブを共有する（Web Audio 経路は `setValueCurveAtTime` でカーブを直接サンプル＝サンプル精度、要素ベース経路は毎フレーム／毎 tick で同じ `fadeEase` を評価）。
+
+- **直前の §11.4 カット境界再利用との整合（最重要）**: 同一動画を分割連結したシームレス境界（隣接レイヤーが同一 `asset` を参照し、離脱クリップの読み出し終端が入場クリップの読み出し始端に連続）では、§11.4 の `<video>` 要素再利用が**音を途切れさせず連続再生**している。ここに out フェード→in フェードを掛けると、せっかく消した「音量の急落→急上昇」（ぶつ切り）を**復活させてしまう**。したがって declick は、**隣に同一アセットがソース時刻を連続して引き継ぐクリップがある境界ではそのフェードを抑制**する（`computeFadeSuppression`：`D.out==C.in` かつ `D.trimStart+(D.out-D.in)==C.trimStart` なら C の in フェードを抑制、対称に out も）。本当に音が途切れる端（真のカット端・トリム端・尺端）だけにフェードを掛ける。
+- **全経路一貫（INV-2）**: フェードのエンベロープ・抑制判定・長さは全経路で同一の純関数 [`footageAutoFade.ts`](src/runtime/footageAutoFade.ts) から導く。整数フレーム解像度の解決値は preview / export / bundle で一致する。サブフレームのフェード曲線忠実度は**経路ごとの音声機構に依存**する（§11.4 のラスタ忠実度カーブアウトと同型）:
+  - **`audio` preview（`PreviewAudioClock`）/ export mux（`OfflineAudioContext`）**: ソースの start/stop が既知なので、**専用の `fadeGain` ノードを直列**（`src → fadeGain → (user)gainNode → dest`）に挿し、`setValueCurveAtTime` で `fadeEase`（slow in / fast out）を直接サンプルした**サンプル精度**のフェードを打つ（`setValueCurveAtTime` 不可の環境は線形ランプにフォールバック）。ユーザー gain 自動化とはノードが別なので互いを stomp しない。
+  - **`audio` bundle（`HTMLAudioElement`）/ video 内蔵音声 preview・bundle（`<video>.volume`）**: AudioParam が無いため、共有 multiplier を毎 tick／毎フレーム `volume` に乗算する best-effort（粒度は tick／フレーム）。video の乗算は `resolve()` が `gain` に焼き込む。
+- **export**: `audio`・video 内蔵音声とも `buildAudioMix` の offline グラフで上記 `fadeGain` 直列により declick を反映（preview と同一の長さ・抑制）。
 
 #### §11.5.1 タイムライン波形表示（編集補助・非直列化）
 

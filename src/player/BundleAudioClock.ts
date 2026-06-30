@@ -1,5 +1,6 @@
 import type { AnimatedProp, Frame, Project, TimelineComposition } from "../core/schema";
 import { readGainProp, sampleGain } from "../runtime/footageAudio";
+import { autoFadeMultiplierAtFrame, collectFadeClips, computeFadeSuppression, isAutoFadeEnabled, type FadeSuppression } from "../runtime/footageAutoFade";
 
 export interface AudioLayerSpec {
   objectId: string;
@@ -8,12 +9,23 @@ export interface AudioLayerSpec {
   outPoint: Frame;
   trimStart: Frame;
   gainProp: AnimatedProp<number>;
+  /** §11.5.2 カット端 declick（既定 ON・best-effort: volume 粒度）。 */
+  autoFade: boolean;
+  suppression: FadeSuppression;
+}
+
+interface LayerGainInfo {
+  gainProp: AnimatedProp<number>;
+  inPoint: Frame;
+  outPoint: Frame;
+  autoFade: boolean;
+  suppression: FadeSuppression;
 }
 
 /** §11.7 — 音声マスタークロック。HTMLAudioElement で file:// 互換再生。 */
 export class BundleAudioClock {
   private readonly elements = new Map<string, HTMLAudioElement>();
-  private readonly gainByObjectId = new Map<string, AnimatedProp<number>>();
+  private readonly gainByObjectId = new Map<string, LayerGainInfo>();
   private startWallMs = 0;
   private playing = false;
   private rafId: number | null = null;
@@ -37,7 +49,13 @@ export class BundleAudioClock {
       audio.src = this.urlForPath(layer.assetPath);
       audio.preload = "auto";
       audio.volume = sampleGain(layer.gainProp, this.rangeStart);
-      this.gainByObjectId.set(layer.objectId, layer.gainProp);
+      this.gainByObjectId.set(layer.objectId, {
+        gainProp: layer.gainProp,
+        inPoint: layer.inPoint,
+        outPoint: layer.outPoint,
+        autoFade: layer.autoFade,
+        suppression: layer.suppression,
+      });
       this.elements.set(layer.objectId, audio);
       try {
         await audio.play();
@@ -143,14 +161,26 @@ export class BundleAudioClock {
   /** §11.5 — keyframed gain を毎 tick で反映（bundle は previewOverride なし・comp 固定）。 */
   private applyGains(frame: number): void {
     for (const [id, el] of this.elements) {
-      const prop = this.gainByObjectId.get(id);
-      if (prop) el.volume = sampleGain(prop, frame);
+      const info = this.gainByObjectId.get(id);
+      if (!info) continue;
+      let v = sampleGain(info.gainProp, frame);
+      // §11.5.2 declick: best-effort（volume 粒度）。video/preview と同一の長さ・抑制で乗算。
+      if (info.autoFade) {
+        v *= autoFadeMultiplierAtFrame(frame, {
+          inPoint: info.inPoint,
+          outPoint: info.outPoint,
+          fps: this.fps,
+          suppression: info.suppression,
+        });
+      }
+      el.volume = Math.max(0, Math.min(1, v));
     }
   }
 }
 
 function collectAudioLayers(project: Project, comp: TimelineComposition): AudioLayerSpec[] {
   const out: AudioLayerSpec[] = [];
+  const suppression = computeFadeSuppression(collectFadeClips(comp)); // §11.5.2
   for (const obj of comp.objects) {
     if (!obj.enabled) continue;
     const audioCmp = obj.components.find((c) => c.type === "audio");
@@ -167,6 +197,8 @@ function collectAudioLayers(project: Project, comp: TimelineComposition): AudioL
       outPoint: obj.outPoint,
       trimStart,
       gainProp: readGainProp(audioCmp.props["gain"]),
+      autoFade: isAutoFadeEnabled(audioCmp.props),
+      suppression: suppression.get(obj.id) ?? { in: false, out: false },
     });
   }
   return out;

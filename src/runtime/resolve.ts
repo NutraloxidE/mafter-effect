@@ -12,6 +12,7 @@ import type {
 import { sampleAny, sampleScalar, sampleVec3 } from "./interpolate";
 import { identity, invert, localMatrix, lookAt, multiply, type Mat4 } from "./mat4";
 import type { ResolvedComponent, ResolvedEffect, ResolvedObject, ResolvedScene } from "./resolved";
+import { autoFadeMultiplierAtFrame, collectFadeClips, computeFadeSuppression, isAutoFadeEnabled } from "./footageAutoFade";
 
 // §6.3 / §8 resolve(comp, frame): 純関数 (INV-1)。
 // parent チェーンを畳んで各オブジェクトに world 行列を焼き込み、フラットな ResolvedScene を返す。
@@ -231,6 +232,9 @@ export function resolve(
   };
 
   const renderer3d = comp.renderer3d ?? "classic";
+  // §11.5.2 declick: video 内蔵音声の gain に焼き込むカット端フェードの抑制判定（§11.4 シームレス境界は抑制）。
+  // audio comp は clocks/exporter 側、export video 音声は buildAudioMix 側で同一純関数を使う（INV-2）。
+  const fadeSuppression = computeFadeSuppression(collectFadeClips(comp));
   const objects: ResolvedObject[] = [];
   for (const obj of comp.objects) {
     if (!isVisible(obj, frame)) continue;
@@ -245,6 +249,18 @@ export function resolve(
         ? []
         : obj.components.map((c) => resolveComponent(c, frame, obj.id, obj.inPoint)),
     };
+    // §11.5.2 declick: video 内蔵音声の gain にカット端フェードを乗算（preview/bundle の video.volume）。
+    for (const rc of resolved.components) {
+      if (rc.type !== "video" || !isAutoFadeEnabled(rc.props)) continue;
+      const g = typeof rc.props["gain"] === "number" ? (rc.props["gain"] as number) : 1;
+      const m = autoFadeMultiplierAtFrame(frame, {
+        inPoint: obj.inPoint,
+        outPoint: obj.outPoint,
+        fps: comp.fps,
+        suppression: fadeSuppression.get(obj.id),
+      });
+      rc.props["gain"] = g * m;
+    }
     if (obj.effects && obj.effects.length > 0) {
       resolved.effects = obj.effects.map((e) => resolveEffect(e, frame, obj.id));
     }

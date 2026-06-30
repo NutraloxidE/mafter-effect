@@ -7,6 +7,7 @@ import type { FileSystem } from "../fs/FileSystem";
 import type { AnimatedProp, Frame, Project, TimelineComposition } from "../core/schema";
 import { loadAudioBuffer, peekAudioBuffer } from "./audioBufferCache";
 import { readGainProp, sampleGain } from "../runtime/footageAudio";
+import { collectFadeClips, computeFadeSuppression, fadeSec, isAutoFadeEnabled, scheduleDeclickRamps, type FadeSuppression } from "../runtime/footageAutoFade";
 
 interface PreparedLayer {
   objectId: string;
@@ -15,6 +16,9 @@ interface PreparedLayer {
   outPoint: Frame;
   trimStart: Frame;
   gainProp: AnimatedProp<number>;
+  /** §11.5.2 カット端 declick（既定 ON）。 */
+  autoFade: boolean;
+  suppression: FadeSuppression;
 }
 
 export interface PreviewAudioClockOptions {
@@ -41,6 +45,7 @@ export async function prepareAudioLayers(
   fs: FileSystem,
 ): Promise<PreparedLayer[]> {
   const layers: PreparedLayer[] = [];
+  const suppression = computeFadeSuppression(collectFadeClips(comp)); // §11.5.2 シームレス境界の二重フェード抑制
   for (const obj of comp.objects) {
     if (!obj.enabled) continue;
     const cmp = obj.components.find((c) => c.type === "audio");
@@ -59,6 +64,8 @@ export async function prepareAudioLayers(
       outPoint: obj.outPoint,
       trimStart: typeof cmp.props["trimStart"] === "number" ? (cmp.props["trimStart"] as number) : 0,
       gainProp: readGainProp(cmp.props["gain"]),
+      autoFade: isAutoFadeEnabled(cmp.props),
+      suppression: suppression.get(obj.id) ?? { in: false, out: false },
     });
   }
   return layers;
@@ -130,10 +137,21 @@ export class PreviewAudioClock {
       if (durSec <= 0) continue;
       const src = ctx.createBufferSource();
       src.buffer = layer.buffer;
+      // §11.5.2 declick: ユーザー gain とは別の fadeGain を直列に挿し、サンプル精度のフェードを打つ
+      // （updateLiveGains が gainNode.gain.value を毎 tick 上書きしても fadeGain のランプは stomp されない）。
+      const fadeGain = ctx.createGain();
       const gainNode = ctx.createGain();
       gainNode.gain.value = sampleGain(layer.gainProp, fromFrame);
-      src.connect(gainNode);
+      src.connect(fadeGain);
+      fadeGain.connect(gainNode);
       gainNode.connect(ctx.destination);
+      scheduleDeclickRamps(fadeGain.gain, {
+        startSec: whenSec,
+        durSec,
+        fadeSec: layer.autoFade ? fadeSec() : 0,
+        fadeInActive: startAtFrame === layer.inPoint, // スクラブで途中から再生していない
+        suppression: layer.suppression,
+      });
       src.start(whenSec, offsetSec, durSec);
       this.nodes.push({ src, gain: gainNode, objectId: layer.objectId });
     }

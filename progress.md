@@ -6,6 +6,31 @@
 
 ---
 
+### 2026-06-30（Claude Opus）— declick フェードを cubic-bezier「slow in / fast out」に（全経路ジッパー除去・§11.5.2）✅
+
+- **要望**: 「どの経路でもジッパーノイズが発生しないようにスムーズに。ベジェ曲線で slow in / fast out」。
+- **変更（[footageAutoFade.ts](src/runtime/footageAutoFade.ts) 1ファイルに集約・全経路共有）**:
+  - `fadeEase` を追加（cubic-bezier `(0.32, 0, 0.67, 0)` ≒ easeInCubic を CSS 同等の Newton 法で x→y 評価）。`makeCubicBezier` ヘルパ。
+  - `autoFadeMultiplier`（resolve→video.volume / bundle el.volume の毎フレーム・毎 tick 経路）を線形 `t` から `fadeEase(t)`（in）/`1-fadeEase(a)`（out）に変更 → slow in / fast out。
+  - `scheduleDeclickRamps`（preview `PreviewAudioClock` / export `OfflineAudioContext`）を `linearRampToValueAtTime` から **`setValueCurveAtTime`**（`fadeCurveSamples` で bezier を 33 点サンプル）に変更＝サンプル精度のカーブ。`setValueCurveAtTime` 非対応環境は線形ランプにフォールバック（`RampableParam.setValueCurveAtTime?` 任意）。
+- **既定長**: `DEFAULT_AUTO_FADE_MS` は現状 **90ms**（spec §11.5.2 の値も 90 に修正。旧記載 30 は古い）。
+- **検証**: [test/footageAutoFade.test.ts](test/footageAutoFade.test.ts) を bezier 形状（端点厳密・中央は線形より下＝slow in・単調・カーブ配列 0→1/1→0）に更新（**22 件 PASS**）。`npm test` 全体 **616 PASS**。`npx tsc` クリーン（既存 TimelinePanel TS6133 のみ）。`public/player.js` 再ビルド済み。実機 [verify-autofade-declick.mjs](verify-autofade-declick.mjs) **PASS**（Comp 23: f0 `inGain≈0.007`＝線形なら≈0.19 のはずが bezier slow-in で大きく減衰／中央=1／シームレス f60 抑制維持／disable 維持）。
+- **忠実度**: Web Audio 経路はカーブをサンプル精度で打つため真に滑らか。要素ベース（audio bundle / video 内蔵音声）は同じ `fadeEase` を毎フレーム評価する best-effort（滑らかさはフレーム/tick 粒度に依存・既存どおり）。
+
+### 2026-06-30（Claude Opus）— カット端のポップ音防止 自動フェード（declick・§11.5.2）✅
+
+- **要望**: 継ぎ目のぶつ切り（本質）は前2修正で解決済み。補助として、**カットしただけ**でも編集中に音がプチる（波形不連続のポップ）のを防ぐ、**video/audio レイヤーに additive・既定 ON の自動フェード**を追加。「追加の仕方は直前の変更（要素再利用＝音連続）の理由を加味して」。
+- **設計の肝（直前の §11.4 との整合）**: 同一アセット連結のシームレス境界（`D.out==C.in` かつ読み出し位置連続）は要素再利用が音を連続再生している。そこに out→in フェードを掛けると「急落→急上昇」を**復活**させるため、`computeFadeSuppression` で**その境界のフェードを抑制**。真のカット端・トリム端・尺端だけにフェード。
+- **実装（共有純関数 [footageAutoFade.ts](src/runtime/footageAutoFade.ts)）**: `autoFade: bool`（既定 true・非 animatable・freeform props ＝ **§5 型非変更**）を [builtinComponents.ts](src/runtime/builtinComponents.ts) の video/audio に追加。既定長 `DEFAULT_AUTO_FADE_MS=30`。適用点:
+  - **video 内蔵音声 preview/bundle**: [resolve.ts](src/runtime/resolve.ts) が video の `gain` に `autoFadeMultiplierAtFrame`（フレーム中央評価）を乗算 → DomRenderer の `video.volume` がフェード済み（DomRenderer 非変更）。
+  - **audio preview**: [previewAudioClock.ts](src/editor/previewAudioClock.ts) が**専用 fadeGain ノードを直列**（`src→fadeGain→userGain→dest`）に挿し `scheduleDeclickRamps` でサンプル精度の linear ramp（live gain と分離・stomp されない）。
+  - **audio + video export**: [exporter.ts](src/runtime/exporter.ts) `buildAudioMix` も同じ fadeGain 直列で declick（preview と同一長・同一抑制＝INV-2）。
+  - **audio bundle**: [BundleAudioClock.ts](src/player/BundleAudioClock.ts) は HTMLAudioElement のため毎 tick `volume` 乗算（best-effort・粒度依存）。
+  - **UI**: [InspectorPanel.tsx](src/editor/panels/InspectorPanel.tsx) の `ComponentFields`（video/audio 用）に bool チェックボックス分岐を追加（既定 ON 表示）。
+- **検証**: 実機 harness（Comp 23・実ブラウザ）で (1) 真の in 端 `gain 0.556 < 中央 1.0`（フェードイン）、(2) **シームレス境界 f60 のフェードは抑制**（`seamInGain==seamMidGain==1`＝音連続を壊さない）、(3) `autoFade=false` で焼き込み消滅、を確認 [verify-autofade-declick.mjs](verify-autofade-declick.mjs)。Inspector チェックボックス描画＋既定 ON を実機確認 [verify-autofade-ui.mjs](verify-autofade-ui.mjs)。`npm test` **611 PASS**（新規 [test/footageAutoFade.test.ts](test/footageAutoFade.test.ts) 17 件）。`public/player.js` 再ビルド済み（runtime 変更のため）。
+- **既知の忠実度**: Web Audio 経路（audio preview / export）はサンプル精度。要素ベース（audio bundle / video 内蔵音声）は `volume` 粒度の best-effort（サブフレーム精度が要るなら `<video>` の Web Audio ルーティングが v2 follow-up）。
+- **harness 教訓**: UI を駆動するには走っている React と同一 store ＝ `window.__mafterEditorStore` を使う（`import("/src/editor/store.ts")` は別 Zustand インスタンスで UI に反映されない）。コンポーネント params は ComponentFields（video/audio）/ EffectFields / ExpressionPreset の3系統に別々の `params.map` があり、bool 分岐は ComponentFields に足す。
+
 ### 2026-06-30（Claude Opus）— カット境界の内蔵音声ぶつ切り修正（要素再利用プールの遅延静音）✅
 
 - **症状**: 上記 flicker 修正後も、同一動画の連結カット境界で**内蔵音声がぶつ切り**（ユーザー報告: 音量が超短時間で急落→急上昇）。
@@ -22,6 +47,44 @@
 - **spec**: [§11.4](doc/mafter-effect-spec.md) warm-up 節に「カット境界の `<video>` 要素再利用」散文を追記（INV/§5 不変）。
 - **検証**: 実機 harness（Comp 23 を zip import→再生）で**境界 f60 が `rs=0`→`rs=4 vw=1080` に改善**・再生中 NOT READY ゼロ・scrub 無回帰を確認。`npm test` **594 PASS**（新規 [test/videoElementPool.test.ts](test/videoElementPool.test.ts) 6 件含む）。`public/player.js` 再ビルド済み（freshness 緑）。video を含まない comp では renderFrame 挙動はループ順序入替のみでバイト等価＝既存 export 経路は構造的に無回帰。
 - **follow-up（本タスク対象外）**: 異なるアセット間の境界はプール空でコールド（先読み warm-up が必要）。プールは未帰還アセットの要素を dispose まで保持（長セッションで上限導入の余地）。
+
+### 2026-06-30（Claude Opus）— Animated Raster Proxy / video footage quality（全 Phase 実装）✅
+
+プラン `.cursor/plans/animated_raster_proxy_*.plan.md` を Phase 1→6 まで通し実装。決定: `footageKind`/`originalPath`/`proxies` は `asset.meta`（§5 型変更なし）、prop 名 `footageQuality`（UI "Quality"）。
+
+- **resolver / cache（Phase 1b）**: [imageAssetCache.ts](src/runtime/imageAssetCache.ts) に `getUrlForQuality` + `proxyById` + `loadProxiesFromFs`（meta.proxies を blob 化）+ evict 拡張。[DomRenderer.ts](src/runtime/DomRenderer.ts) video は `getUrlForQuality(assetId, footageQuality)` で映像切替（exporter も同 DomRenderer 経由＝INV-2）。
+- **proxy 生成（Phase 2/4）**: [webcodecsVideoEncode.ts](src/runtime/webcodecsVideoEncode.ts)（VP9 webm・exporter とは独立）、[animatedRasterDetect.ts](src/runtime/animatedRasterDetect.ts)（ImageDecoder でアニメ webp/gif 判定）、[animatedRasterProxy.ts](src/runtime/animatedRasterProxy.ts)（等間隔 fps リサンプル）、[footageVideoProxy.ts](src/runtime/footageVideoProxy.ts)（native mp4→<video> seek→縮小 webm・音声破棄）。
+- **store（Phase 2/3）**: [store.ts](src/editor/store.ts) `importImageAsset` がアニメ webp/gif を検出→`importAnimatedRasterAsset`（原本 + medium proxy・path=proxy）。`ensureProxyTier(assetId, quality)`（原本を FS から再構成→tier proxy 生成→meta.proxies 更新・undo 非積載・warm-up evict）。`rehydrateAnimatedRasters`（zip 再 import 後に medium 再生成）を `loadFromFs` 後にキック。native import に `footageKind:"native"`。`removeAsset` は原本 + 全 proxy ファイル削除。
+- **UI（Phase 3）**: [InspectorPanel.tsx](src/editor/panels/InspectorPanel.tsx) `QualitySelect`（optgroup Source/Editing/Performance + friendly ラベル + 選択で lazy `ensureProxyTier` + `generating…`/`proxy failed` 表示 + `evictPreviewMediaAsset`）。
+- **export 音声（Phase 5）**: [exporter.ts](src/runtime/exporter.ts) `buildAudioMix` が `resolveFootageAudioPath`（quality 非依存・原本）から decode。raster（音声 null）はスキップ。
+- **zip / bundle / gate（Phase 6）**: [zip.ts](src/fs/zip.ts) `exportProjectZip`（proxy ファイル除外 + `normalizeProjectForZip` で raster path→原本・proxies/originalPath 省略）を [ProjectPanel.tsx](src/editor/panels/ProjectPanel.tsx) `exportZip` から使用。[bundleCollect.ts](src/runtime/bundleCollect.ts) video はレイヤー quality で `resolveFootageVideoPath` した映像 + `resolveFootageAudioPath` 原本のみ同梱。[ExportDialog.tsx](src/editor/ExportDialog.tsx) は export 前に `collectExportProxyJobs` の proxy tier を `ensureProxyTier` で実体化（失敗=中止）し、更新後 project で書き出し。bundle player cache（`registerProjectUrls`/`loadVideoBlobsFromUrls`）も proxy URL を登録。
+- **WebCodecs stall ガード**: [webcodecsVideoEncode.ts](src/runtime/webcodecsVideoEncode.ts) に encode 全体のウォッチドッグ（既定 `max(15000, frameCount*500)`ms）。stall する環境で proxy 生成が UI をハングさせず throw → 呼び出し側が原本フォールバック。
+- **テスト / 検証**:
+  - `npm test` **588 PASS** + 新規 [test/footageQuality.test.ts](test/footageQuality.test.ts)（9）/ [test/footageProxyPure.test.ts](test/footageProxyPure.test.ts)（10・zip 正規化 / bundleCollect path 選択 / proxy jobs / リサンプル / detection）。
+  - typecheck はプロジェクト変更分すべて緑（既存 TimelinePanel の pre-existing TS6133 3 件のみ赤・本タスク非関連）。`public/player.js` 再ビルド済み（freshness 緑）。
+  - [verify-video-export.mjs](verify-video-export.mjs) **PASS**（DomRenderer 映像 resolver + exporter 共有経路の無回帰を実機確認）。
+  - **proxy 生成の実 WebCodecs 検証（実ブラウザ）= PASS**: [verify-video-quality-proxy.mjs](verify-video-quality-proxy.mjs) を `HEADED=1`（headless:false + GPU 有効フラグ）で実行 → native MP4 を `ensureProxyTier("medium")` で実 VP9 encode（≈22s）→ proxy webm 生成・**960×540 へ縮小**（原寸 1920×1080）・`meta.proxies.medium` 登録・cache blob は proxy/original とも fetch 可能（生存）・`bundleCollect` が **proxy 映像 + 原本音声のみ**同梱・`getUrlForQuality(medium)` が別 URL を返す、を全て確認。
+  - **headless では proxy 検証不可**（既定 headless chromium は VP9 encode がレンダラをブロック＝環境制約・コードのバグではない。exporter の PNG-seq フォールバックと同根）。verify は `HEADED=1` で実行すること。詳細メモ: `headless-webcodecs-encode-blocks`。純粋ロジックは単体テストでも担保。
+- **v1 既知制約 / follow-up**:
+  - **proxy tier の preview/bundle 内蔵音声**: native proxy は音声を破棄するため、ユーザーが native を proxy tier にすると preview/bundle で内蔵音声が鳴らない（**export は mux で原本から鳴る・OK**）。`original` tier は従来どおり `<video>` アンミュートで鳴る。proxy preview/bundle の原本音声 PreviewAudioClock/BundleAudioClock 統合は **v2 follow-up**。
+  - ラスタ `original` の preview/bundle/export 映像は medium フォールバック（v2 で原本閾値）。GIF 可変 delay は等間隔リサンプル。APNG は v2。
+  - mp4/webm/bundle export の品質閾値（Export 設定で original 強制）は v2（現状はレイヤー quality どおり）。
+
+### 2026-06-30（Claude Opus）— Animated Raster Proxy / video footage quality（Phase 1: 基盤）✅
+
+- **目的**: 全 `video` レイヤーに画質ティア（`footageQuality`）を持たせ、重い素材を軽いプロキシで編集し最終書き出しのみ原本に上げる（AE の Proxy/Render Quality 相当）。プラン: `.cursor/plans/animated_raster_proxy_*.plan.md`。
+- **ユーザー確認済みの決定**: ① `footageKind`/`originalPath`/`proxies` は **`asset.meta`（freeform）に載せ §5 型変更なし**。② **段階実装**（Phase 1 から）。③ prop 名は **`footageQuality`**（§27.4 のエフェクト `quality`(scalar) と区別、UI ラベルは "Quality"）。
+- **Phase 1 実装範囲（純関数基盤・共有 capture パイプライン非変更＝既存 export 無回帰）**:
+  - spec **§11.4b** 追記（[doc/mafter-effect-spec.md](doc/mafter-effect-spec.md)）: ティア/UI グループ、`meta.proxies`/`footageKind`/`originalPath`、映像/音声パス分離、ストレージ 3 経路規約、v1 制約。§5 非変更を明記。
+  - [src/runtime/footageQuality.ts](src/runtime/footageQuality.ts): `FootageQuality` 型・`FOOTAGE_QUALITY_TIERS`・`PROXY_TIER_PARAMS`（maxDim/quality）・`QUALITY_UI_GROUPS`（Source/Editing/Performance・英語）・friendly ラベル・`normalizeFootageQuality`。
+  - [src/runtime/footagePlayback.ts](src/runtime/footagePlayback.ts): 純関数 `resolveFootageVideoPath(asset, quality)`（プロキシ無→原本フォールバック）・`resolveFootageAudioPath(asset)`（quality 非依存・原本・raster は null）・`footageKindOf`/`resolveOriginalPath`/`getProxyEntry`。
+  - [builtinComponents.ts](src/runtime/builtinComponents.ts): video に `footageQuality` enum param（既定 `original`・非 animatable）追加。
+  - test: [test/footageQuality.test.ts](test/footageQuality.test.ts) 9 件 PASS。`public/player.js` 再ビルド済み（runtime 変更のため・freshness test 緑）。
+- **Phase 1 のスコープ外（後続）**: cache の quality 解決・DomRenderer/exporter 映像 resolver 配線・プロキシ生成（`animatedRasterProxy`/`footageVideoProxy`/`webcodecsVideoEncode`）・`ensureProxyTier`・Inspector QualitySelect（optgroup UI）・zip 正規化（原本のみ）・bundleCollect・内蔵音声抽出の preview/bundle clock 統合。**現状 `footageQuality` prop は登録済みだが映像切替は未配線（既定 original で挙動不変）。**
+- **注意（無回帰）**: footageQuality.ts/footagePlayback.ts は純関数で既存経路に未配線のため、既存 video export/preview/bundle は完全に不変。`builtinComponents` の param 追加は Inspector enum 表示のみ（選択しても現状映像は変わらない）。
+- **既知の pre-existing**: `TimelinePanel.tsx`（前セッションの WIP・未コミット）に TS6133 unused-var が 3 件あり `tsc --noEmit` が赤。本タスク非関連・未修正。
+
+> （上記は全 Phase 完了。直下の「Phase 1: 基盤」エントリは初期コミット時の記録で内容は上に統合済み。）
 
 ### 2026-06-30（Claude Opus）— 旧 HW での動画レイヤー再生スタッタ修正（対策 A）✅
 

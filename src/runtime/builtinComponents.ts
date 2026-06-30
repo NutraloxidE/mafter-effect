@@ -1,5 +1,6 @@
 import type { ComponentDef } from "./plugin";
 import { globalPluginRegistry } from "./pluginRegistry";
+import { FOOTAGE_QUALITY_TIERS } from "./footageQuality";
 
 /** §26.2 builtin ComponentDef 登録（text）。ParamDescriptor で Timeline/Inspector の kind を正す。 */
 const TEXT_COMPONENT_DEF: ComponentDef = {
@@ -46,6 +47,10 @@ const VIDEO_COMPONENT_DEF: ComponentDef = {
     { key: "trimStart", label: "Trim Start", kind: "scalar", default: 0, animatable: true, min: 0 },
     // §11.4 内蔵音声の音量（0..1, keyframe 可）。UI 表示名は Volume。
     { key: "gain", label: "Volume", kind: "scalar", default: 1, animatable: true, min: 0, max: 1 },
+    // §11.5.2 カット端のポップ音防止 自動フェード（declick）。既定 ON。
+    { key: "autoFade", label: "Auto-fade (declick)", kind: "bool", default: true, animatable: false },
+    // §11.4b 画質ティア。原本/プロキシの映像ファイル切替（音声は常に原本）。既定 original（後方互換）。
+    { key: "footageQuality", label: "Quality", kind: "enum", default: "original", animatable: false, options: [...FOOTAGE_QUALITY_TIERS] },
   ],
   render() { /* DomRenderer */ },
 };
@@ -59,6 +64,8 @@ const AUDIO_COMPONENT_DEF: ComponentDef = {
     // §11.5 音量（0..1, keyframe 可）。UI 表示名は Volume。
     { key: "gain", label: "Volume", kind: "scalar", default: 1, animatable: true, min: 0, max: 1 },
     { key: "trimStart", label: "Trim Start", kind: "scalar", default: 0, animatable: true, min: 0 },
+    // §11.5.2 カット端のポップ音防止 自動フェード（declick）。既定 ON。
+    { key: "autoFade", label: "Auto-fade (declick)", kind: "bool", default: true, animatable: false },
   ],
   render() { /* PreviewAudioClock / export mux */ },
 };

@@ -14,6 +14,8 @@ import type {
 } from "../core/schema";
 import { globalPluginRegistry } from "./pluginRegistry";
 import { collectExpressionPresetScriptPaths } from "./builtinExpressionPresetScripts";
+import { resolveFootageAudioPath, resolveFootageVideoPath } from "./footagePlayback";
+import { normalizeFootageQuality } from "./footageQuality";
 
 export interface BundleCollectResult {
   timelineCompIds: Set<string>;
@@ -71,6 +73,21 @@ function collectAssetFromProp(val: unknown, project: Project, binaries: Set<stri
 
 function collectObjectAssets(obj: SceneObject, project: Project, binaries: Set<string>): void {
   for (const cmp of obj.components) {
+    // §11.4b video はレイヤー quality で resolve した映像 path のみ同梱（原本全体は積まない）。
+    // 内蔵音声付き native は原本 path も同梱（proxy tier でも音声は原本から再生）。
+    if (cmp.type === "video") {
+      const assetId = cmp.props["asset"];
+      if (typeof assetId === "string") {
+        const asset = project.assets.find((a) => a.id === assetId);
+        if (asset) {
+          const quality = normalizeFootageQuality(cmp.props["footageQuality"]);
+          binaries.add(resolveFootageVideoPath(asset, quality));
+          const audioPath = resolveFootageAudioPath(asset);
+          if (audioPath) binaries.add(audioPath);
+        }
+      }
+      continue;
+    }
     for (const val of Object.values(cmp.props)) {
       collectAssetFromProp(val, project, binaries);
       if (typeof val === "string" && project.assets.some((a) => a.id === val)) {
@@ -78,7 +95,7 @@ function collectObjectAssets(obj: SceneObject, project: Project, binaries: Set<s
         if (asset) binaries.add(asset.path);
       }
     }
-    if (cmp.type === "image" || cmp.type === "video" || cmp.type === "audio") {
+    if (cmp.type === "image" || cmp.type === "audio") {
       const assetId = cmp.props["asset"];
       if (typeof assetId === "string") {
         const asset = project.assets.find((a) => a.id === assetId);

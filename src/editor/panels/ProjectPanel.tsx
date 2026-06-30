@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { ExportDialog } from "../ExportDialog";
 import { useEditorStore } from "../store";
-import { exportZip, importZip, type ZipExportProgress } from "../../fs/zip";
+import { exportZip, exportProjectZip, importZip, type ZipExportProgress } from "../../fs/zip";
 import { globalPluginRegistry } from "../../runtime/pluginRegistry";
 import type { Project } from "../../core/schema";
 import { DRAG_MIME } from "./dragMime";
@@ -72,9 +72,11 @@ export function ProjectPanel() {
     setZipStatus("プロジェクトを保存中…");
     try {
       await saveToFs();
-      const bytes = await exportZip(getFs(), "", (p) => {
-        setZipStatus(formatZipProgress(p));
-      });
+      // §11.4b 原本のみ同梱（proxy 除外 + project.json 正規化）。project が無ければ全 FS フォールバック。
+      const proj = useEditorStore.getState().project;
+      const bytes = proj
+        ? await exportProjectZip(getFs(), proj, "", (p) => setZipStatus(formatZipProgress(p)))
+        : await exportZip(getFs(), "", (p) => setZipStatus(formatZipProgress(p)));
       const blob = new Blob([bytes as unknown as BlobPart], { type: "application/zip" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");

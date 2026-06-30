@@ -17,6 +17,8 @@ import { ModuleLoader } from "./moduleLoader";
 import { resolve, type ExpressionEvaluator } from "./resolve";
 import { compositeExportFrame } from "./exportComposite";
 import { collectFootageAudioSources, scheduleGainAutomation } from "./footageAudio";
+import { collectFadeClips, computeFadeSuppression, fadeSec, isAutoFadeEnabled, scheduleDeclickRamps } from "./footageAutoFade";
+import { resolveFootageAudioPath } from "./footagePlayback";
 
 export type ExportPhase = "prepare" | "render" | "encode" | "audio" | "bake" | "pack" | "done" | "error";
 
@@ -456,6 +458,8 @@ async function buildAudioMix(
 
   const mixSources = collectFootageAudioSources(comp);
   if (mixSources.length === 0) return null;
+  // §11.5.2 カット端 declick の抑制判定（シームレス境界の二重フェード防止）。preview と同一純関数。
+  const fadeSuppression = computeFadeSuppression(collectFadeClips(comp));
 
   const durationSec = (endFrame - startFrame) / fps;
   const sampleRate = 44100;
@@ -463,13 +467,18 @@ async function buildAudioMix(
   const tmpCtx = new AudioContext();
 
   let anyLoaded = false;
-  for (const { obj, assetId, trimStart, gainProp } of mixSources) {
+  for (const { obj, assetId, trimStart, gainProp, componentType } of mixSources) {
     const asset = project.assets.find((a) => a.id === assetId);
     if (!asset) continue;
 
+    // §11.4b 内蔵音声は quality 非依存で常に原本から（プロキシ tier でも音声は劣化させない）。
+    // raster（音声なし）は null → スキップ。
+    const audioPath = resolveFootageAudioPath(asset);
+    if (!audioPath) continue;
+
     let data: Uint8Array;
     try {
-      data = await fs.read(asset.path);
+      data = await fs.read(audioPath);
     } catch { continue; }
 
     let decoded: AudioBuffer;
@@ -498,13 +507,26 @@ async function buildAudioMix(
       exportStartFrame: startFrame,
       exportEndFrame: endFrame,
     });
-    src.connect(gainNode);
-    gainNode.connect(offCtx.destination);
 
     const outDuration = Math.min(
       decoded.duration - effectiveTrimSec,
       (obj.outPoint - Math.max(obj.inPoint, startFrame)) / fps,
     );
+    // §11.5.2 declick: ユーザー gain 自動化とは別の fadeGain を直列に挿し、サンプル精度のフェードを打つ。
+    // preview（PreviewAudioClock）と同一の長さ・抑制で INV-2 を保つ。
+    const fadeComp = obj.components.find((c) => c.type === componentType);
+    const fadeGain = offCtx.createGain();
+    scheduleDeclickRamps(fadeGain.gain, {
+      startSec: objStartSec,
+      durSec: Math.max(0, outDuration),
+      fadeSec: fadeComp && isAutoFadeEnabled(fadeComp.props) ? fadeSec() : 0,
+      fadeInActive: obj.inPoint >= startFrame, // サブレンジ export で途中再生開始なら in フェード無し
+      suppression: fadeSuppression.get(obj.id),
+    });
+    src.connect(fadeGain);
+    fadeGain.connect(gainNode);
+    gainNode.connect(offCtx.destination);
+
     src.start(objStartSec, effectiveTrimSec, Math.max(0, outDuration));
     anyLoaded = true;
   }

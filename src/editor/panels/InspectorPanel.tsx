@@ -16,6 +16,8 @@ import { TimecodeScrub } from "../TimecodeScrub";
 import { applyLinkedScaleDelta, applyLinkedScaleValue } from "../linkedScale";
 import { formatBarBeat } from "../beatTimecode";
 import { globalPluginRegistry } from "../../runtime/pluginRegistry";
+import { QUALITY_UI_GROUPS, footageQualityLabel, isProxyTier, normalizeFootageQuality, type FootageQuality } from "../../runtime/footageQuality";
+import { evictPreviewMediaAsset } from "../../runtime/imageAssetCache";
 import { groupEffectsForPicker } from "../effectCategories";
 import { BakerBadge } from "../bakerLabel";
 import { BackgroundControl } from "./BackgroundControl";
@@ -1198,6 +1200,22 @@ function ExpressionPresetFields({
           stored === undefined && param.animatable
             ? staticProp(param.default)
             : stored;
+        if (param.key === "footageQuality") {
+          const assetId = typeof props["asset"] === "string" ? (props["asset"] as string) : "";
+          return (
+            <QualitySelect
+              key={param.key}
+              label={param.label}
+              value={normalizeFootageQuality(raw)}
+              assetId={assetId}
+              disabled={readOnly}
+              onCommit={(q) => {
+                if (readOnly) { onMigrate({ [param.key]: q }); return; }
+                writePresets({ ...props, [param.key]: q }, `Edit ${param.label}`);
+              }}
+            />
+          );
+        }
         if (param.kind === "enum" && !param.animatable) {
           const val = typeof raw === "string" ? raw : String(param.default ?? "");
           return (
@@ -1248,6 +1266,63 @@ function ExpressionPresetFields({
         return null;
       })}
     </>
+  );
+}
+
+/** §11.4b 画質ティア選択。optgroup + friendly ラベル + 選択時に lazy プロキシ生成（進捗表示）。 */
+function QualitySelect({
+  label,
+  value,
+  assetId,
+  disabled,
+  onCommit,
+}: {
+  label: string;
+  value: FootageQuality;
+  assetId: string;
+  disabled?: boolean;
+  onCommit: (q: FootageQuality) => void;
+}) {
+  const ensureProxyTier = useEditorStore((s) => s.ensureProxyTier);
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  const onChange = (q: FootageQuality) => {
+    onCommit(q);
+    // 画質切替で warm-up 済みフレームと旧 blob を破棄（プロキシ取り違え防止）。
+    if (assetId) evictPreviewMediaAsset(assetId);
+    setFailed(false);
+    if (assetId && isProxyTier(q)) {
+      setBusy(true);
+      void (async () => {
+        const ok = await ensureProxyTier(assetId, q);
+        setBusy(false);
+        setFailed(!ok);
+      })();
+    }
+  };
+
+  return (
+    <Row label={label}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, width: "100%" }}>
+        <select
+          value={value}
+          disabled={disabled}
+          onChange={(e) => onChange(normalizeFootageQuality(e.target.value))}
+          style={selectStyle}
+        >
+          {QUALITY_UI_GROUPS.map((g) => (
+            <optgroup key={g.label} label={g.label}>
+              {g.tiers.map((t) => (
+                <option key={t} value={t}>{footageQualityLabel(t)}</option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+        {busy && <span style={{ fontSize: 11, opacity: 0.7, whiteSpace: "nowrap" }}>generating…</span>}
+        {failed && !busy && <span style={{ fontSize: 11, color: "#e57373", whiteSpace: "nowrap" }}>proxy failed</span>}
+      </div>
+    </Row>
   );
 }
 
@@ -1457,6 +1532,19 @@ function ComponentFields({
                   <option key={opt} value={opt}>{opt}</option>
                 ))}
               </select>
+            </Row>
+          );
+        }
+        if (param.kind === "bool" && !param.animatable) {
+          // §11.5.2 autoFade 等。後から追加された bool param は既存 props に無い → 既定値で描画。
+          const checked = typeof raw === "boolean" ? raw : Boolean(param.default);
+          return (
+            <Row key={param.key} label={param.label}>
+              <input
+                type="checkbox"
+                checked={checked}
+                onChange={(e) => writeProps({ ...props, [param.key]: e.target.checked }, `Edit ${param.label}`)}
+              />
             </Row>
           );
         }
