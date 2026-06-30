@@ -19,6 +19,7 @@ import { applyFilterChainToBuffer } from "./effectRaster";
 import { resolveEffectChain } from "./effectChain";
 import { EXPORT_VIDEO_TARGET_ATTR, primeVideoElement, syncVideoElementTime, waitForVideoFrame } from "./videoElementSync";
 import { ensureVideosPrimed, peekVideoPrimed, type VideoPrimeTarget } from "./videoWarmupCache";
+import { KeyedElementPool } from "./videoElementPool";
 import type { ExportChain, ExportLayer, NestedCompositeMeta, ExportTaggedElement } from "./exportComposite";
 import type { EffectFilter } from "./plugin";
 import type { BlendMode } from "../core/schema";
@@ -114,6 +115,14 @@ export class DomRenderer implements Renderer {
   private entries = new Map<string, ObjectEntry>();
   private currentComp: CompositionMeta | null = null;
   private rasterPending = new Set<Promise<void>>();
+
+  /**
+   * §11.4 カット境界の `<video>` 要素再利用プール。key=assetId、value=離脱して空いた要素。
+   * 同一動画の連結カットで境界レイヤーが入れ替わる際、破棄→新規生成（=再ロード/再デコード）の
+   * 代わりに同一アセットの decode 済み要素を再利用してデコードギャップ（空フレーム・音の再初期化）を防ぐ。
+   * preview/bundle 専用。export 経路は waitForVideoFrame がデコードを待つため決定論不変（INV-2）。
+   */
+  private videoPool = new KeyedElementPool<HTMLVideoElement>();
 
   // §7 HTML comp サポート: HtmlCompPlayer を注入（optional）。
   // mount 後に setHtmlPlayer() で差し替え可。
@@ -229,8 +238,25 @@ export class DomRenderer implements Renderer {
 
     const seen = new Set<string>();
     for (const obj of scene.objects) {
+      if (!obj.isNull) seen.add(obj.id);
+    }
+
+    // 離脱オブジェクトの削除は入場処理より前に行う。
+    // §11.4 カット境界（離脱と入場が同一フレーム）で、入場レイヤーが子 <video> を生成する前に
+    // 離脱レイヤーの <video> をプールへ退避しておかないと再利用できない（順序が肝）。
+    for (const [id, entry] of this.entries) {
+      if (!seen.has(id)) {
+        this.restoreAdjustmentSuppression(id);
+        // §11.4 配下の <video> は破棄せずプールへ退避（同一アセットのカット境界で再利用する）。
+        this.stashVideosToPool(entry);
+        entry.div.remove();
+        this.entries.delete(id);
+        this.htmlPlayer?.unmountObject(id);
+      }
+    }
+
+    for (const obj of scene.objects) {
       if (obj.isNull) continue;
-      seen.add(obj.id);
       let entry = this.entries.get(obj.id);
       if (!entry) {
         const div = document.createElement("div");
@@ -266,16 +292,31 @@ export class DomRenderer implements Renderer {
       entry.threeD = obj.threeD === true;
       this.applyObject(entry, obj, frame);
     }
+  }
 
-    // 非表示になったオブジェクトを削除
-    for (const [id, entry] of this.entries) {
-      if (!seen.has(id)) {
-        this.restoreAdjustmentSuppression(id);
-        entry.div.remove();
-        this.entries.delete(id);
-        this.htmlPlayer?.unmountObject(id);
+  /**
+   * §11.4 離脱した entry の `<video>` を assetId 単位プールへ退避する（破棄しない）。
+   * DOM からは外すが要素参照・src・デコーダ状態は保持し、muted+pause 済みにする（音漏れ防止）。
+   */
+  private stashVideosToPool(entry: ObjectEntry): void {
+    for (const el of entry.children) {
+      if (!(el instanceof HTMLVideoElement)) continue;
+      const assetId = el.dataset.mafterVideoAsset;
+      if (!assetId) continue;
+      try {
+        el.muted = true;
+        if (!el.paused) el.pause();
+      } catch {
+        /* muted/pause best-effort */
       }
+      if (el.parentNode) el.parentNode.removeChild(el);
+      this.videoPool.stash(assetId, el);
     }
+  }
+
+  /** §11.4 同一アセットの空き `<video>` をプールから1つ取り出す（無ければ null）。 */
+  private acquireVideoFromPool(assetId: string): HTMLVideoElement | null {
+    return this.videoPool.acquire(assetId);
   }
 
   resize(w: number, h: number): void {
@@ -421,6 +462,16 @@ export class DomRenderer implements Renderer {
 
   dispose(): void {
     this.pauseAllVideos();
+    // §11.4 プールに退避した <video> も明示破棄（src 解放・リーク防止）。
+    for (const el of this.videoPool.drain()) {
+      try {
+        el.pause();
+        el.removeAttribute("src");
+        el.load();
+      } catch {
+        /* teardown best-effort */
+      }
+    }
     if (this.root) {
       this.root.remove();
       this.root = null;
@@ -486,7 +537,12 @@ export class DomRenderer implements Renderer {
       entry.div.innerHTML = "";
       if (svgRoot) entry.div.appendChild(svgRoot);
       entry.children = obj.components.map((c) => {
-        const el = createComponentEl(c.type);
+        // §11.4 video は同一アセットの decode 済み要素をプールから再利用（境界の空フレーム回避）。
+        const assetId = c.type === "video" ? (c.props["asset"] as string | undefined) : undefined;
+        const el =
+          assetId && assetId !== ""
+            ? (this.acquireVideoFromPool(assetId) ?? createComponentEl("video"))
+            : createComponentEl(c.type);
         entry.div.appendChild(el);
         return el;
       });
