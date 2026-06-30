@@ -6,14 +6,21 @@
 
 ---
 
+### 2026-06-30（Claude Opus）— カット境界の内蔵音声ぶつ切り修正（要素再利用プールの遅延静音）✅
+
+- **症状**: 上記 flicker 修正後も、同一動画の連結カット境界で**内蔵音声がぶつ切り**（ユーザー報告: 音量が超短時間で急落→急上昇）。
+- **原因**: flicker 修正の `stashVideosToPool` が退避時に `<video>` を `pause()`+`muted=true` し、再利用時に `syncVideoElementTime`（playback）が `unmute`+再 seek+`play()` していた → 境界で一瞬ミュート＆停止＆シーク＝音量の急落→急上昇。
+- **修正**: 退避時は **pause/mute せず detach のみ**（`<video>` は DOM から外しても再生継続）。同一フレーム再利用なら要素は止まらず映像も音も連続。再利用されず残ったプール要素だけ **add パス後に `quiescePooledVideos()` で pause+mute**（遅延静音・離脱クリップの音漏れ防止）。停止/`dispose` 時もプール要素を静音。[videoElementPool.ts](src/runtime/videoElementPool.ts) に `peekAll()`（非破壊列挙）を追加。preview/bundle 専用・export 非干渉（INV-2）。
+- **spec**: [§11.4](doc/mafter-effect-spec.md) カット境界再利用の散文を「退避時 pause/mute しない・遅延静音」に更新。
+- **検証**: 実機 harness（Comp 23 再生、対象 `<video>` の pause/play/muted をパッチ計測）で**境界(f58–62)の pause/play/mute イベントゼロ**・`paused=false/muted=false/seeking=false` 維持・ct 連続前進・映像 rs=4 維持を確認。`npm test` **594 PASS**。
+
 ### 2026-06-30（Claude Opus）— カット境界の動画ちらつき修正（`<video>` 要素 asset 単位再利用プール）✅
 
 - **症状**: 同一動画を分割して連結したタイムライン（例 zip `mafter-project (11)` の **Comp 23**: 同一アセットを in0–out60/trim0 と in60–out150/trim60 の2レイヤーで連結）の**カット境界で映像が一瞬空白＋内蔵音声がプチっ**。
 - **原因（実機計測で確定）**: 各カットは別 object id ＝別 `<video>`。[DomRenderer.renderFrame](src/runtime/DomRenderer.ts) の reconcile が離脱レイヤーの `<video>` を破棄し入場レイヤーに新規 `<video>` を生成→`src` 再代入するため、境界フレームでデコードが間に合わず空フレーム化（実測 f60 で `readyState=0, videoWidth=0`、回復まで ≈3–4 フレーム）。既存 warm-up（`primeMountedVideos`/play gate）は「再生開始時にマウント済みを prime」するだけで再生途中の境界には無効。
 - **修正**: DomRenderer に **assetId 単位の `<video>` 再利用プール**（[videoElementPool.ts](src/runtime/videoElementPool.ts) `KeyedElementPool`・DOM 非依存）を導入。離脱レイヤーの要素を破棄せず（mute+pause+detach して）プールへ退避し、入場レイヤーが同一アセットなら再利用（src 同一→再ロード/再デコード不要・現在時刻からシームレス継続）。**renderFrame の削除ループを入場処理の前へ移動**（境界フレームで退避→再利用の順序を成立させるのが肝）。同一アセット同時表示はプール空→新規生成へフォールバック。dispose でプール要素も明示破棄。preview/bundle 専用、export 経路は `waitForVideoFrame`/`flushVideoFrames` がデコードを待つため決定論不変（INV-2）。
 - **spec**: [§11.4](doc/mafter-effect-spec.md) warm-up 節に「カット境界の `<video>` 要素再利用」散文を追記（INV/§5 不変）。
-- **検証**: 実機 harness（Comp 23 を zip import→再生）で**境界 f60 が `rs=0`→`rs=4 vw=1080` に改善**・再生中 NOT READY ゼロ・scrub 無回帰を確認。`npm test` **594 PASS**（新規 [test/videoElementPool.test.ts](test/videoElementPool.test.ts) 6 件含む）。video を含まない comp では renderFrame 挙動はループ順序入替のみでバイト等価＝既存 export 経路は構造的に無回帰。
-- **コミット注記**: 本コミットは flicker 修正のソースのみ（DomRenderer / videoElementPool / test / spec§11.4 / progress）。**`public/player.js`（HTML bundle 用）は再ビルドすると未コミットの animated raster runtime も同梱するため本コミットに含めない**。bundle への反映は animated raster 機能コミット時の player.js 再ビルドで行う（preview/mp4/png は src を直接 import するため本コミットで即反映）。
+- **検証**: 実機 harness（Comp 23 を zip import→再生）で**境界 f60 が `rs=0`→`rs=4 vw=1080` に改善**・再生中 NOT READY ゼロ・scrub 無回帰を確認。`npm test` **594 PASS**（新規 [test/videoElementPool.test.ts](test/videoElementPool.test.ts) 6 件含む）。`public/player.js` 再ビルド済み（freshness 緑）。video を含まない comp では renderFrame 挙動はループ順序入替のみでバイト等価＝既存 export 経路は構造的に無回帰。
 - **follow-up（本タスク対象外）**: 異なるアセット間の境界はプール空でコールド（先読み warm-up が必要）。プールは未帰還アセットの要素を dispose まで保持（長セッションで上限導入の余地）。
 
 ### 2026-06-30（Claude Opus）— 旧 HW での動画レイヤー再生スタッタ修正（対策 A）✅

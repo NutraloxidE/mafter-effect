@@ -292,23 +292,23 @@ export class DomRenderer implements Renderer {
       entry.threeD = obj.threeD === true;
       this.applyObject(entry, obj, frame);
     }
+
+    // §11.4 入場処理で再利用されずプールに残った <video> を静音（離脱クリップの音漏れ防止）。
+    this.quiescePooledVideos();
   }
 
   /**
    * §11.4 離脱した entry の `<video>` を assetId 単位プールへ退避する（破棄しない）。
-   * DOM からは外すが要素参照・src・デコーダ状態は保持し、muted+pause 済みにする（音漏れ防止）。
+   * DOM から外すだけで **pause/mute はしない**: 同一フレームで入場レイヤーが同一アセットを
+   * 再利用する場合に再生を止めると、内蔵音声が一瞬ミュート→再 seek→再 play で「急落→急上昇」
+   * （ぶつ切り）になる。`<video>` は DOM から外しても再生継続する。再利用されず残った要素は
+   * `quiescePooledVideos`（add ループ後）で pause+mute する＝遅延静音で音漏れも防ぐ。
    */
   private stashVideosToPool(entry: ObjectEntry): void {
     for (const el of entry.children) {
       if (!(el instanceof HTMLVideoElement)) continue;
       const assetId = el.dataset.mafterVideoAsset;
       if (!assetId) continue;
-      try {
-        el.muted = true;
-        if (!el.paused) el.pause();
-      } catch {
-        /* muted/pause best-effort */
-      }
       if (el.parentNode) el.parentNode.removeChild(el);
       this.videoPool.stash(assetId, el);
     }
@@ -317,6 +317,22 @@ export class DomRenderer implements Renderer {
   /** §11.4 同一アセットの空き `<video>` をプールから1つ取り出す（無ければ null）。 */
   private acquireVideoFromPool(assetId: string): HTMLVideoElement | null {
     return this.videoPool.acquire(assetId);
+  }
+
+  /**
+   * §11.4 このフレームで再利用されずプールに残った `<video>` を pause+mute する（遅延静音）。
+   * 退避時に止めないことで同一アセット連結カットの音声を連続させ、本当に離脱した（同一アセットの
+   * 入場が無い）要素だけをここで静音する。冪等（既に停止済みは無害）。
+   */
+  private quiescePooledVideos(): void {
+    for (const el of this.videoPool.peekAll()) {
+      try {
+        el.muted = true;
+        if (!el.paused) el.pause();
+      } catch {
+        /* muted/pause best-effort */
+      }
+    }
   }
 
   resize(w: number, h: number): void {
@@ -500,6 +516,8 @@ export class DomRenderer implements Renderer {
         }
       }
     }
+    // §11.4 プールに退避した（再生継続中かもしれない）<video> も停止・静音する。
+    this.quiescePooledVideos();
   }
 
   private applyObject(entry: ObjectEntry, obj: ResolvedObject, frame: Frame): void {

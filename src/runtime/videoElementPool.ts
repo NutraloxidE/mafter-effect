@@ -29,6 +29,13 @@ export class KeyedElementPool<T> {
     return el;
   }
 
+  /** 退避中の全要素を破壊せず列挙する（再利用されず残った要素の遅延静音などに使う）。 */
+  peekAll(): T[] {
+    const all: T[] = [];
+    for (const list of this.free.values()) all.push(...list);
+    return all;
+  }
+
   /** 退避中の全要素を返してプールを空にする（dispose 時の teardown 用）。 */
   drain(): T[] {
     const all: T[] = [];
