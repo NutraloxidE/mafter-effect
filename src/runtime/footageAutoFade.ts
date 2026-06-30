@@ -11,7 +11,7 @@
 import type { Frame, TimelineComposition } from "../core/schema";
 
 /** declick フェードの既定長（ミリ秒）。短いほど目立たず、長いほど確実にポップが消える。 */
-export const DEFAULT_AUTO_FADE_MS = 300;
+export const DEFAULT_AUTO_FADE_MS = 120;
 
 /** フェード抑制判定に必要なクリップの純データ（audio / video 共通）。 */
 export interface FadeClip {
