@@ -546,7 +546,10 @@ export class DomRenderer implements Renderer {
     }
 
     const sig = obj.components.map((c) => c.type).join("|");
-    if (sig !== entry.childSig) {
+    // §11.4 このフレームで entry の子要素を作り直した＝カット境界（プールから別クリップ用に
+    // <video> を再取得した可能性がある）。video の resync を半フレーム精度に強制する合図として使う。
+    const childrenRebuilt = sig !== entry.childSig;
+    if (childrenRebuilt) {
       // html comp が含まれていた場合は player のエントリも解放してから作り直す
       if (entry.childSig.split("|").includes("html")) {
         this.htmlPlayer?.unmountObject(obj.id);
@@ -573,7 +576,7 @@ export class DomRenderer implements Renderer {
       const el = entry.children[i];
       if (el) {
         const hostInPoint = (c.props["_hostInPoint"] as number | undefined) ?? 0;
-        updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, frame, hostInPoint, this.currentComp?.fps ?? 30, this.previewVideoPlayback, this.exportVideoStep);
+        updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, frame, hostInPoint, this.currentComp?.fps ?? 30, this.previewVideoPlayback, this.exportVideoStep, childrenRebuilt);
       }
 
       // Plugin component: registry から ComponentDef.render を呼ぶ（組み込み型は未登録でスキップ）
@@ -1547,6 +1550,7 @@ function updateComponentEl(
   fps = 30,
   previewVideoPlayback = false,
   exportVideoStep = false,
+  forceSeek = false,
 ): void {
   switch (type) {
     case "solid": {
@@ -1610,7 +1614,7 @@ function updateComponentEl(
       // §11.4 内蔵音声の音量（resolve 済み scalar）。再生中のみ実際に鳴る（muted 制御は syncVideoElementTime）。
       const gain = typeof props["gain"] === "number" ? (props["gain"] as number) : 1;
       video.volume = Math.max(0, Math.min(1, gain));
-      syncVideoElementTime(video, t, fps, { playbackMode: previewVideoPlayback, exportStep: exportVideoStep });
+      syncVideoElementTime(video, t, fps, { playbackMode: previewVideoPlayback, exportStep: exportVideoStep, forceSeek });
       if (exportVideoStep) {
         video.setAttribute(EXPORT_VIDEO_TARGET_ATTR, String(t));
       } else {

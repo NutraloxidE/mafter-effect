@@ -6,6 +6,14 @@
 
 ---
 
+### 2026-07-01（Claude Sonnet 5）— 同一アセット連結カットで trim-in の seek 抜け修正（video pooling）✅
+
+- **症状（ユーザー報告）**: 同一動画リソースから作られた2クリップが連続再生されたとき、次クリップの trim-in が前クリップの停止位置に近い（差 0.5 秒未満）と seek されず、あたかも1クリップが続いているように見える。
+- **原因**: [videoElementSync.ts](src/runtime/videoElementSync.ts) `syncVideoElementTime` の再生中 resync 判定が `PLAYBACK_RESYNC_THRESHOLD_SEC`（0.5秒、decode lag 吸収用）を使っており、「カット境界でプールから別クリップ用に `<video>` を再取得した」ことを一切区別していなかった（`fd8d09f`/`2e5e36c` の video 要素プール再利用が原因を作った）。真に連続するカット（差ゼロ）だけでなく、差はあるが 0.5 秒未満のケースまで誤って seek をスキップしていた。
+- **修正**: `VideoElementSyncOptions` に `forceSeek?: boolean` を追加し、再生中 resync の閾値を forceSeek 時は半フレーム精度（`videoSeekThresholdSec`）に切り替え。[DomRenderer.ts](src/runtime/DomRenderer.ts) `applyObject` で `childrenRebuilt = sig !== entry.childSig`（＝このフレームで entry の子要素を作り直した＝カット境界）を検出し、video の `updateComponentEl`/`syncVideoElementTime` 呼び出しへ伝播。真に連続するカットは半フレーム以内なら引き続き無音継続を維持。ネスト comp 描画パスは毎フレーム新規 `<video>` を作るため無変更（`video.paused` 経路が既に厳密）。
+- **検証**: [test/videoElementSync.test.ts](test/videoElementSync.test.ts) に forceSeek のケース2件追加（0.2秒差は seek される／半フレーム以内は無音継続維持）。`npm test` **618 PASS**。`npx tsc` は既存 TimelinePanel TS6133 のみ（無関係）。`public/player.js` は hook で自動再ビルド済み（freshness 緑）。
+- **未実施**: 実機 Playwright 検証（trim-in の異なる2クリップを連続配置し `currentTime` を確認）は未実施——次セッションでの follow-up。
+
 ### 2026-06-30（Claude Opus）— declick フェードを cubic-bezier「slow in / fast out」に（全経路ジッパー除去・§11.5.2）✅
 
 - **要望**: 「どの経路でもジッパーノイズが発生しないようにスムーズに。ベジェ曲線で slow in / fast out」。
@@ -180,7 +188,6 @@
 
 ## 既知のバグ・未解決課題
 
-- **§11.7 HTML bundle — MP4 入りコンポの再生もっさり（優先度高）**: 動画 Footage（`component.type === "video"`）を含む timeline comp を **HTML bundle（§11.7）で書き出し、player で再生**すると preview より重く・カクついて感じる（MP4 export のもっさり issue と同型の症状が bundle 再生経路でも報告）。bundle は video を bake せず live `<video>` + 同梱 mp4 で再生する設計だが、現状は **Preview パネルで直した `previewVideoPlayback`（`video.play()` でネイティブ decode に任せる）経路と完全には一致していない**可能性が高い（毎フレーム `renderFrame` → seek / DOM reconcile 由来のオーバーヘッド等）。**想定修正方針**: PreviewPanel / [videoElementSync.ts](src/runtime/videoElementSync.ts) と同様に BundlePlayer から `previewVideoPlayback: true` を再生中一貫適用し、停止・スクラブ時のみ seek（[BundlePlayer.ts](src/player/BundlePlayer.ts) は一部配線済みだが不十分の可能性）。関連: [doc/issue/video-footage-export-sluggish.md](doc/issue/video-footage-export-sluggish.md)（MP4 export 側の追跡 issue・症状は近いが経路は別）。
 - **§27.3 SVG 5 種の export 一致（INV-2）未検証**: wave/ripple/turbulent/linearWipe/angularWipe の preview↔export ピクセル parity（feImage href が foreignObject ラスタ経路で再現するか）。pixelSorter は検証済み。
 - **Issue B（[doc/distortion-effect-bugs.md](doc/distortion-effect-bugs.md)）**: turbulent プレビュー左端グレー枠の歪み漏れ。未着手。
 - **Issue C / fastTurbulent centroid**: 強 amount で centroid ~6–8px ドリフト残（[effectRouting.ts](src/runtime/effectRouting.ts) で self-capture raster 統一後も残るチューニング課題）。
@@ -202,9 +209,10 @@
 
 ## Next steps（次のセッションでやること）
 
-**優先順位: 既知バグ修正（**動画 bundle もっさり含む**）> 手動回帰 > 新機能。**
+**優先順位: 既知バグ修正 > 手動回帰 > 新機能。**
 
-0. **§11.7 HTML bundle — MP4 入りコンポの再生もっさり（優先度高）** — 動画 Footage 入り comp を HTML bundle 書き出し → player 再生で preview より重い。Preview 経路と同じ `previewVideoPlayback` + `video.play()` 方式に揃えれば治りそう（[videoElementSync.ts](src/runtime/videoElementSync.ts) / [BundlePlayer.ts](src/player/BundlePlayer.ts) / [DomRenderer.ts](src/runtime/DomRenderer.ts)）。`verify-video-import-edges.mjs` の preview 系 + bundle player 実機で before/after 計測。MP4 export 側は [doc/issue/video-footage-export-sluggish.md](doc/issue/video-footage-export-sluggish.md) で別追跡。
+> ~~§11.7 HTML bundle — MP4 入りコンポの再生もっさり~~ — **解消済み**（2026-06-26 の bundle blob URL 化・preview native play() 統一・drift resync 緩和・warm up 等の積み重ねで解決。ユーザー確認済み）。
+
 0b. **先読み warm-up（優先度中）— 異なるアセット間のカット境界** — カット境界の `<video>` 要素再利用プール（2026-06-30 実装済み）は**同一アセットの連結カット**のデコードギャップは解消したが、**異なるアセット同士の境界**は入場側のプールが空でコールド（新規 `<video>` を境界フレームで生成→デコード未完→数フレーム空白）。対策: 再生中、in 点が近い（次 ~0.5–1s）video レイヤーの `<video>` を **in 点より前に offscreen 先行マウント＋ prime**（[primeVideoElement](src/runtime/videoElementSync.ts) / [videoWarmupCache.ts](src/runtime/videoWarmupCache.ts) を流用）。preview/bundle 専用・export 非干渉（INV-2）。実機 harness で別アセット境界の readyState を before/after 計測。
 1. **手動回帰（残）** — §25 Preview（直接操作・ズーム・オーバーレイ・animated KF 書き戻し）/ §24 Ease パネル（F9 メニュー・グラフエディタとの SSoT 共有）。
 2. **verify スクリプト更新** — `verify-preview-cache.mjs` / `verify-effects.mjs` を現行 UX（cache 既定 OFF・project ロード手順）に合わせて修正。

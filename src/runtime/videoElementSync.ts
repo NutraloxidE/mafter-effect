@@ -143,6 +143,13 @@ export interface VideoElementSyncOptions {
   playbackMode: boolean;
   /** mp4/png export: 各フレームを正確な target 時刻へ決定論 seek（INV-2） */
   exportStep?: boolean;
+  /**
+   * true = このフレームでカット境界を跨いだ（entry の子要素を作り直した／プールから
+   * 別クリップ用に再取得した）。再生中の resync 判定を緩い PLAYBACK_RESYNC_THRESHOLD_SEC
+   * ではなく半フレーム精度で行い、trim-in が前クリップの停止位置とわずかにズレる
+   * ケースで seek が抜けるのを防ぐ（真に連続するカットは半フレーム以内なら無音継続を維持）。
+   */
+  forceSeek?: boolean;
 }
 
 /** 半フレーム未満の差は無視（scrub/export の過剰 seek 抑制）。 */
@@ -230,7 +237,10 @@ export function syncVideoElementTime(
     // 再生中は drift 矯正 seek をしない。本当の不連続（ループ復帰・大ジャンプ）でのみ
     // 再同期し、通常の decode lag drift はネイティブ play() の追従に任せる（旧 HW の
     // 自己増殖 seek ループ＝映像ガクつきを断つ）。
-    if (Math.abs(video.currentTime - targetSec) > PLAYBACK_RESYNC_THRESHOLD_SEC) {
+    // forceSeek（カット境界でプールから再取得した直後）は緩い閾値だと trim-in のズレを
+    // 見逃すため、半フレーム精度で判定する。
+    const resyncThreshold = options.forceSeek ? seekThreshold : PLAYBACK_RESYNC_THRESHOLD_SEC;
+    if (Math.abs(video.currentTime - targetSec) > resyncThreshold) {
       try {
         video.currentTime = targetSec;
       } catch {

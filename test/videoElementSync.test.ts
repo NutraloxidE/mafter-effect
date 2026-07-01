@@ -104,6 +104,21 @@ describe("syncVideoElementTime", () => {
     expect(video.currentTime).toBe(1.0);
   });
 
+  it("forceSeek resyncs at half-frame precision even within the loose playback threshold", () => {
+    // カット境界（プール再取得）: 差 0.2s は旧閾値(0.5s)未満のため通常なら seek されないが、
+    // forceSeek=true なら trim-in のズレを正しく検出して seek する。
+    const video = mockVideo(0.8, false);
+    syncVideoElementTime(video, 1.0, 30, { playbackMode: true, forceSeek: true });
+    expect(video.currentTime).toBe(1.0);
+  });
+
+  it("forceSeek does not seek when the cut is truly contiguous (within half a frame)", () => {
+    // trim-in が前クリップの停止位置と一致する連続カット: forceSeek でも無音継続を維持する。
+    const video = mockVideo(1.0, false);
+    syncVideoElementTime(video, 1.0 + 1 / 120, 30, { playbackMode: true, forceSeek: true });
+    expect(video.currentTime).toBe(1.0);
+  });
+
   it("resyncs when drift is large during playback", () => {
     const video = mockVideo(0, false);
     syncVideoElementTime(video, 1, 30, { playbackMode: true });
