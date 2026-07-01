@@ -10,6 +10,7 @@ import { collectBundleDependencies } from "../runtime/bundleCollect";
 import { collectExportProxyJobs } from "../runtime/footagePlayback";
 import { useEditorStore } from "./store";
 import type { Project } from "../core/schema";
+import { feedbackCollector } from "./feedbackCollector";
 
 interface Props {
   project: Project;
@@ -82,6 +83,7 @@ export function ExportDialog({ project, compId, onClose }: Props) {
         const ok = await ensureProxyTier(job.assetId, job.quality);
         if (!ok) {
           setError(`プロキシ生成に失敗しました（asset ${job.assetId} / ${job.quality}）。`);
+          feedbackCollector.onExportError();
           return;
         }
       }
@@ -108,13 +110,16 @@ export function ExportDialog({ project, compId, onClose }: Props) {
           `${format.toUpperCase()} で書き出せず PNG 連番 (${ext}) になりました。`
           + (result.fallbackReason ? `\n理由: ${result.fallbackReason}` : ""),
         );
+        feedbackCollector.onExportFallback();
       }
     } catch (e) {
       if (e instanceof DOMException && e.name === "AbortError") {
         setProgress(null);
+        feedbackCollector.onExportCancelled();
       } else {
         setError(String(e));
         setProgress((p) => p ? { ...p, phase: "error" } : null);
+        feedbackCollector.onExportError();
       }
     } finally {
       abortRef.current = null;

@@ -6,6 +6,91 @@
 
 ---
 
+### 2026-07-02（Claude Sonnet 5）— ヘッダーに「バグ / フィードバックを送信」リンク追加 + `.env` の VITE_FEEDBACK_TOKEN 欠落バグ修正 ✅
+
+- **追加**: [App.tsx](src/App.tsx) の上部メニューバー、「M1 preview」表示の左に「バグ / フィードバックを送信」
+  リンクを追加。既存の `FeedbackSendModal`（催促トースト・ProjectPanel手動送信ボタンと共通）を再利用し、
+  `isFeedbackEnabled()` でゲート（トークン無しビルドでは非表示、他箇所と統一）。
+- **発見・修正した実バグ**: 前セッションで `.env` に `FEEDBACK_INGEST_TOKEN` は追加したが、
+  **クライアントに焼き込む `VITE_FEEDBACK_TOKEN` を追加し忘れていた**ため、`isFeedbackEnabled()` が
+  ローカル dev・本番デプロイ両方で常に `false` になり、ヘッダーリンク・トースト・ProjectPanel送信ボタンが
+  すべて表示されていなかった（サーバ側 smoke test は Node スクリプトが `.env` から直接トークンを読んで
+  curl していたため、この不具合に気づけていなかった＝クライアント経路を実ブラウザで通していなかったのが盲点）。
+  `.env` に `VITE_FEEDBACK_TOKEN=${FEEDBACK_INGEST_TOKEN}`（Vite の dotenv-expand 展開）を追記し、
+  ローカル dev server 再起動 + 本番再デプロイの両方で Playwright 実機確認（リンク表示→クリック→モーダル
+  オープン）まで完了。
+- **教訓**: `VITE_` 系ビルド変数を追加するときは、**実際にクライアントの実行時に効いているか
+  （サーバ側の代理チェックだけで満足しない）を実ブラウザで確認する**こと。
+
+### 2026-07-02（Claude Sonnet 5）— フィードバック収穫ループ v1 実装（サーバ・シグナル・催促UI・収穫・エージェントスキル）✅
+
+- **背景**: `.cursor/plans/feedback_harvest_loop_bf981079.plan.md` と、その添削監査
+  `.cursor/plans/feedback_undefined_audit_091af114.plan.md`（G2/G27/G28 の非破壊3条件）に基づき、
+  デプロイ先エディタの「不便シグナル」検知→催促→収穫→要約→提案までの一連のループを一気に実装。
+  spec（`doc/mafter-effect-spec.md`）とは分離した運用機能のため §5/INV 変更なし。
+- **Phase 1（サーバ・deploy）**: [`scripts/mafter_http_server.py`](scripts/mafter_http_server.py)（stdlib のみ、
+  static 配信 + `POST /api/feedback`。トークン未設定なら feedback API は 404 で static 専用に振る舞う＝
+  非破壊条件1）。[`scripts/deploy-ssh.mjs`](scripts/deploy-ssh.mjs) の `configureRemoteServer` を
+  **python 統合サーバ一本**に置き換え（Docker/Caddy デュアルパスは v2 へ、`buildCaddyfile` は削除）。
+  起動前に `pkill -f mafter_http_server.py` 等で冪等化（非破壊条件3）。python スクリプト転送は
+  base64+exec だとサイズ的に不安があったため SFTP 経由（`sftpWriteFile`）に変更。
+- **Phase 2（シグナル・UI）**: [`feedbackSignals.ts`](src/editor/feedbackSignals.ts)（純関数・`BurstTracker` /
+  `ReversalTracker` / `KeyedBurstTracker` + スコア減衰、単体テスト12件）→
+  [`feedbackCollector.ts`](src/editor/feedbackCollector.ts)（シングルトン、閾値30・クールダウン30分・
+  セッション最大2回、`VITE_FEEDBACK_TOKEN` 未設定時は常に無効化）→
+  [`FeedbackPrompt.tsx`](src/editor/FeedbackPrompt.tsx)（催促トースト＋送信モーダル）。
+  フックは [`store.ts`](src/editor/store.ts) の `undo`/`redo`/`updateObject`（1箇所で rapid tweak 検知）/
+  `ensureProxyTier` 失敗、[`ExportDialog.tsx`](src/editor/ExportDialog.tsx)（error/cancel/fallback）、
+  [`ProjectPanel.tsx`](src/editor/panels/ProjectPanel.tsx)（zip失敗＋手動送信ボタン、トークン無しは非表示）、
+  [`TimelinePanel.tsx`](src/editor/panels/TimelinePanel.tsx) の ruler scrub（方向反転検知）。
+- **Phase 3**: [`scripts/harvest-feedback.mjs`](scripts/harvest-feedback.mjs)（SSH 収穫、ローカル保存成功後のみ
+  リモート archive へ copy→検証→delete）。`npm run harvest:feedback`。
+- **Phase 4**: [`scripts/summarize-feedback.mjs`](scripts/summarize-feedback.mjs)（決定論の集計 JSON）＋
+  3スキル（[run-feedback-loop](.claude/skills/run-feedback-loop/SKILL.md) /
+  [summarize-user-feedback](.claude/skills/summarize-user-feedback/SKILL.md) /
+  [propose-from-user-feedback](.claude/skills/propose-from-user-feedback/SKILL.md)）。すべて Agent 非依存
+  （Cursor/Claude Code 等どれでも同じ SKILL.md で動く）。implementation-loop Phase 4d に接続済み。
+- **ドキュメント**: [`doc/feedback-payload.md`](doc/feedback-payload.md)（JSON スキーマ）、
+  [`doc/feedback-loop.md`](doc/feedback-loop.md)（運用正本）、`.env.example` 新規作成、
+  `.gitignore` に `feedback/inbox/`・`feedback/reports/` 追加。
+- **検証（実施済み）**:
+  - `npm test` 全体 **630 PASS**（新規 [test/feedbackSignals.test.ts](test/feedbackSignals.test.ts) 12件含む）。
+    `projectBins.test.ts` の単発flakeは無関係（stash して未変更 main でも再現、ULID絡みの既知の pre-existing flake）。
+  - `npx tsc --noEmit` 新規エラーなし（既存 `TimelinePanel.tsx` の TS6133 3件は無関係の pre-existing dead/WIP コード、
+    git stash で確認済み）。
+  - `npx vite build` 成功（196 modules）。`__APP_VERSION__` 注入確認、トークン未設定時に feedback 機能が
+    正しく無効化されることをビルド成果物で確認。
+  - `mafter_http_server.py` を実際に起動し curl で auth/バリデーション/rate limit(10req/min)/payload size
+    (8KB)/static フォールバック/トークン無しモードを全て手動検証。
+  - **Playwright で実ブラウザ end-to-end**: `VITE_FEEDBACK_TOKEN` 有効ビルドで dev server 起動 →
+    実際の signal 発火（export_error + undo burst）→ 催促トースト表示 → モーダルでシグナル表示確認 →
+    テキスト入力 → 送信 → 実際に `Authorization: Bearer <token>` 付き `POST /api/feedback` が正しい
+    schema で発火することを確認 → その実ペイロードを実サーバに再送し jsonl append（UTF-8含む日本語メッセージ
+    含め）まで一気通貫で確認。
+- **実デプロイ smoke test（追ってユーザーが実行、同日中に完了）** ✅:
+  `https://4bbaff83-9f31-4326-9453-a6d903d8a166-w1.gycp.party` へ `npm run deploy:ssh` 実行 →
+  `GET /` 200・有効トークンで `POST /api/feedback` 200（jsonl append 確認）・無トークン/誤トークンで
+  401・`npm run harvest:feedback` でリモート `inbox/` → ローカル取得＋リモート `archive/` へ移動確認・
+  `npm run summarize:feedback` で正しい集計まで一気通貫で確認。
+- **デプロイ中に発見・修正した実バグ2件**（`npm run build` をフルパスで初めて通し、実際に
+  `deploy:ssh` を実行して初めて顕在化。ローカル検証だけでは踏めなかった）:
+  1. **`TimelinePanel.tsx` の pre-existing TS6133 ×3**（WIP でコメントアウト済みの `statusMsg` 表示・
+     `flashStatus` 呼び出しの戻り値 `n` が未使用）が `npm run build`（`tsc --noEmit` 必須）を丸ごとブロックしていた。
+     挙動を変えず最小修正（`const [, setStatusMsg] = ...` / `const n = ...` の捕捉を削除）。
+  2. **`configureRemoteServer` の `pkill -f mafter_http_server.py` 自己マッチバグ**: ssh2 の
+     `client.exec()` は複合コマンド全体を1つの `sh -c "..."` で実行するため、素の `pkill -f pattern` は
+     「このコマンドを実行中のシェル自身の argv」にもパターン文字列がそのまま含まれておりマッチし、
+     SIGTERM を受けて exec チャンネルが `code=null`（signal 終了）で死ぬ → 以降のコマンド
+     （nohup 起動含む）が一切実行されず deploy 全体が失敗する、という実機でしか踏めないバグだった。
+     `pkill -f '[p]ython3 -m http.server'` / `'[m]after_http_server.py'` の**ブラケットトリック**
+     （grep/pkill の自己マッチ回避の定石）で修正・実機で再現→解消を確認。
+- **既知の制約 / follow-up（v2 以降）**:
+  - Docker/Caddy デュアルパス・TLS（`:443`）は v1 スコープ外（python `:80` 単一プロセスのみ）。
+  - `scripts/deploy-ssh-lib.mjs` への SSH 共通化（G14）は監査で v1 スコープ外に降格済み。
+    `harvest-feedback.mjs` は意図的に `deploy-ssh.mjs` と接続まわりのコードを小さく重複させている。
+  - `VITE_FEEDBACK_TOKEN` はビルドに平文で焼き込まれる仕様（漏洩許容・秘密鍵ではない）。abuse 対策は
+    サーバ側 rate limit のみ。悪用時は `.env` の `FEEDBACK_INGEST_TOKEN` をローテして再 deploy。
+
 ### 2026-07-01（Claude Sonnet 5）— 同一アセット連結カットで trim-in の seek 抜け修正（video pooling）✅
 
 - **症状（ユーザー報告）**: 同一動画リソースから作られた2クリップが連続再生されたとき、次クリップの trim-in が前クリップの停止位置に近い（差 0.5 秒未満）と seek されず、あたかも1クリップが続いているように見える。

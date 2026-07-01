@@ -41,6 +41,7 @@ import { EXPRESSION_PRESETS, type ExpressionPresetId } from "../expressionPreset
 import { previewCacheService } from "../previewCacheService";
 import { framesToSegments } from "../cacheSegments";
 import { precompChildToParentFrame } from "../../cache/precompFrameKey";
+import { feedbackCollector } from "../feedbackCollector";
 import { loadWorkArea } from "../workAreaStorage";
 import { isValidParent, listParentCandidates } from "../parentLink";
 import { buildReparentPatch } from "../reparent";
@@ -208,7 +209,8 @@ export function TimelinePanel() {
   // P1-6: レイヤーバードラッグ（trim/slide）をパネルにリフトアップ。複数選択を一括移動するため。
   const [barDrag, setBarDrag] = useState<{ ids: Set<string>; mode: "in" | "out" | "move"; delta: number } | null>(null);
   // 操作フィードバック（コピー/ペースト等）。一定時間で消える。
-  const [statusMsg, setStatusMsg] = useState<string>("");
+  // 表示（statusMsg の読み出し）は WIP でコメントアウト中のため setter のみ使用。
+  const [, setStatusMsg] = useState<string>("");
   const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const flashStatus = (msg: string) => {
     setStatusMsg(msg);
@@ -810,8 +812,16 @@ export function TimelinePanel() {
   // プレイヘッドドラッグ
   const startScrub = (e: React.MouseEvent) => {
     const scrubStart = frame;
-    setFrame(snapFrame(pxToFrame(e.clientX), scrubStart));
-    const move = (ev: MouseEvent) => setFrame(snapFrame(pxToFrame(ev.clientX), scrubStart));
+    // フィードバックループ G8: ruler scrub の方向反転検知（scrub_oscillation）用。
+    let lastScrubFrame = scrubStart;
+    const applyScrubFrame = (next: number) => {
+      const delta = next - lastScrubFrame;
+      if (delta !== 0) feedbackCollector.onScrubFrame(delta);
+      lastScrubFrame = next;
+      setFrame(next);
+    };
+    applyScrubFrame(snapFrame(pxToFrame(e.clientX), scrubStart));
+    const move = (ev: MouseEvent) => applyScrubFrame(snapFrame(pxToFrame(ev.clientX), scrubStart));
     const up = () => {
       window.removeEventListener("mousemove", move);
       window.removeEventListener("mouseup", up);
@@ -978,18 +988,18 @@ export function TimelinePanel() {
       if ((e.ctrlKey || e.metaKey) && (e.key === "x" || e.key === "X")) {
         if (selectedKfs.size > 0) {
           e.preventDefault();
-          const n = copySelectedKfsToClipboard();
+          copySelectedKfsToClipboard();
           applyMultiKfDelete(selectedKfs);
           // WIP: コピペ通知は上部ツールバーのレイアウトを分厚くするため一時無効。後でどうにかする必要がある。
-          // flashStatus(`✂ ${n} キーフレームをカット`);
+          // flashStatus(`✂ ${copySelectedKfsToClipboard()} キーフレームをカット`);
           return;
         }
         if (selectedIds.length > 0) {
           e.preventDefault();
-          const n = copySelectedLayersToClipboard();
+          copySelectedLayersToClipboard();
           removeObjects(selectedIds);
           // WIP: コピペ通知は上部ツールバーのレイアウトを分厚くするため一時無効。後でどうにかする必要がある。
-          // flashStatus(`✂ ${n} レイヤーをカット`);
+          // flashStatus(`✂ ${copySelectedLayersToClipboard()} レイヤーをカット`);
           return;
         }
         return;

@@ -17,3 +17,8 @@ npm-debug.log*
 # vite / vitest cache
 .vite/
 coverage/
+
+# フィードバックループ（doc/feedback-loop.md）: 収穫した生データ・生成レポートは非コミット。
+# reports は手動でレビュー後に個別 git add することは可（doc/feedback-loop.md 参照）。
+feedback/inbox/
+feedback/reports/

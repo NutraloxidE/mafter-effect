@@ -5,9 +5,11 @@ import { access, mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 import { Client } from "ssh2";
 
 const isWindows = process.platform === "win32";
+const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 
 const HELP_TEXT = `Deploy local build artifacts to a remote host over SSH.
 
@@ -23,17 +25,24 @@ Options:
   --password <password>       SSH password (prefer DEPLOY_PASSWORD in .env)
   --local-path <path>         Local directory to upload (default: dist)
   --remote-path <path>        Remote destination directory (default: ~/mafter-effect)
-  --site-host <host>          Public host for HTTPS cert (default: DEPLOY_HOST host part)
-  --tls-email <email>         ACME account email used by Caddy (optional)
-  --no-serve                  Skip remote 80/443 web server setup
+  --site-host <host>          Public host for HTTPS cert (unused in v1 python-only serve; kept for v2 Caddy)
+  --tls-email <email>         ACME account email (unused in v1; kept for v2 Caddy)
+  --no-serve                  Skip remote web server setup
   --build                     Run "npm run build" before deploying
   --clean                     Remove remote-path contents before upload
+  --token <token>             Feedback ingest Bearer token (prefer FEEDBACK_INGEST_TOKEN in .env)
   --help                      Show this help
 
 .env keys:
   DEPLOY_HOST, DEPLOY_USER, DEPLOY_PORT, DEPLOY_PASSWORD, DEPLOY_IDENTITY,
   DEPLOY_LOCAL_PATH, DEPLOY_REMOTE_PATH, DEPLOY_SITE_HOST, DEPLOY_TLS_EMAIL,
-  DEPLOY_BUILD, DEPLOY_CLEAN, DEPLOY_ENABLE_WEB
+  DEPLOY_BUILD, DEPLOY_CLEAN, DEPLOY_ENABLE_WEB,
+  FEEDBACK_INGEST_TOKEN, FEEDBACK_REMOTE_DIR (default: ~/mafter-feedback)
+
+Remote web serving (v1): a single stdlib python3 process
+(scripts/mafter_http_server.py) serves the uploaded static files on :80 and,
+when FEEDBACK_INGEST_TOKEN is set, POST /api/feedback (see doc/feedback-loop.md).
+Caddy/Docker dual-path TLS termination is deferred to v2.
 
 Example:
   npm run deploy:ssh
@@ -56,6 +65,8 @@ function parseArgs(argv) {
     build: false,
     clean: false,
     help: false,
+    feedbackToken: "",
+    feedbackRemoteDir: "",
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -112,6 +123,9 @@ function parseArgs(argv) {
         break;
       case "--tls-email":
         options.tlsEmail = next;
+        break;
+      case "--token":
+        options.feedbackToken = next;
         break;
       default:
         throw new Error(`Unknown option: ${arg}`);
@@ -172,6 +186,8 @@ function mergeOptions(cliOptions, envValues) {
   options.serve = options.serve && parseBoolean(envValues.DEPLOY_ENABLE_WEB, true);
   options.build = options.build || parseBoolean(envValues.DEPLOY_BUILD, false);
   options.clean = options.clean || parseBoolean(envValues.DEPLOY_CLEAN, false);
+  options.feedbackToken = options.feedbackToken || envValues.FEEDBACK_INGEST_TOKEN || "";
+  options.feedbackRemoteDir = options.feedbackRemoteDir || envValues.FEEDBACK_REMOTE_DIR || "~/mafter-feedback";
   return options;
 }
 
@@ -235,22 +251,6 @@ function resolveRemotePath(remotePath, remoteHome) {
     return path.posix.join(remoteHome, normalized.slice(2));
   }
   return path.posix.normalize(normalized);
-}
-
-function buildCaddyfile(options) {
-  const globalOptions = options.tlsEmail ? `{\n  email ${options.tlsEmail}\n}\n\n` : "";
-  const commonBody = [
-    "  root * /srv",
-    "  encode gzip zstd",
-    "  file_server",
-    "  try_files {path} /index.html",
-  ].join("\n");
-
-  if (options.siteHost) {
-    return `${globalOptions}${options.siteHost} {\n${commonBody}\n}\n`;
-  }
-
-  return `:80 {\n${commonBody}\n}\n\n:443 {\n  tls internal\n${commonBody}\n}\n`;
 }
 
 function resolveLocalCommand(command) {
@@ -639,64 +639,64 @@ async function uploadDirectory(client, localRoot, remotePath) {
   await uploadDirectoryViaSftp(client, localRoot, remoteRoot);
 }
 
-async function writeRemoteFileViaExec(client, remotePath, content) {
-  const encoded = Buffer.from(content, "utf8").toString("base64");
-  await execRemote(
-    client,
-    `mkdir -p $(dirname ${remotePath}) && printf '%s' ${shellQuote(encoded)} | base64 -d > ${remotePath}`
-  );
-}
-
+// v1 確定（doc/feedback-loop.md Phase1, .cursor/plans/feedback_harvest_loop_bf981079.plan.md）:
+// リモート配信は python 統合サーバ一本（scripts/mafter_http_server.py）。Caddy/Docker デュアルパスは v2。
+// 実測（probe-deploy-remote.mjs, 2026-07-01）で Docker デーモンは常に未起動だったため、
+// 旧来の「Docker があれば Caddy、無ければ python fallback」を廃し python 一本化する。
 async function configureRemoteServer(client, options, remoteShellTarget) {
-  const deployRoot = '"$HOME/.mafter-deploy"';
-  const caddyData = '"$HOME/.mafter-deploy/caddy-data"';
-  const caddyConfig = '"$HOME/.mafter-deploy/caddy-config"';
-  const caddyfilePath = '"$HOME/.mafter-deploy/Caddyfile"';
-  const caddyfile = buildCaddyfile(options);
-
-  await execRemote(
-    client,
-    `mkdir -p ${remoteShellTarget} ${deployRoot} ${caddyData} ${caddyConfig}`
-  );
-  await writeRemoteFileViaExec(client, caddyfilePath, caddyfile);
-
-  const dockerReady = await execRemote(
-    client,
-    "command -v docker >/dev/null 2>&1 && timeout 5 docker info >/dev/null 2>&1 && echo yes || echo no",
-    true
-  );
-
-  if (dockerReady === "yes") {
-    await execRemote(
-      client,
-      "docker rm -f mafter-caddy >/dev/null 2>&1 || true; " +
-        "docker run -d --name mafter-caddy --restart unless-stopped " +
-        "-p 80:80 -p 443:443 " +
-        `-v ${remoteShellTarget}:/srv ` +
-        `-v ${caddyfilePath}:/etc/caddy/Caddyfile ` +
-        `-v ${caddyData}:/data ` +
-        `-v ${caddyConfig}:/config ` +
-        "caddy:2-alpine >/dev/null; " +
-        "echo 'Started Caddy via Docker on :80/:443'"
-    );
-    return;
-  }
-
   const pythonReady = await execRemote(
     client,
     "command -v python3 >/dev/null 2>&1 && echo yes || echo no",
     true
   );
-  if (pythonReady === "yes") {
-    await execRemote(
-      client,
-      'nohup python3 -m http.server 80 --directory "$HOME/mafter-effect" >/tmp/mafter-http.log 2>&1 & sleep 1; echo "Started python3 http.server on :80 (Docker unavailable)"'
+  if (pythonReady !== "yes") {
+    throw new Error(
+      "Files deployed but python3 is not available on the remote host for web serving (v1 requires python3; Caddy/Docker is v2). Re-run with --no-serve or install python3."
     );
-    return;
   }
 
-  throw new Error(
-    "Files deployed but neither Docker nor python3 is available for web serving. Re-run with --no-serve or install Docker."
+  const remoteHome = await execRemote(client, 'printf %s "$HOME"', true);
+  const deployRoot = path.posix.join(remoteHome, ".mafter-deploy");
+  const serverScriptPath = path.posix.join(deployRoot, "mafter_http_server.py");
+  await execRemote(client, `mkdir -p ${shellQuote(remoteHome)} ${shellQuote(deployRoot)}`);
+
+  // 13KB 超になり得るスクリプトを exec+base64 で送ると SSH channel request のサイズ制約に近づくため、
+  // 既に確立済みの SFTP 経由（uploadDirectory と同じ機構）で書き込む。
+  const serverScriptSource = await readFile(
+    path.join(SCRIPT_DIR, "mafter_http_server.py"),
+    "utf8"
+  );
+  const sftp = await openSftp(client);
+  try {
+    await sftpWriteFile(sftp, serverScriptPath, serverScriptSource);
+  } finally {
+    sftp.end();
+  }
+
+  // 非破壊条件3（起動の冪等化）: 旧 `python3 -m http.server` と前回起動の本サーバを止めてから再起動する。
+  // これが無いと再デプロイのたびに :80 へ多重 bind して "address already in use" になる。
+  // パターンは `[x]pattern` トリックで自己マッチを回避する: ssh2 の exec は複合コマンド全体を
+  // 1つの `sh -c "..."` で実行するため、素の `pkill -f mafter_http_server.py` は
+  // パターン文字列そのものを含む「このコマンドを実行中のシェル自身」にもマッチして
+  // SIGTERM を受け、exec チャンネルが code=null（signal 終了）で落ちてしまう
+  // （実機で確認済みのバグ。以降のコマンドが一切実行されず起動処理が丸ごと失敗する）。
+  await execRemote(
+    client,
+    "pkill -f '[p]ython3 -m http.server' >/dev/null 2>&1 || true; " +
+      "pkill -f '[m]after_http_server.py' >/dev/null 2>&1 || true; " +
+      "sleep 1"
+  );
+
+  // トークン未設定なら --feedback-dir/--token を渡さない = static 専用（非破壊条件1: 既存 http.server 相当の挙動）。
+  const feedbackArgs = options.feedbackToken
+    ? ` --feedback-dir ${remoteShellPath(options.feedbackRemoteDir)}/inbox --token ${shellQuote(options.feedbackToken)}`
+    : "";
+
+  await execRemote(
+    client,
+    `nohup python3 ${shellQuote(serverScriptPath)} --port 80 --static ${remoteShellTarget}${feedbackArgs} ` +
+      ">/tmp/mafter-http.log 2>&1 & disown; sleep 1; " +
+      `echo 'Started mafter_http_server.py on :80${options.feedbackToken ? " (static+feedback)" : " (static-only, no FEEDBACK_INGEST_TOKEN)"}'`
   );
 }
 

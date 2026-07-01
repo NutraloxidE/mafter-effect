@@ -3,6 +3,8 @@ import { WorkspaceLayout } from "./editor/WorkspaceLayout";
 import { ContextMenuHost } from "./editor/contextMenu/ContextMenuHost";
 import { defaultWorkspace, ensureEasePanelVisible, ensurePipelinePanelVisible, type LayoutNode, type WorkspaceState } from "./editor/layout";
 import { useEditorStore } from "./editor/store";
+import { FeedbackPrompt, FeedbackSendModal } from "./editor/FeedbackPrompt";
+import { isFeedbackEnabled } from "./editor/feedbackCollector";
 
 const WORKSPACE_KEY = "mafter-workspace-v1";
 
@@ -51,6 +53,7 @@ function updateLayoutTabs(node: LayoutNode, path: number[], active: number): Lay
 
 export function App() {
   const [workspace, setWorkspace] = useState<WorkspaceState>(loadWorkspace);
+  const [showFeedbackModal, setShowFeedbackModal] = useState(false);
 
   const undo = useEditorStore((s) => s.undo);
   const redo = useEditorStore((s) => s.redo);
@@ -129,6 +132,11 @@ export function App() {
           {canUndo ? `${undoStack.past.length} op` : "clean"}
         </span>
         <span style={{ flex: 1 }} />
+        {isFeedbackEnabled() && (
+          <button onClick={() => setShowFeedbackModal(true)} style={feedbackLinkStyle}>
+            バグ報告 / フィードバックを送信
+          </button>
+        )}
         <span style={{ color: "#555", fontSize: 10 }}>M1 preview</span>
       </div>
 
@@ -139,9 +147,25 @@ export function App() {
 
       {/* 単一コントローラのコンテキストメニュー描画ホスト（body ポータル） */}
       <ContextMenuHost />
+
+      {/* フィードバックループ: 不便シグナルの催促トースト（doc/feedback-loop.md） */}
+      <FeedbackPrompt />
+
+      {showFeedbackModal && <FeedbackSendModal onClose={() => setShowFeedbackModal(false)} />}
     </div>
   );
 }
+
+const feedbackLinkStyle: React.CSSProperties = {
+  background: "transparent",
+  border: "none",
+  color: "#7fb8f0",
+  cursor: "pointer",
+  padding: "2px 8px",
+  fontSize: 11,
+  textDecoration: "underline",
+  marginRight: 8,
+};
 
 function menuBtnStyle(enabled: boolean): React.CSSProperties {
   return {

@@ -83,6 +83,7 @@ import {
   type ExpressionPresetId,
 } from "./expressionPresets";
 import { bindExpressionFs } from "./expressionModuleHub";
+import { feedbackCollector } from "./feedbackCollector";
 
 const WAVEFORM_MODE_KEY = "mafter:waveformMode";
 function loadWaveformMode(): WaveformMode {
@@ -462,6 +463,8 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       previewOverride: null,
     }));
     void saveProject(fs, result.project);
+    // フィードバックループ G9: undo バースト検知は undo() のみをフックする（applyCommand は対象外）。
+    feedbackCollector.onUndo();
   },
 
   redo: () => {
@@ -474,6 +477,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       previewOverride: null,
     }));
     void saveProject(fs, result.project);
+    feedbackCollector.onRedo();
   },
 
   setPlaying: (v) => set({ isPlaying: v }),
@@ -715,7 +719,11 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     cmdRemoveObjects(get(), ids);
     set((s) => ({ selectedObjectIds: s.selectedObjectIds.filter((x) => !ids.includes(x)) }));
   },
-  updateObject: (id, patch, label) => cmdUpdateObject(get(), id, patch, label),
+  updateObject: (id, patch, label) => {
+    cmdUpdateObject(get(), id, patch, label);
+    // フィードバックループ G7: param 確定の全経路が通る 1 箇所（updateObject）で rapid_inspector_tweak を検知。
+    if (label) feedbackCollector.onInspectorTweak(`${id}:${label}`);
+  },
   updateObjects: (patches, label) => cmdUpdateObjects(get(), patches, label),
 
   duplicateSelected: () => {
@@ -1230,6 +1238,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     try {
       bytes = await fs.read(originalPath);
     } catch {
+      feedbackCollector.onProxyFailed();
       return false;
     }
     const origMime = typeof asset0.meta?.["mime"] === "string" ? (asset0.meta["mime"] as string) : "";
@@ -1247,7 +1256,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     try {
       if (kind === "animated-raster") {
         const info = await detectAnimatedRaster(file);
-        if (!info) return false;
+        if (!info) { feedbackCollector.onProxyFailed(); return false; }
         const proxy = await buildAnimatedRasterProxy(file, info, tier as ProxyTier);
         proxyBytes = proxy.bytes; proxyMime = proxy.mime; pw = proxy.width; ph = proxy.height;
       } else {
@@ -1255,6 +1264,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         proxyBytes = proxy.bytes; proxyMime = proxy.mime; pw = proxy.width; ph = proxy.height;
       }
     } catch {
+      feedbackCollector.onProxyFailed();
       return false;
     }
 
@@ -1262,6 +1272,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     try {
       await fs.write(proxyPath, proxyBytes);
     } catch {
+      feedbackCollector.onProxyFailed();
       return false;
     }
 

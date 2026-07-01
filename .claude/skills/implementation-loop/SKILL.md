@@ -182,6 +182,9 @@ worked example（2026-06-26）: 動画 export で `inlineVideoFrames` + `exportV
 | 視覚・位置・parity・「見た目がおかしい」 | [debug-visual-render-bug](../debug-visual-render-bug/SKILL.md) **必須** |
 | displacement / filter / 調整レイヤー / ドリフト | [implement-visual-effect](../implement-visual-effect/SKILL.md) |
 | 新 built-in component / 型の配線漏れ | [add-layer-component-type](../add-layer-component-type/SKILL.md) |
+| フィードバック収穫→要約→提案（一文・日常入口） | [run-feedback-loop](../run-feedback-loop/SKILL.md) **推奨** |
+| ユーザーフィードバックの要約のみ | [summarize-user-feedback](../summarize-user-feedback/SKILL.md) |
+| 要約から次タスク提案のみ（実装前） | [propose-from-user-feedback](../propose-from-user-feedback/SKILL.md) |
 
 **バグ修正時**: まず本スキル（Phase 0–2）で地図化 → 視覚系なら `debug-visual-render-bug` の
 measure-don't-theorize ループを **Phase 4 全体を通して**回す。

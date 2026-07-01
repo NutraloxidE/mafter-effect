@@ -6,6 +6,8 @@ import { globalPluginRegistry } from "../../runtime/pluginRegistry";
 import type { Project } from "../../core/schema";
 import { DRAG_MIME } from "./dragMime";
 import { ProjectTreeView } from "./projectTree/ProjectTreeView";
+import { feedbackCollector, isFeedbackEnabled } from "../feedbackCollector";
+import { FeedbackSendModal } from "../FeedbackPrompt";
 
 export { DRAG_MIME } from "./dragMime";
 
@@ -51,6 +53,7 @@ export function ProjectPanel() {
   const [zipError, setZipError] = useState<string | null>(null);
   const [zipBusy, setZipBusy] = useState(false);
   const [zipStatus, setZipStatus] = useState<string | null>(null);
+  const [showFeedbackModal, setShowFeedbackModal] = useState(false);
 
   const registeredComponents = pluginsVersion >= 0 ? globalPluginRegistry.getComponentDefs() : [];
 
@@ -89,6 +92,7 @@ export function ProjectPanel() {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setZipError(msg);
+      feedbackCollector.onZipError();
     } finally {
       setZipBusy(false);
       setZipStatus(null);
@@ -188,6 +192,16 @@ export function ProjectPanel() {
             ▶ Export Video…
           </button>
         </div>
+        {isFeedbackEnabled() && (
+          <div style={{ marginTop: 4 }}>
+            <button
+              onClick={() => setShowFeedbackModal(true)}
+              style={{ ...btnStyle, width: "100%" }}
+            >
+              フィードバックを送る
+            </button>
+          </div>
+        )}
       </div>
 
       {project && (
@@ -303,6 +317,10 @@ export function ProjectPanel() {
           onConfirm={() => { removeAsset(deleteAsset.id); setDeleteAssetId(null); }}
           onCancel={() => setDeleteAssetId(null)}
         />
+      )}
+
+      {showFeedbackModal && (
+        <FeedbackSendModal onClose={() => setShowFeedbackModal(false)} />
       )}
     </div>
   );
