@@ -1,5 +1,12 @@
 import { chromium } from "playwright";
 
+// §28.9: Caching は既定 OFF。この検証は
+//  (A) 既定 OFF で軽量 comp を再生 → バッジ「Cache OFF」（旧版は誤って「Realtime」を期待していた）
+//  (B) previewBakeRequired な重い effect（pixelSorter）を含む comp を実 Play ボタンで再生
+//      → activateAutoCacheIfNeeded 経由で Auto Cache セッションが自動起動（バッジ「Auto Cache」）
+//  (C) Caching チェックボックスを実 DOM クリックで手動 ON → RAM/Clear UI 出現・スクラブでキャッシュ生成
+//  (D) ワークエリア B/N + タイムライン緑バー
+// を実機で確認する。§28 の RAM ではなく「実際に画面に出ている UI 文言」を張り替えの都度検証すること。
 const PORT = process.env.VERIFY_PORT ?? "5173";
 const URL = `http://localhost:${PORT}/`;
 const browser = await chromium.launch();
@@ -28,8 +35,21 @@ const report = await page.evaluate(async () => {
 
   const sp = (v) => ({ value: v, keyframes: [] });
   const v3 = (x, y) => ({ x, y, z: 0 });
-  const out = { realtime: false, caching: false, cachedPlayback: false };
+  const out = {};
 
+  const badgeText = () => {
+    const el = [...document.querySelectorAll("span")].find((s) =>
+      /Cache OFF|Realtime|Auto Cache|Caching \d|Cached/.test(s.textContent ?? ""),
+    );
+    return el?.textContent ?? "(none)";
+  };
+  const cachingCheckbox = () => {
+    const label = [...document.querySelectorAll("label")].find((l) => l.textContent?.trim() === "Caching");
+    return label?.querySelector('input[type="checkbox"]') ?? null;
+  };
+  const playButton = () => document.querySelector('button[title="再生/停止"]');
+
+  // (A) 既定 OFF — 軽量 solid を数フレーム進めてもキャッシュ UI は Cache OFF のまま。
   const solidId = S().addSolid("Solid");
   const comp = S().project.compositions.find((k) => k.kind === "timeline");
   const obj = comp.objects.find((o) => o.id === solidId);
@@ -46,9 +66,13 @@ const report = await page.evaluate(async () => {
     S().setFrame(f);
     await new Promise((r) => setTimeout(r, 100));
   }
-  await new Promise((r) => setTimeout(r, 1000));
-  out.realtime = document.body.innerText.includes("Realtime");
+  await new Promise((r) => setTimeout(r, 500));
+  out.defaultCacheCheckboxChecked = cachingCheckbox()?.checked ?? null;
+  out.badgeDefault = badgeText();
+  out.defaultIsCacheOff = out.badgeDefault.includes("Cache OFF");
 
+  // (B) previewBakeRequired effect（pixelSorter）を持つ重い comp を実 Play ボタンで再生
+  //     → handleTogglePlay 経由で activateAutoCacheIfNeeded が起動するはず（S().setPlaying 直呼びでは起動しない）。
   const heavyId = S().addSolid("Heavy");
   const fxId = S().addEffect(heavyId, "pixelSorter");
   const comp2 = S().project.compositions.find((k) => k.kind === "timeline");
@@ -63,14 +87,36 @@ const report = await page.evaluate(async () => {
     ),
     effects: [{
       ...fx,
-      props: {
-        ...fx.props,
-        thresholdLow: sp(0.1),
-        thresholdHigh: sp(0.9),
-        angle: sp(45),
-      },
+      props: { ...fx.props, thresholdLow: sp(0.1), thresholdHigh: sp(0.9), angle: sp(45) },
     }],
   }, "setup");
+  await new Promise((r) => setTimeout(r, 200));
+
+  S().setFrame(0);
+  playButton()?.click();
+  await new Promise((r) => setTimeout(r, 1500));
+  out.badgeDuringAutoCache = badgeText();
+  out.autoCacheTriggered = out.badgeDuringAutoCache.includes("Auto Cache");
+  playButton()?.click(); // stop
+  await new Promise((r) => setTimeout(r, 200));
+
+  // (C) 明示的に Caching チェックボックスを実クリックで ON → RAM/Clear UI 出現 + スクラブでキャッシュ生成。
+  // 直前の Auto Cache セッションでチェックボックスが既に checked=true（autoCacheSession 由来）の
+  // ことがあるため、まず OFF に倒してから改めて ON にする（patchCacheSettings は enabled:false で
+  // autoCacheSession も道連れにリセットする設計＝「OFF は全部を止める」）。
+  let cb = cachingCheckbox();
+  out.hadCheckbox = !!cb;
+  if (cb?.checked) {
+    cb.click();
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  cb = cachingCheckbox();
+  cb?.click();
+  await new Promise((r) => setTimeout(r, 200));
+  out.manualCacheEnabled = cachingCheckbox()?.checked ?? false;
+  const t2 = document.body.innerText;
+  out.hasClearButton = t2.includes("Clear");
+  out.hasRamInput = t2.includes("RAM");
 
   for (let f = 0; f < 6; f++) {
     S().setFrame(f);
@@ -84,14 +130,6 @@ const report = await page.evaluate(async () => {
     await new Promise((r) => setTimeout(r, 300));
   }
   out.scrubCachedFrames = scrubCached;
-  const t2 = document.body.innerText;
-  out.caching = t2.includes("Caching") || t2.includes("Cached");
-
-  S().setPlaying(true);
-  await new Promise((r) => setTimeout(r, 3000));
-  S().setPlaying(false);
-  const t3 = document.body.innerText;
-  out.cachedPlayback = t3.includes("Cached") || t3.includes("Realtime");
 
   // §28.8 ワークエリア B/N + 緑バー
   const { loadWorkArea } = await import("/src/editor/workAreaStorage.ts");
@@ -115,9 +153,19 @@ const report = await page.evaluate(async () => {
 
 console.log("VERIFY_PREVIEW_CACHE", JSON.stringify(report, null, 2));
 if (errors.length) console.error("CONSOLE_ERRORS", errors);
-const ok = report.realtime && (report.caching || report.cachedPlayback) && report.workAreaOk && report.scrubCachedFrames > 0;
+const ok =
+  report.defaultIsCacheOff &&
+  report.autoCacheTriggered &&
+  report.hadCheckbox &&
+  report.manualCacheEnabled &&
+  report.hasClearButton &&
+  report.scrubCachedFrames > 0 &&
+  report.workAreaOk &&
+  errors.length === 0;
 if (!ok) {
   console.error("FAIL", report);
   process.exitCode = 1;
+} else {
+  console.log("PASS");
 }
 await browser.close();
