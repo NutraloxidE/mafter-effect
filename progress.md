@@ -6,6 +6,26 @@
 
 ---
 
+### 2026-07-02（Claude Fable 5）— 健全性確認 + Opus 4.8 / Composer 2.5 への引き継ぎ記録 ✅
+
+> **Fable 5 は 2026-07-07 で利用不可になる。** 以降は **Claude Opus 4.8 / Cursor Composer 2.5** が引き継ぐ。
+> このエントリが引き継ぎの正本。次セッションのエージェントはまずここと「Next steps」を読むこと。
+
+- **現在地（2026-07-02 時点・全て確認済み）**:
+  - `git status`: トラック済みファイルの未コミット差分**ゼロ**（フィードバックループ v1 は `4314b8d` でコミット済み）。
+    未追跡は `verify-*.mjs`/`*.png` 等の実機検証ハーネスと debug 素材のみ（従来どおり意図的に未追跡）。
+  - `npm test`: **630 PASS（66 files）**。`npx tsc --noEmit`: クリーン。`playerBuildFreshness`: 緑（player.js 最新）。
+- **引き継ぎタスク（優先順）**: 下の「Next steps」がそのまま正。特に:
+  1. **#0a（新規追加）**: 2026-07-01 の trim-in forceSeek 修正の実機 Playwright 検証が未実施
+     （trim-in の異なる同一アセット2クリップを連結し、カット境界で `currentTime` が正しく seek されるか実機確認）。
+  2. **#0b**: 異なるアセット間カット境界の先読み warm-up。
+  3. **フィードバックループ運用**: デプロイ済み（`doc/feedback-loop.md` が運用正本）。定期的に
+     `npm run harvest:feedback` → summarize → propose の3スキルを回してユーザーフィードバック起点のタスクを起こす。
+- **引き継ぎ時の注意（エージェント共通）**:
+  - ワークフローは [.claude/skills/implementation-loop/SKILL.md](.claude/skills/implementation-loop/SKILL.md) が正本。spec 先行・INV-2 全経路・実機 Playwright 検証・player.js 再ビルドを省略しない。
+  - INV / §5 スキーマ / project.json 直列化の変更は必ずユーザー確認（CLAUDE.md 参照）。
+  - 実機検証の罠は memory 済みだが要点: UI 駆動は `window.__mafterEditorStore`（dynamic import は別インスタンス）、headless Chromium は WebCodecs VP9 encode 不可（`HEADED=1`）、port は dev server に合わせる。
+
 ### 2026-07-02（Claude Sonnet 5）— ヘッダーに「バグ / フィードバックを送信」リンク追加 + `.env` の VITE_FEEDBACK_TOKEN 欠落バグ修正 ✅
 
 - **追加**: [App.tsx](src/App.tsx) の上部メニューバー、「M1 preview」表示の左に「バグ / フィードバックを送信」
@@ -299,6 +319,8 @@
 > ~~§11.7 HTML bundle — MP4 入りコンポの再生もっさり~~ — **解消済み**（2026-06-26 の bundle blob URL 化・preview native play() 統一・drift resync 緩和・warm up 等の積み重ねで解決。ユーザー確認済み）。
 
 > ~~verifyスクリプト更新~~ — **2026-07-01 解消**（詳細は既知バグセクション参照）。
+
+0a. **trim-in forceSeek 修正の実機検証（優先度高・所要小）** — 2026-07-01 の `forceSeek` 修正（`e9f7928`）は単体テストのみで実機未検証。同一アセットから trim-in の異なる2クリップ（差 0.5 秒未満）を連結した comp を再生し、カット境界で `<video>.currentTime` が新クリップの trim-in に正しく seek されること・真に連続する境界（半フレーム以内）は無音継続が維持されることを Playwright 実機で確認する。ハーネスは [verify-autofade-declick.mjs](verify-autofade-declick.mjs)（Comp 23 系）を流用可。
 
 0b. **先読み warm-up（優先度中）— 異なるアセット間のカット境界** — カット境界の `<video>` 要素再利用プール（2026-06-30 実装済み）は**同一アセットの連結カット**のデコードギャップは解消したが、**異なるアセット同士の境界**は入場側のプールが空でコールド（新規 `<video>` を境界フレームで生成→デコード未完→数フレーム空白）。対策: 再生中、in 点が近い（次 ~0.5–1s）video レイヤーの `<video>` を **in 点より前に offscreen 先行マウント＋ prime**（[primeVideoElement](src/runtime/videoElementSync.ts) / [videoWarmupCache.ts](src/runtime/videoWarmupCache.ts) を流用）。preview/bundle 専用・export 非干渉（INV-2）。実機 harness で別アセット境界の readyState を before/after 計測。
 1. **手動回帰（残）** — §25 Preview（直接操作・ズーム・オーバーレイ・animated KF 書き戻し）/ §24 Ease パネル（F9 メニュー・グラフエディタとの SSoT 共有）。

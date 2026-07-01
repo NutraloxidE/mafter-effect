@@ -18,10 +18,10 @@
 
 ---
 
-## 運用体制（重要・2026-06 更新）
+## 運用体制（重要・2026-07 更新）
 
-> **Claude Code (Opus) は利用制限により停止中。** 当面は **Cursor (Composer 2.5) が設計・spec 編集・実装をすべて単独で担当**する。
-> 旧来の「設計=Claude Code / 実装=Cursor」分業は無効。Cursor が `doc/mafter-effect-spec.md` を編集してよい。
+> **Claude Fable 5 は 2026-07-07 で利用不可。** 以降は **Claude Code (Opus 4.8) と Cursor (Composer 2.5) のどちらも設計・spec 編集・実装を担当してよい**（旧来の「設計=Claude Code / 実装=Cursor」固定分業は無効のまま）。
+> 引き継ぎの現在地・残タスクは `progress.md` の「2026-07-02（Claude Fable 5）引き継ぎ記録」と「Next steps」を正とする。
 
 ただし以下は **勝手に進めず、編集・実装の前に必ずユーザーへ確認する**（選択肢＋推奨案を提示）:
 
