@@ -271,13 +271,22 @@ const DITHER_DISSOLVE_EFFECT_DEF: EffectDef = {
   executionPath: "live",
   params: [
     { key: "completion", label: "Transition Completion", kind: "scalar", default: 0, animatable: true, min: 0, max: 1, step: 0.01 },
+    {
+      key: "pattern",
+      label: "Pattern",
+      kind: "enum",
+      default: "ordered",
+      animatable: false,
+      options: ["ordered", "blueNoise"],
+    },
   ],
   apply(props, ctx: EffectRenderCtx) {
     const reveal = ditherEffectiveReveal(ctx.layerOpacity ?? 1, num(props["completion"], 0));
     if (reveal >= 1) return null;
     const w = Math.max(1, ctx.width);
     const h = Math.max(1, ctx.height);
-    const primitives = ditherDissolveMask(reveal, w, h);
+    const pattern = props["pattern"] === "blueNoise" ? "blueNoise" : "ordered";
+    const primitives = ditherDissolveMask(reveal, w, h, pattern);
     if (!primitives) return null;
     return { kind: "svg", primitives };
   },

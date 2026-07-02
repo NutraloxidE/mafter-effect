@@ -1,4 +1,7 @@
+import { BLUE_NOISE_64, BLUE_NOISE_SIZE } from "./blueNoise64";
 import { quantizeDitherReveal } from "./ditherReveal";
+
+export type DitherPattern = "ordered" | "blueNoise";
 
 // §27.3 ディザ合成（Dither Dissolve）用の Bayer 秩序ディザマスク。
 // レイヤー opacity を閾値に、ピクセル単位で α 0/1 を決める（混色しない）。
@@ -40,6 +43,28 @@ const BAYER = bayerMatrix(TILE);
 export function ditherVisible(x: number, y: number, opacity: number): boolean {
   const threshold = (BAYER[y % TILE]![x % TILE]! + 0.5) / (TILE * TILE);
   return threshold < opacity;
+}
+
+/** blue noise タイル（64×64 rank LUT）での可視判定。 */
+export function ditherVisibleBlueNoise(x: number, y: number, opacity: number): boolean {
+  const idx = (y % BLUE_NOISE_SIZE) * BLUE_NOISE_SIZE + (x % BLUE_NOISE_SIZE);
+  const threshold = (BLUE_NOISE_64[idx]! + 0.5) / 256;
+  return threshold < opacity;
+}
+
+export function ditherVisibleAt(
+  pattern: DitherPattern,
+  x: number,
+  y: number,
+  opacity: number,
+): boolean {
+  return pattern === "blueNoise"
+    ? ditherVisibleBlueNoise(x, y, opacity)
+    : ditherVisible(x, y, opacity);
+}
+
+export function normalizeDitherPattern(value: unknown): DitherPattern {
+  return value === "blueNoise" ? "blueNoise" : "ordered";
 }
 
 // opacity を 64 段に量子化したタイル dataURL のキャッシュ（renderer 内・描画専用）。

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   angularWipeMask,
   bayerMaskSvg,
+  blueNoiseMaskSvg,
   ditherDissolveMask,
   lightPixelSortDisplaceMapSvg,
   lightPixelSortFilter,
@@ -162,6 +163,19 @@ describe("effectSvg helpers", () => {
     const svg = bayerMaskSvg(64, 64, 0.5);
     expect(svg).toContain('patternUnits="userSpaceOnUse"');
     expect(svg).toContain('width="8" height="8"');
+  });
+
+  it("blueNoiseMaskSvg tiles 64x64 pattern across layer", () => {
+    const svg = blueNoiseMaskSvg(128, 128, 0.5);
+    expect(svg).toContain('id="blueNoise"');
+    expect(svg).toContain('width="64" height="64"');
+  });
+
+  it("ditherDissolveMask blueNoise uses live svg primitives only", () => {
+    const s = ditherDissolveMask(0.5, 320, 240, "blueNoise");
+    expect(s).toContain("feImage");
+    expect(s).toContain("blueNoise");
+    expect(s).not.toContain("feTile");
   });
 
   it("linearWipeMask converts luminance to alpha for partial completion", () => {

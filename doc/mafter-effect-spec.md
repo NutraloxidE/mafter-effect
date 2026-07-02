@@ -2194,8 +2194,10 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 | param key | label | kind | default | range | animatable |
 |---|---|---|---|---|---|
 | `completion` | Transition Completion | scalar | `0` | 0..1, step 0.01 | ✅ |
+| `pattern` | Pattern | enum | `"ordered"` | `ordered` / `blueNoise` | ❌ |
 
-- `apply` → `{ kind: "svg", primitives }`（wipe と同型: `feImage` Bayer pattern マスク → `luminanceToAlpha` → `feComposite operator="in"`）。`feTile` は使わない。
+- `apply` → `{ kind: "svg", primitives }`（**live**。wipe と同型: `feImage` タイル pattern マスク → `luminanceToAlpha` → `feComposite operator="in"`）。`feTile` は使わない。**ラスタ bake 経路は使わない**（`previewBakeRequired: false` 固定）。
+- **`pattern`**: `ordered` = 8×8 Bayer 秩序ディザ（既定・旧 blendMode 互換）。`blueNoise` = 64×64 rank タイル（格子感を抑えた不規則ディザ）。いずれも SVG `<pattern>` + `feImage` のみ。
 - **有効表示率**: `effectiveReveal = quantize(layerOpacity × (1 − completion))`（64 段量子化・[`ditherReveal.ts`](../src/runtime/ditherReveal.ts)）。`layerOpacity` は `EffectRenderCtx` で DomRenderer が `ResolvedObject.opacity` を注入。
 - **恒等**: `effectiveReveal >= 1` → `null`（filter なし）。`effectiveReveal <= 0` → 全消去。
 - **`executionPath`**: `"live"` / **`previewBakeRequired`**: `false` / **カテゴリ**: `"ワイプ"`。

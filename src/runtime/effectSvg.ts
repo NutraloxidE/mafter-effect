@@ -1,6 +1,6 @@
 /** §27 — SVG filter primitive 組み立て（純関数・INV-1）。 */
 
-import { ditherVisible } from "./ditherMask";
+import { ditherVisibleAt, normalizeDitherPattern, type DitherPattern } from "./ditherMask";
 import { quantizeDitherReveal } from "./ditherReveal";
 import { seededRandom } from "./exprHelpers";
 import { rgbaToPngDataUri } from "./pngDataUri";
@@ -526,34 +526,58 @@ function allBlackMaskSvg(w: number, h: number): string {
 /**
  * §27.3 Dither Dissolve — 8×8 Bayer pattern を敷いた layer 寸法マスク SVG。
  */
-export function bayerMaskSvg(w: number, h: number, reveal: number): string {
+function ditherPatternMaskSvg(
+  w: number,
+  h: number,
+  reveal: number,
+  pattern: DitherPattern,
+): string {
   const t = quantizeDitherReveal(reveal);
+  const tile = pattern === "blueNoise" ? 64 : 8;
+  const patternId = pattern === "blueNoise" ? "blueNoise" : "bayer";
   const cells: string[] = [];
-  for (let y = 0; y < 8; y++) {
-    for (let x = 0; x < 8; x++) {
-      const on = ditherVisible(x, y, t);
+  for (let y = 0; y < tile; y++) {
+    for (let x = 0; x < tile; x++) {
+      const on = ditherVisibleAt(pattern, x, y, t);
       cells.push(`<rect x="${x}" y="${y}" width="1" height="1" fill="${on ? "white" : "black"}"/>`);
     }
   }
   return [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">`,
-    `<defs><pattern id="bayer" width="8" height="8" patternUnits="userSpaceOnUse">`,
+    `<defs><pattern id="${patternId}" width="${tile}" height="${tile}" patternUnits="userSpaceOnUse">`,
     cells.join(""),
     `</pattern></defs>`,
-    `<rect width="100%" height="100%" fill="url(#bayer)"/>`,
+    `<rect width="100%" height="100%" fill="url(#${patternId})"/>`,
     `</svg>`,
   ].join("");
+}
+
+/** §27.3 Dither Dissolve — 8×8 Bayer pattern（ordered）。 */
+export function bayerMaskSvg(w: number, h: number, reveal: number): string {
+  return ditherPatternMaskSvg(w, h, reveal, "ordered");
+}
+
+/** §27.3 Dither Dissolve — 64×64 blue noise rank tile。 */
+export function blueNoiseMaskSvg(w: number, h: number, reveal: number): string {
+  return ditherPatternMaskSvg(w, h, reveal, "blueNoise");
 }
 
 /**
  * §27.3 Dither Dissolve — wipe と同型の SVG filter primitives（feTile 不使用）。
  * reveal は呼び出し側で ditherEffectiveReveal 済みを渡す。
  */
-export function ditherDissolveMask(reveal: number, w: number, h: number): string {
+export function ditherDissolveMask(
+  reveal: number,
+  w: number,
+  h: number,
+  pattern: DitherPattern = "ordered",
+): string {
   const q = quantizeDitherReveal(reveal);
   if (q >= 1) return "";
   if (q <= 0) return maskComposite(svgDataUri(allBlackMaskSvg(w, h)), 0, w, h);
-  return maskComposite(svgDataUri(bayerMaskSvg(w, h, q)), 0, w, h);
+  const p = normalizeDitherPattern(pattern);
+  const maskSvg = p === "blueNoise" ? blueNoiseMaskSvg(w, h, q) : bayerMaskSvg(w, h, q);
+  return maskComposite(svgDataUri(maskSvg), 0, w, h);
 }
 
 /**

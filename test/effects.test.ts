@@ -306,6 +306,21 @@ describe("builtinEffects apply (§27.3)", () => {
     }
   });
 
+  it("ditherDissolve blueNoise stays live svg (not raster)", () => {
+    const r = DITHER_DISSOLVE_EFFECT_DEF.apply(
+      { completion: 0.5, pattern: "blueNoise" },
+      { ...ctx, layerOpacity: 1 },
+    );
+    expect(r?.kind).toBe("svg");
+    expect(DITHER_DISSOLVE_EFFECT_DEF.previewBakeRequired).toBe(false);
+    expect(DITHER_DISSOLVE_EFFECT_DEF.executionPath).toBe("live");
+    if (r?.kind === "svg") {
+      expect(r.primitives).toContain("feImage");
+      expect(r.primitives).toContain("blueNoise");
+      expect(r.primitives).not.toContain("feTile");
+    }
+  });
+
   it("linearWipe accepts angle outside 0..360", () => {
     const r = LINEAR_WIPE_EFFECT_DEF.apply({ completion: 0.5, angle: -30, feather: 0 }, ctx);
     expect(r?.kind).toBe("svg");
