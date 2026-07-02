@@ -13,6 +13,7 @@ npm-debug.log*
 .vscode/
 .idea/
 .env
+.cursor/goal-state.json
 
 # vite / vitest cache
 .vite/
