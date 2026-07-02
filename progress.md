@@ -6,6 +6,21 @@
 
 ---
 
+### 2026-07-02（Claude Fable 5 指揮 + Cursor 委任）— #0a forceSeek 実機検証（回帰発見→修正）+ #0b 異アセット境界先読み warm-up（Cursor 実装・マージ待ち）
+
+- **#0a（trim-in forceSeek `e9f7928` の実機検証）— 完了・回帰を1件発見し修正** ✅:
+  - 恒久ハーネス [verify-forceseek-trim.mjs](verify-forceseek-trim.mjs)（Comp 23・実再生で境界前後の `currentTime` 軌道と seeking イベントを計測）。
+  - **Case B（trim-in +6f=0.2s ズレ・旧閾値 0.5s 未満）は当初から PASS** — forceSeek が正しく発火し新 trim-in の軌道に乗る（修正目的は機能）。
+  - **発見した回帰**: forceSeek の判定が「`currentTime` と target の差 vs 半フレーム」だったため、**通常の再生 decode lag（実測 0.05〜0.17s）が常に半フレームを超え、真に連続するシームレス境界でも毎回 seek が発火**していた。シームレス境界は declick フェードが抑制されている（§11.5.2）ため、この seek のプチノイズ・映像ジャンプが素通しになる＝プール再利用（§11.4）が守る「無音継続」を壊す。
+  - **修正**: [videoElementSync.ts](src/runtime/videoElementSync.ts) に純関数 `isSourceContinuousAcrossCut`（前フレーム target の軌道 vs 新 target で連続性判定）。[DomRenderer.ts](src/runtime/DomRenderer.ts) video 分岐が `dataset.mafterTargetSec/mafterTargetFrame` を使い、**軌道が連続なら forceSeek を無効化**（decode lag では seek しない）・trim ズレのみ半フレーム精度 seek。spec §11.4 散文追記（§5/INV 不変）。
+  - **検証**: 実機 A: `boundarySeeks=0`・drift 0.0002s（lag 0.12s でも無音継続維持）/ B: `boundarySeeks=1`・drift -0.006s、両 PASS。`npm test` **635 PASS**（新規 unit 5 件）・typecheck 緑・`npm run build:player` 済み・[verify-video-export.mjs](verify-video-export.mjs) 無回帰 PASS（453ms/frame WARN は既知 pre-existing）。
+- **#0b（異なるアセット間カット境界の先読み warm-up）— Cursor 委任で実装 → main へマージ済み** ✅:
+  - 実装元 worktree: `C:\Users\resis\.cursor\worktrees\mafter-effect\cursor-video-warmup-20260702`（未コミット working tree のまま。**composer-2.5 が usage 上限だったため `--model auto` で委任**・session_id `3f2e6a16-bab8-4784-8151-29069b73fa1b`）。
+  - 実装: 純関数 [videoLookaheadWarmup.ts]（`computeVideoLookaheadWarmupTargets`・in 点 ≈1s 以内の video を offscreen 生成→`primeVideoElement`→プール stash）+ DomRenderer 再生中フック + PreviewPanel/BundlePlayer 配線 + 停止/scrub/dispose の明示破棄 + spec §11.4 散文。
+  - レビューゲート（Claude 実施）: typecheck / **639 PASS** / build / build:player すべて緑。diff 精査済み（§5/INV 非変更・export 経路オプトイン閉じ・リーク始末あり）。
+  - 実機 before/after（恒久ハーネス [verify-crossasset-warmup.mjs](verify-crossasset-warmup.mjs)・異アセット2クリップ連結を実再生）: **main = 境界 f60 で `rs=1`（decode 未完）→ worktree = 最初のサンプルから `rs=4`** PASS。
+  - **マージ（2026-07-02・Claude が手動実施）**: 両ブランチとも同一ベース（`449b10e`）から未コミットで分岐しており、`DomRenderer.ts`/spec §11.4/`progress.md`/`public/player.js` が #0a と #0b 双方で変更されていたため git merge ではなく**手動マージ**（DomRenderer.ts は編集領域が非重複=競合なしを確認の上、逐次 Edit で統合／spec は同一行末尾追記+新規箇条書きで非重複／videoElementPool.ts・PreviewPanel.tsx・BundlePlayer.ts・videoLookaheadWarmup.ts は worktree 専用差分を `git apply` でそのまま適用）。lookahead 投入要素は `mafterTargetFrame` 未設定のため #0a の連続性判定は安全側（forceSeek 判定へ）に倒れ整合。マージ後 `npm run typecheck` / `npm test` / `npm run build:player` 緑、`verify-forceseek-trim.mjs`・`verify-crossasset-warmup.mjs`（マージ後の main に対して）両方 PASS を確認。
+
 ### 2026-07-02（Claude Fable 5）— 健全性確認 + Opus 4.8 / Composer 2.5 への引き継ぎ記録 ✅
 
 > **Fable 5 は 2026-07-07 で利用不可になる。** 以降は **Claude Opus 4.8 / Cursor Composer 2.5** が引き継ぐ。
@@ -320,9 +335,9 @@
 
 > ~~verifyスクリプト更新~~ — **2026-07-01 解消**（詳細は既知バグセクション参照）。
 
-0a. **trim-in forceSeek 修正の実機検証（優先度高・所要小）** — 2026-07-01 の `forceSeek` 修正（`e9f7928`）は単体テストのみで実機未検証。同一アセットから trim-in の異なる2クリップ（差 0.5 秒未満）を連結した comp を再生し、カット境界で `<video>.currentTime` が新クリップの trim-in に正しく seek されること・真に連続する境界（半フレーム以内）は無音継続が維持されることを Playwright 実機で確認する。ハーネスは [verify-autofade-declick.mjs](verify-autofade-declick.mjs)（Comp 23 系）を流用可。
+0a. ~~**trim-in forceSeek 修正の実機検証**~~ — **2026-07-02 完了**（実機 PASS・lag 起因のシームレス境界 seek 回帰を発見し `isSourceContinuousAcrossCut` で修正。冒頭エントリ参照）。（旧記載: trim-in forceSeek 修正の実機検証（優先度高・所要小）） — 2026-07-01 の `forceSeek` 修正（`e9f7928`）は単体テストのみで実機未検証。同一アセットから trim-in の異なる2クリップ（差 0.5 秒未満）を連結した comp を再生し、カット境界で `<video>.currentTime` が新クリップの trim-in に正しく seek されること・真に連続する境界（半フレーム以内）は無音継続が維持されることを Playwright 実機で確認する。ハーネスは [verify-autofade-declick.mjs](verify-autofade-declick.mjs)（Comp 23 系）を流用可。
 
-0b. **先読み warm-up（優先度中）— 異なるアセット間のカット境界** — カット境界の `<video>` 要素再利用プール（2026-06-30 実装済み）は**同一アセットの連結カット**のデコードギャップは解消したが、**異なるアセット同士の境界**は入場側のプールが空でコールド（新規 `<video>` を境界フレームで生成→デコード未完→数フレーム空白）。対策: 再生中、in 点が近い（次 ~0.5–1s）video レイヤーの `<video>` を **in 点より前に offscreen 先行マウント＋ prime**（[primeVideoElement](src/runtime/videoElementSync.ts) / [videoWarmupCache.ts](src/runtime/videoWarmupCache.ts) を流用）。preview/bundle 専用・export 非干渉（INV-2）。実機 harness で別アセット境界の readyState を before/after 計測。
+0b. **先読み warm-up — 異なるアセット間のカット境界** — **2026-07-02 Cursor 委任で実装済み・worktree `cursor-video-warmup-20260702` 未マージ（ユーザー確認待ち・冒頭エントリ参照）**。（旧記載:） — カット境界の `<video>` 要素再利用プール（2026-06-30 実装済み）は**同一アセットの連結カット**のデコードギャップは解消したが、**異なるアセット同士の境界**は入場側のプールが空でコールド（新規 `<video>` を境界フレームで生成→デコード未完→数フレーム空白）。対策: 再生中、in 点が近い（次 ~0.5–1s）video レイヤーの `<video>` を **in 点より前に offscreen 先行マウント＋ prime**（[primeVideoElement](src/runtime/videoElementSync.ts) / [videoWarmupCache.ts](src/runtime/videoWarmupCache.ts) を流用）。preview/bundle 専用・export 非干渉（INV-2）。実機 harness で別アセット境界の readyState を before/after 計測。
 1. **手動回帰（残）** — §25 Preview（直接操作・ズーム・オーバーレイ・animated KF 書き戻し）/ §24 Ease パネル（F9 メニュー・グラフエディタとの SSoT 共有）。
 2. **§27 INV-2 export parity** — SVG 5 種（wave/ripple/turbulent/wipe）の preview↔export ピクセル検証。Issue B / fastTurbulent centroid チューニング。
 3. **§27.4 調整レイヤー follow-up** — multi-pass flush 厳密化 / precomp ネスト Live 調整 export。
@@ -817,3 +832,18 @@ canvas 化結果は以降から見て通常の背面ピクセルと等価（zOrd
 - **build:player**: 実行済み（src/player 変更・playerBuildFreshness 緑）。
 - **検証**: `npm test` 569 件緑。新規実機 [verify-bundle-autoplay-unlock.mjs](verify-bundle-autoplay-unlock.mjs)（Chromium `--autoplay-policy=document-user-activation-required` で autoplay ブロック）: 読み込み直後は `<video>` paused（ブロック確認）、**スペースバーではなく単純クリック 1 回**で playing & unmuted（volume 1）を確認。無回帰: verify-bundle-export PASS。
 - **既知の制約**: 完全無操作の音声自動再生はブラウザ（Chrome/Firefox/Safari）のポリシー上不可能。本実装は「最初の任意操作で確実に開始」が上限。MEI が高い環境では boot 時に無操作で鳴ることもある（ブラウザ依存）。
+
+### 2026-07-02（Cursor 委任）— 異なるアセット間カット境界の先読み warm-up（Next steps #0b）✅
+
+- **実装**: [videoLookaheadWarmup.ts](src/runtime/videoLookaheadWarmup.ts)（純関数 `computeVideoLookaheadWarmupTargets` / `collectVideoClipsFromComp`）、DomRenderer 再生中の offscreen prime→プール stash、[PreviewPanel](src/editor/panels/PreviewPanel.tsx) / [BundlePlayer](src/player/BundlePlayer.ts) へのクリップ注入。停止・scrub・dispose で先読み要素を明示破棄。export 経路非干渉。
+- **spec**: §11.4 warm-up 節に散文追記（§5/INV 不変）。
+- **検証（Cursor 側）**: `npm run typecheck` / `npm test` / `npm run build` / `npm run build:player` 緑。新規 unit [test/videoLookaheadWarmup.test.ts](test/videoLookaheadWarmup.test.ts)。
+- **マージ後の検証（Claude・2026-07-02）**: worktree を main へ手動マージ（DomRenderer.ts が #0a と同時変更のため）。実機 before/after [verify-crossasset-warmup.mjs](verify-crossasset-warmup.mjs) で異アセット2クリップ連結を実再生 — マージ前 main は境界 f60 で `readyState=1`（コールド）→ マージ後は最初のサンプルから `readyState=4` PASS。詳細は冒頭「#0a + #0b」エントリ参照。
+
+### 2026-07-02（Cursor / goal-cursor）— blendMode 整理: ditherDissolve 削除 + 未知値 missing フォールバック ✅
+
+- **方針**: `ditherDissolve` を `BlendMode` enum から外し（将来 effect 化）、CSS 16 種のみを正準化。`project.json` に未知 `blendMode` があれば validate で strip + エディタ専用 `missingBlendModes`（Undo 非参加）で Inspector に `name (missing)` 表示。render は `normal` フォールバック（INV-2 維持）。
+- **実装**: [blendMode.ts](src/core/blendMode.ts)（`isKnownBlendMode` / `normalizeBlendMode`）、[validate.ts](src/core/validate.ts) / [serialize.ts](src/core/serialize.ts) / [resolve.ts](src/runtime/resolve.ts)、[DomRenderer.ts](src/runtime/DomRenderer.ts)（dither 経路削除）、[store.ts](src/editor/store.ts) + [InspectorPanel.tsx](src/editor/panels/InspectorPanel.tsx)。[ditherMask.ts](src/runtime/ditherMask.ts) は effect 用に温存（実行コードからは未参照）。
+- **spec**: §5.4d / §23.3a から dither 削除、未知 blend の散文追記（§5 型は CSS 16 種 enum のみ・意図どおり）。
+- **検証**: `npm run typecheck` / `npm test` 650 件 / `npm run build:player` 緑。Playwright: [verify-blend-mode.mjs](verify-blend-mode.mjs) PASS、[verify-missing-blend-mode.mjs](verify-missing-blend-mode.mjs) PASS（FS 注入 `ditherDissolve` → `loadFromFs` → Inspector `ditherDissolve (missing)` + `mix-blend-mode: normal`）。unit: [test/blendMode.test.ts](test/blendMode.test.ts)。
+- **(goal-cursor)** ditherDissolve 除去・未知 blend missing UI・全検証緑まで完了。
