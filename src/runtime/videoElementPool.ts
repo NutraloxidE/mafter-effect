@@ -29,6 +29,23 @@ export class KeyedElementPool<T> {
     return el;
   }
 
+  /** key に空き要素があるか（先読み warm-up の重複投入防止）。 */
+  has(key: string): boolean {
+    const list = this.free.get(key);
+    return !!list && list.length > 0;
+  }
+
+  /** 特定要素を key のスタックから除去（先読み warm-up の破棄用）。 */
+  remove(key: string, el: T): boolean {
+    const list = this.free.get(key);
+    if (!list) return false;
+    const idx = list.indexOf(el);
+    if (idx === -1) return false;
+    list.splice(idx, 1);
+    if (list.length === 0) this.free.delete(key);
+    return true;
+  }
+
   /** 退避中の全要素を破壊せず列挙する（再利用されず残った要素の遅延静音などに使う）。 */
   peekAll(): T[] {
     const all: T[] = [];

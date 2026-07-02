@@ -116,4 +116,25 @@ describe("serializeProject", () => {
     }
     expect(serializeProject(canon)).not.toContain("labelIndex");
   });
+
+  it("serializes blendMode when known and strips unknown values", () => {
+    const base = createProject({ now: "2026-01-01T00:00:00.000Z" });
+    const p: Project = structuredClone(base);
+    const o = obj("01A");
+    o.blendMode = "multiply";
+    timeline(p).objects = [o];
+    expect(serializeProject(p)).toContain('"blendMode": "multiply"');
+
+    const bad: Project = structuredClone(p);
+    const badObj = { ...o };
+    (badObj as { blendMode?: string }).blendMode = "ditherDissolve";
+    timeline(bad).objects[0] = badObj;
+    const canon = canonicalizeProject(bad);
+    const tcomp = canon.compositions[0];
+    expect(tcomp?.kind).toBe("timeline");
+    if (tcomp?.kind === "timeline") {
+      expect(tcomp.objects[0]?.blendMode).toBeUndefined();
+    }
+    expect(serializeProject(canon)).not.toContain("blendMode");
+  });
 });

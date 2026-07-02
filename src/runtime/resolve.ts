@@ -9,6 +9,7 @@ import type {
   Transform,
   Vec3,
 } from "../core/schema";
+import { normalizeBlendMode } from "../core/blendMode";
 import { sampleAny, sampleScalar, sampleVec3 } from "./interpolate";
 import { identity, invert, localMatrix, lookAt, multiply, type Mat4 } from "./mat4";
 import type { ResolvedComponent, ResolvedEffect, ResolvedObject, ResolvedScene } from "./resolved";
@@ -243,7 +244,7 @@ export function resolve(
       worldTransform: worldOf(obj.id),
       zOrder: obj.zOrder,
       opacity: scalarProp(obj.opacity, frame, obj.id),
-      blendMode: obj.blendMode ?? "normal",
+      blendMode: normalizeBlendMode(obj.blendMode),
       inPoint: obj.inPoint,
       components: obj.isAdjustment || obj.isNull
         ? []

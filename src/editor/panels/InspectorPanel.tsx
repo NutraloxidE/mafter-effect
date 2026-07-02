@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { sampleAny, sampleScalar, sampleVec3 } from "../../runtime/interpolate";
 import type { AnimatedProp, BlendMode, Component, Easing, EffectInstance, ExpressionPresetInstance, ParamDescriptor, RGBA, SceneObject, ThreeDMode, Transform, Vec3 } from "../../core/schema";
 import { BLEND_MODES } from "../../core/schema";
+import { formatMissingBlendModeLabel } from "../../core/blendMode";
 import {
   currentTimelineComp,
   setKeyframe,
@@ -58,7 +59,6 @@ const BLEND_MODE_LABELS: Record<BlendMode, string> = {
   saturation: "Saturation",
   color: "Color",
   luminosity: "Luminosity",
-  ditherDissolve: "Dither Dissolve",
 };
 
 /** Transform 等のレイヤー Inspector と同じスクロール枠（overlay scrollbar 時も右余白を揃える）。 */
@@ -104,6 +104,7 @@ export function InspectorPanel() {
   const setThreeD = useEditorStore((s) => s.setThreeD);
   const setThreeDMode = useEditorStore((s) => s.setThreeDMode);
   const setBlendMode = useEditorStore((s) => s.setBlendMode);
+  const missingBlendModes = useEditorStore((s) => s.missingBlendModes);
   const setCompBackground = useEditorStore((s) => s.setCompBackground);
   const resizeComp = useEditorStore((s) => s.resizeComp);
   const setCompFps = useEditorStore((s) => s.setCompFps);
@@ -555,10 +556,17 @@ export function InspectorPanel() {
         </Row>
         <Row label="Blend Mode">
           <select
-            value={obj.blendMode ?? "normal"}
-            onChange={(e) => setBlendMode(obj.id, e.target.value as BlendMode)}
+            value={missingBlendModes[obj.id] ? "__missing__" : (obj.blendMode ?? "normal")}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v === "__missing__") return;
+              setBlendMode(obj.id, v as BlendMode);
+            }}
             style={selectStyle}
           >
+            {missingBlendModes[obj.id] && (
+              <option value="__missing__">{formatMissingBlendModeLabel(missingBlendModes[obj.id]!)}</option>
+            )}
             {BLEND_MODES.map((m) => (
               <option key={m} value={m}>{BLEND_MODE_LABELS[m]}</option>
             ))}

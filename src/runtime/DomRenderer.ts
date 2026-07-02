@@ -17,15 +17,18 @@ import { canvasToRasterBuffer, rasterBufferToCanvas } from "./pixelSort";
 import { processRasterChainAsync } from "./rasterProcessAsync";
 import { applyFilterChainToBuffer } from "./effectRaster";
 import { resolveEffectChain } from "./effectChain";
-import { EXPORT_VIDEO_TARGET_ATTR, primeVideoElement, syncVideoElementTime, waitForVideoFrame } from "./videoElementSync";
+import { EXPORT_VIDEO_TARGET_ATTR, isSourceContinuousAcrossCut, primeVideoElement, syncVideoElementTime, waitForVideoFrame } from "./videoElementSync";
 import { normalizeFootageQuality } from "./footageQuality";
 import { ensureVideosPrimed, peekVideoPrimed, type VideoPrimeTarget } from "./videoWarmupCache";
 import { KeyedElementPool } from "./videoElementPool";
+import {
+  computeVideoLookaheadWarmupTargets,
+  type VideoClipLookaheadInput,
+} from "./videoLookaheadWarmup";
 import type { ExportChain, ExportLayer, NestedCompositeMeta, ExportTaggedElement } from "./exportComposite";
 import type { EffectFilter } from "./plugin";
 import type { BlendMode } from "../core/schema";
 import { isCssBlendMode } from "./blendCompose";
-import { ditherTileDataUrl } from "./ditherMask";
 import { multiply, translation, type Mat4 } from "./mat4";
 
 // §8 DomRenderer — フラット matrix3d レンダラ。
@@ -44,11 +47,6 @@ const BASE_Z = 10; // z-index はこの値を起点に zOrder*BASE_Z で割り�
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
-/**
- * §5.4d 描画モードを div の style に反映する（トップレベル・ネスト comp 共用の純ヘルパ）。
- * - 16種: `mix-blend-mode`（normal はクリア）。ラスター化ゼロのネイティブ合成。
- * - ditherDissolve: `mask-image` に Bayer ディザを敷き、opacity を閾値へ回す（div α は 1 固定・AE 準拠）。
- */
 /** §6.5b / §23.3b — 3D 層のみ cameraPre を掛け、2D 層は免除。 */
 function objectWorldTransformWithCamera(cameraPre: Mat4 | null, obj: ResolvedObject): Mat4 {
   return cameraPre && obj.threeD === true
@@ -56,23 +54,16 @@ function objectWorldTransformWithCamera(cameraPre: Mat4 | null, obj: ResolvedObj
     : obj.worldTransform;
 }
 
-function setBlendModeStyle(el: HTMLElement, blend: BlendMode, opacity: number): void {
+/**
+ * §5.4d 描画モードを div の style に反映する（トップレベル・ネスト comp 共用の純ヘルパ）。
+ * 16種: `mix-blend-mode`（normal はクリア）。ラスター化ゼロのネイティブ合成。
+ * 旧 dither 経路の mask 残留を防ぐため毎フレーム mask をクリアする。
+ */
+function setBlendModeStyle(el: HTMLElement, blend: BlendMode): void {
   const s = el.style;
-  if (blend === "ditherDissolve") {
-    s.mixBlendMode = "";
-    s.opacity = "1";
-    const url = ditherTileDataUrl(opacity);
-    const ref = url ? `url(${url})` : "";
-    s.setProperty("mask-image", ref);
-    s.setProperty("-webkit-mask-image", ref);
-    s.setProperty("mask-repeat", "repeat");
-    s.setProperty("-webkit-mask-repeat", "repeat");
-  } else {
-    // dither マスクをクリア（前フレームが dither だった場合の残留防止）。
-    s.setProperty("mask-image", "");
-    s.setProperty("-webkit-mask-image", "");
-    s.mixBlendMode = isCssBlendMode(blend) ? blend : "";
-  }
+  s.setProperty("mask-image", "");
+  s.setProperty("-webkit-mask-image", "");
+  s.mixBlendMode = isCssBlendMode(blend) ? blend : "";
 }
 
 interface ObjectEntry {
@@ -124,6 +115,10 @@ export class DomRenderer implements Renderer {
    * preview/bundle 専用。export 経路は waitForVideoFrame がデコードを待つため決定論不変（INV-2）。
    */
   private videoPool = new KeyedElementPool<HTMLVideoElement>();
+  /** §11.4 先読み warm-up でプールへ投入した <video>（scrub/停止時に明示破棄）。 */
+  private lookaheadVideos = new Map<string, HTMLVideoElement>();
+  /** 先読み判定用の comp 内 video クリップ一覧（PreviewPanel / BundlePlayer が注入）。 */
+  private videoLookaheadClips: VideoClipLookaheadInput[] | null = null;
 
   // §7 HTML comp サポート: HtmlCompPlayer を注入（optional）。
   // mount 後に setHtmlPlayer() で差し替え可。
@@ -171,6 +166,7 @@ export class DomRenderer implements Renderer {
     if (opts.previewVideoPlayback !== undefined) {
       if (this.previewVideoPlayback && !opts.previewVideoPlayback) {
         this.pauseAllVideos();
+        this.clearVideoLookaheadWarmups();
       }
       this.previewVideoPlayback = opts.previewVideoPlayback;
     }
@@ -296,6 +292,9 @@ export class DomRenderer implements Renderer {
 
     // §11.4 入場処理で再利用されずプールに残った <video> を静音（離脱クリップの音漏れ防止）。
     this.quiescePooledVideos();
+
+    // §11.4 異なるアセット間カット境界 — 再生中のみ in 点が近い clip を offscreen で先読み prime しプールへ投入。
+    this.scheduleVideoLookaheadWarmup(frame);
   }
 
   /**
@@ -317,7 +316,21 @@ export class DomRenderer implements Renderer {
 
   /** §11.4 同一アセットの空き `<video>` をプールから1つ取り出す（無ければ null）。 */
   private acquireVideoFromPool(assetId: string): HTMLVideoElement | null {
-    return this.videoPool.acquire(assetId);
+    const el = this.videoPool.acquire(assetId);
+    if (!el) return null;
+    for (const [objectId, tracked] of this.lookaheadVideos) {
+      if (tracked === el) {
+        this.lookaheadVideos.delete(objectId);
+        break;
+      }
+    }
+    return el;
+  }
+
+  /** §11.4 preview/bundle — comp 内 video クリップ一覧（先読み warm-up 判定用）。 */
+  setVideoLookaheadClips(clips: VideoClipLookaheadInput[] | null): void {
+    this.videoLookaheadClips = clips;
+    if (!this.previewVideoPlayback) this.clearVideoLookaheadWarmups();
   }
 
   /**
@@ -333,6 +346,102 @@ export class DomRenderer implements Renderer {
       } catch {
         /* muted/pause best-effort */
       }
+    }
+  }
+
+  private getActiveVideoAssetIds(): Set<string> {
+    const ids = new Set<string>();
+    for (const entry of this.entries.values()) {
+      for (const el of entry.children) {
+        if (el instanceof HTMLVideoElement) {
+          const assetId = el.dataset.mafterVideoAsset;
+          if (assetId) ids.add(assetId);
+        }
+      }
+    }
+    return ids;
+  }
+
+  private teardownVideoElement(el: HTMLVideoElement): void {
+    try {
+      el.pause();
+      el.removeAttribute("src");
+      el.load();
+    } catch {
+      /* teardown best-effort */
+    }
+  }
+
+  /** §11.4 先読み warm-up 要素をプールから除去して破棄（scrub/停止/dispose 用）。 */
+  private clearVideoLookaheadWarmups(): void {
+    for (const [objectId, el] of this.lookaheadVideos) {
+      const assetId = el.dataset.mafterVideoAsset;
+      if (assetId) this.videoPool.remove(assetId, el);
+      this.teardownVideoElement(el);
+      this.lookaheadVideos.delete(objectId);
+    }
+  }
+
+  /**
+   * §11.4 再生中 — in 点が近い upcoming clip 向けに offscreen <video> を生成・prime しプールへ stash。
+   * export 経路は previewVideoPlayback=false のため非干渉（INV-2）。
+   */
+  private scheduleVideoLookaheadWarmup(frame: Frame): void {
+    if (!this.previewVideoPlayback || this.exportVideoStep || !this.imageCache) return;
+    const clips = this.videoLookaheadClips;
+    if (!clips || clips.length === 0) return;
+    const fps = this.currentComp?.fps ?? 30;
+    const targets = computeVideoLookaheadWarmupTargets(frame, fps, clips, {
+      activeAssetIds: this.getActiveVideoAssetIds(),
+    });
+    const wanted = new Set(targets.map((t) => t.objectId));
+
+    for (const objectId of [...this.lookaheadVideos.keys()]) {
+      if (!wanted.has(objectId)) {
+        const el = this.lookaheadVideos.get(objectId);
+        if (el) {
+          const assetId = el.dataset.mafterVideoAsset;
+          if (assetId) this.videoPool.remove(assetId, el);
+          this.teardownVideoElement(el);
+        }
+        this.lookaheadVideos.delete(objectId);
+      }
+    }
+
+    for (const t of targets) {
+      if (this.entries.has(t.objectId)) continue;
+      if (this.lookaheadVideos.has(t.objectId)) continue;
+      if (this.videoPool.has(t.assetId)) continue;
+
+      const clip = clips.find((c) => c.objectId === t.objectId);
+      const quality = normalizeFootageQuality(clip?.footageQuality);
+      const src = this.imageCache.getUrlForQuality(t.assetId, quality) ?? "";
+      if (!src) continue;
+
+      const video = document.createElement("video");
+      video.controls = false;
+      video.style.cssText = "position:absolute;top:0;left:0;pointer-events:none";
+      video.muted = true;
+      video.playsInline = true;
+      video.preload = "auto";
+      video.src = src;
+      video.dataset.mafterVideoAsset = t.assetId;
+      video.dataset.mafterTargetSec = String(t.targetSec);
+      video.dataset.mafterLookaheadObjectId = t.objectId;
+
+      this.lookaheadVideos.set(t.objectId, video);
+      this.videoPool.stash(t.assetId, video);
+
+      void ensureVideosPrimed([
+        {
+          assetId: t.assetId,
+          targetSec: t.targetSec,
+          fps,
+          prime: () => primeVideoElement(video, t.targetSec, fps),
+        },
+      ]).catch(() => {
+        /* best-effort */
+      });
     }
   }
 
@@ -479,15 +588,10 @@ export class DomRenderer implements Renderer {
 
   dispose(): void {
     this.pauseAllVideos();
+    this.clearVideoLookaheadWarmups();
     // §11.4 プールに退避した <video> も明示破棄（src 解放・リーク防止）。
     for (const el of this.videoPool.drain()) {
-      try {
-        el.pause();
-        el.removeAttribute("src");
-        el.load();
-      } catch {
-        /* teardown best-effort */
-      }
+      this.teardownVideoElement(el);
     }
     if (this.root) {
       this.root.remove();
@@ -530,7 +634,7 @@ export class DomRenderer implements Renderer {
     entry.div.style.zIndex = String(Math.round(obj.zOrder * BASE_Z));
 
     // §5.4d 描画モード。毎フレーム明示設定/クリア（前フレームの残留を防ぐ）。
-    this.applyBlendMode(entry, obj.blendMode, obj.opacity);
+    this.applyBlendMode(entry, obj.blendMode);
 
     if (obj.isAdjustment) {
       const w = this.currentComp?.width ?? 0;
@@ -643,14 +747,11 @@ export class DomRenderer implements Renderer {
   }
 
   /**
-   * §5.4d 描画モードを CSS に反映する。
-   * - 16 種: `mix-blend-mode`（normal はクリア）。ラスター化ゼロのネイティブ合成。
-   * - ditherDissolve: `mask-image` に Bayer ディザを敷き、opacity をディザ閾値へ回す
-   *   （div α は 1 に固定・AE 準拠）。
+   * §5.4d 描画モードを CSS に反映する（16 種は mix-blend-mode、normal はクリア）。
    */
-  private applyBlendMode(entry: ObjectEntry, blend: BlendMode, opacity: number): void {
+  private applyBlendMode(entry: ObjectEntry, blend: BlendMode): void {
     entry.blendMode = blend;
-    setBlendModeStyle(entry.div, blend, opacity);
+    setBlendModeStyle(entry.div, blend);
   }
 
   /** §5.4d capture — comp 内に CSS mix-blend を持つレイヤーがあるか（Canvas 合成要否判定）。 */
@@ -1387,7 +1488,7 @@ export class DomRenderer implements Renderer {
       }
       container.appendChild(div);
       // §23.3a: トップレベルと挙動を揃える（ラスタ無し・append 後に実測サイズで filter region 決定）。
-      setBlendModeStyle(div, obj.blendMode, obj.opacity);
+      setBlendModeStyle(div, obj.blendMode);
 
       if (this.exportCompositeMode) {
         // §23.3d export — backdrop-filter は foreignObject で落ちるため、調整は live に立てず
@@ -1614,14 +1715,30 @@ function updateComponentEl(
       // §11.4 内蔵音声の音量（resolve 済み scalar）。再生中のみ実際に鳴る（muted 制御は syncVideoElementTime）。
       const gain = typeof props["gain"] === "number" ? (props["gain"] as number) : 1;
       video.volume = Math.max(0, Math.min(1, gain));
-      syncVideoElementTime(video, t, fps, { playbackMode: previewVideoPlayback, exportStep: exportVideoStep, forceSeek });
+      // §11.4 カット境界の resync 要否は「ct と target の差」ではなく target の軌道の連続性で
+      // 判定する（decode lag を理由に seek すると、真に連続するシームレス境界の映像・音声の
+      // 連続をカットごとに壊す）。trim-in がずれた再取得のみ半フレーム精度で seek。
+      const prevTargetSec = Number(video.dataset.mafterTargetSec);
+      const prevTargetFrame = Number(video.dataset.mafterTargetFrame);
+      const cutSeek =
+        forceSeek &&
+        !isSourceContinuousAcrossCut(
+          Number.isFinite(prevTargetSec) ? prevTargetSec : undefined,
+          Number.isFinite(prevTargetFrame) ? prevTargetFrame : undefined,
+          t,
+          hostFrame,
+          fps,
+        );
+      syncVideoElementTime(video, t, fps, { playbackMode: previewVideoPlayback, exportStep: exportVideoStep, forceSeek: cutSeek });
       if (exportVideoStep) {
         video.setAttribute(EXPORT_VIDEO_TARGET_ATTR, String(t));
       } else {
         video.removeAttribute(EXPORT_VIDEO_TARGET_ATTR);
       }
       // §11.4 preview/bundle warm-up 用に現フレームの target 時刻と assetId を記録（export attr とは別）。
+      // mafterTargetFrame はカット境界の連続性判定（isSourceContinuousAcrossCut）が読む。
       video.dataset.mafterTargetSec = String(t);
+      video.dataset.mafterTargetFrame = String(hostFrame);
       if (assetId) video.dataset.mafterVideoAsset = assetId;
       else delete video.dataset.mafterVideoAsset;
       const size = assetId ? imageCache?.getSize(assetId) : null;

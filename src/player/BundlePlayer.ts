@@ -15,6 +15,7 @@ import { htmlCompositionsInProject, timelineCompositionsInProject } from "../run
 import { BundleAudioClock, hasAudioLayers } from "./BundleAudioClock";
 import { assetUrlForBundle, buildBundleFs } from "./BundleFs";
 import { applyFitTransform } from "./bundleFit";
+import { collectVideoClipsFromComp } from "../runtime/videoLookaheadWarmup";
 
 /** §11.7 web bundle player — runtime + 音声クロックの薄いラッパ。 */
 export class BundlePlayer {
@@ -95,6 +96,7 @@ export class BundlePlayer {
 
     this.renderer.setHtmlComps(new Map(htmlComps.map((c) => [c.id, c])));
     this.renderer.setTimelineComps(new Map(timelineComps.map((c) => [c.id, c])));
+    this.renderer.setVideoLookaheadClips(collectVideoClipsFromComp(comp));
 
     await this.engine.prepare(comp);
     this.evaluator = this.engine.makeEvaluator(comp);

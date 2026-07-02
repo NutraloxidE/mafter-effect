@@ -1,4 +1,5 @@
 import type { Project, SceneObject, TimelineComposition, ProjectBin, ProjectTreeEntry } from "./schema";
+import { isKnownBlendMode } from "./blendMode";
 import { treeOrderIsRedundant } from "./projectTree";
 
 // §5.6 正準シリアライズ:
@@ -36,7 +37,9 @@ function canonicalizeObject(obj: SceneObject): SceneObject {
     strip({ labelIndex: undefined });
   }
   // §5.4d: blendMode は "normal" 以外のときだけ書く（既定 normal・省略は byte 等価維持）。
-  if (obj.blendMode === "normal") strip({ blendMode: undefined });
+  if (obj.blendMode === "normal" || (obj.blendMode !== undefined && !isKnownBlendMode(obj.blendMode))) {
+    strip({ blendMode: undefined });
+  }
   // §9 Phase 0.5: 空 expressionPresets は省略（byte 等価維持）。
   if (obj.expressionPresets !== undefined && obj.expressionPresets.length === 0) {
     strip({ expressionPresets: undefined });

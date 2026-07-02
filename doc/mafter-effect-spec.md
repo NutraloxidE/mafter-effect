@@ -235,8 +235,7 @@ type BlendMode =
   | "multiply" | "screen" | "overlay" | "darken" | "lighten"
   | "color-dodge" | "color-burn" | "hard-light" | "soft-light"
   | "difference" | "exclusion"
-  | "hue" | "saturation" | "color" | "luminosity"   // CSS が直接持つ 16 種（normal 含む）
-  | "ditherDissolve";                                 // ディザ合成（Bayer 秩序ディザ）
+  | "hue" | "saturation" | "color" | "luminosity";   // CSS mix-blend-mode が直接持つ 16 種（normal 含む）
 
 interface SceneObject {
   // ...既存フィールド...
@@ -245,13 +244,13 @@ interface SceneObject {
 ```
 
 - **データ型はプレーン enum**（`AnimatedProp` にしない）。AE でも描画モードはキーフレーム不可。
-- **直列化**: `blendMode` は **`"normal"` 以外のときだけ**書く。`undefined`/`"normal"` はキー省略（§5.6 正準化）→ 既存 `project.json` は byte 等価（INV-4）。
-- **resolve（INV-3）**: `resolve()` が `ResolvedObject.blendMode`（既定 `"normal"`）に素通しで焼く。補間しない（純粋・INV-1）。
+- **直列化**: `blendMode` は **`"normal"` 以外のときだけ**書く。`undefined`/`"normal"` はキー省略（§5.6 正準化）→ 既存 `project.json` は byte 等価（INV-4）。**未知値は validate / canonicalize で strip**（書き出しに残さない）。
+- **未知 blendMode（load 時）**: `validateProject` が `blendMode` を `undefined`（= normal 描画）に正規化し、エディタは `missingBlendModes`（editor-only・非直列化）に raw 名を記録。Inspector は `{raw} (missing)` を表示。ユーザーが既知 mode を選ぶと missing 記録は消える。
+- **resolve（INV-3）**: `resolve()` が `ResolvedObject.blendMode`（未知は `"normal"` に正規化）に焼く。補間しない（純粋・INV-1）。
 - **描画経路**（§8 / §11）:
   - **preview / Live HTML バンドル**: 16 種は CSS `mix-blend-mode` をレイヤー div に直接設定（ラスター化ゼロ・ネイティブ合成）。
-  - **動画キャプチャ書き出し（mp4 / webm / png 連番）**: `foreignObject` は backdrop 合成をしないため、comp 内に非 `normal` の 16 種が 1 つでもあれば **レイヤー別キャプチャ → Canvas 2D `globalCompositeOperation`**（`normal`→`source-over`、他 15 種は同名）で z 順に合成し直す。これで preview ≡ export（INV-2）を守る。非 blend comp は従来の単一スナップショット高速経路を維持。
-  - **`ditherDissolve`**: `mix-blend-mode` ではなく CSS `mask-image` に **Bayer（秩序）ディザのしきい値タイル**を敷き、レイヤー opacity を閾値にする（AE 準拠で opacity は div α ではなくディザ密度へ）。α 0/1 のしきい値処理なので `foreignObject` キャプチャでもそのまま出る（Canvas 再合成不要）。Bayer は固定行列で**完全決定論**（`Math.random` 不要・INV-1）。
-- **INVARIANTS**: ditherDissolve は秩序ディザで INV-1 を、capture コンポジットで INV-2 を守る。`blendMode` は `ResolvedObject` に焼くためレンダラ非依存（INV-3）、optional 省略で byte 等価（INV-4）。
+  - **動画キャプチャ書き出し（mp4 / webm / png 連番）**: `foreignObject` は backdrop 合成をしないため、comp 内に非 `normal` の 15 種が 1 つでもあれば **レイヤー別キャプチャ → Canvas 2D `globalCompositeOperation`**（`normal`→`source-over`、他 15 種は同名）で z 順に合成し直す。これで preview ≡ export（INV-2）を守る。非 blend comp は従来の単一スナップショット高速経路を維持。
+- **INVARIANTS**: `blendMode` は `ResolvedObject` に焼くためレンダラ非依存（INV-3）、optional 省略で byte 等価（INV-4）。
 
 ### §5.5 Component（タグ付き union + プラグイン拡張）
 
@@ -691,7 +690,8 @@ interface ExportConfig {
   - **export**: video レイヤーの内蔵音声も §11.2 の mux 対象。`audio` レイヤーと**同一のタイミング式**（`inPoint`/`outPoint`/`trimStart`）で `decodeAudioData`→`OfflineAudioContext` に追加合成し、`gainProp` を §11.5 のフレーム刻み automation で `GainNode` に打つ。decode 失敗（無音動画・非対応コンテナ）は best-effort でスキップ。
   - **既知の制約**: 複数 video が同時再生するとブラウザが音声を自動ミックス（個別 volume は効くがミキサー側のクリッピングはブラウザ依存）。`audio` レイヤーと内蔵音声付き video の併用時、映像クロックは `PreviewAudioClock`/`BundleAudioClock`、video 音声はネイティブ再生で、大きなドリフト時のみ既存 resync が働く（best-effort）。mixing graph は §16 将来。
 - **warm-up（再生レイテンシ回避・非直列化）**: §11.5 音声プリロードと対になる前倒し。preview / HTML bundle player は、編集中 comp の enabled video レイヤーを **idle 中（`requestIdleCallback`）に `<video>` を現フレームのソース時刻へ seek + decode（loadeddata 相当）まで warm-up** し、`assetId@frame` 粒度で primed 状態を共有キャッシュに記録する（多重 prime は inflight 去重）。再生開始時、全 video が warm-up 済みなら遅延ゼロで開始し、未完了の video がある場合のみ短時間（best-effort 上限）prime を待ってから再生する＝開幕の「他レイヤーは即描画されるが動画だけ遅れて登場」を防ぐ。warm-up は present（`requestVideoFrameCallback`）待ちをせず、再生ループは従来どおり軽量（毎フレーム seek しない）。**warm-up は preview/bundle player 専用で、export 経路（決定論 seek + `requestVideoFrameCallback` の present 待ち）は一切変更しない（INV-2 非干渉）。** warm-up 失敗は best-effort（再生開始時に再試行）で、Footage 削除時に primed 状態を破棄する。
-  - **カット境界の `<video>` 要素再利用（デコードギャップ回避）**: 同一動画を分割して連結したタイムライン（隣接レイヤーが同一 `asset` を参照）では、カット境界でレイヤー（object id）が入れ替わる。DomRenderer の reconcile が離脱レイヤーの `<video>` を破棄し入場レイヤーに新規 `<video>` を生成すると、新要素のロード＋デコードが境界フレームに間に合わず**数フレーム空フレーム（映像のちらつき）と内蔵音声の再初期化（プチノイズ）**が出る。これを防ぐため、DomRenderer は離脱した `<video>` を破棄せず **`assetId` 単位の要素プール**へ退避（DOM から外すが参照・`src`・デコーダ状態を保持し、**再生は止めない**）し、入場レイヤーが同一アセットなら**プールの要素を再利用**する（src 同一のため再ロード・再デコード不要・現在時刻から映像も内蔵音声もシームレスに継続）。**退避時に `pause`/`mute` しないのが要点**: 同一フレームで再利用される要素を止めると内蔵音声が一瞬ミュート→再 seek→再 play で「音量が急落→急上昇」（ぶつ切り）になる。`<video>` は DOM から外しても再生継続する仕様を利用し、入場処理（reconcile の add パス）の後に**再利用されず残ったプール要素だけを `pause`+`mute`**（遅延静音）して離脱クリップの音漏れを防ぐ。同一アセットの2レイヤーが同フレームに同時存在（クロスディゾルブ等）する場合はプールが空になり新規生成へフォールバックする（要素の重複利用はしない）。この再利用は **preview / HTML bundle player 専用**で、export 経路は要素インスタンスが変わっても `waitForVideoFrame`/`flushVideoFrames` がデコード完了を待つため決定論は不変（INV-2 非干渉）。
+  - **カット境界の `<video>` 要素再利用（デコードギャップ回避）**: 同一動画を分割して連結したタイムライン（隣接レイヤーが同一 `asset` を参照）では、カット境界でレイヤー（object id）が入れ替わる。DomRenderer の reconcile が離脱レイヤーの `<video>` を破棄し入場レイヤーに新規 `<video>` を生成すると、新要素のロード＋デコードが境界フレームに間に合わず**数フレーム空フレーム（映像のちらつき）と内蔵音声の再初期化（プチノイズ）**が出る。これを防ぐため、DomRenderer は離脱した `<video>` を破棄せず **`assetId` 単位の要素プール**へ退避（DOM から外すが参照・`src`・デコーダ状態を保持し、**再生は止めない**）し、入場レイヤーが同一アセットなら**プールの要素を再利用**する（src 同一のため再ロード・再デコード不要・現在時刻から映像も内蔵音声もシームレスに継続）。**退避時に `pause`/`mute` しないのが要点**: 同一フレームで再利用される要素を止めると内蔵音声が一瞬ミュート→再 seek→再 play で「音量が急落→急上昇」（ぶつ切り）になる。`<video>` は DOM から外しても再生継続する仕様を利用し、入場処理（reconcile の add パス）の後に**再利用されず残ったプール要素だけを `pause`+`mute`**（遅延静音）して離脱クリップの音漏れを防ぐ。同一アセットの2レイヤーが同フレームに同時存在（クロスディゾルブ等）する場合はプールが空になり新規生成へフォールバックする（要素の重複利用はしない）。この再利用は **preview / HTML bundle player 専用**で、export 経路は要素インスタンスが変わっても `waitForVideoFrame`/`flushVideoFrames` がデコード完了を待つため決定論は不変（INV-2 非干渉）。再利用直後（カット境界を跨いだフレーム）の resync 要否は、`currentTime` と target の差（再生 decode lag を含み常態で半フレームを超える）ではなく**前フレーム target からのソース読み出し位置の連続性**で判定する: target の軌道が連続（半フレーム以内）なら decode lag があっても seek せず映像・内蔵音声の連続を維持し、trim-in がずれた再取得のみ半フレーム精度で seek する。
+  - **異なるアセット間カット境界の先読み warm-up**: 上記プール再利用は**同一アセットの連結カット**では有効だが、**異なるアセット同士の境界**では入場側のプールが空のままになり、境界フレームで新規 `<video>` 生成→デコード未完→数フレーム空白が残る。preview / HTML bundle player の**再生中**、in 点が近い（既定 ≈1 秒以内）enabled video レイヤーについて、in 点の trim 時刻へ offscreen で `<video>` を先行生成し `primeVideoElement`（loadeddata 相当）で decode 済みにしてから **`assetId` 単位プールへ stash** する。カット到達時に入場 reconcile が `acquire` すればコールドスタートを避けられる。判定は comp 内 video クリップ一覧と現フレームから純関数で upcoming 集合を求め、**現表示中と同一 assetId の upcoming は除外**（連結カットは退避再利用で足りる）。再生停止・scrub（`previewVideoPlayback=false`）・dispose では先読み要素だけをプールから除去して `src` 解放しリークしない。export 経路（`exportVideoStep` / `waitForVideoFrame` / `flushVideoFrames`）は触らない（INV-2 非干渉）。
 
 ### §11.4b video footage quality（プロキシ・映像/音声分離）— Phase 1: 基盤
 
@@ -1408,7 +1408,7 @@ childFrame     = clamp(round(parentTimeSec * childFps) + trimStart, 0, childComp
 
 ネスト comp 内の各オブジェクトに設定された **描画モード（`blendMode`）** と **live filter 系 effect** を、ライブ再解決経路（`renderNestedComp`）でも適用する。トップレベル描画（`applyObject` → `applyBlendMode` / `applyEffects`）と挙動を揃え、precomp の中身が「ブレンド・エフェクトが効いた状態」で外側 comp に現れるようにする。**ラスター化を一切伴わない**（純 CSS / SVG filter）。
 
-- **blendMode**: 各内側 div に §5.4d と同じ方式を適用（16種は `mix-blend-mode`、`ditherDissolve` は `mask-image` ディザ）。トップレベルと共有する純関数ヘルパ `setBlendModeStyle(el, blend, opacity)` を用いる。
+- **blendMode**: 各内側 div に §5.4d と同じ方式を適用（16種は `mix-blend-mode`）。トップレベルと共有する純関数ヘルパ `setBlendModeStyle(el, blend)` を用いる。
 - **isolation 境界（AE collapse OFF = non-collapse 固定）**: ネスト comp コンテナに `isolation:isolate` を付与する。これにより**内部レイヤーのブレンドは precomp 内（自分の背景・下位レイヤー）で閉じ**、precomp 全体が1ユニットとして外側 comp に合成される。AE の既定（collapse transformations OFF）と一致し、`isolation` グループがネイティブに1枚へ合成するため**ラスター無しで AE と同じ結果**が出る。collapse ON（内部ブレンドが外側背面へ貫通）は将来。
 - **live filter 系 effect のみ**: `EffectDef.apply()` が返す `css` / `svg` ピースのみ内側 div の `filter` に適用する。`kind:"raster"` のピース、および **full displacement**（`wave`/`ripple`/`turbulentDisplace`）は raster 経路を要するため**ライブ経路では適用しない**（それらを含む comp は §28.11 の comp 単位ラスタ経路に乗せて反映する）。`Fast*` displacement は region クランプ済みの live filter なので適用対象。
 - **export 整合（INV-2）**: コンテナを `isolation:isolate` にすることで、export の Canvas 合成（`exporter.ts` `getCompositeLayers`＝トップレベル entry 列挙）でも、コンテナ div を1枚 capture する際に内部ブレンドがネイティブに焼かれ、preview と一致する。

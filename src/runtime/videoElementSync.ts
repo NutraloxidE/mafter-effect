@@ -158,6 +158,37 @@ export function videoSeekThresholdSec(fps: number): number {
 }
 
 /**
+ * カット境界（要素プール再取得）でのソース読み出し位置の連続性判定。
+ * 「ct と target の差」で seek 要否を決めると、通常の再生 decode lag（数フレーム）が
+ * 半フレーム閾値を常に超え、真に連続するシームレス境界でも毎回 seek が発火して
+ * プール再利用が保っている映像・内蔵音声の連続（§11.4）を壊す。
+ * そこで target の軌道どうしを比較する: 前フレームの target（前クリップの最終描画時刻）
+ * から経過フレームぶん進めた時刻と新クリップの target が半フレーム以内なら
+ * 「真に連続するカット」= seek 不要。trim-in がずれている場合だけ seek させる。
+ * prev が無い（新規要素・warm-up 投入のみ）や逆行は連続と見なさない（安全側 = seek 判定へ）。
+ */
+export function isSourceContinuousAcrossCut(
+  prevTargetSec: number | undefined,
+  prevTargetFrame: number | undefined,
+  targetSec: number,
+  frame: number,
+  fps: number,
+): boolean {
+  if (
+    prevTargetSec === undefined ||
+    prevTargetFrame === undefined ||
+    !Number.isFinite(prevTargetSec) ||
+    !Number.isFinite(prevTargetFrame)
+  ) {
+    return false;
+  }
+  const framesAdvanced = frame - prevTargetFrame;
+  if (framesAdvanced < 0) return false;
+  const expected = prevTargetSec + framesAdvanced / Math.max(1, fps);
+  return Math.abs(targetSec - expected) <= videoSeekThresholdSec(fps);
+}
+
+/**
  * 再生中はネイティブ play() に任せ、本当の不連続（ループ復帰・大ジャンプ）でのみ再同期する閾値。
  * 小さな decode lag drift で毎フレーム seek すると、旧 HW（例: Ivy Bridge / HD 4000）では
  * seek 後の present 復帰が遅く、また遅れて seek… と自己増殖の seek ループ＝映像 plane の

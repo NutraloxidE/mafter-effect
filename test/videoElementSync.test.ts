@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  isSourceContinuousAcrossCut,
   primeVideoElement,
   syncVideoElementTime,
   videoSeekThresholdSec,
@@ -117,6 +118,35 @@ describe("syncVideoElementTime", () => {
     const video = mockVideo(1.0, false);
     syncVideoElementTime(video, 1.0 + 1 / 120, 30, { playbackMode: true, forceSeek: true });
     expect(video.currentTime).toBe(1.0);
+  });
+
+  describe("isSourceContinuousAcrossCut", () => {
+    // カット境界の seek 要否は ct（decode lag を含む）ではなく target の軌道で判定する。
+    // 実測: 再生中の ct は target から 1〜5 フレーム遅れるのが常態で、ct 基準だと
+    // シームレス境界でも毎回 seek が発火して映像・内蔵音声の連続を壊す。
+    it("returns true for a seamless cut (next target continues the trajectory)", () => {
+      // 前クリップ f59 の target=59/30、次クリップ f60 の target=(60-60+60)/30=2.0 → 連続。
+      expect(isSourceContinuousAcrossCut(59 / 30, 59, 2.0, 60, 30)).toBe(true);
+    });
+
+    it("returns false when trim-in is shifted beyond half a frame", () => {
+      // trim-in +6f（0.2s）ずれ: 期待軌道 2.0 に対し target 2.2 → 不連続 = seek させる。
+      expect(isSourceContinuousAcrossCut(59 / 30, 59, 2.2, 60, 30)).toBe(false);
+    });
+
+    it("tolerates skipped render frames when the source keeps advancing", () => {
+      // f58 → f60（1 フレーム落ち）: 期待 = prev + 2/30。連続とみなす。
+      expect(isSourceContinuousAcrossCut(58 / 30, 58, 2.0, 60, 30)).toBe(true);
+    });
+
+    it("returns false without previous target info (fresh or warm-up-only element)", () => {
+      expect(isSourceContinuousAcrossCut(undefined, undefined, 2.0, 60, 30)).toBe(false);
+      expect(isSourceContinuousAcrossCut(Number.NaN, 59, 2.0, 60, 30)).toBe(false);
+    });
+
+    it("returns false when frames go backwards (loop restart / scrub jump)", () => {
+      expect(isSourceContinuousAcrossCut(59 / 30, 59, 0, 0, 30)).toBe(false);
+    });
   });
 
   it("resyncs when drift is large during playback", () => {

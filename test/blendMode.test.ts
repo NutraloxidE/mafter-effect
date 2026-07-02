@@ -4,8 +4,8 @@ import { defaultTransform, staticProp } from "../src/core/props";
 import { serializeProject } from "../src/core/serialize";
 import { validateProject } from "../src/core/validate";
 import { resolve } from "../src/runtime/resolve";
-import { bayerMatrix, ditherVisible } from "../src/runtime/ditherMask";
 import { blendModeToCompositeOp, isCssBlendMode } from "../src/runtime/blendCompose";
+import { isKnownBlendMode, normalizeBlendMode } from "../src/core/blendMode";
 import { BLEND_MODES } from "../src/core/schema";
 import type { BlendMode, Project, SceneObject, TimelineComposition } from "../src/core/schema";
 
@@ -53,18 +53,54 @@ describe("blendMode canonical serialization", () => {
   });
 });
 
-// §5.4d: 不明な blendMode は normal 扱い（undefined）にする。
+describe("blendMode helpers", () => {
+  it("isKnownBlendMode は BLEND_MODES と一致", () => {
+    for (const m of BLEND_MODES) expect(isKnownBlendMode(m)).toBe(true);
+    expect(isKnownBlendMode("ditherDissolve")).toBe(false);
+    expect(isKnownBlendMode("bogus")).toBe(false);
+  });
+
+  it("normalizeBlendMode は未知を normal に収束", () => {
+    expect(normalizeBlendMode(undefined)).toBe("normal");
+    expect(normalizeBlendMode("")).toBe("normal");
+    expect(normalizeBlendMode("ditherDissolve")).toBe("normal");
+    expect(normalizeBlendMode("multiply")).toBe("multiply");
+  });
+});
+
+// §5.4d: 不明な blendMode は normal 扱い（undefined）+ missingBlendModes 記録。
 describe("blendMode validation", () => {
   const now = "2026-01-01T00:00:00.000Z";
 
-  it("不明な値は strip + warn", () => {
+  it("不明な値は strip + warn + missingBlendModes", () => {
     const p = structuredClone(createProject({ now }));
     const o = obj("01OBJ000000000000000000001");
     (o as { blendMode?: string }).blendMode = "bogus";
     timeline(p).objects = [o];
-    const { project, warnings } = validateProject(p);
+    const { project, warnings, missingBlendModes } = validateProject(p);
     expect(timeline(project).objects[0]!.blendMode).toBeUndefined();
     expect(warnings.some((w) => w.includes("blendMode"))).toBe(true);
+    expect(missingBlendModes["01OBJ000000000000000000001"]).toBe("bogus");
+  });
+
+  it("ditherDissolve は unknown 扱い", () => {
+    const p = structuredClone(createProject({ now }));
+    const o = obj("01OBJ000000000000000000001");
+    (o as { blendMode?: string }).blendMode = "ditherDissolve";
+    timeline(p).objects = [o];
+    const { project, missingBlendModes } = validateProject(p);
+    expect(timeline(project).objects[0]!.blendMode).toBeUndefined();
+    expect(missingBlendModes["01OBJ000000000000000000001"]).toBe("ditherDissolve");
+  });
+
+  it("空文字は missing 記録せず strip", () => {
+    const p = structuredClone(createProject({ now }));
+    const o = obj("01OBJ000000000000000000001");
+    (o as { blendMode?: string }).blendMode = "";
+    timeline(p).objects = [o];
+    const { project, missingBlendModes } = validateProject(p);
+    expect(timeline(project).objects[0]!.blendMode).toBeUndefined();
+    expect(missingBlendModes["01OBJ000000000000000000001"]).toBeUndefined();
   });
 });
 
@@ -83,45 +119,26 @@ describe("blendMode resolve passthrough", () => {
     const scene = resolve(comp([obj("a", "screen")]), 0);
     expect(scene.objects[0]!.blendMode).toBe("screen");
   });
+
+  it("未知値は normal に正規化", () => {
+    const o = obj("a");
+    (o as { blendMode?: string }).blendMode = "ditherDissolve";
+    const scene = resolve(comp([o]), 0);
+    expect(scene.objects[0]!.blendMode).toBe("normal");
+  });
 });
 
 // §5.4d: capture コンポジットの blendMode → globalCompositeOperation 写像。
 describe("blendMode composite mapping", () => {
-  it("normal / ditherDissolve は source-over、他は同名", () => {
+  it("normal は source-over、他は同名", () => {
     expect(blendModeToCompositeOp("normal")).toBe("source-over");
-    expect(blendModeToCompositeOp("ditherDissolve")).toBe("source-over");
     expect(blendModeToCompositeOp("multiply")).toBe("multiply");
     expect(blendModeToCompositeOp("color-dodge")).toBe("color-dodge");
   });
 
-  it("isCssBlendMode は normal/ditherDissolve を除く 15 種のみ true", () => {
+  it("isCssBlendMode は normal を除く 15 種のみ true", () => {
     const cssTrue = BLEND_MODES.filter((m) => isCssBlendMode(m));
     expect(cssTrue.length).toBe(15);
     expect(isCssBlendMode("normal")).toBe(false);
-    expect(isCssBlendMode("ditherDissolve")).toBe(false);
-  });
-});
-
-// §5.4d / INV-1: Bayer 秩序ディザは完全決定論（Math.random 不要）。
-describe("ditherMask determinism", () => {
-  it("8×8 Bayer は 0..63 の全階調を 1 度ずつ含む", () => {
-    const m = bayerMatrix(8);
-    const flat = m.flat().sort((a, b) => a - b);
-    expect(flat).toEqual(Array.from({ length: 64 }, (_, i) => i));
-  });
-
-  it("opacity が上がると可視テクセル数は単調増加", () => {
-    const count = (op: number) => {
-      let n = 0;
-      for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) if (ditherVisible(x, y, op)) n++;
-      return n;
-    };
-    expect(count(0)).toBe(0);
-    expect(count(1)).toBe(64);
-    expect(count(0.25)).toBeLessThan(count(0.75));
-  });
-
-  it("同 opacity は同一結果（決定論）", () => {
-    expect(ditherVisible(3, 5, 0.5)).toBe(ditherVisible(3, 5, 0.5));
   });
 });

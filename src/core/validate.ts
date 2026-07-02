@@ -1,12 +1,14 @@
-import type { Project, SceneObject, TimelineComposition } from "./schema";
-import { BLEND_MODES, CURRENT_SCHEMA_VERSION } from "./schema";
+import type { ObjectId, Project, SceneObject, TimelineComposition } from "./schema";
+import { CURRENT_SCHEMA_VERSION } from "./schema";
+import { isKnownBlendMode } from "./blendMode";
 import { ensureProjectTree } from "./projectTree";
 
 export interface ValidationResult {
   project: Project; // 正規化後（不正 parent を root 化した結果など）
   warnings: string[];
+  /** エディタ専用: 未知 blendMode の raw 名（objectId → 文字列）。project.json には書かない。 */
+  missingBlendModes: Record<ObjectId, string>;
 }
-
 export class ProjectError extends Error {
   constructor(message: string) {
     super(message);
@@ -30,19 +32,20 @@ export function validateProject(raw: unknown): ValidationResult {
     throw new ProjectError("project.json: root must be an object");
   }
   const warnings: string[] = [];
+  const missingBlendModes: Record<ObjectId, string> = {};
   let project = migrate(raw as Project, warnings);
 
   for (const comp of project.compositions) {
     validateCompMeta(comp, warnings);
     if (comp.kind === "timeline") {
-      validateTimeline(comp, warnings);
+      validateTimeline(comp, warnings, missingBlendModes);
     }
   }
 
   validateProjectBins(project, warnings);
   project = ensureProjectTree(project);
 
-  return { project, warnings };
+  return { project, warnings, missingBlendModes };
 }
 
 function migrate(project: Project, warnings: string[]): Project {
@@ -104,6 +107,7 @@ function validateCompMeta(
 function validateTimeline(
   comp: TimelineComposition,
   warnings: string[],
+  missingBlendModes: Record<ObjectId, string>,
 ): void {
   const byId = new Map<string, SceneObject>();
   for (const obj of comp.objects) byId.set(obj.id, obj);
@@ -115,11 +119,14 @@ function validateTimeline(
       );
       obj.isAdjustment = undefined;
     }
-    // §5.4d: 不明な blendMode は normal 扱い（undefined）にする。
-    if (obj.blendMode !== undefined && !BLEND_MODES.includes(obj.blendMode)) {
+    // §5.4d: 不明な blendMode は normal 扱い（undefined）にする。エディタは missingBlendModes で表示。
+    if (obj.blendMode !== undefined && !isKnownBlendMode(obj.blendMode)) {
       warnings.push(
         `comp ${comp.id}: object ${obj.id} has unknown blendMode ${String(obj.blendMode)}; treating as normal`,
       );
+      if (obj.blendMode !== "") {
+        missingBlendModes[obj.id] = String(obj.blendMode);
+      }
       obj.blendMode = undefined;
     }
     // §27.4: adjustmentMode は調整レイヤーのみ有効。不正値・非調整は live 扱い（undefined）にする。

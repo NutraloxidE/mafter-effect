@@ -323,6 +323,9 @@ export interface EditorStore {
 
   // §5.4d 描画モード
   setBlendMode: (objId: string, mode: BlendMode) => void;
+
+  /** §5.4d エディタ専用: 未知 blendMode の raw 名（load 時 validate が記録）。非直列化。 */
+  missingBlendModes: Record<string, string>;
 }
 
 export const useEditorStore = create<EditorStore>((set, get) => ({
@@ -343,6 +346,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   projectRevision: 0,
   previewOverride: null,
   workAreaRevision: 0,
+  missingBlendModes: {},
 
   newProject: () => {
     const p = createProject({ name: "Untitled" });
@@ -356,6 +360,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       undoStack: emptyStack(),
       projectRevision: 0,
       previewOverride: null,
+      missingBlendModes: {},
     });
     // メモリだけ切り替えて FS が旧プロジェクトのまま残ると zip が古い内容を書き出す（§20.4b 回帰）。
     void (async () => {
@@ -372,7 +377,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
   loadFromFs: async () => {
     try {
-      const { project: p } = await loadProject(fs);
+      const { project: p, missingBlendModes } = await loadProject(fs);
       set({
         project: p,
         currentCompId: p.rootComposition,
@@ -382,6 +387,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         undoStack: emptyStack(),
         projectRevision: get().projectRevision + 1,
         previewOverride: null,
+        missingBlendModes,
       });
       await get().loadPlugins();
       await ensureAllPresetScripts(fs);
@@ -714,10 +720,26 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   },
 
   addObject: (obj) => cmdAddObject(get(), obj),
-  removeObject: (id) => cmdRemoveObject(get(), id),
+  removeObject: (id) => {
+    cmdRemoveObject(get(), id);
+    set((s) => {
+      if (!(id in s.missingBlendModes)) return s;
+      const { [id]: _removed, ...missingBlendModes } = s.missingBlendModes;
+      return { missingBlendModes };
+    });
+  },
   removeObjects: (ids) => {
     cmdRemoveObjects(get(), ids);
-    set((s) => ({ selectedObjectIds: s.selectedObjectIds.filter((x) => !ids.includes(x)) }));
+    set((s) => {
+      const idSet = new Set(ids);
+      const missingBlendModes = Object.fromEntries(
+        Object.entries(s.missingBlendModes).filter(([k]) => !idSet.has(k)),
+      );
+      return {
+        selectedObjectIds: s.selectedObjectIds.filter((x) => !ids.includes(x)),
+        missingBlendModes,
+      };
+    });
   },
   updateObject: (id, patch, label) => {
     cmdUpdateObject(get(), id, patch, label);
@@ -732,7 +754,16 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     if (!comp) return;
     const targets = comp.objects.filter((o) => s.selectedObjectIds.includes(o.id));
     const newIds = cmdDuplicateObjects(s, targets);
-    if (newIds.length > 0) set({ selectedObjectIds: newIds });
+    if (newIds.length > 0) {
+      const missingBlendModes = { ...s.missingBlendModes };
+      // cmdDuplicateObjects は入力順を保持し newIds[i] が targets[i] の複製（順序 1:1 前提）。
+      targets.forEach((src, i) => {
+        const raw = s.missingBlendModes[src.id];
+        const newId = newIds[i];
+        if (raw !== undefined && newId !== undefined) missingBlendModes[newId] = raw;
+      });
+      set({ selectedObjectIds: newIds, missingBlendModes });
+    }
   },
 
   splitSelected: () => {
@@ -750,7 +781,15 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     if (!comp || objects.length === 0) return [];
     // cmdDuplicateObjects は新 ULID 付与 + append + 1 undo（zOrder は元 +0.5）。
     const newIds = cmdDuplicateObjects(s, objects);
-    if (newIds.length > 0) set({ selectedObjectIds: newIds });
+    if (newIds.length > 0) {
+      const missingBlendModes = { ...s.missingBlendModes };
+      objects.forEach((src, i) => {
+        const raw = s.missingBlendModes[src.id];
+        const newId = newIds[i];
+        if (raw !== undefined && newId !== undefined) missingBlendModes[newId] = raw;
+      });
+      set({ selectedObjectIds: newIds, missingBlendModes });
+    }
     return newIds;
   },
 
@@ -1751,6 +1790,11 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const obj = comp?.objects.find((o) => o.id === objId);
     if (!obj) return;
     get().updateObject(objId, { blendMode: mode === "normal" ? undefined : mode }, `Blend mode: ${mode}`);
+    set((s) => {
+      if (!(objId in s.missingBlendModes)) return s;
+      const { [objId]: _removed, ...missingBlendModes } = s.missingBlendModes;
+      return { missingBlendModes };
+    });
   },
 
   setCompRenderer3d: (mode) => {

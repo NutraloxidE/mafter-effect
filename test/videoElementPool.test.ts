@@ -50,4 +50,14 @@ describe("KeyedElementPool — stash / acquire", () => {
     expect(pool.size()).toBe(0);
     expect(pool.acquire("assetA")).toBeNull();
   });
+
+  it("has / remove — 先読み warm-up の重複投入防止と明示破棄", () => {
+    const pool = new KeyedElementPool<string>();
+    expect(pool.has("assetA")).toBe(false);
+    pool.stash("assetA", "elA1");
+    expect(pool.has("assetA")).toBe(true);
+    expect(pool.remove("assetA", "elA1")).toBe(true);
+    expect(pool.has("assetA")).toBe(false);
+    expect(pool.remove("assetA", "elA1")).toBe(false);
+  });
 });

@@ -122,7 +122,7 @@ export interface SceneObject {
 
 // §5.4b 3D レイヤー描画経路。"auto" は comp.renderer3d に従う。
 export type ThreeDMode = "auto" | "dom" | "raster3d";
-// §5.4d 描画モード / ブレンドモード。CSS が直接持つ 16 種（normal 含む）＋ ditherDissolve。
+// §5.4d 描画モード / ブレンドモード。CSS mix-blend-mode が直接持つ 16 種（normal 含む）。
 export type BlendMode =
   | "normal"
   | "multiply"
@@ -139,8 +139,7 @@ export type BlendMode =
   | "hue"
   | "saturation"
   | "color"
-  | "luminosity"
-  | "ditherDissolve";
+  | "luminosity";
 // 許可値（validate / UI 用）。順序は UI ドロップダウンの並びも兼ねる。
 export const BLEND_MODES: readonly BlendMode[] = [
   "normal",
@@ -159,7 +158,6 @@ export const BLEND_MODES: readonly BlendMode[] = [
   "saturation",
   "color",
   "luminosity",
-  "ditherDissolve",
 ];
 // §5.4c AE ラベル色インデックス 0–15。
 export type LabelIndex = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16;

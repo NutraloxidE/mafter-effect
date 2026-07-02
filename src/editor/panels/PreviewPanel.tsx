@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { resolve, type ExpressionEvaluator } from "../../runtime/resolve";
 import { DomRenderer } from "../../runtime/DomRenderer";
+import { collectVideoClipsFromComp } from "../../runtime/videoLookaheadWarmup";
 import { FontOutlineCache } from "../../runtime/fontOutlineCache";
 import { ImageAssetCache, registerPreviewImageCache } from "../../runtime/imageAssetCache";
 import { HtmlCompPlayer } from "../../runtime/htmlComp";
@@ -437,6 +438,11 @@ export function PreviewPanel() {
       _htmlPlayer.prepare(htmlComps, (id) => `${compositionDir(id)}/script.js`),
     ]).then(() => setRenderTick((t) => t + 1));
   }, [comp?.id, project]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // §11.4 異なるアセット間カット境界の先読み warm-up — comp 内 video クリップ一覧を DomRenderer へ。
+  useEffect(() => {
+    rendererRef.current?.setVideoLookaheadClips(comp ? collectVideoClipsFromComp(comp) : null);
+  }, [comp?.id, comp?.objects]);
 
   useEffect(() => {
     setRenderTick((t) => t + 1);
