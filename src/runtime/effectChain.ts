@@ -10,6 +10,7 @@ export interface EffectChainCtx {
   width: number;
   height: number;
   frame: number;
+  layerOpacity?: number;
 }
 
 export type RasterChainItem = {

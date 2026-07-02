@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   angularWipeMask,
+  bayerMaskSvg,
+  ditherDissolveMask,
   lightPixelSortDisplaceMapSvg,
   lightPixelSortFilter,
   linearWipeGradientCoords,
@@ -142,6 +144,24 @@ describe("effectSvg helpers", () => {
 
   it("linearWipeMask returns empty string at completion 0 (AE: inert)", () => {
     expect(linearWipeMask(0, 0, 0, 1920, 1080)).toBe("");
+  });
+
+  it("ditherDissolveMask returns empty at full reveal", () => {
+    expect(ditherDissolveMask(1, 320, 240)).toBe("");
+  });
+
+  it("ditherDissolveMask uses pattern and luminanceToAlpha at partial reveal", () => {
+    const s = ditherDissolveMask(0.5, 320, 240);
+    expect(s).toContain("feImage");
+    expect(s).toContain("luminanceToAlpha");
+    expect(s).toContain('operator="in"');
+    expect(s).not.toContain("feTile");
+  });
+
+  it("bayerMaskSvg tiles 8x8 pattern across layer", () => {
+    const svg = bayerMaskSvg(64, 64, 0.5);
+    expect(svg).toContain('patternUnits="userSpaceOnUse"');
+    expect(svg).toContain('width="8" height="8"');
   });
 
   it("linearWipeMask converts luminance to alpha for partial completion", () => {

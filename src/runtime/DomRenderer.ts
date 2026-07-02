@@ -1,3 +1,4 @@
+import { shouldForceOpaqueForDither } from "./ditherReveal";
 import { DISPLACEMENT_EFFECT_TYPES, FAST_DISPLACEMENT_EFFECT_TYPES } from "./effectSvg";
 import { needsSvgDisplaceCapture } from "./effectRouting";
 import type { CompositionMeta, Frame, HtmlComposition, RGBA, TimelineComposition } from "../core/schema";
@@ -630,7 +631,9 @@ export class DomRenderer implements Renderer {
     // dolly/zoom が効く）。2D 層は素の worldTransform = カメラ免除（AE 準拠, z=0 で perspective 無歪み）。
     const xform = objectWorldTransformWithCamera(this.cameraPre, obj);
     entry.div.style.transform = mat4ToCss(xform);
-    entry.div.style.opacity = String(obj.opacity);
+    entry.div.style.opacity = shouldForceOpaqueForDither(obj.effects, obj.opacity)
+      ? "1"
+      : String(obj.opacity);
     entry.div.style.zIndex = String(Math.round(obj.zOrder * BASE_Z));
 
     // §5.4d 描画モード。毎フレーム明示設定/クリア（前フレームの残留を防ぐ）。
@@ -816,12 +819,14 @@ export class DomRenderer implements Renderer {
       layerW = Math.max(layerW, child.offsetWidth);
       layerH = Math.max(layerH, child.offsetHeight);
     }
+    const layerOpacity = obj.opacity;
     const ctx = obj.isAdjustment
-      ? { width: compW, height: compH, frame }
+      ? { width: compW, height: compH, frame, layerOpacity }
       : {
           width: layerW || entry.div.offsetWidth || compW,
           height: layerH || entry.div.offsetHeight || compH,
           frame,
+          layerOpacity,
         };
 
     const chain = resolveEffectChain(effects, ctx, `fx-${obj.id}`);
@@ -1456,12 +1461,15 @@ export class DomRenderer implements Renderer {
       const div = document.createElement("div");
       const xform = objectWorldTransformWithCamera(cameraPre, obj);
       const isAdj = obj.isAdjustment === true;
+      const nestedOpacity = shouldForceOpaqueForDither(obj.effects, obj.opacity)
+        ? "1"
+        : String(obj.opacity);
       if (isAdj) {
         // §23.3d: 調整レイヤーは comp 全面の空 div とし、effect を backdrop-filter で背後へ効かせる。
         // コンテンツ component は描かない（背後を覆わないため）。
-        div.style.cssText = `position:absolute;top:0;left:0;transform-origin:0 0;transform:${mat4ToCss(xform)};opacity:${obj.opacity};z-index:${Math.round(obj.zOrder * BASE_Z)};width:${childComp.width}px;height:${childComp.height}px;background:transparent;pointer-events:none`;
+        div.style.cssText = `position:absolute;top:0;left:0;transform-origin:0 0;transform:${mat4ToCss(xform)};opacity:${nestedOpacity};z-index:${Math.round(obj.zOrder * BASE_Z)};width:${childComp.width}px;height:${childComp.height}px;background:transparent;pointer-events:none`;
       } else {
-        div.style.cssText = `position:absolute;top:0;left:0;transform-origin:0 0;transform:${mat4ToCss(xform)};opacity:${obj.opacity};z-index:${Math.round(obj.zOrder * BASE_Z)}`;
+        div.style.cssText = `position:absolute;top:0;left:0;transform-origin:0 0;transform:${mat4ToCss(xform)};opacity:${nestedOpacity};z-index:${Math.round(obj.zOrder * BASE_Z)}`;
         for (const c of obj.components) {
           if (c.type === "comp") {
             // ネストされた comp は再帰描画（深度制限付き）
@@ -1495,7 +1503,12 @@ export class DomRenderer implements Renderer {
         // 解決済み chain をレイヤメタに保存し、exportComposite が子座標系で背面 master へ焼く。
         let exportChain: ExportChain | null = null;
         if (isAdj) {
-          const ctx = { width: childComp.width, height: childComp.height, frame: childFrame };
+          const ctx = {
+            width: childComp.width,
+            height: childComp.height,
+            frame: childFrame,
+            layerOpacity: obj.opacity,
+          };
           const ec = resolveEffectChain(obj.effects ?? [], ctx, `nfx-${obj.id}`);
           exportChain = {
             preFilterStr: ec.preTokens.join(" "),
@@ -1565,7 +1578,7 @@ export class DomRenderer implements Renderer {
     const isAdj = obj.isAdjustment === true;
     const w = isAdj ? Math.max(1, Math.round(compW)) : Math.max(1, Math.round(div.offsetWidth || compW || 0));
     const h = isAdj ? Math.max(1, Math.round(compH)) : Math.max(1, Math.round(div.offsetHeight || compH || 0));
-    const ctx = { width: w, height: h, frame };
+    const ctx = { width: w, height: h, frame, layerOpacity: obj.opacity };
     const tokens: string[] = [];
     const svgFilters: { id: string; primitives: string }[] = [];
     let i = 0;

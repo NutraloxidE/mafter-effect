@@ -251,6 +251,7 @@ interface SceneObject {
   - **preview / Live HTML バンドル**: 16 種は CSS `mix-blend-mode` をレイヤー div に直接設定（ラスター化ゼロ・ネイティブ合成）。
   - **動画キャプチャ書き出し（mp4 / webm / png 連番）**: `foreignObject` は backdrop 合成をしないため、comp 内に非 `normal` の 15 種が 1 つでもあれば **レイヤー別キャプチャ → Canvas 2D `globalCompositeOperation`**（`normal`→`source-over`、他 15 種は同名）で z 順に合成し直す。これで preview ≡ export（INV-2）を守る。非 blend comp は従来の単一スナップショット高速経路を維持。
 - **INVARIANTS**: `blendMode` は `ResolvedObject` に焼くためレンダラ非依存（INV-3）、optional 省略で byte 等価（INV-4）。
+- **Dither Dissolve**: 旧 `blendMode: "ditherDissolve"` は廃止。§27 `ditherDissolve` **live エフェクト**を使用（マスク型ディザ・`blendMode` ではない）。
 
 ### §5.5 Component（タグ付き union + プラグイン拡張）
 
@@ -2187,6 +2188,22 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 - **AE 準拠の極性**: `completion <= 0` は `null`（完全表示）。`completion >= 1` は全消去。黒い扇形（= 消える領域）が `startAngle`（0 = 真上）から時計回りに `sweep = completion·360°` で広がる。
 
 > **ワイプ共通**: エフェクト配列順を維持するため `clip-path` ではなく SVG filter 内マスク（§27.1）。AE Transition 100% 一致は非目標。
+
+#### `ditherDissolve` — Dither Dissolve
+
+| param key | label | kind | default | range | animatable |
+|---|---|---|---|---|---|
+| `completion` | Transition Completion | scalar | `0` | 0..1, step 0.01 | ✅ |
+
+- `apply` → `{ kind: "svg", primitives }`（wipe と同型: `feImage` Bayer pattern マスク → `luminanceToAlpha` → `feComposite operator="in"`）。`feTile` は使わない。
+- **有効表示率**: `effectiveReveal = quantize(layerOpacity × (1 − completion))`（64 段量子化・[`ditherReveal.ts`](../src/runtime/ditherReveal.ts)）。`layerOpacity` は `EffectRenderCtx` で DomRenderer が `ResolvedObject.opacity` を注入。
+- **恒等**: `effectiveReveal >= 1` → `null`（filter なし）。`effectiveReveal <= 0` → 全消去。
+- **`executionPath`**: `"live"` / **`previewBakeRequired`**: `false` / **カテゴリ**: `"ワイプ"`。
+- **描画**: `effectiveReveal < 1` の間、host div の CSS `opacity` は **1 に強制**（Bayer マスクが透明度を担う。CSS opacity との二重減衰を防ぐ）。
+- **意味**: **マスク型ディザ dissolve**（レイヤー自己マスク）。AE Dither Dissolve **ブレンドモード合成の 100% 代替ではない**（下層との合成挙動は近似）。
+- **旧 `blendMode: "ditherDissolve"`**: §5.4d から削除済み。`blendMode=normal` + 本エフェクトを使用。load 時 unknown blend は `missingBlendModes` UI のまま。
+- **エフェクト順**: チェーン**末尾推奨**（blur 等の後ろだとエッジがぼける）。
+- **既知制約**: ネスト内で full displacement と併用時は live effect skip（§23.3a）。
 
 #### `pixelSorter` — Pixel Sorter（AEPS2 Phase 1 コア）
 

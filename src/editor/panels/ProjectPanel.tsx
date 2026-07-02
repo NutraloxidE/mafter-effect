@@ -6,7 +6,7 @@ import { globalPluginRegistry } from "../../runtime/pluginRegistry";
 import type { Project } from "../../core/schema";
 import { DRAG_MIME } from "./dragMime";
 import { ProjectTreeView } from "./projectTree/ProjectTreeView";
-import { feedbackCollector, isFeedbackEnabled } from "../feedbackCollector";
+import { feedbackCollector } from "../feedbackCollector";
 import { FeedbackSendModal } from "../FeedbackPrompt";
 
 export { DRAG_MIME } from "./dragMime";
@@ -192,16 +192,6 @@ export function ProjectPanel() {
             ▶ Export Video…
           </button>
         </div>
-        {isFeedbackEnabled() && (
-          <div style={{ marginTop: 4 }}>
-            <button
-              onClick={() => setShowFeedbackModal(true)}
-              style={{ ...btnStyle, width: "100%" }}
-            >
-              フィードバックを送る
-            </button>
-          </div>
-        )}
       </div>
 
       {project && (

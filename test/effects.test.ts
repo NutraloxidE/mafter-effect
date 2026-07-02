@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ANGULAR_WIPE_EFFECT_DEF,
   BLUR_EFFECT_DEF,
+  DITHER_DISSOLVE_EFFECT_DEF,
   LINEAR_WIPE_EFFECT_DEF,
   RIPPLE_EFFECT_DEF,
   TINT_EFFECT_DEF,
@@ -43,13 +44,13 @@ describe("builtinEffects apply (§27.3)", () => {
   it("re-registers after pluginRegistry.clear() (loadPlugins 経路)", () => {
     registerBuiltinEffects();
     expect(globalPluginRegistry.listEffects().map((e) => e.type)).toEqual([
-      "blur", "tint", "wave", "turbulentDisplace", "ripple", "linearWipe", "angularWipe", "pixelSorter", "pixelSortLite",
+      "blur", "tint", "wave", "turbulentDisplace", "ripple", "linearWipe", "angularWipe", "ditherDissolve", "pixelSorter", "pixelSortLite",
       "fastWave", "fastRipple", "fastTurbulentDisplace",
     ]);
     globalPluginRegistry.clear();
     registerBuiltinEffects();
     expect(globalPluginRegistry.listEffects().map((e) => e.type)).toEqual([
-      "blur", "tint", "wave", "turbulentDisplace", "ripple", "linearWipe", "angularWipe", "pixelSorter", "pixelSortLite",
+      "blur", "tint", "wave", "turbulentDisplace", "ripple", "linearWipe", "angularWipe", "ditherDissolve", "pixelSorter", "pixelSortLite",
       "fastWave", "fastRipple", "fastTurbulentDisplace",
     ]);
   });
@@ -271,6 +272,37 @@ describe("builtinEffects apply (§27.3)", () => {
     if (r?.kind === "svg") {
       expect(r.primitives).toContain("feImage");
       expect(r.primitives).toContain("path");
+    }
+  });
+
+  it("ditherDissolve returns null when effectiveReveal >= 1", () => {
+    expect(DITHER_DISSOLVE_EFFECT_DEF.apply({ completion: 0 }, { ...ctx, layerOpacity: 1 })).toBeNull();
+  });
+
+  it("ditherDissolve returns bayer mask when layer opacity < 1", () => {
+    const r = DITHER_DISSOLVE_EFFECT_DEF.apply({ completion: 0 }, { ...ctx, layerOpacity: 0.5 });
+    expect(r?.kind).toBe("svg");
+    if (r?.kind === "svg") {
+      expect(r.primitives).toContain("feImage");
+      expect(r.primitives).toContain("luminanceToAlpha");
+      expect(r.primitives).toContain('operator="in"');
+      expect(r.primitives).not.toContain("feTile");
+    }
+  });
+
+  it("ditherDissolve uses completion to reduce reveal", () => {
+    const r = DITHER_DISSOLVE_EFFECT_DEF.apply({ completion: 0.5 }, { ...ctx, layerOpacity: 1 });
+    expect(r?.kind).toBe("svg");
+    if (r?.kind === "svg") {
+      expect(r.primitives).toContain("luminanceToAlpha");
+    }
+  });
+
+  it("ditherDissolve fully hides when reveal <= 0", () => {
+    const r = DITHER_DISSOLVE_EFFECT_DEF.apply({ completion: 1 }, { ...ctx, layerOpacity: 1 });
+    expect(r?.kind).toBe("svg");
+    if (r?.kind === "svg") {
+      expect(r.primitives).toContain("black");
     }
   });
 

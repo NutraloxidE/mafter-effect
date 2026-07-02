@@ -4,6 +4,8 @@ import { globalPluginRegistry } from "./pluginRegistry";
 import {
   angularWipeMask,
   displaceWithMap,
+  ditherDissolveMask,
+  ditherEffectiveReveal,
   evolutionToOffsetPx,
   lightPixelSortFilter,
   linearWipeMask,
@@ -220,7 +222,6 @@ const LINEAR_WIPE_EFFECT_DEF: EffectDef = {
     { key: "feather", label: "Feather", kind: "scalar", default: 0, animatable: true, min: 0, max: 200, step: 0.1 },
   ],
   apply(props, ctx: EffectRenderCtx) {
-    // AE 準拠: completion 0 = 恒等（表示）、1 = 完全 wipe（非表示）。
     const completion = num(props["completion"], 0);
     if (completion <= 0) return null;
     const w = Math.max(1, ctx.width);
@@ -257,6 +258,26 @@ const ANGULAR_WIPE_EFFECT_DEF: EffectDef = {
     const centerY = Math.min(1, Math.max(0, num(props["centerY"], 0.5)));
     const feather = Math.max(0, num(props["feather"], 0));
     const primitives = angularWipeMask(completion, startAngle, centerX, centerY, feather, w, h);
+    if (!primitives) return null;
+    return { kind: "svg", primitives };
+  },
+};
+
+const DITHER_DISSOLVE_EFFECT_DEF: EffectDef = {
+  type: "ditherDissolve",
+  label: "Dither Dissolve",
+  category: "ワイプ",
+  previewBakeRequired: false,
+  executionPath: "live",
+  params: [
+    { key: "completion", label: "Transition Completion", kind: "scalar", default: 0, animatable: true, min: 0, max: 1, step: 0.01 },
+  ],
+  apply(props, ctx: EffectRenderCtx) {
+    const reveal = ditherEffectiveReveal(ctx.layerOpacity ?? 1, num(props["completion"], 0));
+    if (reveal >= 1) return null;
+    const w = Math.max(1, ctx.width);
+    const h = Math.max(1, ctx.height);
+    const primitives = ditherDissolveMask(reveal, w, h);
     if (!primitives) return null;
     return { kind: "svg", primitives };
   },
@@ -330,6 +351,7 @@ export function registerBuiltinEffects(): void {
   globalPluginRegistry.registerEffect(RIPPLE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(LINEAR_WIPE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(ANGULAR_WIPE_EFFECT_DEF);
+  globalPluginRegistry.registerEffect(DITHER_DISSOLVE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(PIXEL_SORTER_EFFECT_DEF);
   globalPluginRegistry.registerEffect(PIXEL_SORT_LITE_EFFECT_DEF);
   registerFastEffects();
@@ -343,6 +365,7 @@ export {
   RIPPLE_EFFECT_DEF,
   LINEAR_WIPE_EFFECT_DEF,
   ANGULAR_WIPE_EFFECT_DEF,
+  DITHER_DISSOLVE_EFFECT_DEF,
   PIXEL_SORTER_EFFECT_DEF,
   PIXEL_SORT_LITE_EFFECT_DEF,
 };

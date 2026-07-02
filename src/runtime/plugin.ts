@@ -49,6 +49,8 @@ export interface EffectRenderCtx {
   width: number;
   height: number;
   frame: number;
+  /** §27.3 Dither Dissolve — ResolvedObject.opacity */
+  layerOpacity?: number;
 }
 
 export interface EffectDef {

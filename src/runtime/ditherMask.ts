@@ -1,4 +1,6 @@
-// §5.4d ディザ合成（Dither Dissolve）用の Bayer 秩序ディザマスク。
+import { quantizeDitherReveal } from "./ditherReveal";
+
+// §27.3 ディザ合成（Dither Dissolve）用の Bayer 秩序ディザマスク。
 // レイヤー opacity を閾値に、ピクセル単位で α 0/1 を決める（混色しない）。
 // Bayer は固定行列なので完全決定論（Math.random 不要・INV-1）。CSS mask-image に
 // 敷くタイル画像を生成する。α しきい値処理のため foreignObject キャプチャでもそのまま出る。
@@ -50,12 +52,11 @@ const tileCache = new Map<number, string>();
  * その両端でも正しいタイルを返す。DOM 非対応環境（テスト）では空文字を返す。
  */
 export function ditherTileDataUrl(opacity: number): string {
-  const q = Math.max(0, Math.min(64, Math.round(opacity * 64)));
+  const t = quantizeDitherReveal(opacity);
+  const q = Math.round(t * 64);
   const cached = tileCache.get(q);
   if (cached !== undefined) return cached;
   if (typeof document === "undefined") return "";
-
-  const t = q / 64;
   const canvas = document.createElement("canvas");
   canvas.width = TILE;
   canvas.height = TILE;

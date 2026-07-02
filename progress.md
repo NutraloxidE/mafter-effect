@@ -847,3 +847,10 @@ canvas 化結果は以降から見て通常の背面ピクセルと等価（zOrd
 - **spec**: §5.4d / §23.3a から dither 削除、未知 blend の散文追記（§5 型は CSS 16 種 enum のみ・意図どおり）。
 - **検証**: `npm run typecheck` / `npm test` 650 件 / `npm run build:player` 緑。Playwright: [verify-blend-mode.mjs](verify-blend-mode.mjs) PASS、[verify-missing-blend-mode.mjs](verify-missing-blend-mode.mjs) PASS（FS 注入 `ditherDissolve` → `loadFromFs` → Inspector `ditherDissolve (missing)` + `mix-blend-mode: normal`）。unit: [test/blendMode.test.ts](test/blendMode.test.ts)。
 - **(goal-cursor)** ditherDissolve 除去・未知 blend missing UI・全検証緑まで完了。
+
+### 2026-07-02（Cursor / goal-cursor）— ditherDissolve live エフェクト再実装 ✅
+
+- **方針**: 削除済み blendMode `ditherDissolve` を §27.3 の live builtin エフェクトとして再実装。`effectiveReveal = quantize(layerOpacity × (1 − completion))`（64 段）、Bayer 8×8 SVG pattern + `maskComposite`（wipe 同型・feTile 不使用）。`effectiveReveal < 1` 時は div `opacity = 1`（Bayer マスクが透明度を担う）。§5 型変更なし。
+- **実装**: [ditherReveal.ts](src/runtime/ditherReveal.ts)（純関数）、[effectSvg.ts](src/runtime/effectSvg.ts)（`bayerMaskSvg` / `ditherDissolveMask`）、[builtinEffects.ts](src/runtime/builtinEffects.ts)（`DITHER_DISSOLVE_EFFECT_DEF` category=ワイプ）、[plugin.ts](src/runtime/plugin.ts) / [effectChain.ts](src/runtime/effectChain.ts)（`layerOpacity`）、[DomRenderer.ts](src/runtime/DomRenderer.ts)（layerOpacity 注入 + opacity 強制）。spec §27.3 + §5.4d 移行注記。
+- **検証**: `npm run typecheck` / `npm test` 660 件 / `playerBuildFreshness` 緑。Playwright: [verify-dither-dissolve.mjs](verify-dither-dissolve.mjs) PASS（preview screenshot 計測・dither 純色ピクセル vs smooth opacity 中間色を対照）、[verify-blend-mode.mjs](verify-blend-mode.mjs) / [verify-missing-blend-mode.mjs](verify-missing-blend-mode.mjs) 無回帰 PASS。unit: [test/ditherReveal.test.ts](test/ditherReveal.test.ts)、[test/effects.test.ts](test/effects.test.ts)、[test/effectSvg.test.ts](test/effectSvg.test.ts)。
+- **(goal-cursor)** ditherDissolve live エフェクト実装・verify PASS まで完了。

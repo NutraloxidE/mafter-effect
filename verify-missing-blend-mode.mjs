@@ -26,7 +26,7 @@ const setup = await page.evaluate(async () => {
   await store.getState().saveToFs?.();
   const text = await fs.readText("project.json");
   const raw = JSON.parse(text);
-  const comp = raw.compositions.find((c) => c.id === raw.rootComposition);
+  const comp = raw.compositions.find((c) => c.objects?.some((o) => o.id === id));
   const obj = comp?.objects.find((o) => o.id === id);
   if (!obj) return { error: "object not in project.json", id };
 
