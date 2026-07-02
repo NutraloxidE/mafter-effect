@@ -4,6 +4,7 @@ import {
   BLUR_EFFECT_DEF,
   DITHER_DISSOLVE_EFFECT_DEF,
   LINEAR_WIPE_EFFECT_DEF,
+  OPTICS_COMPENSATION_EFFECT_DEF,
   RIPPLE_EFFECT_DEF,
   TINT_EFFECT_DEF,
   TURBULENT_DISPLACE_EFFECT_DEF,
@@ -44,13 +45,13 @@ describe("builtinEffects apply (§27.3)", () => {
   it("re-registers after pluginRegistry.clear() (loadPlugins 経路)", () => {
     registerBuiltinEffects();
     expect(globalPluginRegistry.listEffects().map((e) => e.type)).toEqual([
-      "blur", "tint", "wave", "turbulentDisplace", "ripple", "linearWipe", "angularWipe", "ditherDissolve", "pixelSorter", "pixelSortLite",
+      "blur", "tint", "wave", "turbulentDisplace", "ripple", "opticsCompensation", "linearWipe", "angularWipe", "ditherDissolve", "pixelSorter", "pixelSortLite",
       "fastWave", "fastRipple", "fastTurbulentDisplace",
     ]);
     globalPluginRegistry.clear();
     registerBuiltinEffects();
     expect(globalPluginRegistry.listEffects().map((e) => e.type)).toEqual([
-      "blur", "tint", "wave", "turbulentDisplace", "ripple", "linearWipe", "angularWipe", "ditherDissolve", "pixelSorter", "pixelSortLite",
+      "blur", "tint", "wave", "turbulentDisplace", "ripple", "opticsCompensation", "linearWipe", "angularWipe", "ditherDissolve", "pixelSorter", "pixelSortLite",
       "fastWave", "fastRipple", "fastTurbulentDisplace",
     ]);
   });
@@ -163,6 +164,44 @@ describe("builtinEffects apply (§27.3)", () => {
   it("ripple center actually moves the rings", () => {
     const a = RIPPLE_EFFECT_DEF.apply({ amplitude: 10, radius: 100, frequency: 5, centerX: 0.25, centerY: 0.5 }, ctx);
     const b = RIPPLE_EFFECT_DEF.apply({ amplitude: 10, radius: 100, frequency: 5, centerX: 0.75, centerY: 0.5 }, ctx);
+    expect(a?.kind === "svg" && b?.kind === "svg" && a.primitives !== b.primitives).toBe(true);
+  });
+
+  it("opticsCompensation returns null when fieldOfView is 0", () => {
+    expect(
+      OPTICS_COMPENSATION_EFFECT_DEF.apply(
+        { fieldOfView: 0, reverse: false, centerX: 0.5, centerY: 0.5, quality: 1 },
+        ctx,
+      ),
+    ).toBeNull();
+  });
+
+  it("opticsCompensation returns PNG feImage displacement map", () => {
+    const r = OPTICS_COMPENSATION_EFFECT_DEF.apply(
+      { fieldOfView: 50, reverse: false, centerX: 0.5, centerY: 0.5, quality: 1 },
+      ctx,
+    );
+    expect(r?.kind).toBe("svg");
+    expect(OPTICS_COMPENSATION_EFFECT_DEF.executionPath).toBe("live");
+    expect(OPTICS_COMPENSATION_EFFECT_DEF.previewBakeRequired).toBe(false);
+    if (r?.kind === "svg") {
+      expect(r.primitives).toContain("feDisplacementMap");
+      expect(r.primitives).toContain("feImage");
+      expect(r.primitives).toContain("data:image/png;base64,");
+      expect(r.primitives).toContain('width="1920"');
+      expect(r.primitives).toContain('height="1080"');
+    }
+  });
+
+  it("opticsCompensation reverse changes the map", () => {
+    const a = OPTICS_COMPENSATION_EFFECT_DEF.apply(
+      { fieldOfView: 60, reverse: false, centerX: 0.5, centerY: 0.5, quality: 1 },
+      ctx,
+    );
+    const b = OPTICS_COMPENSATION_EFFECT_DEF.apply(
+      { fieldOfView: 60, reverse: true, centerX: 0.5, centerY: 0.5, quality: 1 },
+      ctx,
+    );
     expect(a?.kind === "svg" && b?.kind === "svg" && a.primitives !== b.primitives).toBe(true);
   });
 

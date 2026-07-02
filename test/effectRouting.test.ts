@@ -11,9 +11,10 @@ describe("effectRouting", () => {
     expect(hasEnabledDisplacement([{ type: "blur", enabled: true }])).toBe(false);
   });
 
-  it("hasEnabledFullDisplacement excludes Fast* distortion", () => {
+  it("hasEnabledFullDisplacement excludes Fast* and opticsCompensation", () => {
     expect(hasEnabledFullDisplacement([{ type: "fastWave", enabled: true }])).toBe(false);
     expect(hasEnabledFullDisplacement([{ type: "fastTurbulentDisplace", enabled: true }])).toBe(false);
+    expect(hasEnabledFullDisplacement([{ type: "opticsCompensation", enabled: true }])).toBe(false);
     expect(hasEnabledFullDisplacement([{ type: "wave", enabled: true }])).toBe(true);
     expect(hasEnabledFullDisplacement([{ type: "turbulentDisplace", enabled: true }])).toBe(true);
     expect(hasEnabledFullDisplacement([{ type: "blur", enabled: true }])).toBe(false);
@@ -33,6 +34,14 @@ describe("effectRouting", () => {
         effects: [{ type: "wave", enabled: true }],
       }),
     ).toBe(true);
+  });
+
+  it("needsSvgDisplaceCapture: 通常レイヤー + opticsCompensation → false（live）", () => {
+    expect(
+      needsSvgDisplaceCapture({
+        effects: [{ type: "opticsCompensation", enabled: true }],
+      }),
+    ).toBe(false);
   });
 
   it("needsSvgDisplaceCapture: Live調整 + blur only → false", () => {

@@ -48,6 +48,7 @@ export const DISPLACEMENT_EFFECT_TYPES = new Set([
   "wave",
   "turbulentDisplace",
   "ripple",
+  "opticsCompensation",
   "fastWave",
   "fastRipple",
   "fastTurbulentDisplace",
@@ -59,6 +60,18 @@ export const FAST_DISPLACEMENT_EFFECT_TYPES = new Set([
   "fastRipple",
   "fastTurbulentDisplace",
 ]);
+
+/** §27.3 — live CSS filter 完結 displacement（raster capture 対象外）。Fast* + opticsCompensation。 */
+export const LIVE_DISPLACEMENT_EFFECT_TYPES = new Set([
+  ...FAST_DISPLACEMENT_EFFECT_TYPES,
+  "opticsCompensation",
+]);
+
+/** Optics Compensation — FOV 上限（tan 発散回避）。 */
+export const OPTICS_MAX_FOV_DEG = 170;
+
+/** AE FOV 目視キャリブ用内部スケール（ユーザーパラメータではない）。 */
+export const OPTICS_FOV_DEG_SCALE = 1;
 
 /** §27.5 Fast displacement — optional map blur stdDeviation (px, userSpace). */
 export const FAST_DISPLACE_AA_STD_DEV = 1;
@@ -312,6 +325,124 @@ export function rippleDisplacementSample(
   const theta = (2 * Math.PI * frequency * dist) / radius + phase;
   const mag = env * Math.sin(theta);
   return { x: (dx / dist) * mag, y: (dy / dist) * mag };
+}
+
+/** 中心 (cx,cy) からレイヤー四隅までの最大距離。 */
+export function opticsRMax(cx: number, cy: number, w: number, h: number): number {
+  const lw = Math.max(1, w);
+  const lh = Math.max(1, h);
+  let max = 0;
+  for (const [px, py] of [[0, 0], [lw, 0], [0, lh], [lw, lh]] as const) {
+    max = Math.max(max, Math.hypot(px - cx, py - cy));
+  }
+  return Math.max(max, 1);
+}
+
+/** 正規化半径 rn に対する Optics Compensation 写像先 rn'。 */
+export function opticsMappedRn(rn: number, fovDeg: number, reverse: boolean): number {
+  const clampedFov = Math.min(OPTICS_MAX_FOV_DEG, Math.max(0, fovDeg)) * OPTICS_FOV_DEG_SCALE;
+  const theta = (clampedFov * Math.PI) / 360;
+  if (theta < 1e-8 || rn <= 0) return rn;
+  const tanTheta = Math.tan(theta);
+  if (Math.abs(tanTheta) < 1e-8) return rn;
+  if (reverse) {
+    return Math.atan(rn * tanTheta) / theta;
+  }
+  return Math.tan(theta * rn) / tanTheta;
+}
+
+/** rn∈[0,1] 上の max |rn'−rn|（scale 算出用・四隅 rn=1 では 0 になり得る）。 */
+export function opticsMaxRadialDelta(fovDeg: number, reverse: boolean): number {
+  if (fovDeg <= 0) return 0;
+  let max = 0;
+  const steps = 128;
+  for (let i = 0; i <= steps; i++) {
+    const rn = i / steps;
+    const mapped = opticsMappedRn(rn, fovDeg, reverse);
+    max = Math.max(max, Math.abs(mapped - rn));
+  }
+  return max;
+}
+
+/** §27.3 Optics Compensation — 放射方向変位（正規化成分 [-1,1]）。純関数（INV-1）。 */
+export function opticsDisplacementSample(
+  dx: number,
+  dy: number,
+  rMax: number,
+  fovDeg: number,
+  reverse: boolean,
+): { x: number; y: number } {
+  const dist = Math.hypot(dx, dy);
+  if (dist < 1e-6 || rMax < 1e-6) return { x: 0, y: 0 };
+  const maxDeltaRn = opticsMaxRadialDelta(fovDeg, reverse);
+  if (maxDeltaRn < 1e-9) return { x: 0, y: 0 };
+  const rn = dist / rMax;
+  const rnPrime = opticsMappedRn(rn, fovDeg, reverse);
+  const radialDelta = (rnPrime - rn) * rMax;
+  const scalePx = rMax * maxDeltaRn;
+  const ux = dx / dist;
+  const uy = dy / dist;
+  return { x: (ux * radialDelta) / scalePx, y: (uy * radialDelta) / scalePx };
+}
+
+/** feDisplacementMap scale（px）— effectChain region 推定用。 */
+export function opticsDisplaceScalePx(
+  fieldOfView: number,
+  reverse: boolean,
+  w: number,
+  h: number,
+  centerX: number,
+  centerY: number,
+): number {
+  const fov = Math.max(0, fieldOfView);
+  const maxDeltaRn = opticsMaxRadialDelta(fov, reverse);
+  if (maxDeltaRn < 1e-9) return 0;
+  const lw = Math.max(1, Math.round(w));
+  const lh = Math.max(1, Math.round(h));
+  const cx = clamp01(centerX) * lw;
+  const cy = clamp01(centerY) * lh;
+  return opticsRMax(cx, cy, lw, lh) * maxDeltaRn;
+}
+
+/**
+ * §27.3 Optics Compensation — FOV ベース放射 displacement map（PNG data URI）。
+ *
+ * AE Optics Compensation 相当（Resize / 色収差は Phase 2）。ripple と同型の 2D ベクトル map。
+ */
+export function opticsCompensationDisplaceMap(
+  fieldOfView: number,
+  reverse: boolean,
+  centerX: number,
+  centerY: number,
+  w: number,
+  h: number,
+  quality = 1,
+): { uri: string; scale: number } {
+  const fov = Math.max(0, fieldOfView);
+  const maxDeltaRn = opticsMaxRadialDelta(fov, reverse);
+  const lw = Math.max(1, Math.round(w));
+  const lh = Math.max(1, Math.round(h));
+  const cx = clamp01(centerX) * lw;
+  const cy = clamp01(centerY) * lh;
+  const rMax = opticsRMax(cx, cy, lw, lh);
+  const scalePx = rMax * maxDeltaRn;
+  const scale = 2 * scalePx;
+
+  const { mw, mh } = rippleMapDims(lw, lh, quality);
+  const rgba = new Uint8Array(mw * mh * 4);
+  for (let my = 0; my < mh; my++) {
+    const ly = ((my + 0.5) / mh) * lh;
+    for (let mx = 0; mx < mw; mx++) {
+      const lx = ((mx + 0.5) / mw) * lw;
+      const { x, y } = opticsDisplacementSample(lx - cx, ly - cy, rMax, fov, reverse);
+      const o = (my * mw + mx) * 4;
+      rgba[o] = Math.round(clamp01(0.5 + 0.5 * x) * 255);
+      rgba[o + 1] = Math.round(clamp01(0.5 + 0.5 * y) * 255);
+      rgba[o + 2] = 128;
+      rgba[o + 3] = 255;
+    }
+  }
+  return { uri: rgbaToPngDataUri(rgba, mw, mh), scale };
 }
 
 /**

@@ -2,13 +2,14 @@ import type { RGBA } from "../core/schema";
 import type { EffectDef, EffectRenderCtx, RasterBuffer } from "./plugin";
 import { globalPluginRegistry } from "./pluginRegistry";
 import {
-  angularWipeMask,
   displaceWithMap,
+  angularWipeMask,
   ditherDissolveMask,
   ditherEffectiveReveal,
   evolutionToOffsetPx,
   lightPixelSortFilter,
   linearWipeMask,
+  opticsCompensationDisplaceMap,
   phaseToSeed,
   rippleDisplaceMap,
   sizeToFrequency,
@@ -210,6 +211,45 @@ const RIPPLE_EFFECT_DEF: EffectDef = {
   },
 };
 
+function bool(v: unknown, fallback: boolean): boolean {
+  return typeof v === "boolean" ? v : fallback;
+}
+
+const OPTICS_COMPENSATION_EFFECT_DEF: EffectDef = {
+  type: "opticsCompensation",
+  label: "Optics Compensation",
+  category: "ディストーション",
+  previewBakeRequired: false,
+  executionPath: "live",
+  params: [
+    { key: "fieldOfView", label: "Field Of View", kind: "scalar", default: 50, animatable: true, min: 0, max: 170, step: 0.1 },
+    { key: "reverse", label: "Reverse Lens Distortion", kind: "bool", default: false, animatable: false },
+    { key: "centerX", label: "Center X", kind: "scalar", default: 0.5, animatable: true, min: 0, max: 1, step: 0.01 },
+    { key: "centerY", label: "Center Y", kind: "scalar", default: 0.5, animatable: true, min: 0, max: 1, step: 0.01 },
+    { key: "quality", label: "Quality", kind: "scalar", default: 1, animatable: true, min: 0.1, max: 1, step: 0.05 },
+  ],
+  apply(props, ctx: EffectRenderCtx) {
+    const fieldOfView = Math.max(0, num(props["fieldOfView"], 0));
+    if (fieldOfView === 0) return null;
+    const w = Math.max(1, ctx.width);
+    const h = Math.max(1, ctx.height);
+    const reverse = bool(props["reverse"], false);
+    const centerX = Math.min(1, Math.max(0, num(props["centerX"], 0.5)));
+    const centerY = Math.min(1, Math.max(0, num(props["centerY"], 0.5)));
+    const { uri, scale } = opticsCompensationDisplaceMap(
+      fieldOfView,
+      reverse,
+      centerX,
+      centerY,
+      w,
+      h,
+      quality(props),
+    );
+    if (scale === 0) return null;
+    return { kind: "svg", primitives: displaceWithMap(uri, scale, w, h) };
+  },
+};
+
 const LINEAR_WIPE_EFFECT_DEF: EffectDef = {
   type: "linearWipe",
   label: "Linear Wipe",
@@ -358,6 +398,7 @@ export function registerBuiltinEffects(): void {
   globalPluginRegistry.registerEffect(WAVE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(TURBULENT_DISPLACE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(RIPPLE_EFFECT_DEF);
+  globalPluginRegistry.registerEffect(OPTICS_COMPENSATION_EFFECT_DEF);
   globalPluginRegistry.registerEffect(LINEAR_WIPE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(ANGULAR_WIPE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(DITHER_DISSOLVE_EFFECT_DEF);
@@ -372,6 +413,7 @@ export {
   WAVE_EFFECT_DEF,
   TURBULENT_DISPLACE_EFFECT_DEF,
   RIPPLE_EFFECT_DEF,
+  OPTICS_COMPENSATION_EFFECT_DEF,
   LINEAR_WIPE_EFFECT_DEF,
   ANGULAR_WIPE_EFFECT_DEF,
   DITHER_DISSOLVE_EFFECT_DEF,

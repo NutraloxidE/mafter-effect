@@ -81,6 +81,12 @@ describe("previewCompAnalysis", () => {
     expect(compHasFullDisplacementEffect(makeComp([waveObj]))).toBe(true);
     expect(compNeedsAutoPreviewCache(makeComp([fastObj]))).toBe(false);
     expect(compNeedsAutoPreviewCache(makeComp([waveObj]))).toBe(true);
+    const opticsObj: SceneObject = {
+      ...fastObj,
+      effects: [{ id: "FX3", type: "opticsCompensation", enabled: true, props: { fieldOfView: 50 } }],
+    };
+    expect(compHasFullDisplacementEffect(makeComp([opticsObj]))).toBe(false);
+    expect(compNeedsAutoPreviewCache(makeComp([opticsObj]))).toBe(false);
     expect(compNeedsAutoPreviewCache(makeComp())).toBe(false);
   });
 

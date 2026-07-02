@@ -1,6 +1,6 @@
 // §27.1 / §27.12 — effect 経路判定 SSOT（DomRenderer / pipelineAnalysis 共用・INV-1 純関数）。
 
-import { DISPLACEMENT_EFFECT_TYPES, FAST_DISPLACEMENT_EFFECT_TYPES } from "./effectSvg";
+import { DISPLACEMENT_EFFECT_TYPES, LIVE_DISPLACEMENT_EFFECT_TYPES } from "./effectSvg";
 
 export interface EffectRoutingInput {
   isAdjustment?: boolean;
@@ -21,7 +21,7 @@ export function hasEnabledDisplacement(
 
 /**
  * enabled な **full** displacement（`wave` / `ripple` / `turbulentDisplace`）があるか。
- * Fast* は live CSS filter（region クランプ）で raster 不要なので除外する（§27.12 改定3）。
+ * Fast* / opticsCompensation は live CSS filter（region クランプ）で raster 不要なので除外する（§27.12 改定3）。
  */
 export function hasEnabledFullDisplacement(
   effects: { type: string; enabled: boolean }[] | undefined,
@@ -30,7 +30,7 @@ export function hasEnabledFullDisplacement(
     (e) =>
       e.enabled &&
       DISPLACEMENT_EFFECT_TYPES.has(e.type) &&
-      !FAST_DISPLACEMENT_EFFECT_TYPES.has(e.type),
+      !LIVE_DISPLACEMENT_EFFECT_TYPES.has(e.type),
   );
 }
 

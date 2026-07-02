@@ -2,7 +2,7 @@
 // トップレベル（DomRenderer.applyEffects）と export のネスト comp タグ付けが同一ロジックを共有し、
 // preview と export で chain が 2 本にならないようにする（INV-2）。
 
-import { DISPLACEMENT_EFFECT_TYPES } from "./effectSvg";
+import { DISPLACEMENT_EFFECT_TYPES, opticsDisplaceScalePx } from "./effectSvg";
 import { globalPluginRegistry } from "./pluginRegistry";
 import type { ResolvedEffect } from "./resolved";
 
@@ -68,7 +68,16 @@ export function resolveEffectChain(
       effect.type === "fastWave" ||
       effect.type === "fastRipple"
         ? Math.max(0, typeof p["amplitude"] === "number" ? p["amplitude"] : 0)
-        : Math.max(0, typeof p["amount"] === "number" ? p["amount"] : 0);
+        : effect.type === "opticsCompensation"
+          ? opticsDisplaceScalePx(
+              typeof p["fieldOfView"] === "number" ? p["fieldOfView"] : 0,
+              p["reverse"] === true,
+              ctx.width,
+              ctx.height,
+              typeof p["centerX"] === "number" ? p["centerX"] : 0.5,
+              typeof p["centerY"] === "number" ? p["centerY"] : 0.5,
+            )
+          : Math.max(0, typeof p["amount"] === "number" ? p["amount"] : 0);
     fxMaxDisplaceScale = Math.max(fxMaxDisplaceScale, scale);
   }
 

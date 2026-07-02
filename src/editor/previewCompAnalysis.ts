@@ -1,5 +1,5 @@
 import type { TimelineComposition } from "../core/schema";
-import { DISPLACEMENT_EFFECT_TYPES, FAST_DISPLACEMENT_EFFECT_TYPES } from "../runtime/effectSvg";
+import { DISPLACEMENT_EFFECT_TYPES, FAST_DISPLACEMENT_EFFECT_TYPES, LIVE_DISPLACEMENT_EFFECT_TYPES } from "../runtime/effectSvg";
 import { effectsAreFastDisplacementOnly } from "../runtime/previewDisplacement";
 import { globalPluginRegistry } from "../runtime/pluginRegistry";
 
@@ -34,7 +34,7 @@ export function compHasFullDisplacementEffect(comp: TimelineComposition): boolea
   for (const obj of comp.objects) {
     for (const fx of obj.effects ?? []) {
       if (!fx.enabled) continue;
-      if (DISPLACEMENT_EFFECT_TYPES.has(fx.type) && !FAST_DISPLACEMENT_EFFECT_TYPES.has(fx.type)) {
+      if (DISPLACEMENT_EFFECT_TYPES.has(fx.type) && !LIVE_DISPLACEMENT_EFFECT_TYPES.has(fx.type)) {
         return true;
       }
     }

@@ -6,6 +6,14 @@
 
 ---
 
+### 2026-07-02（Cursor / goal-cursor）— Optics Compensation live エフェクト ✅
+
+- **追加**: builtin `opticsCompensation`（AE Optics Compensation 相当・FOV + reverse + center + quality）。`feImage` PNG 放射ベクトル map → `feDisplacementMap`、`executionPath: "live"`。
+- **配線**: `LIVE_DISPLACEMENT_EFFECT_TYPES`（Fast* + optics）— effectRouting / DomRenderer ネスト / previewCompAnalysis / effectChain。
+- **spec**: §27.3 `opticsCompensation` 追記（Resize 非対応は Phase 2）。
+- **検証**: `npm test` **676 PASS**・typecheck 緑・`npm run build:player` 済み。
+- **Phase 2 残**: Resize（reverse 端クリップ回避）・色収差・Playwright verify ハーネス。
+
 ### 2026-07-02（Claude Fable 5 指揮 + Cursor 委任）— #0a forceSeek 実機検証（回帰発見→修正）+ #0b 異アセット境界先読み warm-up（Cursor 実装・マージ待ち）
 
 - **#0a（trim-in forceSeek `e9f7928` の実機検証）— 完了・回帰を1件発見し修正** ✅:

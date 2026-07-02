@@ -16,6 +16,11 @@ import {
   fastRippleDisplace,
   fastTurbulentDisplace,
   fastWaveDisplace,
+  opticsCompensationDisplaceMap,
+  opticsDisplacementSample,
+  opticsMappedRn,
+  opticsMaxRadialDelta,
+  opticsRMax,
   rippleDisplaceMap,
   rippleDisplacementSample,
   rippleMapDims,
@@ -313,6 +318,60 @@ describe("ripple radial displacement (§27.3)", () => {
     expect(a.uri).not.toBe(b.uri);
     // 長辺 1920 でも RIPPLE_MAP_MAX_DIM 以下に縮小されている（PNG が巨大化しない）。
     expect(RIPPLE_MAP_MAX_DIM).toBeLessThanOrEqual(256);
+  });
+});
+
+describe("optics compensation radial displacement (§27.3)", () => {
+  const W = 640;
+  const H = 480;
+  const RMAX = opticsRMax(W * 0.5, H * 0.5, W, H);
+
+  it("displacement vector points along the radius (not a spiral)", () => {
+    const cases: [number, number][] = [[80, 0], [0, -60], [100, 70], [-90, 25]];
+    for (const [dx, dy] of cases) {
+      const { x, y } = opticsDisplacementSample(dx, dy, RMAX, 50, false);
+      const cross = dx * y - dy * x;
+      const scale = Math.hypot(dx, dy) * Math.hypot(x, y);
+      expect(Math.abs(cross)).toBeLessThanOrEqual(scale * 1e-9 + 1e-9);
+    }
+  });
+
+  it("is zero at the center", () => {
+    expect(opticsDisplacementSample(0, 0, RMAX, 50, false)).toEqual({ x: 0, y: 0 });
+  });
+
+  it("fieldOfView 0 is identity", () => {
+    expect(opticsMaxRadialDelta(0, false)).toBe(0);
+    expect(opticsDisplacementSample(100, 50, RMAX, 0, false)).toEqual({ x: 0, y: 0 });
+  });
+
+  it("reverse inverts radial delta sign at interior points", () => {
+    const dx = 120;
+    const dy = 0;
+    const fwd = opticsDisplacementSample(dx, dy, RMAX, 60, false);
+    const rev = opticsDisplacementSample(dx, dy, RMAX, 60, true);
+    expect(Math.sign(fwd.x)).toBe(-Math.sign(rev.x));
+  });
+
+  it("opticsMappedRn fixes corners at rn=1", () => {
+    expect(opticsMappedRn(1, 50, false)).toBeCloseTo(1, 6);
+    expect(opticsMappedRn(1, 50, true)).toBeCloseTo(1, 6);
+  });
+
+  it("opticsMaxRadialDelta is positive for fov>0 and peaks in interior", () => {
+    const d = opticsMaxRadialDelta(50, false);
+    expect(d).toBeGreaterThan(0);
+    expect(Math.abs(opticsMappedRn(1, 50, false) - 1)).toBeLessThan(1e-6);
+  });
+
+  it("opticsCompensationDisplaceMap emits PNG with scale>0", () => {
+    const { uri, scale } = opticsCompensationDisplaceMap(50, false, 0.5, 0.5, W, H);
+    expect(uri.startsWith("data:image/png;base64,")).toBe(true);
+    expect(scale).toBeGreaterThan(0);
+  });
+
+  it("opticsCompensation is in LIVE_DISPLACEMENT set", () => {
+    expect(DISPLACEMENT_EFFECT_TYPES.has("opticsCompensation")).toBe(true);
   });
 });
 

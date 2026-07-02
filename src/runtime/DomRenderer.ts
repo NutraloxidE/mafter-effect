@@ -1,5 +1,5 @@
 import { shouldForceOpaqueForDither } from "./ditherReveal";
-import { DISPLACEMENT_EFFECT_TYPES, FAST_DISPLACEMENT_EFFECT_TYPES } from "./effectSvg";
+import { DISPLACEMENT_EFFECT_TYPES, LIVE_DISPLACEMENT_EFFECT_TYPES } from "./effectSvg";
 import { needsSvgDisplaceCapture } from "./effectRouting";
 import type { CompositionMeta, Frame, HtmlComposition, RGBA, TimelineComposition } from "../core/schema";
 import type { FontOutlineCache } from "./fontOutlineCache";
@@ -1584,10 +1584,10 @@ export class DomRenderer implements Renderer {
     let i = 0;
     for (const effect of effects) {
       if (!effect.enabled) continue;
-      // full displacement は raster 必須（§27.12）→ live では skip。Fast* は region クランプ済みで適用可。
+      // full displacement は raster 必須（§27.12）→ live では skip。LIVE セットは region クランプ済みで適用可。
       if (
         DISPLACEMENT_EFFECT_TYPES.has(effect.type) &&
-        !FAST_DISPLACEMENT_EFFECT_TYPES.has(effect.type)
+        !LIVE_DISPLACEMENT_EFFECT_TYPES.has(effect.type)
       ) {
         continue;
       }

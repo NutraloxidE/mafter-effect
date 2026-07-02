@@ -1980,7 +1980,7 @@ interface EffectDef {
 
 | executionPath | builtin effect | 経路 |
 |---|---|---|
-| **`"live"`** | `blur` / `tint` / `linearWipe` / `angularWipe` / `pixelSortLite` / `fastWave` / `fastRipple` / `fastTurbulentDisplace` | DOM `filter` / `backdrop-filter` を同期適用（中間 raster 化なし・軽量） |
+| **`"live"`** | `blur` / `tint` / `linearWipe` / `angularWipe` / `pixelSortLite` / `opticsCompensation` / `fastWave` / `fastRipple` / `fastTurbulentDisplace` | DOM `filter` / `backdrop-filter` を同期適用（中間 raster 化なし・軽量） |
 | **`"raster"`** | `wave` / `turbulentDisplace` / `ripple` / `pixelSorter` | canvas でピクセル処理（full displacement はドリフト対策で raster 必須・§27.1） |
 
 - **Live調整レイヤー**の effect ピッカーは **`executionPath === "live"` のみ列挙**（§27.4 / §27.6）。**Raster調整レイヤー**と**通常レイヤー**は両方可。
@@ -2083,6 +2083,25 @@ interface EffectDef {
 - 単一スカラ map ではなく per-pixel ベクトル map なので AE Ripple に近い同心円が出る（**AE 100% 一致は非目標**・現状 `phase` は内部既定 0・UI param 未公開）。
 - `amplitude === 0` は `null`。`feDisplacementMap scale = 2·amplitude`（変位 = `scale·(channel−0.5)` ゆえ半径方向振幅 `amplitude` px）。
 - **preview↔export 一致（INV-2）**: displacement raster パイプライン（`runDirectSvgDisplacePipeline` → `rasterizeFilteredImage`）で先に displaced canvas を焼き、export はその canvas を `inlineCanvasBitmaps` で bake するため**同一ピクセル**（実測 alpha-coverage diff 0）。
+
+#### `opticsCompensation` — Optics Compensation（AE 相当・live）
+
+| param key | label | kind | default | range | animatable |
+|---|---|---|---|---|---|
+| `fieldOfView` | Field Of View | scalar | `50` | 0..170, step 0.1 | ✅ |
+| `reverse` | Reverse Lens Distortion | bool | `false` | — | ❌ |
+| `centerX` | Center X | scalar | `0.5` | 0..1, step 0.01 | ✅ |
+| `centerY` | Center Y | scalar | `0.5` | 0..1, step 0.01 | ✅ |
+| `quality` | Quality | scalar | `1` | 0.1..1, step 0.05 | ✅ |
+
+- `apply` → `{ kind: "svg", primitives }`。ripple 同型の **2D ベクトル PNG map**（`opticsCompensationDisplaceMap` → `feImage` → `feDisplacementMap`）。**等距離 fisheye ↔ rectilinear** 写像（半角 `θ = fieldOfView·π/360`）:
+  - forward（`reverse=false`）: `rn' = tan(θ·rn)/tan(θ)`（fisheye 付与）
+  - reverse（`reverse=true`）: `rn' = atan(rn·tan(θ))/θ`（fisheye 除去）
+  - 変位は半径方向 `(dx,dy)/dist · (rn'−rn)·rMax`。`scale = 2·rMax·max|rn'−rn|`（rn∈[0,1] の解析最大・四隅 rn=1 では 0）。
+- **`executionPath`: `"live"`** / **`previewBakeRequired`: `false`** / **`LIVE_DISPLACEMENT_EFFECT_TYPES`**（§27.12・raster capture 対象外）。
+- filter region = layer bounds `(0,0,w,h)` クランプ（§27.12 改定3）。
+- **非目標**: AE ピクセル完全一致、**Resize**（reverse 時のレイヤー拡大・端クリップは Phase 2）、色収差、カメラプロファイル。
+- `fieldOfView === 0` は `null`（恒等）。
 
 #### §27.4 ディストーション軽量化ノブ（`quality`）— 確定
 
