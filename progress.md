@@ -6,6 +6,41 @@
 
 ---
 
+### 2026-07-04（Cursor）— Motion Track Walk（2a auto-scale + 2b essential R+t）✅
+
+- **背景**: Comp 27 型（前進＋揺れ＋チルト）は分離 VO（QUAR 並進 / rotation-only）では原理的に弱い。
+- **2a**: `autoScale.ts` — 支配軸 range を comp 高さ≈15% へ正規化。Position / Both / Walk で適用。微小変位警告。
+- **2b**: `essentialPose.ts`（純 TS essential+recoverPose）+ worker `estimateMode:"walk"` + `walkAccumulate` + UI モード **Walk**（既定）。OpenCV calib3d カスタムビルドは不要。
+- **検証**: autoScale / essential / walkAccumulate / diagnostics / roi 系 vitest。
+- **PLAN**: `.cursor/plans/video_motion_track_walk_shake_tilt.plan.md`。
+
+### 2026-07-04（Cursor + Fable RG-20260704-02）— Comp 27「分かりやすいのに動かない」修正 ✅
+
+- **再現**: Downloads `mafter-project (17).zip` Comp 27（人なし住宅街・前進+チルトなのに position≈0.1px・rotation 全 identity）。
+- **Fable 診断**: 主因は既定「背景優先」が道路（最良特徴）を 61% 黒塗り。QUAR はマスク境界の静止エッジにロック、回転は全滅を無警告ベイク。
+- **修正**: 既定 `full`、crowd exclude 縮小、`summarizeTrackValidity` + 回転有効率ガード、equalizeHist は full mask のみ、§16.1 散文。
+- **PLAN**: `.cursor/plans/video_motion_track_comp27.plan.md`。Handback: `RG-20260704-02.md`。
+
+### 2026-07-04（Cursor）— Motion Track Comp 26 人混み歩き撮り向け改善 ✅
+
+- **対象**: Downloads 最新 `mafter-project (15).zip` の Comp 26（逆光の歩行者通り・群衆支配で position≈ノイズ・rotation=0 だった）。
+- **改善**: `TrackMaskSpec`（include/exclude）+ 既定プリセット **「背景優先（人混み）」**（中央〜手前 exclude）+ `enhanceContrastRgba`（逆光）+ 回転側 `equalizeHist`（あれば）。UI 既定を background に変更。
+- **検証**: motionTrackRoi 拡張テスト + 既存 motion-track vitest。
+
+### 2026-07-04（Cursor）— Motion Track Phase 1d 特徴品質 + position 補間 ✅
+
+- **実装**: `featureQuality.ts`（FB-LK / err / グリッド再検出 / ROI 縁）+ `rotationTrackWorker` 配線 + `positionInterp.ts`（invalid を baseline スナップせず補間）+ `quarTracker` の `buildPositionsFromTrack` / rotation worker へ `roi` 伝播。
+- **spec**: §16.1 Phase 1d 散文 + テーブル。§5/INV 不変。
+- **検証**: `motionTrackFeatureQuality` + `motionTrackPositionInterp` 純関数テスト。既存 motion-track vitest 無回帰。
+- **次**: Phase 1e（2 パス）/ 1f（MediaPipe・要確認）/ 1b-b（POI/zoom）。
+
+### 2026-07-04（Cursor + Fable RG-20260704-01）— 人混み耐性改善 PLAN ✅
+
+- **委任**: `claude -p --model fable`（session `b60a49b0-9024-496b-85eb-aaf7c84e2714`）。ハンドオフ [RG-20260704-01](.cursor/delegations/handoffs/RG-20260704-01.md)。
+- **診断**: 主因は動体特徴の数的支配・frame0 固定トラック・**ROI 縁のゼロ運動偽特徴（1c の逆効果）**・invalid 時 position の baseline スナップバック。
+- **PLAN**: [`.cursor/plans/video_motion_track_people_heavy.plan.md`](.cursor/plans/video_motion_track_people_heavy.plan.md)。次の 1 本 = **Phase 1d**（FB-LK / グリッド再検出 / ROI 縁棄却 / 補間、依存追加ゼロ）。1f MediaPipe ~6MB はユーザー確認後。
+- **次**: Phase 1d 実装（ユーザー指示で着手）。
+
 ### 2026-07-04（Cursor）— Motion Track Phase 1c ROI（追跡範囲 mask）✅
 
 - **方針**: crop ではなく **ダウンサンプル後に ROI 外を黒塗り（mask）**。画像サイズ不変 → 回転推定の主点 `w/2,h/2` を維持。Worker API 変更なし。

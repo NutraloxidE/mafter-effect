@@ -1,9 +1,9 @@
 import type { Frame, Vec3 } from "../../core/schema";
-import type { TrackRoi } from "./trackRoi";
+import type { TrackMaskSpec, TrackRoi } from "./trackRoi";
 
-export type { TrackRoi } from "./trackRoi";
+export type { TrackMaskSpec, TrackRoi } from "./trackRoi";
 
-export type TrackMode = "position" | "rotation" | "both";
+export type TrackMode = "position" | "rotation" | "both" | "walk";
 
 /** [qx, qy, qz, qw] — rotation-only 推定器の出力。 */
 export type RawQuaternion = [number, number, number, number];
@@ -24,8 +24,16 @@ export interface TrackOptions {
   userScale: number;
   sampleInterval: number;
   targetWidth?: number;
-  /** 追跡範囲（正規化矩形）。未指定 = 全体。ROI 外は mask（黒塗り）で除外。 */
+  /** @deprecated mask を使う。単一 include の後方互換。 */
   roi?: TrackRoi;
+  /** 追跡マスク（include/exclude）。未指定 = 全体。 */
+  mask?: TrackMaskSpec;
+  /** 逆光向けコントラスト伸長（既定 true）。 */
+  enhanceContrast?: boolean;
+  /** 並進を comp 寸法の一定割合へ自動正規化（既定 true）。 */
+  autoScale?: boolean;
+  /** autoScale 時の目標 range（px）。未指定は height * 0.15。 */
+  autoScaleTargetPx?: number;
 }
 
 export interface TrackProgress {
@@ -126,6 +134,8 @@ export interface RotationTrackWorkerInit {
   opencvUrl: string;
 }
 
+export type TrackEstimateMode = "rotation" | "walk";
+
 export interface RotationTrackWorkerFrame {
   type: "frame";
   idx: number;
@@ -134,6 +144,12 @@ export interface RotationTrackWorkerFrame {
   h: number;
   focalLength: number;
   reset: boolean;
+  /** @deprecated mask を使う。 */
+  roi?: TrackRoi;
+  /** 追跡マスク。縁マージン棄却用。 */
+  mask?: TrackMaskSpec;
+  /** rotation = その場回転のみ / walk = essential R+t */
+  estimateMode?: TrackEstimateMode;
 }
 
 export interface RotationTrackWorkerDispose {
@@ -158,6 +174,10 @@ export interface RotationTrackWorkerRotation {
   residual: number;
   processMs: number;
   error?: string;
+  /** walk モード: カメラ運動方向（単位） */
+  translation?: RawTranslation | null;
+  /** walk モード: 対応点 median flow (px) */
+  medianFlow?: number;
 }
 
 export interface RotationTrackWorkerError {

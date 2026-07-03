@@ -1,11 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
+  TRACK_EXCLUDE_CROWD,
   TRACK_ROI_FULL,
   TRACK_ROI_PRESETS,
   applyRoiMask,
+  applyTrackMask,
+  enhanceContrastRgba,
+  isFullMask,
   isFullRoi,
+  isValidTrackMaskPoint,
   normalizeTrackRoi,
+  presetToMask,
   presetToRoi,
+  resolveTrackMask,
   roiToPixelRect,
 } from "../src/editor/motionTrack/trackRoi";
 
@@ -92,18 +99,6 @@ describe("roiToPixelRect", () => {
 });
 
 describe("applyRoiMask", () => {
-  function solidRgba(w: number, h: number, r: number, g: number, b: number, a: number): Uint8ClampedArray {
-    const out = new Uint8ClampedArray(w * h * 4);
-    for (let i = 0; i < w * h; i++) {
-      const o = i * 4;
-      out[o] = r;
-      out[o + 1] = g;
-      out[o + 2] = b;
-      out[o + 3] = a;
-    }
-    return out;
-  }
-
   it("returns same buffer for full ROI (no copy)", () => {
     const src = solidRgba(4, 4, 10, 20, 30, 255);
     const out = applyRoiMask(src, 4, 4, TRACK_ROI_FULL);
@@ -161,3 +156,90 @@ describe("applyRoiMask", () => {
     expect(out.length).toBe(src.length);
   });
 });
+
+describe("background (crowd exclude) mask", () => {
+  it("presetToMask(background) excludes crowd corridor", () => {
+    const m = presetToMask("background");
+    expect(m.exclude).toEqual([TRACK_EXCLUDE_CROWD]);
+    expect(isFullMask(m)).toBe(false);
+  });
+
+  it("zeros crowd region and keeps road/side/top pixels", () => {
+    const w = 100;
+    const h = 100;
+    const src = solidRgba(w, h, 10, 20, 30, 255);
+    const out = applyTrackMask(src, w, h, presetToMask("background"));
+    // center of crowd exclude (y≈0.6) should be zero
+    const cx = Math.floor(w * 0.5);
+    const cy = Math.floor(h * 0.6);
+    const co = (cy * w + cx) * 4;
+    expect(out[co]).toBe(0);
+    // road mid-band above exclude (y=0.25 < 0.35) kept — Comp 27 路面標示帯
+    const road = (Math.floor(h * 0.25) * w + cx) * 4;
+    expect(out[road]).toBe(10);
+    // top-center kept
+    const to = (5 * w + cx) * 4;
+    expect(out[to]).toBe(10);
+    // left edge kept
+    const lo = (cy * w + 2) * 4;
+    expect(out[lo]).toBe(10);
+  });
+
+  it("rejects features inside exclude margin", () => {
+    const mask = presetToMask("background");
+    // inside crowd zone
+    expect(isValidTrackMaskPoint(50, 60, mask, 3, 100, 100)).toBe(false);
+    // road band above crowd exclude (Comp 27)
+    expect(isValidTrackMaskPoint(50, 25, mask, 3, 100, 100)).toBe(true);
+    // top building band
+    expect(isValidTrackMaskPoint(50, 5, mask, 3, 100, 100)).toBe(true);
+    // left building band
+    expect(isValidTrackMaskPoint(5, 50, mask, 3, 100, 100)).toBe(true);
+  });
+
+  it("resolveTrackMask prefers mask over roi", () => {
+    const m = resolveTrackMask(presetToMask("background"), TRACK_ROI_PRESETS.center);
+    expect(m.exclude).toHaveLength(1);
+    expect(m.exclude![0]!.x).toBeCloseTo(TRACK_EXCLUDE_CROWD.x, 10);
+    expect(m.exclude![0]!.y).toBeCloseTo(TRACK_EXCLUDE_CROWD.y, 10);
+    expect(m.include).toBeUndefined();
+  });
+});
+
+describe("enhanceContrastRgba", () => {
+  it("keeps mask zeros", () => {
+    const src = solidRgba(4, 4, 100, 100, 100, 255);
+    // zero left half
+    for (let y = 0; y < 4; y++) {
+      for (let x = 0; x < 2; x++) {
+        const o = (y * 4 + x) * 4;
+        src[o] = src[o + 1] = src[o + 2] = src[o + 3] = 0;
+      }
+    }
+    const out = enhanceContrastRgba(src, 4, 4);
+    expect(out[0]).toBe(0);
+    expect(out[4]).toBe(0);
+  });
+
+  it("stretches low-contrast non-zero pixels", () => {
+    const src = solidRgba(4, 4, 80, 80, 80, 255);
+    src[0] = src[1] = src[2] = 60;
+    src[4] = src[5] = src[6] = 100;
+    const out = enhanceContrastRgba(src, 4, 4);
+    // range should expand
+    const vals = [out[0]!, out[4]!, out[8]!];
+    expect(Math.max(...vals) - Math.min(...vals)).toBeGreaterThanOrEqual(100 - 60);
+  });
+});
+
+function solidRgba(w: number, h: number, r: number, g: number, b: number, a: number): Uint8ClampedArray {
+  const out = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0; i < w * h; i++) {
+    const o = i * 4;
+    out[o] = r;
+    out[o + 1] = g;
+    out[o + 2] = b;
+    out[o + 3] = a;
+  }
+  return out;
+}

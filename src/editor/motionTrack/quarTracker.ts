@@ -8,6 +8,13 @@ import {
 import { smoothTranslations, smoothRotations } from "./smoothPoses";
 import { composeBaselineRotation } from "./coordConvert";
 import { quaternionMultiply, quaternionNormalize } from "./rotationEstimator";
+import { interpolateInvalidVec3Series } from "./positionInterp";
+import {
+  applyAutoScaleToPositions,
+  isMotionSuspiciouslySmall,
+  vec3Range,
+} from "./autoScale";
+import { accumulateWalkTrajectory, type WalkRelative } from "./walkAccumulate";
 import type {
   MotionTrackWorkerRequest,
   MotionTrackWorkerResponse,
@@ -19,10 +26,13 @@ import type {
   RotationTrackResult,
   RotationTrackWorkerRequest,
   RotationTrackWorkerResponse,
+  TrackEstimateMode,
+  TrackMaskSpec,
   TrackOptions,
   TrackProgress,
   TrackResult,
 } from "./types";
+import { resolveTrackMask } from "./trackRoi";
 import type { FileSystem } from "../../fs/FileSystem";
 import type { Project, SceneObject, TimelineComposition } from "../../core/schema";
 import type { ImageAssetCache } from "../../runtime/imageAssetCache";
@@ -149,11 +159,10 @@ function buildPositionsFromTrack(
   validMask: boolean[],
 ): Map<Frame, Vec3> {
   const ref = smoothed[0] ?? [0, 0, 0];
-  const map = new Map<Frame, Vec3>();
+  const series: Array<Vec3 | null> = [];
   for (let i = 0; i < compFrames.length; i++) {
-    const f = compFrames[i]!;
     if (!validMask[i]) {
-      map.set(f, { ...baseline });
+      series.push(null);
       continue;
     }
     const t = smoothed[i] ?? ref;
@@ -161,7 +170,12 @@ function buildPositionsFromTrack(
       [t[0] - ref[0], t[1] - ref[1], t[2] - ref[2]],
       userScale,
     );
-    map.set(f, addVec3(baseline, delta));
+    series.push(addVec3(baseline, delta));
+  }
+  const filled = interpolateInvalidVec3Series(series, baseline, 3);
+  const map = new Map<Frame, Vec3>();
+  for (let i = 0; i < compFrames.length; i++) {
+    map.set(compFrames[i]!, filled[i]!);
   }
   return map;
 }
@@ -201,7 +215,8 @@ export async function runMotionTrack(input: RunMotionTrackInput): Promise<RunMot
       trimStart,
       compFrames,
       targetWidth: options.targetWidth,
-      roi: options.roi,
+      mask: resolveTrackMask(options.mask, options.roi),
+      enhanceContrast: options.enhanceContrast,
       signal,
       onProgress: (current, total) => onProgress?.({ phase: "extracting", current, total }),
     });
@@ -250,8 +265,21 @@ export function finalizeMotionTrackBake(
   validMask: boolean[],
   baseline: Vec3,
   userScale: number,
-): Map<Frame, Vec3> {
-  return buildPositionsFromTrack(compFrames, smoothed, baseline, userScale, validMask);
+  options?: { autoScale?: boolean; autoScaleTargetPx?: number },
+): { positionsByFrame: Map<Frame, Vec3>; autoScale: number; range: number } {
+  const map = buildPositionsFromTrack(compFrames, smoothed, baseline, userScale, validMask);
+  const ordered = compFrames.map((f) => map.get(f)!);
+  const rangeBefore = vec3Range(ordered);
+  if (options?.autoScale === false) {
+    return { positionsByFrame: map, autoScale: 1, range: rangeBefore };
+  }
+  const target = options?.autoScaleTargetPx ?? 160;
+  const { positions, autoScale } = applyAutoScaleToPositions(ordered, baseline, target, 1);
+  const out = new Map<Frame, Vec3>();
+  for (let i = 0; i < compFrames.length; i++) {
+    out.set(compFrames[i]!, positions[i]!);
+  }
+  return { positionsByFrame: out, autoScale, range: vec3Range(positions) };
 }
 
 export const OPENCV_JS_URL = "/motion-track/opencv/opencv.js";
@@ -321,11 +349,15 @@ export class RotationMotionTracker {
     height: number,
     focalLength: number,
     reset: boolean,
+    mask?: TrackMaskSpec,
+    estimateMode: TrackEstimateMode = "rotation",
   ): Promise<{
     rotation: RawQuaternion | null;
     inlierRatio: number;
     residual: number;
     processMs: number;
+    translation: RawTranslation | null;
+    medianFlow: number;
   }> {
     if (!this.ready || !this.worker) throw new Error("rotation tracker not ready");
     const w = this.worker;
@@ -344,6 +376,8 @@ export class RotationMotionTracker {
               inlierRatio: m.inlierRatio,
               residual: m.residual,
               processMs: m.processMs,
+              translation: m.translation ?? null,
+              medianFlow: m.medianFlow ?? 0,
             });
         } else if (m.type === "error") {
           window.clearTimeout(timeout);
@@ -360,6 +394,8 @@ export class RotationMotionTracker {
         h: height,
         focalLength,
         reset,
+        mask,
+        estimateMode,
       };
       w.postMessage(req, [buf]);
     });
@@ -451,7 +487,8 @@ export async function runRotationTrack(input: RunRotationTrackInput): Promise<Ru
       trimStart,
       compFrames,
       targetWidth: options.targetWidth,
-      roi: options.roi,
+      mask: resolveTrackMask(options.mask, options.roi),
+      enhanceContrast: options.enhanceContrast,
       signal,
       onProgress: (current, total) => onProgress?.({ phase: "extracting", current, total }),
     });
@@ -471,6 +508,7 @@ export async function runRotationTrack(input: RunRotationTrackInput): Promise<Ru
         fr.height,
         options.focalLength,
         i === 0,
+        resolveTrackMask(options.mask, options.roi),
       );
       const valid =
         i > 0 &&
@@ -568,7 +606,8 @@ export async function runCombinedMotionTrack(
       trimStart,
       compFrames,
       targetWidth: options.targetWidth,
-      roi: options.roi,
+      mask: resolveTrackMask(options.mask, options.roi),
+      enhanceContrast: options.enhanceContrast,
       signal,
       onProgress: (current, total) => onProgress?.({ phase: "extracting", current, total }),
     });
@@ -606,6 +645,7 @@ export async function runCombinedMotionTrack(
         fr.height,
         options.focalLength,
         i === 0,
+        resolveTrackMask(options.mask, options.roi),
       );
       const rotValid =
         i > 0 &&
@@ -667,3 +707,139 @@ export function finalizeRotationTrackBake(
 ): Map<Frame, Vec3> {
   return buildRotationsFromTrack(compFrames, smoothedCumulative, baseline, validMask);
 }
+
+export interface RunWalkTrackResult {
+  positionsByFrame: Map<Frame, Vec3>;
+  rotationsByFrame: Map<Frame, Vec3>;
+  compFrames: Frame[];
+  validMask: boolean[];
+  bakeStart: Frame;
+  bakeEnd: Frame;
+  autoScale: number;
+  range: number;
+  meanMedianFlow: number;
+}
+
+/** Walk: essential R+t 蓄積で前進・揺れ・チルトを同時ベイク。 */
+export async function runWalkTrack(
+  input: RunRotationTrackInput,
+  baselines: { position: Vec3; rotation: Vec3 },
+): Promise<RunWalkTrackResult> {
+  const { project, comp, videoLayer, assetId, fs, imageCache, options, onProgress, signal } = input;
+  const asset = project.assets.find((a) => a.id === assetId);
+  const durationSec =
+    asset?.meta && typeof asset.meta.duration === "number" ? asset.meta.duration : undefined;
+
+  const compFrames = computeMotionTrackCompFrames(
+    videoLayer,
+    comp.fps,
+    durationSec,
+    options.sampleInterval,
+  );
+  if (compFrames.length === 0) throw new Error("no frames in track range");
+
+  onProgress?.({ phase: "loading", current: 0, total: 1 });
+  const tracker = new RotationMotionTracker();
+  try {
+    await tracker.init();
+    const videoUrl = await resolveVideoAssetUrl(project, assetId, fs, imageCache);
+    if (!videoUrl) throw new Error("video asset URL not available");
+
+    const trimStart =
+      typeof videoLayer.components.find((c) => c.type === "video")?.props["trimStart"] === "number"
+        ? (videoLayer.components.find((c) => c.type === "video")!.props["trimStart"] as number)
+        : 0;
+
+    onProgress?.({ phase: "extracting", current: 0, total: compFrames.length });
+    const extracted = await extractFramesForMotionTrack({
+      videoUrl,
+      fps: comp.fps,
+      inPoint: videoLayer.inPoint,
+      trimStart,
+      compFrames,
+      targetWidth: options.targetWidth,
+      mask: resolveTrackMask(options.mask, options.roi),
+      enhanceContrast: options.enhanceContrast,
+      signal,
+      onProgress: (current, total) => onProgress?.({ phase: "extracting", current, total }),
+    });
+
+    const relatives: Array<WalkRelative | null> = [];
+    let flowSum = 0;
+    let flowCount = 0;
+
+    onProgress?.({ phase: "tracking", current: 0, total: extracted.length });
+    for (let i = 0; i < extracted.length; i++) {
+      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+      const fr = extracted[i]!;
+      const res = await tracker.processFrame(
+        i,
+        fr.rgba,
+        fr.width,
+        fr.height,
+        options.focalLength,
+        i === 0,
+        resolveTrackMask(options.mask, options.roi),
+        "walk",
+      );
+      if (i === 0) {
+        relatives.push(null);
+      } else if (
+        res.rotation &&
+        res.translation &&
+        res.inlierRatio >= MIN_INLIER_RATIO &&
+        Number.isFinite(res.residual)
+      ) {
+        const scale = Math.max(0.5, res.medianFlow);
+        relatives.push({
+          rotation: res.rotation,
+          motion: res.translation,
+          scale,
+        });
+        flowSum += res.medianFlow;
+        flowCount++;
+      } else {
+        relatives.push(null);
+      }
+      onProgress?.({ phase: "tracking", current: i + 1, total: extracted.length });
+    }
+
+    const { positions, rotations, validMask } = accumulateWalkTrajectory(
+      relatives,
+      baselines.position,
+      baselines.rotation,
+      options.userScale,
+    );
+
+    const targetPx = options.autoScaleTargetPx ?? Math.max(80, comp.height * 0.15);
+    const useAuto = options.autoScale !== false;
+    const scaled = useAuto
+      ? applyAutoScaleToPositions(positions, baselines.position, targetPx, 1)
+      : { positions, autoScale: 1 };
+
+    const bakeStart = compFrames[0]!;
+    const bakeEnd = (compFrames[compFrames.length - 1] ?? bakeStart) + 1;
+    const positionsByFrame = new Map<Frame, Vec3>();
+    const rotationsByFrame = new Map<Frame, Vec3>();
+    for (let i = 0; i < compFrames.length; i++) {
+      positionsByFrame.set(compFrames[i]!, scaled.positions[i]!);
+      rotationsByFrame.set(compFrames[i]!, rotations[i]!);
+    }
+
+    return {
+      positionsByFrame,
+      rotationsByFrame,
+      compFrames,
+      validMask,
+      bakeStart,
+      bakeEnd,
+      autoScale: scaled.autoScale,
+      range: vec3Range(scaled.positions),
+      meanMedianFlow: flowCount > 0 ? flowSum / flowCount : 0,
+    };
+  } finally {
+    tracker.dispose();
+  }
+}
+
+export { isMotionSuspiciouslySmall, vec3Range };

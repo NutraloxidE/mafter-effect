@@ -31,6 +31,42 @@
           "text": "parent summarized to user"
         }
       ]
+    },
+    {
+      "id": "RG-20260704-01",
+      "kind": "reasoning",
+      "status": "closed",
+      "createdAt": "2026-07-03T19:23:30.100Z",
+      "updatedAt": "2026-07-03T19:31:07.078Z",
+      "task": "Motion Track: people-heavy scenes reliability improvements",
+      "model": "claude-fable-5-thinking-high",
+      "claudeModel": "fable",
+      "readonly": true,
+      "specRef": "§16.1",
+      "sessionId": "b60a49b0-9024-496b-85eb-aaf7c84e2714",
+      "agentId": null,
+      "chatId": null,
+      "handoffPath": "C:/Workspace/mafter-effect/.cursor/delegations/handoffs/RG-20260704-01.md",
+      "parentActions": [],
+      "notes": []
+    },
+    {
+      "id": "RG-20260704-02",
+      "kind": "reasoning",
+      "status": "closed",
+      "createdAt": "2026-07-03T20:44:59.933Z",
+      "updatedAt": "2026-07-03T20:52:22.984Z",
+      "task": "Comp 27 motion track failure on easy street scene",
+      "model": "claude-fable-5-thinking-high",
+      "claudeModel": "fable",
+      "readonly": true,
+      "specRef": "§16.1",
+      "sessionId": "43e43076-42f9-454b-9eb7-0661be18ce2b",
+      "agentId": null,
+      "chatId": null,
+      "handoffPath": "C:/Workspace/mafter-effect/.cursor/delegations/handoffs/RG-20260704-02.md",
+      "parentActions": [],
+      "notes": []
     }
   ]
 }

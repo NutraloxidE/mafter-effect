@@ -2,7 +2,13 @@ import type { Frame, Project, SceneObject } from "../../core/schema";
 import type { FileSystem } from "../../fs/FileSystem";
 import { videoSeekTargetSec, waitForVideoFrame } from "../../runtime/videoElementSync";
 import { ImageAssetCache } from "../../runtime/imageAssetCache";
-import { applyRoiMask, type TrackRoi } from "./trackRoi";
+import {
+  applyTrackMask,
+  enhanceContrastRgba,
+  resolveTrackMask,
+  type TrackMaskSpec,
+  type TrackRoi,
+} from "./trackRoi";
 
 export const MOTION_TRACK_TARGET_WIDTH = 640;
 
@@ -20,8 +26,12 @@ export interface FrameExtractOptions {
   trimStart: Frame;
   compFrames: Frame[];
   targetWidth?: number;
-  /** 追跡範囲。ダウンサンプル後に ROI 外を黒塗り（画像サイズ不変）。 */
+  /** @deprecated mask を使う。 */
   roi?: TrackRoi;
+  /** 追跡マスク。ダウンサンプル後に適用（画像サイズ不変）。 */
+  mask?: TrackMaskSpec;
+  /** 逆光向けコントラスト伸長（既定 true）。 */
+  enhanceContrast?: boolean;
   onProgress?: (current: number, total: number) => void;
   signal?: AbortSignal;
 }
@@ -72,7 +82,8 @@ export async function extractFramesForMotionTrack(
   opts: FrameExtractOptions,
 ): Promise<ExtractedFrame[]> {
   const targetWidth = opts.targetWidth ?? MOTION_TRACK_TARGET_WIDTH;
-  const roi = opts.roi;
+  const mask = resolveTrackMask(opts.mask, opts.roi);
+  const enhance = opts.enhanceContrast !== false;
   const video = document.createElement("video");
   video.muted = true;
   video.playsInline = true;
@@ -128,12 +139,14 @@ export async function extractFramesForMotionTrack(
       await waitForVideoFrame(video, seekSec);
       ctx.drawImage(video, 0, 0, w, h);
       const imageData = ctx.getImageData(0, 0, w, h);
-      const rgba = applyRoiMask(new Uint8ClampedArray(imageData.data), w, h, roi);
+      let rgba: Uint8ClampedArray = new Uint8ClampedArray(imageData.data);
+      rgba = applyTrackMask(rgba, w, h, mask);
+      if (enhance) rgba = enhanceContrastRgba(rgba, w, h);
       out.push({
         compFrame,
         width: w,
         height: h,
-        rgba,
+        rgba: new Uint8ClampedArray(rgba),
       });
       opts.onProgress?.(i + 1, total);
     }

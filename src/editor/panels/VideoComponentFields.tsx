@@ -14,19 +14,26 @@ import {
 import {
   finalizeMotionTrackBake,
   finalizeRotationTrackBake,
+  isMotionSuspiciouslySmall,
   runCombinedMotionTrack,
   runMotionTrack,
   runRotationTrack,
+  runWalkTrack,
 } from "../motionTrack/quarTracker";
 import type { TrackMode } from "../motionTrack/types";
 import {
   TRACK_ROI_PRESET_LABELS,
   TRACK_ROI_PRESETS,
   normalizeTrackRoi,
-  presetToRoi,
+  presetToMask,
   type TrackRoi,
   type TrackRoiPresetId,
 } from "../motionTrack/trackRoi";
+import { resolveVideoAssetUrl } from "../motionTrack/frameExtractor";
+import {
+  TRACK_VALIDITY_WARN_RATIO,
+  summarizeTrackValidity,
+} from "../motionTrack/trackDiagnostics";
 
 // InspectorPanel の ComponentFields を再利用するための props 型。
 type ComponentFieldsProps = {
@@ -74,12 +81,14 @@ export function VideoComponentFields({
   const assetId = typeof videoComp?.props["asset"] === "string" ? videoComp.props["asset"] : null;
 
   const [targetId, setTargetId] = useState<string>("");
-  const [trackMode, setTrackMode] = useState<TrackMode>("position");
+  const [trackMode, setTrackMode] = useState<TrackMode>("walk");
   const [focalLength, setFocalLength] = useState(550);
   const [userScale, setUserScale] = useState(1);
   const [sampleInterval, setSampleInterval] = useState(1);
+  /** 既定は全体。人混み時のみ「背景優先」を手動選択（Comp 27 で道路を消す事故を防ぐ） */
   const [roiPreset, setRoiPreset] = useState<TrackRoiPresetId>("full");
   const [customRoi, setCustomRoi] = useState<TrackRoi>({ x: 0.25, y: 0.25, w: 0.5, h: 0.5 });
+  const [videoPreviewUrl, setVideoPreviewUrl] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<{ current: number; total: number; phase: string } | null>(null);
@@ -116,7 +125,8 @@ export function VideoComponentFields({
       }));
   }, [comp]);
 
-  const usesRotationTargets = trackMode === "rotation" || trackMode === "both";
+  const usesRotationTargets =
+    trackMode === "rotation" || trackMode === "both" || trackMode === "walk";
 
   const activeTargets = usesRotationTargets
     ? rotationTargetOptions.filter((t) => t.eligible)
@@ -133,6 +143,20 @@ export function VideoComponentFields({
       setTargetId(activeTargets[0].id);
     }
   }, [activeTargets, targetId]);
+
+  useEffect(() => {
+    if (roiPreset !== "custom" || !project || !assetId) {
+      setVideoPreviewUrl(null);
+      return;
+    }
+    let cancelled = false;
+    void resolveVideoAssetUrl(project, assetId, getFs()).then((url) => {
+      if (!cancelled) setVideoPreviewUrl(url);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [roiPreset, project, assetId, getFs]);
 
   const btnStyle: CSSProperties = {
     background: "#2a2a2a",
@@ -208,7 +232,10 @@ export function VideoComponentFields({
       );
       if (!ok) return;
       clearRotationExpression = true;
-    } else if (trackMode === "both" && (hasPosExpr || hasRotExpr)) {
+    } else if (
+      (trackMode === "both" || trackMode === "walk") &&
+      (hasPosExpr || hasRotExpr)
+    ) {
       const props = [hasPosExpr ? "Position" : null, hasRotExpr ? "Rotation" : null]
         .filter(Boolean)
         .join(" / ");
@@ -228,11 +255,13 @@ export function VideoComponentFields({
         ? "回転トラッカーを読み込み中…"
         : trackMode === "both"
           ? "トラッカーを読み込み中…（並進 + 回転）"
-          : "トラッカーを読み込み中…",
+          : trackMode === "walk"
+            ? "Walk トラッカーを読み込み中…（前進・揺れ・見回し）"
+            : "トラッカーを読み込み中…",
     );
     setProgress(null);
 
-    const roi = presetToRoi(roiPreset, customRoi);
+    const mask = presetToMask(roiPreset, customRoi);
 
     try {
       if (trackMode === "position") {
@@ -242,7 +271,7 @@ export function VideoComponentFields({
           videoLayer: obj,
           assetId,
           fs: getFs(),
-          options: { userScale, sampleInterval, roi },
+          options: { userScale, sampleInterval, mask },
           signal: ac.signal,
           onProgress: (p) => {
             const label =
@@ -256,25 +285,104 @@ export function VideoComponentFields({
           },
         });
 
+        const posDiag = summarizeTrackValidity(result.validMask, 4);
         const baseline = sampleVec3(target.transform.position, 0);
-        const positionsByFrame = finalizeMotionTrackBake(
+        const baked = finalizeMotionTrackBake(
           result.compFrames,
           result.track.smoothed,
           result.validMask,
           baseline,
           userScale,
+          { autoScale: true, autoScaleTargetPx: Math.max(80, comp.height * 0.15) },
         );
 
         const { before, after } = applyMotionTrackToProject(project, comp.id, targetId, {
           baselinePosition: baseline,
-          positionsByFrame,
+          positionsByFrame: baked.positionsByFrame,
           bakeStart: result.bakeStart,
           bakeEnd: result.bakeEnd,
           clearExpression: clearPositionExpression,
         });
 
         applyCommand({ label: "Motion Track Bake", before, after });
-        setStatus(`完了 — ${result.compFrames.length} フレームをベイクしました（並進のみ）`);
+        const posPct = Math.round(posDiag.validRatio * 100);
+        const warnSmall = isMotionSuspiciouslySmall(baked.range, 3);
+        setStatus(
+          `完了 — ${result.compFrames.length} フレーム（並進・有効 ${posPct}%・auto×${baked.autoScale.toFixed(1)}）` +
+            (posDiag.validRatio < TRACK_VALIDITY_WARN_RATIO
+              ? "。有効率が低いです。追跡範囲を「全体」にして再試行してください"
+              : warnSmall
+                ? "。変位が小さいです。スケールを上げるか Walk モードを試してください"
+                : ""),
+        );
+      } else if (trackMode === "walk") {
+        const posBaseline = sampleVec3(target.transform.position, 0);
+        const rotBaseline = sampleVec3(target.transform.rotation, 0);
+        const result = await runWalkTrack(
+          {
+            project,
+            comp,
+            videoLayer: obj,
+            assetId,
+            fs: getFs(),
+            options: {
+              userScale,
+              sampleInterval,
+              focalLength,
+              mask,
+              autoScale: true,
+              autoScaleTargetPx: Math.max(80, comp.height * 0.15),
+            },
+            signal: ac.signal,
+            onProgress: (p) => {
+              const label =
+                p.phase === "loading"
+                  ? "Walk トラッカーを読み込み中…"
+                  : p.phase === "extracting"
+                    ? "フレーム抽出"
+                    : "Walk トラッキング（R+t）";
+              setStatus(label);
+              setProgress({ current: p.current, total: p.total, phase: p.phase });
+            },
+          },
+          { position: posBaseline, rotation: rotBaseline },
+        );
+
+        const walkDiag = summarizeTrackValidity(result.validMask, 4);
+        if (walkDiag.validRatio < TRACK_VALIDITY_WARN_RATIO) {
+          const pct = Math.round(walkDiag.validRatio * 100);
+          const abort = window.confirm(
+            `Walk の有効フレームが ${pct}% しかありません。\nベイクを中止しますか？\n（OK = 中止 / キャンセル = それでもベイク）`,
+          );
+          if (abort) {
+            setStatus(`中止 — Walk 有効率が低いためベイクしませんでした（有効 ${pct}%）`);
+            return;
+          }
+        }
+
+        const { before, after } = applyCombinedTrackToProject(
+          project,
+          comp.id,
+          targetId,
+          {
+            baselinePosition: posBaseline,
+            positionsByFrame: result.positionsByFrame,
+            bakeStart: result.bakeStart,
+            bakeEnd: result.bakeEnd,
+            clearExpression: clearPositionExpression,
+          },
+          {
+            baselineRotation: rotBaseline,
+            rotationsByFrame: result.rotationsByFrame,
+            bakeStart: result.bakeStart,
+            bakeEnd: result.bakeEnd,
+            clearExpression: clearRotationExpression,
+          },
+        );
+        applyCommand({ label: "Motion Track Walk Bake", before, after });
+        setStatus(
+          `完了 — Walk ${result.compFrames.length} フレーム（有効 ${Math.round(walkDiag.validRatio * 100)}%・auto×${result.autoScale.toFixed(1)}・range ${result.range.toFixed(1)}px）`,
+        );
       } else if (trackMode === "rotation") {
         const result = await runRotationTrack({
           project,
@@ -282,7 +390,7 @@ export function VideoComponentFields({
           videoLayer: obj,
           assetId,
           fs: getFs(),
-          options: { userScale, sampleInterval, focalLength, roi },
+          options: { userScale, sampleInterval, focalLength, mask },
           signal: ac.signal,
           onProgress: (p) => {
             const label =
@@ -295,6 +403,21 @@ export function VideoComponentFields({
             setProgress({ current: p.current, total: p.total, phase: p.phase });
           },
         });
+
+        const rotDiag = summarizeTrackValidity(result.validMask, 4);
+        if (rotDiag.validRatio < TRACK_VALIDITY_WARN_RATIO) {
+          const pct = Math.round(rotDiag.validRatio * 100);
+          const bakeAnyway = window.confirm(
+            `回転の有効フレームが ${pct}% しかありません（閾値 ${Math.round(TRACK_VALIDITY_WARN_RATIO * 100)}%）。\n` +
+              `このままベイクすると identity（無回転）のキーフレームで上書きされます。\n\n` +
+              `キャンセルしてベイクを中止しますか？\n（OK = 中止 / キャンセル = それでもベイク）`,
+          );
+          // confirm OK = true = user wants to cancel bake
+          if (bakeAnyway) {
+            setStatus(`中止 — 回転の有効率が低いためベイクしませんでした（有効 ${pct}%）`);
+            return;
+          }
+        }
 
         const baseline = sampleVec3(target.transform.rotation, 0);
         const rotationsByFrame = finalizeRotationTrackBake(
@@ -313,7 +436,9 @@ export function VideoComponentFields({
         });
 
         applyCommand({ label: "Motion Track Rotation Bake", before, after });
-        setStatus(`完了 — ${result.compFrames.length} フレームをベイクしました（回転のみ）`);
+        setStatus(
+          `完了 — ${result.compFrames.length} フレームをベイクしました（回転・有効 ${Math.round(rotDiag.validRatio * 100)}%）`,
+        );
       } else {
         const result = await runCombinedMotionTrack({
           project,
@@ -321,7 +446,7 @@ export function VideoComponentFields({
           videoLayer: obj,
           assetId,
           fs: getFs(),
-          options: { userScale, sampleInterval, focalLength, roi },
+          options: { userScale, sampleInterval, focalLength, mask },
           signal: ac.signal,
           onProgress: (p) => {
             const label =
@@ -335,46 +460,79 @@ export function VideoComponentFields({
           },
         });
 
+        const posDiag = summarizeTrackValidity(result.position.validMask, 4);
+        const rotDiag = summarizeTrackValidity(result.rotation.validMask, 4);
+        let bakeRotation = true;
+        if (rotDiag.validRatio < TRACK_VALIDITY_WARN_RATIO) {
+          const pct = Math.round(rotDiag.validRatio * 100);
+          const positionOnly = window.confirm(
+            `回転の有効フレームが ${pct}% しかありません。\n` +
+              `identity 回転で上書きせず、並進のみベイクしますか？\n\n` +
+              `（OK = 並進のみ / キャンセル = 中止）`,
+          );
+          if (!positionOnly) {
+            setStatus(`中止 — 回転の有効率が低いためベイクしませんでした（回転有効 ${pct}%）`);
+            return;
+          }
+          bakeRotation = false;
+        }
+
         const posBaseline = sampleVec3(target.transform.position, 0);
-        const rotBaseline = sampleVec3(target.transform.rotation, 0);
-        const positionsByFrame = finalizeMotionTrackBake(
+        const bakedPos = finalizeMotionTrackBake(
           result.position.compFrames,
           result.position.track.smoothed,
           result.position.validMask,
           posBaseline,
           userScale,
-        );
-        const rotationsByFrame = finalizeRotationTrackBake(
-          result.rotation.compFrames,
-          result.rotation.track.smoothed,
-          result.rotation.validMask,
-          rotBaseline,
+          { autoScale: true, autoScaleTargetPx: Math.max(80, comp.height * 0.15) },
         );
 
-        const { before, after } = applyCombinedTrackToProject(
-          project,
-          comp.id,
-          targetId,
-          {
+        if (!bakeRotation) {
+          const { before, after } = applyMotionTrackToProject(project, comp.id, targetId, {
             baselinePosition: posBaseline,
-            positionsByFrame,
+            positionsByFrame: bakedPos.positionsByFrame,
             bakeStart: result.position.bakeStart,
             bakeEnd: result.position.bakeEnd,
             clearExpression: clearPositionExpression,
-          },
-          {
-            baselineRotation: rotBaseline,
-            rotationsByFrame,
-            bakeStart: result.rotation.bakeStart,
-            bakeEnd: result.rotation.bakeEnd,
-            clearExpression: clearRotationExpression,
-          },
-        );
+          });
+          applyCommand({ label: "Motion Track Bake (position only)", before, after });
+          setStatus(
+            `完了 — 並進のみベイク（回転は有効 ${Math.round(rotDiag.validRatio * 100)}% のためスキップ・並進有効 ${Math.round(posDiag.validRatio * 100)}%）`,
+          );
+        } else {
+          const rotBaseline = sampleVec3(target.transform.rotation, 0);
+          const rotationsByFrame = finalizeRotationTrackBake(
+            result.rotation.compFrames,
+            result.rotation.track.smoothed,
+            result.rotation.validMask,
+            rotBaseline,
+          );
 
-        applyCommand({ label: "Motion Track Combined Bake", before, after });
-        setStatus(
-          `完了 — ${result.position.compFrames.length} フレームをベイクしました（並進 + 回転）`,
-        );
+          const { before, after } = applyCombinedTrackToProject(
+            project,
+            comp.id,
+            targetId,
+            {
+              baselinePosition: posBaseline,
+              positionsByFrame: bakedPos.positionsByFrame,
+              bakeStart: result.position.bakeStart,
+              bakeEnd: result.position.bakeEnd,
+              clearExpression: clearPositionExpression,
+            },
+            {
+              baselineRotation: rotBaseline,
+              rotationsByFrame,
+              bakeStart: result.rotation.bakeStart,
+              bakeEnd: result.rotation.bakeEnd,
+              clearExpression: clearRotationExpression,
+            },
+          );
+
+          applyCommand({ label: "Motion Track Combined Bake", before, after });
+          setStatus(
+            `完了 — ${result.position.compFrames.length} フレーム（並進有効 ${Math.round(posDiag.validRatio * 100)}% / 回転有効 ${Math.round(rotDiag.validRatio * 100)}%・auto×${bakedPos.autoScale.toFixed(1)}）`,
+          );
+        }
       }
     } catch (e) {
       if (e instanceof DOMException && e.name === "AbortError") {
@@ -420,10 +578,12 @@ export function VideoComponentFields({
         <div style={{ fontSize: 11, color: "#8cf", marginBottom: 6 }}>Motion Track</div>
         <div style={{ fontSize: 10, color: "#888", marginBottom: 6 }}>
           {trackMode === "position"
-            ? "並進（Position）のみ。"
+            ? "並進（Position）のみ。auto-scale あり。"
             : trackMode === "rotation"
-              ? "回転（Rotation）のみ。Null / one-node Camera。two-node は Phase 1b-b。"
-              : "並進 + 回転を同時にベイク。Null / one-node Camera。"}
+              ? "その場回転のみ（三脚パン向け）。歩き撮りには Walk を使う。"
+              : trackMode === "walk"
+                ? "Walk: 前進・揺れ・見回し（R+t 同時推定）。Comp 27 型向け。"
+                : "並進 + その場回転を独立にベイク。歩き撮りには Walk を推奨。"}
         </div>
 
         <label style={{ fontSize: 10, color: "#aaa", display: "block", marginBottom: 4 }}>
@@ -434,9 +594,10 @@ export function VideoComponentFields({
             style={selectStyle}
             disabled={running}
           >
+            <option value="walk">Walk（前進・揺れ・見回し）</option>
             <option value="position">Position（並進）</option>
-            <option value="rotation">Rotation（回転）</option>
-            <option value="both">Both（並進 + 回転）</option>
+            <option value="rotation">Rotation（その場回転）</option>
+            <option value="both">Both（並進 + その場回転）</option>
           </select>
         </label>
 
@@ -496,7 +657,7 @@ export function VideoComponentFields({
                 )}
               </div>
             )}
-            {(trackMode === "rotation" || trackMode === "both") && (
+            {(trackMode === "rotation" || trackMode === "both" || trackMode === "walk") && (
               <div style={scrubRowStyle}>
                 <span style={{ flex: 1 }}>焦点距離（px）</span>
                 {scrubWrap(
@@ -532,8 +693,8 @@ export function VideoComponentFields({
                 onChange={(e) => {
                   const next = e.target.value as TrackRoiPresetId;
                   setRoiPreset(next);
-                  if (next !== "custom" && next in TRACK_ROI_PRESETS) {
-                    setCustomRoi({ ...TRACK_ROI_PRESETS[next as Exclude<TrackRoiPresetId, "custom">] });
+                  if (next !== "custom" && next !== "background" && next in TRACK_ROI_PRESETS) {
+                    setCustomRoi({ ...TRACK_ROI_PRESETS[next] });
                   }
                 }}
                 style={selectStyle}
@@ -547,12 +708,15 @@ export function VideoComponentFields({
               </select>
             </label>
             <div style={{ fontSize: 9, color: "#666", marginTop: -2 }}>
-              人が多いときは背景だけを囲むと安定しやすい
-              {(trackMode === "rotation" || trackMode === "both") &&
-                "。回転モードは中央付近の ROI が安定"}
+              {roiPreset === "background"
+                ? "手前中央の群衆帯を除外（人混み歩き撮り向け）。道路だけのシーンでは「全体」を使う"
+                : roiPreset === "full"
+                  ? "人が多いシーンでは「背景優先（人混み）」を選択"
+                  : "人が多いときは「背景優先」が安定しやすい"}
             </div>
             {roiPreset === "custom" && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                <CustomRoiPreview roi={customRoi} videoUrl={videoPreviewUrl} />
                 {(
                   [
                     ["X %", "x"],
@@ -566,6 +730,12 @@ export function VideoComponentFields({
                     {scrubWrap(
                       <ScrubNumber
                         value={Math.round(customRoi[key] * 100)}
+                        onLiveChange={(v) => {
+                          const frac = Math.max(0, Math.min(100, v)) / 100;
+                          setCustomRoi((prev) =>
+                            normalizeTrackRoi({ ...prev, [key]: frac }),
+                          );
+                        }}
                         onCommit={(v) => {
                           const frac = Math.max(0, Math.min(100, v)) / 100;
                           setCustomRoi((prev) =>
@@ -597,8 +767,10 @@ export function VideoComponentFields({
               trackMode === "position"
                 ? "映像から並進を推定し、選択先の Position に KF ベイク"
                 : trackMode === "rotation"
-                  ? "映像から回転を推定し、選択先の Rotation に KF ベイク"
-                  : "映像から並進と回転を推定し、Position / Rotation に KF ベイク"
+                  ? "その場回転を推定し、選択先の Rotation に KF ベイク"
+                  : trackMode === "walk"
+                    ? "前進・揺れ・見回しを R+t で推定し Position / Rotation に KF ベイク"
+                    : "並進とその場回転を独立に推定してベイク"
             }
           >
             Track Motion → Bake Keyframes
@@ -622,5 +794,116 @@ export function VideoComponentFields({
         )}
       </div>
     </>
+  );
+}
+
+/** カスタム ROI の追跡範囲を緑枠で表示（映像サムネ上）。 */
+function CustomRoiPreview({
+  roi,
+  videoUrl,
+}: {
+  roi: TrackRoi;
+  videoUrl: string | null;
+}) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const n = normalizeTrackRoi(roi);
+
+  useEffect(() => {
+    const el = videoRef.current;
+    if (!el || !videoUrl) return;
+    el.src = videoUrl;
+    el.muted = true;
+    el.playsInline = true;
+    const onMeta = () => {
+      try {
+        el.currentTime = 0;
+      } catch {
+        /* seek best-effort */
+      }
+    };
+    el.addEventListener("loadedmetadata", onMeta);
+    el.load();
+    return () => {
+      el.removeEventListener("loadedmetadata", onMeta);
+      el.removeAttribute("src");
+      el.load();
+    };
+  }, [videoUrl]);
+
+  return (
+    <div
+      style={{
+        position: "relative",
+        width: "100%",
+        aspectRatio: "16 / 9",
+        background: "#1a1a1a",
+        border: "1px solid #444",
+        borderRadius: 3,
+        overflow: "hidden",
+        marginTop: 2,
+      }}
+      title="緑の枠が追跡範囲（カスタム ROI）"
+    >
+      {videoUrl ? (
+        <video
+          ref={videoRef}
+          muted
+          playsInline
+          preload="metadata"
+          style={{
+            position: "absolute",
+            inset: 0,
+            width: "100%",
+            height: "100%",
+            // fill: ROI 正規化座標とプレビュー矩形を一致させる
+            objectFit: "fill",
+            background: "#111",
+          }}
+        />
+      ) : (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            color: "#555",
+            fontSize: 10,
+          }}
+        >
+          映像プレビュー
+        </div>
+      )}
+      {/* 緑枠 + 外側を暗く（box-shadow で穴あき暗幕） */}
+      <div
+        aria-hidden
+        style={{
+          position: "absolute",
+          left: `${n.x * 100}%`,
+          top: `${n.y * 100}%`,
+          width: `${n.w * 100}%`,
+          height: `${n.h * 100}%`,
+          border: "2px solid #3dffa0",
+          boxShadow: "0 0 0 9999px rgba(0,0,0,0.5)",
+          boxSizing: "border-box",
+          pointerEvents: "none",
+        }}
+      />
+      <div
+        style={{
+          position: "absolute",
+          left: 4,
+          bottom: 3,
+          fontSize: 9,
+          color: "#3dffa0",
+          textShadow: "0 0 3px #000",
+          pointerEvents: "none",
+          zIndex: 1,
+        }}
+      >
+        追跡範囲
+      </div>
+    </div>
   );
 }
