@@ -3,7 +3,7 @@ import type { TrackMaskSpec, TrackRoi } from "./trackRoi";
 
 export type { TrackMaskSpec, TrackRoi } from "./trackRoi";
 
-export type TrackMode = "position" | "rotation" | "both" | "walk";
+export type TrackMode = "position" | "rotation" | "both" | "walk" | "solve";
 
 /** [qx, qy, qz, qw] — rotation-only 推定器の出力。 */
 export type RawQuaternion = [number, number, number, number];
@@ -37,7 +37,7 @@ export interface TrackOptions {
 }
 
 export interface TrackProgress {
-  phase: "loading" | "extracting" | "tracking" | "baking";
+  phase: "loading" | "extracting" | "tracking" | "solving" | "baking";
   current: number;
   total: number;
 }
@@ -63,6 +63,8 @@ export interface RotationTrackResult {
 export interface RotationTrackOptions extends TrackOptions {
   /** ピンホール焦点距離（px）。fx = fy = focalLength。 */
   focalLength: number;
+  /** 3D Solve: 焦点距離をバンドル調整で自動推定（既定 true）。 */
+  solveFocal?: boolean;
 }
 
 export interface MotionTrackWorkerInit {
@@ -134,7 +136,7 @@ export interface RotationTrackWorkerInit {
   opencvUrl: string;
 }
 
-export type TrackEstimateMode = "rotation" | "walk";
+export type TrackEstimateMode = "rotation" | "walk" | "sfm";
 
 export interface RotationTrackWorkerFrame {
   type: "frame";
@@ -156,10 +158,21 @@ export interface RotationTrackWorkerDispose {
   type: "dispose";
 }
 
+/** sfm モードで蓄積したトラックを一括解法（3D Solve）。 */
+export interface RotationTrackWorkerSolveSfm {
+  type: "solveSfm";
+  width: number;
+  height: number;
+  focalPx: number;
+  optimizeFocal: boolean;
+  seed?: number;
+}
+
 export type RotationTrackWorkerRequest =
   | RotationTrackWorkerInit
   | RotationTrackWorkerFrame
-  | RotationTrackWorkerDispose;
+  | RotationTrackWorkerDispose
+  | RotationTrackWorkerSolveSfm;
 
 export interface RotationTrackWorkerReady {
   type: "ready";
@@ -191,7 +204,39 @@ export interface RotationTrackWorkerError {
   message: string;
 }
 
+/** 3D Solve の進捗（Worker 内の一括解法中）。 */
+export interface RotationTrackWorkerSolveProgress {
+  type: "solveProgress";
+  stage: "init" | "map" | "ba" | "frames";
+  current: number;
+  total: number;
+}
+
+/** 3D Solve の結果フレーム（sfmSolver.SfmFramePose の transferable 表現）。 */
+export interface SolvedFramePose {
+  solved: boolean;
+  /** world(=frame0 cam)→cam クォータニオン [x,y,z,w] */
+  q: RawQuaternion;
+  /** カメラ中心（world、スケール不定） */
+  c: RawTranslation;
+  reprojErrPx: number;
+  numPoints: number;
+}
+
+export interface RotationTrackWorkerSfmSolved {
+  type: "sfmSolved";
+  mode: "sfm" | "rotationOnly" | "failed";
+  frames: SolvedFramePose[];
+  focalPx: number;
+  keyframeCount: number;
+  pointCount: number;
+  medianReprojErrPx: number;
+  message?: string;
+}
+
 export type RotationTrackWorkerResponse =
   | RotationTrackWorkerReady
   | RotationTrackWorkerRotation
-  | RotationTrackWorkerError;
+  | RotationTrackWorkerError
+  | RotationTrackWorkerSolveProgress
+  | RotationTrackWorkerSfmSolved;

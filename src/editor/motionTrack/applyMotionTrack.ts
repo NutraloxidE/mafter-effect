@@ -177,3 +177,45 @@ export function applyCombinedTrackToProject(
 export function targetHasRotationExpression(target: SceneObject): boolean {
   return isPropExpressed(target.transform.rotation);
 }
+
+/**
+ * 3D Solve のベイク: position + rotation + （カメラなら）推定 zoom を単一 undo で適用。
+ * cameraZoomPx は解像度換算済みの comp 高さ基準 zoom（px）。
+ */
+export function applySolveTrackToProject(
+  project: Project,
+  compId: string,
+  targetId: string,
+  positionParams: ApplyMotionTrackParams,
+  rotationParams: ApplyRotationTrackParams,
+  cameraZoomPx?: number,
+): { before: Project; after: Project } {
+  const before = project;
+  const comp = before.compositions.find((c) => c.id === compId && c.kind === "timeline") as
+    | TimelineComposition
+    | undefined;
+  if (!comp) throw new Error("composition not found");
+  const target = comp.objects.find((o) => o.id === targetId);
+  if (!target) throw new Error("target object not found");
+
+  let updated = applyCombinedTrackToObject(target, positionParams, rotationParams);
+  if (cameraZoomPx !== undefined && cameraZoomPx > 0) {
+    updated = {
+      ...updated,
+      components: updated.components.map((c) =>
+        c.type === "camera" ? { ...c, props: { ...c.props, zoom: cameraZoomPx } } : c,
+      ),
+    };
+  }
+  const after: Project = {
+    ...before,
+    compositions: before.compositions.map((c) => {
+      if (c.id !== compId || c.kind !== "timeline") return c;
+      return {
+        ...c,
+        objects: c.objects.map((o) => (o.id === targetId ? updated : o)),
+      };
+    }),
+  };
+  return { before, after };
+}

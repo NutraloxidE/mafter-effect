@@ -1,5 +1,5 @@
-// Phase 1a+1b-a — Video Motion Track 実機検証。
-// ffmpeg 生成クリップ → import → runMotionTrack / runRotationTrack → resolve チェック。
+// Phase 1a+1b-a+3D Solve — Video Motion Track 実機検証。
+// ffmpeg 生成クリップ → import → runMotionTrack / runRotationTrack / runSolveTrack → resolve チェック。
 import { chromium } from "playwright";
 import { execSync } from "node:child_process";
 import fs from "node:fs";
@@ -73,6 +73,8 @@ const browser = await chromium.launch({
   args: ["--autoplay-policy=no-user-gesture-required"],
 });
 const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
+// 3D Solve は全フレーム KLT + BA のため既存シナリオより長い。
+page.setDefaultTimeout(600_000);
 const errors = [];
 page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
 page.on("pageerror", (e) => errors.push(String(e)));
@@ -88,10 +90,12 @@ const result = await page.evaluate(async ({ panBytes, panName, dollyBytes, dolly
     finalizeMotionTrackBake,
     runRotationTrack,
     finalizeRotationTrackBake,
+    runSolveTrack,
   } = await import("/src/editor/motionTrack/quarTracker.ts");
   const {
     applyMotionTrackToProject,
     applyRotationTrackToProject,
+    applySolveTrackToProject,
   } = await import("/src/editor/motionTrack/applyMotionTrack.ts");
   const { sampleVec3 } = await import("/src/runtime/interpolate.ts");
   const { resolve } = await import("/src/runtime/resolve.ts");
@@ -132,7 +136,7 @@ const result = await page.evaluate(async ({ panBytes, panName, dollyBytes, dolly
     });
 
     const baseline = sampleVec3(target.transform.position, 0);
-    const positionsByFrame = finalizeMotionTrackBake(
+    const baked = finalizeMotionTrackBake(
       track.compFrames,
       track.track.smoothed,
       track.validMask,
@@ -142,7 +146,7 @@ const result = await page.evaluate(async ({ panBytes, panName, dollyBytes, dolly
 
     const { before, after } = applyMotionTrackToProject(project, comp.id, targetId, {
       baselinePosition: baseline,
-      positionsByFrame,
+      positionsByFrame: baked.positionsByFrame,
       bakeStart: track.bakeStart,
       bakeEnd: track.bakeEnd,
       clearExpression: false,
@@ -246,7 +250,108 @@ const result = await page.evaluate(async ({ panBytes, panName, dollyBytes, dolly
     focalLength: 550,
   });
 
-  return { nullPan, cameraPan, nullDolly, yawPanRotation };
+  /** 3D Solve: 配線 + ベイクが通ること。平面クリップは rotationOnly になりうる。 */
+  async function trackSolveAndBake({ bytes, name, targetKind }) {
+    await S().newProject();
+    const file = new File([new Uint8Array(bytes)], name, { type: "video/mp4" });
+    const assetId = await S().importVideoAsset(file);
+    if (!assetId) throw new Error("importVideoAsset failed");
+    const videoLayerId = S().addVideoLayer(assetId, "motion-track-solve-src");
+    if (!videoLayerId) throw new Error("addVideoLayer failed");
+    const targetId =
+      targetKind === "camera" ? S().addCamera("motion-track-solve-cam") : S().addNullLayer("motion-track-solve-target");
+    if (!targetId) throw new Error(`add${targetKind} failed`);
+
+    await new Promise((r) => setTimeout(r, 2000));
+
+    const project = S().project;
+    const compId = S().currentCompId;
+    const comp = project.compositions.find((c) => c.id === compId);
+    if (!comp || comp.kind !== "timeline") throw new Error("timeline comp missing");
+    const videoLayer = comp.objects.find((o) => o.id === videoLayerId);
+    const target = comp.objects.find((o) => o.id === targetId);
+    if (!videoLayer || !target) throw new Error("layers missing");
+
+    const posBaseline = sampleVec3(target.transform.position, 0);
+    const rotBaseline = sampleVec3(target.transform.rotation, 0);
+    const result = await runSolveTrack(
+      {
+        project,
+        comp,
+        videoLayer,
+        assetId,
+        fs: S().getFs(),
+        options: {
+          userScale: 80,
+          sampleInterval: 1,
+          focalLength: 550,
+          solveFocal: true,
+          autoScale: true,
+          autoScaleTargetPx: Math.max(80, comp.height * 0.15),
+        },
+      },
+      { position: posBaseline, rotation: rotBaseline },
+    );
+
+    const { before, after } = applySolveTrackToProject(
+      project,
+      comp.id,
+      targetId,
+      {
+        baselinePosition: posBaseline,
+        positionsByFrame: result.positionsByFrame,
+        bakeStart: result.bakeStart,
+        bakeEnd: result.bakeEnd,
+        clearExpression: false,
+      },
+      {
+        baselineRotation: rotBaseline,
+        rotationsByFrame: result.rotationsByFrame,
+        bakeStart: result.bakeStart,
+        bakeEnd: result.bakeEnd,
+        clearExpression: false,
+      },
+    );
+    S().applyCommand({ label: "Motion Track 3D Solve Bake (verify)", before, after });
+
+    const bakedComp = S().project.compositions.find((c) => c.id === compId);
+    const bakedTarget = bakedComp.objects.find((o) => o.id === targetId);
+    const samplePos = (frame) => {
+      const scene = resolve(bakedComp, frame);
+      const o = scene.objects.find((x) => x.id === targetId);
+      if (!o) throw new Error(`${targetKind} not in scene`);
+      return { x: o.worldTransform[12], y: o.worldTransform[13], z: o.worldTransform[14] };
+    };
+    const sampleRot = (frame) => sampleVec3(bakedTarget.transform.rotation, frame);
+
+    return {
+      frameCount: result.compFrames.length,
+      mode: result.mode,
+      validFrames: result.validMask.filter(Boolean).length,
+      pointCount: result.pointCount,
+      keyframeCount: result.keyframeCount,
+      medianReprojErrPx: result.medianReprojErrPx,
+      f0: samplePos(0),
+      fMid: samplePos(15),
+      fLate: samplePos(30),
+      r0: sampleRot(0),
+      rMid: sampleRot(15),
+      rLate: sampleRot(30),
+    };
+  }
+
+  const solvePan = await trackSolveAndBake({
+    bytes: panBytes,
+    name: panName,
+    targetKind: "null",
+  });
+  const solveYaw = await trackSolveAndBake({
+    bytes: yawBytes,
+    name: yawName,
+    targetKind: "null",
+  });
+
+  return { nullPan, cameraPan, nullDolly, yawPanRotation, solvePan, solveYaw };
 }, {
   panBytes: [...videoBytes], panName: "motion-track-pan.mp4",
   dollyBytes: [...dollyBytes], dollyName: "motion-track-dolly.mp4",
@@ -327,6 +432,59 @@ if (!result.cameraPan.poiUnchanged) {
   }
   if (Math.abs(dyLate) <= Math.abs(dyMid)) {
     console.error(`FAIL[yawPanRotation]: expected increasing |yaw| (f30=${dyLate}, f15=${dyMid})`);
+    pass = false;
+  }
+}
+
+// 3D Solve: エンドツーエンド配線。平面パンは視差不足で rotationOnly になりうる。
+// 合成 3D 点群での AE 級精度は motionTrackSfm.test.ts が担保。
+{
+  const r = result.solvePan;
+  if (r.frameCount < 10) {
+    console.error(`FAIL[solvePan]: too few frames (${r.frameCount})`);
+    pass = false;
+  }
+  if (r.mode !== "sfm" && r.mode !== "rotationOnly") {
+    console.error(`FAIL[solvePan]: unexpected mode ${r.mode}`);
+    pass = false;
+  }
+  if (r.validFrames < 10) {
+    console.error(`FAIL[solvePan]: too few valid frames (${r.validFrames})`);
+    pass = false;
+  }
+  if (r.mode === "sfm") {
+    const dxMid = r.fMid.x - r.f0.x;
+    const dxLate = r.fLate.x - r.f0.x;
+    if (Math.abs(dxMid) < 0.1 && Math.abs(dxLate) < 0.1) {
+      console.error(`FAIL[solvePan]: sfm mode but no position displacement (dxMid=${dxMid}, dxLate=${dxLate})`);
+      pass = false;
+    }
+  }
+}
+
+{
+  const r = result.solveYaw;
+  const dyMid = r.rMid.y - r.r0.y;
+  const dyLate = r.rLate.y - r.r0.y;
+  if (r.frameCount < 10) {
+    console.error(`FAIL[solveYaw]: too few frames (${r.frameCount})`);
+    pass = false;
+  }
+  if (r.mode !== "sfm" && r.mode !== "rotationOnly") {
+    console.error(`FAIL[solveYaw]: unexpected mode ${r.mode}`);
+    pass = false;
+  }
+  if (r.validFrames < 10) {
+    console.error(`FAIL[solveYaw]: too few valid frames (${r.validFrames})`);
+    pass = false;
+  }
+  // 純回転クリップ: ヨーが単調に増えること（rotationOnly が本線）。
+  if (Math.abs(dyMid) < 0.3) {
+    console.error(`FAIL[solveYaw]: expected yaw at f15, got dy=${dyMid} (mode=${r.mode})`);
+    pass = false;
+  }
+  if (Math.abs(dyLate) <= Math.abs(dyMid)) {
+    console.error(`FAIL[solveYaw]: expected increasing |yaw| (f30=${dyLate}, f15=${dyMid})`);
     pass = false;
   }
 }

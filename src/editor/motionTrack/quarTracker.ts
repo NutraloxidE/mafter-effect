@@ -407,6 +407,42 @@ export class RotationMotionTracker {
     });
   }
 
+  /** sfm モードで蓄積したトラックを Worker 内で一括解法（3D Solve）。 */
+  async solveSfm(
+    params: { width: number; height: number; focalPx: number; optimizeFocal: boolean; seed?: number },
+    onProgress?: (stage: string, current: number, total: number) => void,
+  ): Promise<Extract<RotationTrackWorkerResponse, { type: "sfmSolved" }>> {
+    if (!this.ready || !this.worker) throw new Error("rotation tracker not ready");
+    const w = this.worker;
+    return new Promise((resolve, reject) => {
+      const timeout = window.setTimeout(() => reject(new Error("3D solve timeout")), 600000);
+      const onMsg = (ev: MessageEvent<RotationTrackWorkerResponse>) => {
+        const m = ev.data;
+        if (m.type === "solveProgress") {
+          onProgress?.(m.stage, m.current, m.total);
+        } else if (m.type === "sfmSolved") {
+          window.clearTimeout(timeout);
+          w.removeEventListener("message", onMsg);
+          resolve(m);
+        } else if (m.type === "error") {
+          window.clearTimeout(timeout);
+          w.removeEventListener("message", onMsg);
+          reject(new Error(m.message));
+        }
+      };
+      w.addEventListener("message", onMsg);
+      const req: RotationTrackWorkerRequest = {
+        type: "solveSfm",
+        width: params.width,
+        height: params.height,
+        focalPx: params.focalPx,
+        optimizeFocal: params.optimizeFocal,
+        seed: params.seed,
+      };
+      w.postMessage(req);
+    });
+  }
+
   dispose(): void {
     if (this.worker) {
       const req: RotationTrackWorkerRequest = { type: "dispose" };
@@ -849,6 +885,161 @@ export async function runWalkTrack(
       pnpAcceptCount,
       maxMapPoints,
       lastReprojErrPx,
+    };
+  } finally {
+    tracker.dispose();
+  }
+}
+
+export interface RunSolveTrackResult {
+  positionsByFrame: Map<Frame, Vec3>;
+  rotationsByFrame: Map<Frame, Vec3>;
+  compFrames: Frame[];
+  validMask: boolean[];
+  bakeStart: Frame;
+  bakeEnd: Frame;
+  autoScale: number;
+  range: number;
+  mode: "sfm" | "rotationOnly" | "failed";
+  /** 推定焦点距離（追跡解像度 px 基準） */
+  focalPx: number;
+  trackWidth: number;
+  trackHeight: number;
+  keyframeCount: number;
+  pointCount: number;
+  medianReprojErrPx: number;
+  message?: string;
+}
+
+/**
+ * 3D Solve: 全フレームの特徴トラックを一括 SfM（バンドル調整つき）で解き、
+ * position + rotation を同時ベイク（AE 3D Camera Tracker 相当）。
+ */
+export async function runSolveTrack(
+  input: RunRotationTrackInput,
+  baselines: { position: Vec3; rotation: Vec3 },
+): Promise<RunSolveTrackResult> {
+  const { project, comp, videoLayer, assetId, fs, imageCache, options, onProgress, signal } = input;
+  const asset = project.assets.find((a) => a.id === assetId);
+  const durationSec =
+    asset?.meta && typeof asset.meta.duration === "number" ? asset.meta.duration : undefined;
+
+  const compFrames = computeMotionTrackCompFrames(
+    videoLayer,
+    comp.fps,
+    durationSec,
+    options.sampleInterval,
+  );
+  if (compFrames.length === 0) throw new Error("no frames in track range");
+
+  onProgress?.({ phase: "loading", current: 0, total: 1 });
+  const tracker = new RotationMotionTracker();
+  try {
+    await tracker.init();
+    const videoUrl = await resolveVideoAssetUrl(project, assetId, fs, imageCache);
+    if (!videoUrl) throw new Error("video asset URL not available");
+
+    const trimStart =
+      typeof videoLayer.components.find((c) => c.type === "video")?.props["trimStart"] === "number"
+        ? (videoLayer.components.find((c) => c.type === "video")!.props["trimStart"] as number)
+        : 0;
+
+    onProgress?.({ phase: "extracting", current: 0, total: compFrames.length });
+    const extracted = await extractFramesForMotionTrack({
+      videoUrl,
+      fps: comp.fps,
+      inPoint: videoLayer.inPoint,
+      trimStart,
+      compFrames,
+      targetWidth: options.targetWidth,
+      mask: resolveTrackMask(options.mask, options.roi),
+      enhanceContrast: options.enhanceContrast,
+      signal,
+      onProgress: (current, total) => onProgress?.({ phase: "extracting", current, total }),
+    });
+    if (extracted.length === 0) throw new Error("no frames extracted");
+
+    onProgress?.({ phase: "tracking", current: 0, total: extracted.length });
+    for (let i = 0; i < extracted.length; i++) {
+      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+      const fr = extracted[i]!;
+      await tracker.processFrame(
+        i,
+        fr.rgba,
+        fr.width,
+        fr.height,
+        options.focalLength,
+        i === 0,
+        resolveTrackMask(options.mask, options.roi),
+        "sfm",
+      );
+      onProgress?.({ phase: "tracking", current: i + 1, total: extracted.length });
+    }
+
+    const trackWidth = extracted[0]!.width;
+    const trackHeight = extracted[0]!.height;
+    onProgress?.({ phase: "solving", current: 0, total: 1 });
+    const solved = await tracker.solveSfm(
+      {
+        width: trackWidth,
+        height: trackHeight,
+        focalPx: options.focalLength,
+        optimizeFocal: options.solveFocal !== false,
+        seed: 20260704,
+      },
+      (_stage, current, total) => onProgress?.({ phase: "solving", current, total }),
+    );
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    if (solved.mode === "failed" || solved.frames.length !== extracted.length) {
+      throw new Error(solved.message ?? "3D solve failed");
+    }
+
+    const { sfmFramesToMafterTrajectory } = await import("./sfm/sfmConvert");
+    const traj = sfmFramesToMafterTrajectory(
+      solved.frames.map((f) => ({
+        solved: f.solved,
+        q: f.q,
+        c: f.c,
+        reprojErrPx: f.reprojErrPx,
+        numPoints: f.numPoints,
+      })),
+      baselines.position,
+      baselines.rotation,
+      options.userScale,
+    );
+
+    const targetPx = options.autoScaleTargetPx ?? Math.max(80, comp.height * 0.15);
+    const useAuto = options.autoScale !== false && solved.mode === "sfm";
+    const scaled = useAuto
+      ? applyAutoScaleToPositions(traj.positions, baselines.position, targetPx, 1)
+      : { positions: traj.positions, autoScale: 1 };
+
+    const bakeStart = compFrames[0]!;
+    const bakeEnd = (compFrames[compFrames.length - 1] ?? bakeStart) + 1;
+    const positionsByFrame = new Map<Frame, Vec3>();
+    const rotationsByFrame = new Map<Frame, Vec3>();
+    for (let i = 0; i < compFrames.length; i++) {
+      positionsByFrame.set(compFrames[i]!, scaled.positions[i]!);
+      rotationsByFrame.set(compFrames[i]!, traj.rotations[i]!);
+    }
+
+    return {
+      positionsByFrame,
+      rotationsByFrame,
+      compFrames,
+      validMask: traj.validMask,
+      bakeStart,
+      bakeEnd,
+      autoScale: scaled.autoScale,
+      range: vec3Range(scaled.positions),
+      mode: solved.mode,
+      focalPx: solved.focalPx,
+      trackWidth,
+      trackHeight,
+      keyframeCount: solved.keyframeCount,
+      pointCount: solved.pointCount,
+      medianReprojErrPx: solved.medianReprojErrPx,
+      message: solved.message,
     };
   } finally {
     tracker.dispose();

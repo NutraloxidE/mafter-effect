@@ -951,7 +951,8 @@ SSoT 違反を避けるため、scope と正準性を分離する:
 | Motion Track 追跡範囲 ROI（§16.1 Phase 1c・mask） | **実装済み（2026-07 Phase 1c）** |
 | Motion Track 特徴品質・補間（§16.1 Phase 1d） | **実装済み（2026-07 Phase 1d）** |
 | Motion Track Walk（前進・揺れ・見回し / R+t）（§16.1 Phase 2a/2b） | **実装済み（2026-07）** |
-| Motion Track POI / zoom・COLMAP/Blender カメラ import | 将来（§16.1 Phase 1b-b / Phase 2） |
+| Motion Track 3D Solve（オフライン SfM / バンドル調整）（§16.1） | **実装済み（2026-07）** |
+| Motion Track POI 軌道・COLMAP/Blender カメラ import | 将来（§16.1 Phase 1b-b / 外部 import） |
 
 ---
 
@@ -976,8 +977,9 @@ video レイヤーのフッテージから単眼 visual odometry（vendored WASM
 - **追跡範囲（ROI）— Phase 1c**: Inspector Video の Motion Track で正規化矩形（プリセット / カスタム）を指定できる。フレーム抽出後に ROI 外を黒塗り（mask）し、画像サイズは変えない（回転推定の主点を維持）。セッション UI 状態のみで `project.json` には永続しない。人が多いシーンでは背景側の ROI を指定すると安定しやすい。
 - **特徴品質・補間 — Phase 1d**: 回転経路は forward-backward LK・LK 誤差閾値・グリッド分散再検出・ROI 縁マージン棄却で動体/偽特徴を抑える。並進ベイクは無効フレームを baseline にスナップせず前後有効値で線形補間（スロープ制限）する。
 - **追跡マスク — Phase 1d+ / Comp 27 修正**: **既定は「全体」**。オプトインの「背景優先（人混み）」は手前中央の群衆帯のみ exclude（道路全体は消さない）。フレーム抽出後に逆光向けコントラスト伸長（マスク黒は維持）。回転経路の `equalizeHist` は full mask 時のみ。回転の有効率が低いときは identity KF を黙って焼かず警告する。マスク境界の静止エッジは QUAR 並進がロックしうる既知制約（境界フェザリングでは防げない）。
-- **Walk モード — Phase 2a/2b/2c（連続性ファースト）**: 歩き撮り向け。OpenCV WASM は **KLT / 特徴検出のみ**。毎フレーム FOE/発散フローで予測ステップを出し、地図（DLT 三角測量）が十分なら DLT-PnP 候補を作るが、**ベイク入力は常に相対ステップ 1 本**（`walkAccumulate` のみ絶対化）。PnP は予測との回転角・並進方向が近いときだけ向きを補正し、scale は予測のまま（単眼スケール不定でもゲートが機能する）。絶対ポーズ直書きは禁止（ジャンプ防止）。並進 auto-scale あり。Rotation（その場）はノーダルパン専用。AE 級フル BA は対象外。
-- 「AE 3D Camera Tracker 級」の本格ソルブは Phase 2 の外部 import（COLMAP / Blender camera, §6.5 の ImporterDef 経路）で扱う。本機能は「手持ち参考値・ラフパス」の位置づけ。
+- **Walk モード — Phase 2a/2b/2c（連続性ファースト）**: 歩き撮り向け。OpenCV WASM は **KLT / 特徴検出のみ**。毎フレーム FOE/発散フローで予測ステップを出し、地図（DLT 三角測量）が十分なら DLT-PnP 候補を作るが、**ベイク入力は常に相対ステップ 1 本**（`walkAccumulate` のみ絶対化）。PnP は予測との回転角・並進方向が近いときだけ向きを補正し、scale は予測のまま（単眼スケール不定でもゲートが機能する）。絶対ポーズ直書きは禁止（ジャンプ防止）。並進 auto-scale あり。Rotation（その場）はノーダルパン専用。逐次 VO のため AE 級フル BA は対象外（一括解法は **3D Solve**）。
+- **3D Solve（オフライン SfM）— 推奨既定**: AE の 3D Camera Tracker 相当の**一括**カメラ解析。OpenCV WASM で長寿命特徴トラックを蓄積したあと、純 TypeScript の SfM（キーフレーム選択 → essential 2-view 初期化 + 焦点距離スイープ → 逐次 PnP + 三角測量 → 全体バンドル調整（LM + Schur・Huber）→ 全フレーム pose-only 局所化）で position + rotation を同時ベイク。カメラ対象では推定焦点距離を `zoom`（静的）へ任意適用可。視差が検出できないクリップ（純パン/チルト・平面シーン）は **rotationOnly** にフォールバック（並進は baseline 維持）。単眼スケールは不定のため auto-scale / UI スケールで補正。既存 Position / Rotation / Walk 経路とは**隔離**（`src/editor/motionTrack/sfm/`）。editor-only・Track Motion 実行時のみ（INV-1/INV-2 はベイク済み KF の再生にのみ関与）。合成シーンでの受け入れ基準は軌道 RMSE < 全長の 1%・回転中央値 < 0.2°・焦点誤差 < 5%（`test/motionTrackSfm.test.ts`）。
+- さらに高精度が必要な場合の外部 import（COLMAP / Blender camera, §6.5 の ImporterDef 経路）は将来。two-node Camera の POI 軌道ベイクは Phase 1b-b。
 
 ---
 

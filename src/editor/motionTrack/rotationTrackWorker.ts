@@ -19,6 +19,8 @@ import type {
   TrackMaskSpec,
 } from "./types";
 import { isFullMask, resolveTrackMask } from "./trackRoi";
+import { buildTrackTable, type FramePoints } from "./sfm/sfmTracks";
+import { solveSfm } from "./sfm/sfmSolver";
 
 interface CvMat {
   delete(): void;
@@ -60,6 +62,9 @@ let prevPtsList: Point2[] = [];
 let prevTrackIds: number[] = [];
 let framesSinceReset = 0;
 let mfVo = new MultiFrameVoState();
+/** sfm モード: 全フレームの (trackId, x, y) 観測蓄積 */
+let sfmFrames: FramePoints[] = [];
+let sfmNextId = 1;
 
 async function loadOpenCv(opencvUrl: string): Promise<void> {
   if (cvReady) return cvReady;
@@ -226,6 +231,16 @@ function disposeTrackingState(): void {
   prevTrackIds = [];
   framesSinceReset = 0;
   mfVo = new MultiFrameVoState();
+  sfmFrames = [];
+  sfmNextId = 1;
+}
+
+function recordSfmFrame(
+  idx: number,
+  points: Array<{ id: number; x: number; y: number }>,
+): void {
+  while (sfmFrames.length <= idx) sfmFrames.push({ points: [] });
+  sfmFrames[idx] = { points };
 }
 
 function trackWithIds(
@@ -282,6 +297,39 @@ self.onmessage = async (ev: MessageEvent<RotationTrackWorkerRequest>) => {
       return;
     }
 
+    if (msg.type === "solveSfm") {
+      const table = buildTrackTable(sfmFrames);
+      const result = solveSfm(table, {
+        width: msg.width,
+        height: msg.height,
+        focalPx: msg.focalPx,
+        optimizeFocal: msg.optimizeFocal,
+        seed: msg.seed,
+        onProgress: (stage, current, total) => {
+          const prog: RotationTrackWorkerResponse = { type: "solveProgress", stage, current, total };
+          self.postMessage(prog);
+        },
+      });
+      const res: RotationTrackWorkerResponse = {
+        type: "sfmSolved",
+        mode: result.mode,
+        frames: result.frames.map((f) => ({
+          solved: f.solved,
+          q: [f.q[0], f.q[1], f.q[2], f.q[3]],
+          c: [f.c[0], f.c[1], f.c[2]],
+          reprojErrPx: f.reprojErrPx,
+          numPoints: f.numPoints,
+        })),
+        focalPx: result.focalPx,
+        keyframeCount: result.keyframes.length,
+        pointCount: result.pointCount,
+        medianReprojErrPx: result.medianReprojErrPx,
+        message: result.message,
+      };
+      self.postMessage(res);
+      return;
+    }
+
     if (msg.type === "frame") {
       const t0 = performance.now();
       let rotation = null;
@@ -322,6 +370,12 @@ self.onmessage = async (ev: MessageEvent<RotationTrackWorkerRequest>) => {
           prevPtsList = seedFeatures(gray, msg.w, msg.h, mask);
           if (estimateMode === "walk") {
             prevTrackIds = mfVo.seedFrame0(prevPtsList);
+          } else if (estimateMode === "sfm") {
+            prevTrackIds = prevPtsList.map(() => sfmNextId++);
+            recordSfmFrame(
+              msg.idx,
+              prevPtsList.map((p, i) => ({ id: prevTrackIds[i]!, x: p.x, y: p.y })),
+            );
           } else {
             prevTrackIds = prevPtsList.map((_, i) => i + 1);
           }
@@ -343,7 +397,36 @@ self.onmessage = async (ev: MessageEvent<RotationTrackWorkerRequest>) => {
           return;
         }
 
-        if (estimateMode === "walk") {
+        if (estimateMode === "sfm") {
+          const { keptIds, keptCur } = trackWithIds(prevGray, gray, prevPtsList, prevTrackIds);
+          // 現在フレームの観測（マスク内のみ記録。マスク外に出た点も追跡は継続）
+          const obsPts: Array<{ id: number; x: number; y: number }> = [];
+          for (let i = 0; i < keptCur.length; i++) {
+            const p = keptCur[i]!;
+            if (filterPointsInRoiInterior([p], msg.w, msg.h, mask).length === 0) continue;
+            obsPts.push({ id: keptIds[i]!, x: p.x, y: p.y });
+          }
+          let nextList = keptCur;
+          const nextIds = [...keptIds];
+          framesSinceReset += 1;
+          if (shouldRediscover(framesSinceReset, nextList.length)) {
+            const merged = mergeRediscovered(gray, nextList, msg.w, msg.h, mask);
+            for (let i = nextList.length; i < merged.length; i++) {
+              const p = merged[i]!;
+              const id = sfmNextId++;
+              nextIds.push(id);
+              obsPts.push({ id, x: p.x, y: p.y });
+            }
+            nextList = merged;
+          }
+          recordSfmFrame(msg.idx, obsPts);
+          mapPoints = nextList.length;
+          inlierRatio = Math.min(1, keptCur.length / 40);
+          prevTrackIds = nextIds;
+          prevGray.delete();
+          prevGray = gray;
+          prevPtsList = nextList;
+        } else if (estimateMode === "walk") {
           const { pairs, keptIds, keptCur } = trackWithIds(
             prevGray,
             gray,

@@ -6,6 +6,18 @@
 
 ---
 
+### 2026-07-04（Cursor）— Motion Track 3D Solve（オフライン SfM）締め ✅
+
+- **背景**: Claude Code セッション「3D カメラトラッキング精度の向上」（`63074e58-…`）で Fable が SfM 本実装まで完了したが、session limit で progress / spec / 実機 verify / デバッグ残骸が未了。
+- **実装本体（前セッション）**: `src/editor/motionTrack/sfm/`（Core / Tracks / TwoView / PnP / BA / Solver / Convert）+ Worker `estimateMode:"sfm"` + `runSolveTrack` + `applySolveTrackToProject` + UI 既定 **3D Solve**。walk / rotation 経路は隔離。
+- **本セッション（未完了分のみ）**:
+  - **spec**: §16.1 に 3D Solve 散文 + §16 テーブル行（§5/INV 不変）。旧「AE 級は外部 import のみ」記述を更新。
+  - **verify**: `verify-motion-track.mjs` に `solvePan` / `solveYaw`（配線 E2E。平面クリップは rotationOnly 許容。AE 級精度は vitest）。あわせて `finalizeMotionTrackBake` が `{ positionsByFrame, … }` を返すようになった後の既存シナリオの Map 取り違えを修正。
+  - **掃除**: `test/_sfmDebug.test.ts` 削除。
+  - **progress**: 本エントリ。
+- **検証**: `motionTrackSfm` **14 PASS**。`verify-motion-track.mjs` **PASS**（既存 4 + solvePan/solveYaw。両 solve は平面/純回転のため `rotationOnly`）。
+- **次**: 実写フィードバック（Comp 系）で 3D Solve の有効率・再投影誤差を見る。POI 軌道 / COLMAP import は将来。
+
 ### 2026-07-04（Cursor）— Walk ゲート付きマルチフレーム（飛ばない設計）✅
 
 - **教訓反映**: 絶対 PnP 直書き禁止。pred=flowWalk 必須、PnP は向きのみ補正（scale=pred）、`acceptPnpRelative` + EMA、`composeRelativeStep` で内部 prevPose と整合。

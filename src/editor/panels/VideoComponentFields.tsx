@@ -8,6 +8,7 @@ import {
   applyCombinedTrackToProject,
   applyMotionTrackToProject,
   applyRotationTrackToProject,
+  applySolveTrackToProject,
   targetHasPositionExpression,
   targetHasRotationExpression,
 } from "../motionTrack/applyMotionTrack";
@@ -18,8 +19,10 @@ import {
   runCombinedMotionTrack,
   runMotionTrack,
   runRotationTrack,
+  runSolveTrack,
   runWalkTrack,
 } from "../motionTrack/quarTracker";
+import { solvedFocalToCameraZoom } from "../motionTrack/sfm/sfmConvert";
 import type { TrackMode } from "../motionTrack/types";
 import {
   TRACK_ROI_PRESET_LABELS,
@@ -81,8 +84,10 @@ export function VideoComponentFields({
   const assetId = typeof videoComp?.props["asset"] === "string" ? videoComp.props["asset"] : null;
 
   const [targetId, setTargetId] = useState<string>("");
-  const [trackMode, setTrackMode] = useState<TrackMode>("walk");
+  const [trackMode, setTrackMode] = useState<TrackMode>("solve");
   const [focalLength, setFocalLength] = useState(550);
+  const [solveFocal, setSolveFocal] = useState(true);
+  const [applySolvedZoom, setApplySolvedZoom] = useState(true);
   const [userScale, setUserScale] = useState(1);
   const [sampleInterval, setSampleInterval] = useState(1);
   /** 既定は全体。人混み時のみ「背景優先」を手動選択（Comp 27 で道路を消す事故を防ぐ） */
@@ -126,7 +131,10 @@ export function VideoComponentFields({
   }, [comp]);
 
   const usesRotationTargets =
-    trackMode === "rotation" || trackMode === "both" || trackMode === "walk";
+    trackMode === "rotation" ||
+    trackMode === "both" ||
+    trackMode === "walk" ||
+    trackMode === "solve";
 
   const activeTargets = usesRotationTargets
     ? rotationTargetOptions.filter((t) => t.eligible)
@@ -233,7 +241,7 @@ export function VideoComponentFields({
       if (!ok) return;
       clearRotationExpression = true;
     } else if (
-      (trackMode === "both" || trackMode === "walk") &&
+      (trackMode === "both" || trackMode === "walk" || trackMode === "solve") &&
       (hasPosExpr || hasRotExpr)
     ) {
       const props = [hasPosExpr ? "Position" : null, hasRotExpr ? "Rotation" : null]
@@ -257,7 +265,9 @@ export function VideoComponentFields({
           ? "トラッカーを読み込み中…（並進 + 回転）"
           : trackMode === "walk"
             ? "Walk トラッカーを読み込み中…（前進・揺れ・見回し）"
-            : "トラッカーを読み込み中…",
+            : trackMode === "solve"
+              ? "3D Solve を読み込み中…（一括カメラ解析）"
+              : "トラッカーを読み込み中…",
     );
     setProgress(null);
 
@@ -315,6 +325,95 @@ export function VideoComponentFields({
                 ? "。変位が小さいです。スケールを上げるか Walk モードを試してください"
                 : ""),
         );
+      } else if (trackMode === "solve") {
+        const posBaseline = sampleVec3(target.transform.position, 0);
+        const rotBaseline = sampleVec3(target.transform.rotation, 0);
+        const result = await runSolveTrack(
+          {
+            project,
+            comp,
+            videoLayer: obj,
+            assetId,
+            fs: getFs(),
+            options: {
+              userScale,
+              sampleInterval,
+              focalLength,
+              solveFocal,
+              mask,
+              autoScale: true,
+              autoScaleTargetPx: Math.max(80, comp.height * 0.15),
+            },
+            signal: ac.signal,
+            onProgress: (p) => {
+              const label =
+                p.phase === "loading"
+                  ? "3D Solve を読み込み中…"
+                  : p.phase === "extracting"
+                    ? "フレーム抽出"
+                    : p.phase === "tracking"
+                      ? "特徴トラッキング"
+                      : "カメラ解析（バンドル調整）";
+              setStatus(label);
+              setProgress({ current: p.current, total: p.total, phase: p.phase });
+            },
+          },
+          { position: posBaseline, rotation: rotBaseline },
+        );
+
+        const solveDiag = summarizeTrackValidity(result.validMask, 4);
+        if (solveDiag.validRatio < TRACK_VALIDITY_WARN_RATIO) {
+          const pct = Math.round(solveDiag.validRatio * 100);
+          const abort = window.confirm(
+            `3D Solve の有効フレームが ${pct}% しかありません（残りは補間）。\nベイクを中止しますか？\n（OK = 中止 / キャンセル = それでもベイク）`,
+          );
+          if (abort) {
+            setStatus(`中止 — 3D Solve 有効率が低いためベイクしませんでした（有効 ${pct}%）`);
+            return;
+          }
+        }
+
+        const targetIsCamera = target.components.some((c) => c.type === "camera");
+        const zoomPx =
+          targetIsCamera && applySolvedZoom && result.mode === "sfm"
+            ? solvedFocalToCameraZoom(result.focalPx, result.trackHeight, comp.height)
+            : undefined;
+
+        const { before, after } = applySolveTrackToProject(
+          project,
+          comp.id,
+          targetId,
+          {
+            baselinePosition: posBaseline,
+            positionsByFrame: result.positionsByFrame,
+            bakeStart: result.bakeStart,
+            bakeEnd: result.bakeEnd,
+            clearExpression: clearPositionExpression,
+          },
+          {
+            baselineRotation: rotBaseline,
+            rotationsByFrame: result.rotationsByFrame,
+            bakeStart: result.bakeStart,
+            bakeEnd: result.bakeEnd,
+            clearExpression: clearRotationExpression,
+          },
+          zoomPx,
+        );
+        applyCommand({ label: "Motion Track 3D Solve Bake", before, after });
+
+        if (result.mode === "rotationOnly") {
+          setStatus(
+            `完了 — 3D Solve ${result.compFrames.length}f（視差なし → 回転のみ推定。${result.message ?? ""}）`,
+          );
+        } else {
+          const errStr = Number.isFinite(result.medianReprojErrPx)
+            ? `・誤差 ${result.medianReprojErrPx.toFixed(2)}px`
+            : "";
+          const zoomStr = zoomPx ? `・zoom ${Math.round(zoomPx)}px 適用` : "";
+          setStatus(
+            `完了 — 3D Solve ${result.compFrames.length}f（有効 ${Math.round(solveDiag.validRatio * 100)}%・KF ${result.keyframeCount}・点 ${result.pointCount}${errStr}${zoomStr}）`,
+          );
+        }
       } else if (trackMode === "walk") {
         const posBaseline = sampleVec3(target.transform.position, 0);
         const rotBaseline = sampleVec3(target.transform.rotation, 0);
@@ -564,6 +663,8 @@ export function VideoComponentFields({
     applyCommand,
     trackMode,
     focalLength,
+    solveFocal,
+    applySolvedZoom,
     roiPreset,
     customRoi,
   ]);
@@ -584,13 +685,15 @@ export function VideoComponentFields({
       <div style={{ marginTop: 10, paddingTop: 8, borderTop: "1px solid #333" }}>
         <div style={{ fontSize: 11, color: "#8cf", marginBottom: 6 }}>Motion Track</div>
         <div style={{ fontSize: 10, color: "#888", marginBottom: 6 }}>
-          {trackMode === "position"
-            ? "並進（Position）のみ。auto-scale あり。"
-            : trackMode === "rotation"
-              ? "その場回転のみ（三脚パン向け）。歩き撮りには Walk を使う。"
-              : trackMode === "walk"
-                ? "Walk: 前進・揺れ・見回し。フロー予測＋地図PnP（連続性ゲートで飛ばない）。"
-                : "並進 + その場回転を独立にベイク。歩き撮りには Walk を推奨。"}
+          {trackMode === "solve"
+            ? "3D Solve: 全フレームを一括解析（バンドル調整）。焦点距離も自動推定。AE の 3D Camera Tracker 相当。"
+            : trackMode === "position"
+              ? "並進（Position）のみ。auto-scale あり。"
+              : trackMode === "rotation"
+                ? "その場回転のみ（三脚パン向け）。歩き撮りには 3D Solve を使う。"
+                : trackMode === "walk"
+                  ? "Walk: 前進・揺れ・見回し。フロー予測＋地図PnP（逐次推定・ドリフトあり）。"
+                  : "並進 + その場回転を独立にベイク。精度重視なら 3D Solve を推奨。"}
         </div>
 
         <label style={{ fontSize: 10, color: "#aaa", display: "block", marginBottom: 4 }}>
@@ -601,6 +704,7 @@ export function VideoComponentFields({
             style={selectStyle}
             disabled={running}
           >
+            <option value="solve">3D Solve（一括解析・推奨）</option>
             <option value="walk">Walk（前進・揺れ・見回し）</option>
             <option value="position">Position（並進）</option>
             <option value="rotation">Rotation（その場回転）</option>
@@ -664,9 +768,14 @@ export function VideoComponentFields({
                 )}
               </div>
             )}
-            {(trackMode === "rotation" || trackMode === "both" || trackMode === "walk") && (
+            {(trackMode === "rotation" ||
+              trackMode === "both" ||
+              trackMode === "walk" ||
+              trackMode === "solve") && (
               <div style={scrubRowStyle}>
-                <span style={{ flex: 1 }}>焦点距離（px）</span>
+                <span style={{ flex: 1 }}>
+                  焦点距離（px{trackMode === "solve" && solveFocal ? "・初期値" : ""}）
+                </span>
                 {scrubWrap(
                   <ScrubNumber
                     value={focalLength}
@@ -678,6 +787,28 @@ export function VideoComponentFields({
                   />,
                 )}
               </div>
+            )}
+            {trackMode === "solve" && (
+              <>
+                <label style={{ ...scrubRowStyle, cursor: "pointer" }}>
+                  <span style={{ flex: 1 }}>焦点距離を自動推定</span>
+                  <input
+                    type="checkbox"
+                    checked={solveFocal}
+                    onChange={(e) => setSolveFocal(e.target.checked)}
+                    disabled={running}
+                  />
+                </label>
+                <label style={{ ...scrubRowStyle, cursor: "pointer" }}>
+                  <span style={{ flex: 1 }}>推定 zoom をカメラに適用</span>
+                  <input
+                    type="checkbox"
+                    checked={applySolvedZoom}
+                    onChange={(e) => setApplySolvedZoom(e.target.checked)}
+                    disabled={running}
+                  />
+                </label>
+              </>
             )}
             <div style={scrubRowStyle}>
               <span style={{ flex: 1 }}>サンプリング間隔（フレーム）</span>
@@ -771,13 +902,15 @@ export function VideoComponentFields({
             disabled={running || !assetId || activeTargets.length === 0}
             style={{ ...btnStyle, fontSize: 10 }}
             title={
-              trackMode === "position"
-                ? "映像から並進を推定し、選択先の Position に KF ベイク"
-                : trackMode === "rotation"
-                  ? "その場回転を推定し、選択先の Rotation に KF ベイク"
-                  : trackMode === "walk"
-                    ? "前進・揺れ・見回しを R+t で推定し Position / Rotation に KF ベイク"
-                    : "並進とその場回転を独立に推定してベイク"
+              trackMode === "solve"
+                ? "全フレーム一括の SfM + バンドル調整でカメラを解析し Position / Rotation（+ zoom）をベイク"
+                : trackMode === "position"
+                  ? "映像から並進を推定し、選択先の Position に KF ベイク"
+                  : trackMode === "rotation"
+                    ? "その場回転を推定し、選択先の Rotation に KF ベイク"
+                    : trackMode === "walk"
+                      ? "前進・揺れ・見回しを R+t で推定し Position / Rotation に KF ベイク"
+                      : "並進とその場回転を独立に推定してベイク"
             }
           >
             Track Motion → Bake Keyframes
