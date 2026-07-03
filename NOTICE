@@ -1,0 +1,9 @@
+# Third-Party Notices
+
+## QUAR Engine
+
+- **Project**: [FunwayHQ/quar_engine](https://github.com/FunwayHQ/quar_engine)
+- **License**: MIT
+- **Copyright**: FunwayHQ
+- **Usage**: Video Motion Track (editor-only). Vendored build at `public/motion-track/pkg/`.
+- **PROVENANCE**: See `public/motion-track/PROVENANCE.md`

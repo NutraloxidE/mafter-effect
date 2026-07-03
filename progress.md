@@ -6,6 +6,28 @@
 
 ---
 
+### 2026-07-03（Claude Fable 5 指揮・Opus 4.8 スパイク・Cursor 委任実装）— Video Motion Track Phase 0+1a（並進のみ）✅
+
+- **計画**: `.cursor/plans/video_motion_tracking_99321e75.plan.md`（正本。ゲート判定・実装ファイル表・フェーズ分割まで更新済み）。ユーザーからの依頼「精査して完成された PLAN に」「実装は Fable がやらず delegate-to-cursor か Opus/Sonnet」「テストまでやって完成」を受けて実施。
+- **Phase 0 スパイク（Opus 4.8 サブエージェント、2 ラウンド）**:
+  - QUAR Engine（MIT・単眼 WASM VO）を gh-pages 配布 wasm（0.1.0 相当）でスパイク → 計画本命の `Tracker6DoFHandle`（6DoF pose）は **全構成で inert**（identity pose・parallax=0）。同じ wasm 内の `TrackerHandle`（並進のみ）は方向正解率 100%・29–68ms/frame。
+  - ユーザー承認の「段階方式」に従い rustup + wasm-pack 0.15.0 を導入（`stable-x86_64-pc-windows-gnu`・MSVC 不要）し、upstream `main` HEAD（`c3a04b1`）からソースビルドを実施 → **ソースビルドでも `Tracker6DoFHandle` は同じく inert**（ソース精査で 6DoF pose 段自体が実質未完成と判明。feature フラグ起因ではない）。
+  - **ゲート判定確定**: `TrackerHandle` 並進のみで合格（並進方向正解率 >80%・<500ms/frame の基準クリア）。Phase 1a は **position ベイクのみ**にスコープをピボット（rotation / POI / zoom は Phase 1b 送り）。
+  - 産物: `public/motion-track/pkg/`（ソースビルド版 vendored wasm）+ `pkg-pages-snapshot/`（旧版退避）+ `PROVENANCE.md`（取得・ビルド経緯）+ `probe-motion-spike-report.md`（実測値・座標規約）。
+- **spec**: `doc/mafter-effect-spec.md` §16 に 1 行追加 + **§16.1 新設**（Motion Track from footage — editor-only・並進のみ・INV 非関与の理由・制約を散文化）。§5/INV 変更なし。
+- **Phase 1a 実装（Cursor `--model auto`・worktree `cursor-motion-track-20260703`）**: `src/editor/motionTrack/{types,frameExtractor,coordConvert,smoothPoses,quarTracker,motionTrackWorker,applyMotionTrack}.ts` + `VideoComponentFields.tsx`（Inspector Video 折りたたみ内インライン、モーダル無し）+ `InspectorPanel.tsx` の `comp.type === "video"` 分岐配線 + `NOTICE`（QUAR MIT クレジット）。座標変換は実測済みの「+z シーン奥→Mafter -z のみ反転」。ベイクは単一 `applyCommand`（Undo 1 件）+ expression は確認の上クリア。
+  - 実装完了後のバックグラウンド出力が前セッション終了で途切れたため、Fable が worktree の実体を直接検証（typecheck / `npx vitest run` / diff 精査）してレビューを完了。
+- **検証（Fable 実施）**: `npx tsc --noEmit` クリーン。`npx vitest run` **686 PASS**（新規 `motionTrackApply.test.ts` 4件・`motionTrackCoordConvert.test.ts` 7件含む）。失敗 1 件（`playerBuildFreshness`）は **pre-existing**（別の未コミット runtime 変更由来と `git stash` で確認済み・motion track 由来ではない）。実機 Playwright（`verify-motion-track.mjs`、ffmpeg 生成の水平パン合成 mp4）を worktree・main 両方の dev server で実行し **両方 PASS**（frame0→15→30 で +x 単調増加、有効フレーム 20/60、コンソールエラー無し）。`src/runtime` / `public/player.js` は無変更（`npm run build:player` 不要）。
+- **Cursor worktree 後始末**: `git worktree remove` は実行したが、Windows 側でディレクトリがロックされ物理削除は未完了（git のメタデータからは除去済みで実害なし）。`C:\Users\resis\.cursor\worktrees\mafter-effect\cursor-motion-track-20260703` フォルダが残っていたら手動削除可。
+- **検証拡張（2026-07-03 続き・Fable 実施、ユーザー「続けて」指示を受けて）**: `verify-motion-track.mjs` を拡張し、当初の Null+水平パンだけだった実機検証に **Camera ターゲット**と**ドリー（前進）クリップ**を追加。
+  - **Camera ターゲット**: 実際に `addCamera()` して並進のみベイク → `resolve()` の worldTransform に正しく反映、かつ **two-node カメラの `pointOfInterest` がベイクで一切変更されないこと**を実機で確認（並進のみスコープの契約どおり）。
+  - **ドリークリップ**: ffmpeg `zoompan` で生成した「フラットな 1 枚のテクスチャをズーム」クリップは、実は **Essential matrix が退化する平面シーン**（計画書に既記載の既知制約そのもの）に該当し、z 変位が単調増加しなかった（f15=0.53 → f30=0.51）。これはコードのバグではなく検証クリップの限界と判断し、アサーションを「z 軸パイプラインが実際に非ゼロ値を書いていること」の弱い健全性チェックに是正（座標変換の符号自体は `motionTrackCoordConvert.test.ts` の単体テストで固定済みのため二重に守られている）。
+  - 3 シナリオ（nullPan / cameraPan / nullDolly）すべて PASS。`npx tsc --noEmit` クリーン・`npx vitest run` 686 PASS（回帰なし、pre-existing の `playerBuildFreshness` 失敗のみ）。
+- **未実装・既知の制約（次セッション）**:
+  - **回転・pointOfInterest・zoom 推定は未実装**（上流 6DoF 未成熟のため意図的にスコープ外。Phase 1b は上流修正 or OpenCV カスタムビルド待ち）。
+  - スケール係数 UI はあるが既定値の妥当性は未チューニング（実写クリップでの使用感は未確認・合成クリップのみで検証）。
+  - **真のドリー（奥行き視差あり）シーンでの z 推定精度は未検証**（ffmpeg だけでは視差ありの合成クリップを作りにくい。実写のドリーショットでの手動確認が望ましい）。
+
 ### 2026-07-02（Cursor / goal-cursor）— Optics Compensation live エフェクト ✅
 
 - **追加**: builtin `opticsCompensation`（AE Optics Compensation 相当・FOV + reverse + center + quality）。`feImage` PNG 放射ベクトル map → `feDisplacementMap`、`executionPath: "live"`。

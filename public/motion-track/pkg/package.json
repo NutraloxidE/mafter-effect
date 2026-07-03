@@ -1,0 +1,24 @@
+{
+  "name": "quar-engine",
+  "type": "module",
+  "collaborators": [
+    "QUAR Team"
+  ],
+  "description": "WebAR SLAM engine targeting 60FPS markerless 6DoF tracking in the browser",
+  "version": "0.1.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/FunwayHQ/quar_engine"
+  },
+  "files": [
+    "quar_engine_bg.wasm",
+    "quar_engine.js",
+    "quar_engine.d.ts"
+  ],
+  "main": "quar_engine.js",
+  "types": "quar_engine.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

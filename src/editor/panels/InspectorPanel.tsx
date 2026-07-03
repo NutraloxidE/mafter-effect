@@ -22,6 +22,7 @@ import { evictPreviewMediaAsset } from "../../runtime/imageAssetCache";
 import { groupEffectsForPicker } from "../effectCategories";
 import { BakerBadge } from "../bakerLabel";
 import { BackgroundControl } from "./BackgroundControl";
+import { VideoComponentFields } from "./VideoComponentFields";
 import {
   buildDefaultPresetProps,
   EXPRESSION_PRESET_LIST,
@@ -698,6 +699,17 @@ export function InspectorPanel() {
                   previewPatch={previewPatch}
                   onEditFocus={() => setPreviewQualityEditing(true)}
                   onEditBlur={() => setPreviewQualityEditing(false)}
+                />
+              ) : comp.type === "video" ? (
+                <VideoComponentFields
+                  obj={obj}
+                  compIdx={compIdx}
+                  frame={frame}
+                  updateObject={updateObject}
+                  previewPatch={previewPatch}
+                  onEditFocus={() => setPreviewQualityEditing(true)}
+                  onEditBlur={() => setPreviewQualityEditing(false)}
+                  componentFields={ComponentFields}
                 />
               ) : (
                 <ComponentFields

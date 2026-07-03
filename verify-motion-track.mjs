@@ -1,0 +1,227 @@
+// Phase 1a — Video Motion Track 実機検証。
+// ffmpeg 生成の水平パン合成 mp4 → import → runMotionTrack → resolve position 方向チェック。
+// Null ターゲット（並進 x/y）+ Camera ターゲット（同一 track を再適用）+ expression クリア経路を検証する。
+import { chromium } from "playwright";
+import { execSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+
+const PORT = process.env.VERIFY_PORT ?? "5173";
+const URL = `http://localhost:${PORT}/`;
+const DEBUG_DIR = path.join("for-debug-data");
+const CLIP_PATH = path.join(DEBUG_DIR, "motion-track-pan.mp4");
+const DOLLY_CLIP_PATH = path.join(DEBUG_DIR, "motion-track-dolly.mp4");
+const HEADED = process.env.HEADED === "1";
+
+function ensurePanClip() {
+  fs.mkdirSync(DEBUG_DIR, { recursive: true });
+  if (fs.existsSync(CLIP_PATH)) return;
+  const vf = "crop=640:480:x='min(n*3\\,640)':y=0";
+  const cmd = [
+    "ffmpeg", "-y",
+    "-f", "lavfi", "-i", "testsrc2=size=1280x480:rate=30:duration=2",
+    "-vf", vf,
+    "-c:v", "libx264", "-pix_fmt", "yuv420p",
+    CLIP_PATH,
+  ].join(" ");
+  console.log("[verify-motion-track] generating pan clip:", cmd);
+  execSync(cmd, { stdio: "inherit" });
+}
+
+function ensureDollyClip() {
+  fs.mkdirSync(DEBUG_DIR, { recursive: true });
+  if (fs.existsSync(DOLLY_CLIP_PATH)) return;
+  // 中心からのスケールアップ（zoompan）でドリー（前進）を模擬。
+  const vf = "scale=1280:960,zoompan=z='min(zoom+0.0015,1.3)':d=1:s=640x480:fps=30";
+  const cmd = [
+    "ffmpeg", "-y",
+    "-f", "lavfi", "-i", "testsrc2=size=1280x960:rate=30:duration=2",
+    "-vf", vf,
+    "-frames:v", "60",
+    "-c:v", "libx264", "-pix_fmt", "yuv420p",
+    DOLLY_CLIP_PATH,
+  ].join(" ");
+  console.log("[verify-motion-track] generating dolly clip:", cmd);
+  execSync(cmd, { stdio: "inherit" });
+}
+
+ensurePanClip();
+ensureDollyClip();
+const videoBytes = fs.readFileSync(CLIP_PATH);
+const dollyBytes = fs.readFileSync(DOLLY_CLIP_PATH);
+
+const browser = await chromium.launch({
+  headless: !HEADED,
+  args: ["--autoplay-policy=no-user-gesture-required"],
+});
+const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
+const errors = [];
+page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
+page.on("pageerror", (e) => errors.push(String(e)));
+
+await page.goto(URL, { waitUntil: "domcontentloaded", timeout: 60000 });
+await page.evaluate(() => indexedDB.deleteDatabase("mafter-effect-fs"));
+await page.reload({ waitUntil: "domcontentloaded", timeout: 60000 });
+
+const result = await page.evaluate(async ({ panBytes, panName, dollyBytes, dollyName }) => {
+  const storeMod = await import("/src/editor/store.ts");
+  const { runMotionTrack, finalizeMotionTrackBake } = await import("/src/editor/motionTrack/quarTracker.ts");
+  const { applyMotionTrackToProject } = await import("/src/editor/motionTrack/applyMotionTrack.ts");
+  const { sampleVec3 } = await import("/src/runtime/interpolate.ts");
+  const { resolve } = await import("/src/runtime/resolve.ts");
+
+  const S = () => storeMod.useEditorStore.getState();
+  for (let i = 0; i < 120 && !(S().project && S().currentCompId); i++) {
+    await new Promise((r) => setTimeout(r, 250));
+  }
+
+  async function trackAndBake({ bytes, name, targetKind, userScale }) {
+    await S().newProject();
+    const file = new File([new Uint8Array(bytes)], name, { type: "video/mp4" });
+    const assetId = await S().importVideoAsset(file);
+    if (!assetId) throw new Error("importVideoAsset failed");
+    const videoLayerId = S().addVideoLayer(assetId, "motion-track-src");
+    if (!videoLayerId) throw new Error("addVideoLayer failed");
+    const targetId =
+      targetKind === "camera" ? S().addCamera("motion-track-cam") : S().addNullLayer("motion-track-target");
+    if (!targetId) throw new Error(`add${targetKind} failed`);
+
+    await new Promise((r) => setTimeout(r, 2000));
+
+    const project = S().project;
+    const compId = S().currentCompId;
+    const comp = project.compositions.find((c) => c.id === compId);
+    if (!comp || comp.kind !== "timeline") throw new Error("timeline comp missing");
+    const videoLayer = comp.objects.find((o) => o.id === videoLayerId);
+    const target = comp.objects.find((o) => o.id === targetId);
+    if (!videoLayer || !target) throw new Error("layers missing");
+
+    const track = await runMotionTrack({
+      project,
+      comp,
+      videoLayer,
+      assetId,
+      fs: S().getFs(),
+      options: { userScale, sampleInterval: 1 },
+    });
+
+    const baseline = sampleVec3(target.transform.position, 0);
+    const positionsByFrame = finalizeMotionTrackBake(
+      track.compFrames,
+      track.track.smoothed,
+      track.validMask,
+      baseline,
+      userScale,
+    );
+
+    const { before, after } = applyMotionTrackToProject(project, comp.id, targetId, {
+      baselinePosition: baseline,
+      positionsByFrame,
+      bakeStart: track.bakeStart,
+      bakeEnd: track.bakeEnd,
+      clearExpression: false,
+    });
+    S().applyCommand({ label: "Motion Track Bake (verify)", before, after });
+
+    const bakedComp = S().project.compositions.find((c) => c.id === compId);
+    const bakedTarget = bakedComp.objects.find((o) => o.id === targetId);
+    // Camera 二段カメラは pointOfInterest を静的維持していること（並進のみベイクの契約）。
+    const poiUnchanged =
+      targetKind !== "camera" ||
+      (() => {
+        const camComp = bakedTarget.components.find((c) => c.type === "camera");
+        const before = target.components.find((c) => c.type === "camera").props.pointOfInterest;
+        const after = camComp.props.pointOfInterest;
+        return JSON.stringify(before) === JSON.stringify(after);
+      })();
+    const sample = (frame) => {
+      const scene = resolve(bakedComp, frame);
+      const o = scene.objects.find((x) => x.id === targetId);
+      if (!o) throw new Error(`${targetKind} not in scene`);
+      return { x: o.worldTransform[12], y: o.worldTransform[13], z: o.worldTransform[14] };
+    };
+
+    return {
+      frameCount: track.compFrames.length,
+      f0: sample(0),
+      fMid: sample(15),
+      fLate: sample(30),
+      validFrames: track.validMask.filter(Boolean).length,
+      poiUnchanged,
+    };
+  }
+
+  const nullPan = await trackAndBake({ bytes: panBytes, name: panName, targetKind: "null", userScale: 80 });
+  const cameraPan = await trackAndBake({ bytes: panBytes, name: panName, targetKind: "camera", userScale: 80 });
+  const nullDolly = await trackAndBake({ bytes: dollyBytes, name: dollyName, targetKind: "null", userScale: 500 });
+
+  return { nullPan, cameraPan, nullDolly };
+}, {
+  panBytes: [...videoBytes], panName: "motion-track-pan.mp4",
+  dollyBytes: [...dollyBytes], dollyName: "motion-track-dolly.mp4",
+});
+
+console.log("track result:", JSON.stringify(result, null, 2));
+
+let pass = true;
+function checkPan(label, r) {
+  const dxMid = r.fMid.x - r.f0.x;
+  const dxLate = r.fLate.x - r.f0.x;
+  if (r.frameCount < 10) {
+    console.error(`FAIL[${label}]: too few frames tracked (${r.frameCount})`);
+    pass = false;
+  }
+  if (r.validFrames < 20) {
+    console.error(`FAIL[${label}]: too few valid estimates (${r.validFrames})`);
+    pass = false;
+  }
+  if (dxMid < 0.15) {
+    console.error(`FAIL[${label}]: expected +x displacement at f15, got dx=${dxMid}`);
+    pass = false;
+  }
+  if (dxLate <= dxMid) {
+    console.error(`FAIL[${label}]: expected increasing +x (f30=${dxLate}, f15=${dxMid})`);
+    pass = false;
+  }
+  if (Math.abs(r.f0.y - r.fMid.y) > 80) {
+    console.error(`FAIL[${label}]: unexpected large Y drift`);
+    pass = false;
+  }
+}
+
+checkPan("nullPan", result.nullPan);
+checkPan("cameraPan", result.cameraPan);
+if (!result.cameraPan.poiUnchanged) {
+  console.error("FAIL[cameraPan]: pointOfInterest changed by a position-only bake");
+  pass = false;
+}
+
+// dolly: ffmpeg zoompan は平坦な 1 枚のテクスチャを拡大するだけ（実シーンの奥行き視差が無い）ため、
+// Essential matrix が退化する既知の平面シーンケース（計画書「既知の制約」参照）。単調な z 増加は
+// 期待できないので、ここでは「Z 軸パイプラインが実際に動いて非ゼロ値を書いている」ことのみを
+// 弱く確認する（座標変換の Z 反転自体は motionTrackCoordConvert.test.ts の単体テストで固定済み）。
+{
+  const r = result.nullDolly;
+  const dzMid = Math.abs(r.fMid.z - r.f0.z);
+  if (r.validFrames < 15) {
+    console.error(`FAIL[nullDolly]: too few valid estimates (${r.validFrames})`);
+    pass = false;
+  }
+  if (!Number.isFinite(dzMid)) {
+    console.error(`FAIL[nullDolly]: non-finite z displacement`);
+    pass = false;
+  }
+  if (dzMid < 0.05) {
+    console.error(`FAIL[nullDolly]: expected some z displacement at f15, got dz=${dzMid} (z-axis pipeline may not be wired)`);
+    pass = false;
+  }
+}
+
+if (errors.length > 0) {
+  console.error("console errors:", errors);
+  pass = false;
+}
+
+await browser.close();
+console.log(pass ? "PASS" : "FAIL");
+process.exit(pass ? 0 : 1);

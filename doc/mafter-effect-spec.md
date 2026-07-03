@@ -907,6 +907,28 @@ SSoT 違反を避けるため、scope と正準性を分離する:
 | Monetization / entitlement 層（feature-flag, account/app レベル, §29） | 将来（MVP 後・スキーマ/INV 非変更） |
 | watermark（raster 出力, §29.2） | 将来（MVP 後・依存: raster export=M3） |
 | tier ゲート（bundle=§11.7 / headless=M3.5 / native=§14, §29.3） | 将来（MVP 後・依存: §11.7 / M3.5 / §14） |
+| Motion Track from footage — 並進のみ（§16.1・editor-only WASM VO） | **実装中（2026-07 Phase 1a）** |
+| Motion Track 回転 / POI / zoom 推定・COLMAP/Blender カメラ import | 将来（§16.1 Phase 1b/2） |
+
+---
+
+### §16.1 Motion Track from footage（映像からのカメラ運動推定・editor-only）
+
+video レイヤーのフッテージから単眼 visual odometry（vendored WASM トラッカー: QUAR Engine `TrackerHandle`, MIT）で**カメラ並進方向**をフレームごとに推定し、同 comp 内の **Camera または Null** の `transform.position` に dense keyframe としてベイクするエディタ機能。
+
+**アーキテクチャ境界（INV 非関与の根拠）**:
+
+- 推定は **editor-only の非決定的解析**。結果は通常の `Keyframe` として `project.json` に保存され、以降の `resolve()`・preview・export は既存パスのまま（INV-1/INV-2 は「ベイク済み KF の再生」にしか関与しない）。
+- WASM は `public/motion-track/pkg/`（由来・sha256 は同ディレクトリ `PROVENANCE.md`）から**「Track Motion」実行時のみ** Web Worker 内に lazy load。メインバンドル・player.js・Web bundle export（§11.7）には一切同梱しない。
+- フレーム抽出はメインスレッド（hidden `<video>` + `videoSeekTargetSec` seek + canvas `getImageData`）。comp フレーム→ソース時刻は `sourceFrame = f - inPoint + trimStart` でマッピングし、レイヤー in/out とソースの交差範囲のみ解析。
+- ベイクは**単一 applyCommand**（Undo 1 件）。対象プロパティに expression がある場合は確認の上クリアし、クリアも同一 command に含める。
+
+**スコープと制約（正直な期待値）**:
+
+- **並進（position）のみ**。回転・pointOfInterest・zoom は推定しない（Phase 1b/2。単眼の回転/並進曖昧性と上流トラッカーの 6DoF pose 段が未成熟なため、2026-07-03 スパイク実測でスコープ確定）。
+- 単眼スケール不定: 推定量は方向のみ信頼可・大きさは非メトリック。UI のスケール係数（既定 1.0）でユーザー補正する（AE 3D Camera Tracker と同型の制約）。
+- カメラが動き背景が静止しているフッテージが前提。被写体のみが動く映像・強いモーションブラーでは破綻しうる。冒頭数フレーム（トラッカー warmup）は frame 0 の値をホールドする。
+- 「AE 3D Camera Tracker 級」の本格ソルブは Phase 2 の外部 import（COLMAP / Blender camera, §6.5 の ImporterDef 経路）で扱う。本機能は「手持ち参考値・ラフパス」の位置づけ。
 
 ---
 
