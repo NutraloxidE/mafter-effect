@@ -3,17 +3,9 @@
 import {
   bearingFromPixel,
   estimateRotationFromPairs,
-  quaternionConjugate,
   type BearingPair,
 } from "./rotationEstimator";
-import {
-  cameraMotionFromRelativePose,
-  estimateRelativePose,
-  medianFlowPx,
-  relativePoseToQuaternion,
-  type PixelPair,
-} from "./essentialPose";
-import { estimateWalkStepFromFlow } from "./flowWalk";
+import { MultiFrameVoState } from "./multiFrameVo";
 import {
   filterPointsInRoiInterior,
   filterTrackedPoints,
@@ -65,7 +57,9 @@ declare const cv: OpenCvModule;
 let cvReady: Promise<void> | null = null;
 let prevGray: CvMat | null = null;
 let prevPtsList: Point2[] = [];
+let prevTrackIds: number[] = [];
 let framesSinceReset = 0;
+let mfVo = new MultiFrameVoState();
 
 async function loadOpenCv(opencvUrl: string): Promise<void> {
   if (cvReady) return cvReady;
@@ -229,7 +223,44 @@ function disposeTrackingState(): void {
   prevGray?.delete();
   prevGray = null;
   prevPtsList = [];
+  prevTrackIds = [];
   framesSinceReset = 0;
+  mfVo = new MultiFrameVoState();
+}
+
+function trackWithIds(
+  prev: CvMat,
+  next: CvMat,
+  pts: Point2[],
+  ids: number[],
+): {
+  pairs: Array<{ id: number; x0: number; y0: number; x1: number; y1: number }>;
+  keptIds: number[];
+  keptCur: Point2[];
+} {
+  const { keptPrev, keptCur } = trackForwardBackward(prev, next, pts);
+  const pairs: Array<{ id: number; x0: number; y0: number; x1: number; y1: number }> = [];
+  const keptIds: number[] = [];
+  const used = new Set<number>();
+  for (let i = 0; i < keptPrev.length; i++) {
+    const p0 = keptPrev[i]!;
+    const p1 = keptCur[i]!;
+    let bestJ = -1;
+    let bestD = 1e9;
+    for (let j = 0; j < pts.length; j++) {
+      if (used.has(j)) continue;
+      const d = Math.hypot(pts[j]!.x - p0.x, pts[j]!.y - p0.y);
+      if (d < bestD) {
+        bestD = d;
+        bestJ = j;
+      }
+    }
+    if (bestJ < 0 || bestD > 1.5) continue;
+    used.add(bestJ);
+    pairs.push({ id: ids[bestJ]!, x0: p0.x, y0: p0.y, x1: p1.x, y1: p1.y });
+    keptIds.push(ids[bestJ]!);
+  }
+  return { pairs, keptIds, keptCur };
 }
 
 self.onmessage = async (ev: MessageEvent<RotationTrackWorkerRequest>) => {
@@ -258,6 +289,9 @@ self.onmessage = async (ev: MessageEvent<RotationTrackWorkerRequest>) => {
       let residual = Infinity;
       let translation = null as [number, number, number] | null;
       let medianFlow = 0;
+      let mapPoints = 0;
+      let pnpAccepted = false;
+      let reprojErrPx = Number.POSITIVE_INFINITY;
       let error: string | undefined;
       const estimateMode = msg.estimateMode ?? "rotation";
 
@@ -286,6 +320,11 @@ self.onmessage = async (ev: MessageEvent<RotationTrackWorkerRequest>) => {
           disposeTrackingState();
           prevGray = gray;
           prevPtsList = seedFeatures(gray, msg.w, msg.h, mask);
+          if (estimateMode === "walk") {
+            prevTrackIds = mfVo.seedFrame0(prevPtsList);
+          } else {
+            prevTrackIds = prevPtsList.map((_, i) => i + 1);
+          }
           framesSinceReset = 0;
           const res: RotationTrackWorkerResponse = {
             type: "rotation",
@@ -296,54 +335,59 @@ self.onmessage = async (ev: MessageEvent<RotationTrackWorkerRequest>) => {
             processMs: performance.now() - t0,
             translation: null,
             medianFlow: 0,
+            mapPoints: 0,
+            pnpAccepted: false,
+            reprojErrPx: Infinity,
           };
           self.postMessage(res);
           return;
         }
 
-        const { keptPrev, keptCur } = trackForwardBackward(prevGray, gray, prevPtsList);
-
         if (estimateMode === "walk") {
-          const pixelPairs: PixelPair[] = [];
-          const n = Math.min(keptPrev.length, keptCur.length);
-          for (let i = 0; i < n; i++) {
-            const p0 = keptPrev[i]!;
-            const p1 = keptCur[i]!;
-            if (!filterPointsInRoiInterior([p0], msg.w, msg.h, mask).length) continue;
-            if (!filterPointsInRoiInterior([p1], msg.w, msg.h, mask).length) continue;
-            pixelPairs.push({ x0: p0.x, y0: p0.y, x1: p1.x, y1: p1.y });
-          }
-          medianFlow = medianFlowPx(pixelPairs);
-          const pose = estimateRelativePose(
-            pixelPairs,
-            msg.focalLength,
-            msg.focalLength,
-            msg.w / 2,
-            msg.h / 2,
+          const { pairs, keptIds, keptCur } = trackWithIds(
+            prevGray,
+            gray,
+            prevPtsList,
+            prevTrackIds,
           );
-          // essential が十分信頼できるときだけ採用。否则 FOE/発散ベース（ドリーに強い）
-          if (pose && pose.inlierRatio >= 0.35 && pose.residual < 5e-4) {
-            // 相対ポーズの R は点変換規約。カメラ向きは逆回転。
-            rotation = quaternionConjugate(relativePoseToQuaternion(pose));
-            translation = cameraMotionFromRelativePose(pose);
-            inlierRatio = pose.inlierRatio;
-            residual = pose.residual;
-          } else {
-            const flowStep = estimateWalkStepFromFlow(
-              pixelPairs,
-              msg.w,
-              msg.h,
-              msg.focalLength,
-            );
-            if (flowStep) {
-              rotation = flowStep.rotation;
-              translation = flowStep.motion;
-              inlierRatio = Math.min(1, pixelPairs.length / 40);
-              residual = 0;
-              medianFlow = flowStep.scale;
-            }
+          const filteredPairs = pairs.filter((p) => {
+            const ok0 = filterPointsInRoiInterior([{ x: p.x0, y: p.y0 }], msg.w, msg.h, mask);
+            const ok1 = filterPointsInRoiInterior([{ x: p.x1, y: p.y1 }], msg.w, msg.h, mask);
+            return ok0.length > 0 && ok1.length > 0;
+          });
+
+          let nextList = keptCur;
+          const newPoints: Point2[] = [];
+          framesSinceReset += 1;
+          if (shouldRediscover(framesSinceReset, nextList.length)) {
+            const merged = mergeRediscovered(gray, nextList, msg.w, msg.h, mask);
+            for (let i = nextList.length; i < merged.length; i++) newPoints.push(merged[i]!);
+            nextList = merged;
           }
+
+          const step = mfVo.processFrame(
+            msg.idx,
+            filteredPairs,
+            newPoints,
+            msg.w,
+            msg.h,
+            msg.focalLength,
+          );
+          rotation = step.step.rotation;
+          translation = step.step.motion;
+          medianFlow = step.step.scale;
+          inlierRatio = Math.min(1, filteredPairs.length / 40);
+          residual = step.reprojErrPx;
+          mapPoints = step.mapPoints;
+          pnpAccepted = step.pnpAccepted;
+          reprojErrPx = step.reprojErrPx;
+          prevTrackIds = [...keptIds, ...step.newIds];
+
+          prevGray.delete();
+          prevGray = gray;
+          prevPtsList = nextList;
         } else {
+          const { keptPrev, keptCur } = trackForwardBackward(prevGray, gray, prevPtsList);
           const pairs = buildBearingPairs(keptPrev, keptCur, msg.w, msg.h, msg.focalLength, mask);
           if (pairs.length >= 4) {
             const est = estimateRotationFromPairs(pairs);
@@ -353,17 +397,17 @@ self.onmessage = async (ev: MessageEvent<RotationTrackWorkerRequest>) => {
               residual = est.residual;
             }
           }
-        }
 
-        let nextList = keptCur;
-        framesSinceReset += 1;
-        if (shouldRediscover(framesSinceReset, nextList.length)) {
-          nextList = mergeRediscovered(gray, nextList, msg.w, msg.h, mask);
-        }
+          let nextList = keptCur;
+          framesSinceReset += 1;
+          if (shouldRediscover(framesSinceReset, nextList.length)) {
+            nextList = mergeRediscovered(gray, nextList, msg.w, msg.h, mask);
+          }
 
-        prevGray.delete();
-        prevGray = gray;
-        prevPtsList = nextList;
+          prevGray.delete();
+          prevGray = gray;
+          prevPtsList = nextList;
+        }
       } catch (ex) {
         error = ex instanceof Error ? ex.message : String(ex);
       }
@@ -378,6 +422,9 @@ self.onmessage = async (ev: MessageEvent<RotationTrackWorkerRequest>) => {
         error,
         translation,
         medianFlow,
+        mapPoints,
+        pnpAccepted,
+        reprojErrPx,
       };
       self.postMessage(res);
       return;

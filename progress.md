@@ -6,6 +6,21 @@
 
 ---
 
+### 2026-07-04（Cursor）— Walk ゲート付きマルチフレーム（飛ばない設計）✅
+
+- **教訓反映**: 絶対 PnP 直書き禁止。pred=flowWalk 必須、PnP は向きのみ補正（scale=pred）、`acceptPnpRelative` + EMA、`composeRelativeStep` で内部 prevPose と整合。
+- **実装**: `poseGate.ts` / `multiFrameVo` 改修 / `solvePnPWithPrior` / worker Walk 再接続。status に map / PnP / err。
+- **検証**: poseGate・MF continuity（max jump ≤ 3×median）含む **84 PASS**。
+
+### 2026-07-04（Cursor）— Walk のマルチフレーム PnP を撤回（飛び回帰）✅
+
+- **症状**: PnP 切り替えでポーズが飛ぶ。ユーザー報告「前の方がマシ」。
+- **対応**: いったん flowWalk のみに戻したのち、ゲート付き設計で再実装（上エントリ）。
+
+### 2026-07-04（Cursor）— Motion Track マルチフレーム VO（OpenCV KLT + TS PnP）⚠️ 撤回
+
+- 実装したが実機でジャンプ。Walk は flowWalk に戻した。
+
 ### 2026-07-04（Cursor）— Motion Track Walk（2a auto-scale + 2b essential R+t）✅
 
 - **背景**: Comp 27 型（前進＋揺れ＋チルト）は分離 VO（QUAR 並進 / rotation-only）では原理的に弱い。

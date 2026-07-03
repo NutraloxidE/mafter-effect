@@ -178,6 +178,12 @@ export interface RotationTrackWorkerRotation {
   translation?: RawTranslation | null;
   /** walk モード: 対応点 median flow (px) */
   medianFlow?: number;
+  /** walk MF: 地図点数 */
+  mapPoints?: number;
+  /** walk MF: このフレームで PnP を採用したか */
+  pnpAccepted?: boolean;
+  /** walk MF: 地図点の median 再投影誤差 (px) */
+  reprojErrPx?: number;
 }
 
 export interface RotationTrackWorkerError {

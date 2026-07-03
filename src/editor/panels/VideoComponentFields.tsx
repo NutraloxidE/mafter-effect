@@ -380,8 +380,15 @@ export function VideoComponentFields({
           },
         );
         applyCommand({ label: "Motion Track Walk Bake", before, after });
+        const errStr = Number.isFinite(result.lastReprojErrPx)
+          ? `・err ${result.lastReprojErrPx.toFixed(1)}px`
+          : "";
+        const pnpStr =
+          result.pnpAcceptCount > 0
+            ? `・PnP ${result.pnpAcceptCount}f`
+            : "・PnP unused";
         setStatus(
-          `完了 — Walk ${result.compFrames.length} フレーム（有効 ${Math.round(walkDiag.validRatio * 100)}%・auto×${result.autoScale.toFixed(1)}・range ${result.range.toFixed(1)}px）`,
+          `完了 — Walk ${result.compFrames.length}f（有効 ${Math.round(walkDiag.validRatio * 100)}%・auto×${result.autoScale.toFixed(1)}・range ${result.range.toFixed(1)}px・map ${result.maxMapPoints}${pnpStr}${errStr}）`,
         );
       } else if (trackMode === "rotation") {
         const result = await runRotationTrack({
@@ -582,7 +589,7 @@ export function VideoComponentFields({
             : trackMode === "rotation"
               ? "その場回転のみ（三脚パン向け）。歩き撮りには Walk を使う。"
               : trackMode === "walk"
-                ? "Walk: 前進・揺れ・見回し（R+t 同時推定）。Comp 27 型向け。"
+                ? "Walk: 前進・揺れ・見回し。フロー予測＋地図PnP（連続性ゲートで飛ばない）。"
                 : "並進 + その場回転を独立にベイク。歩き撮りには Walk を推奨。"}
         </div>
 

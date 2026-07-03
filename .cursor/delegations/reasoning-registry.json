@@ -67,6 +67,24 @@
       "handoffPath": "C:/Workspace/mafter-effect/.cursor/delegations/handoffs/RG-20260704-02.md",
       "parentActions": [],
       "notes": []
+    },
+    {
+      "id": "RG-20260704-03",
+      "kind": "reasoning",
+      "status": "closed",
+      "createdAt": "2026-07-03T22:03:22.711Z",
+      "updatedAt": "2026-07-03T22:10:05.125Z",
+      "task": "Browser multi-frame VO with OpenCV WASM for AE-like accuracy",
+      "model": "claude-fable-5-thinking-high",
+      "claudeModel": "fable",
+      "readonly": true,
+      "specRef": "§16.1",
+      "sessionId": null,
+      "agentId": null,
+      "chatId": null,
+      "handoffPath": "C:/Workspace/mafter-effect/.cursor/delegations/handoffs/RG-20260704-03.md",
+      "parentActions": [],
+      "notes": []
     }
   ]
 }

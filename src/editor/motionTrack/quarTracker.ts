@@ -358,6 +358,9 @@ export class RotationMotionTracker {
     processMs: number;
     translation: RawTranslation | null;
     medianFlow: number;
+    mapPoints: number;
+    pnpAccepted: boolean;
+    reprojErrPx: number;
   }> {
     if (!this.ready || !this.worker) throw new Error("rotation tracker not ready");
     const w = this.worker;
@@ -378,6 +381,9 @@ export class RotationMotionTracker {
               processMs: m.processMs,
               translation: m.translation ?? null,
               medianFlow: m.medianFlow ?? 0,
+              mapPoints: m.mapPoints ?? 0,
+              pnpAccepted: m.pnpAccepted === true,
+              reprojErrPx: m.reprojErrPx ?? Infinity,
             });
         } else if (m.type === "error") {
           window.clearTimeout(timeout);
@@ -718,6 +724,9 @@ export interface RunWalkTrackResult {
   autoScale: number;
   range: number;
   meanMedianFlow: number;
+  pnpAcceptCount: number;
+  maxMapPoints: number;
+  lastReprojErrPx: number;
 }
 
 /** Walk: essential R+t 蓄積で前進・揺れ・チルトを同時ベイク。 */
@@ -767,6 +776,9 @@ export async function runWalkTrack(
     const relatives: Array<WalkRelative | null> = [];
     let flowSum = 0;
     let flowCount = 0;
+    let pnpAcceptCount = 0;
+    let maxMapPoints = 0;
+    let lastReprojErrPx = Infinity;
 
     onProgress?.({ phase: "tracking", current: 0, total: extracted.length });
     for (let i = 0; i < extracted.length; i++) {
@@ -782,19 +794,17 @@ export async function runWalkTrack(
         resolveTrackMask(options.mask, options.roi),
         "walk",
       );
+      maxMapPoints = Math.max(maxMapPoints, res.mapPoints);
+      if (Number.isFinite(res.reprojErrPx)) lastReprojErrPx = res.reprojErrPx;
+      if (res.pnpAccepted) pnpAcceptCount++;
       if (i === 0) {
         relatives.push(null);
-      } else if (
-        res.rotation &&
-        res.translation &&
-        res.inlierRatio >= MIN_INLIER_RATIO &&
-        Number.isFinite(res.residual)
-      ) {
-        const scale = Math.max(0.5, res.medianFlow);
+      } else if (res.rotation && res.translation) {
+        // MF VO は連続性ゲート済みの相対ステップを返す（scale は pred 由来）
         relatives.push({
           rotation: res.rotation,
           motion: res.translation,
-          scale,
+          scale: Math.max(0.5, res.medianFlow),
         });
         flowSum += res.medianFlow;
         flowCount++;
@@ -836,6 +846,9 @@ export async function runWalkTrack(
       autoScale: scaled.autoScale,
       range: vec3Range(scaled.positions),
       meanMedianFlow: flowCount > 0 ? flowSum / flowCount : 0,
+      pnpAcceptCount,
+      maxMapPoints,
+      lastReprojErrPx,
     };
   } finally {
     tracker.dispose();
