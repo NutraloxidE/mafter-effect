@@ -19,6 +19,14 @@ import {
   runRotationTrack,
 } from "../motionTrack/quarTracker";
 import type { TrackMode } from "../motionTrack/types";
+import {
+  TRACK_ROI_PRESET_LABELS,
+  TRACK_ROI_PRESETS,
+  normalizeTrackRoi,
+  presetToRoi,
+  type TrackRoi,
+  type TrackRoiPresetId,
+} from "../motionTrack/trackRoi";
 
 // InspectorPanel の ComponentFields を再利用するための props 型。
 type ComponentFieldsProps = {
@@ -70,6 +78,8 @@ export function VideoComponentFields({
   const [focalLength, setFocalLength] = useState(550);
   const [userScale, setUserScale] = useState(1);
   const [sampleInterval, setSampleInterval] = useState(1);
+  const [roiPreset, setRoiPreset] = useState<TrackRoiPresetId>("full");
+  const [customRoi, setCustomRoi] = useState<TrackRoi>({ x: 0.25, y: 0.25, w: 0.5, h: 0.5 });
   const [status, setStatus] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<{ current: number; total: number; phase: string } | null>(null);
@@ -222,6 +232,8 @@ export function VideoComponentFields({
     );
     setProgress(null);
 
+    const roi = presetToRoi(roiPreset, customRoi);
+
     try {
       if (trackMode === "position") {
         const result = await runMotionTrack({
@@ -230,7 +242,7 @@ export function VideoComponentFields({
           videoLayer: obj,
           assetId,
           fs: getFs(),
-          options: { userScale, sampleInterval },
+          options: { userScale, sampleInterval, roi },
           signal: ac.signal,
           onProgress: (p) => {
             const label =
@@ -270,7 +282,7 @@ export function VideoComponentFields({
           videoLayer: obj,
           assetId,
           fs: getFs(),
-          options: { userScale, sampleInterval, focalLength },
+          options: { userScale, sampleInterval, focalLength, roi },
           signal: ac.signal,
           onProgress: (p) => {
             const label =
@@ -309,7 +321,7 @@ export function VideoComponentFields({
           videoLayer: obj,
           assetId,
           fs: getFs(),
-          options: { userScale, sampleInterval, focalLength },
+          options: { userScale, sampleInterval, focalLength, roi },
           signal: ac.signal,
           onProgress: (p) => {
             const label =
@@ -387,6 +399,8 @@ export function VideoComponentFields({
     applyCommand,
     trackMode,
     focalLength,
+    roiPreset,
+    customRoi,
   ]);
 
   return (
@@ -511,6 +525,65 @@ export function VideoComponentFields({
                 />,
               )}
             </div>
+            <label style={{ fontSize: 10, color: "#aaa", display: "block" }}>
+              追跡範囲（ROI）
+              <select
+                value={roiPreset}
+                onChange={(e) => {
+                  const next = e.target.value as TrackRoiPresetId;
+                  setRoiPreset(next);
+                  if (next !== "custom" && next in TRACK_ROI_PRESETS) {
+                    setCustomRoi({ ...TRACK_ROI_PRESETS[next as Exclude<TrackRoiPresetId, "custom">] });
+                  }
+                }}
+                style={selectStyle}
+                disabled={running}
+              >
+                {(Object.keys(TRACK_ROI_PRESET_LABELS) as TrackRoiPresetId[]).map((id) => (
+                  <option key={id} value={id}>
+                    {TRACK_ROI_PRESET_LABELS[id]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div style={{ fontSize: 9, color: "#666", marginTop: -2 }}>
+              人が多いときは背景だけを囲むと安定しやすい
+              {(trackMode === "rotation" || trackMode === "both") &&
+                "。回転モードは中央付近の ROI が安定"}
+            </div>
+            {roiPreset === "custom" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                {(
+                  [
+                    ["X %", "x"],
+                    ["Y %", "y"],
+                    ["W %", "w"],
+                    ["H %", "h"],
+                  ] as const
+                ).map(([label, key]) => (
+                  <div key={key} style={scrubRowStyle}>
+                    <span style={{ flex: 1 }}>{label}</span>
+                    {scrubWrap(
+                      <ScrubNumber
+                        value={Math.round(customRoi[key] * 100)}
+                        onCommit={(v) => {
+                          const frac = Math.max(0, Math.min(100, v)) / 100;
+                          setCustomRoi((prev) =>
+                            normalizeTrackRoi({ ...prev, [key]: frac }),
+                          );
+                        }}
+                        min={key === "w" || key === "h" ? 10 : 0}
+                        max={100}
+                        decimals={0}
+                        step={1}
+                        speed={1}
+                        style={scrubInputStyle}
+                      />,
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 

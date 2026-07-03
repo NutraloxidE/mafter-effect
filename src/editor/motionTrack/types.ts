@@ -1,4 +1,7 @@
 import type { Frame, Vec3 } from "../../core/schema";
+import type { TrackRoi } from "./trackRoi";
+
+export type { TrackRoi } from "./trackRoi";
 
 export type TrackMode = "position" | "rotation" | "both";
 
@@ -21,6 +24,8 @@ export interface TrackOptions {
   userScale: number;
   sampleInterval: number;
   targetWidth?: number;
+  /** 追跡範囲（正規化矩形）。未指定 = 全体。ROI 外は mask（黒塗り）で除外。 */
+  roi?: TrackRoi;
 }
 
 export interface TrackProgress {

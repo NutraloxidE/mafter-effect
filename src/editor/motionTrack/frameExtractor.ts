@@ -2,6 +2,7 @@ import type { Frame, Project, SceneObject } from "../../core/schema";
 import type { FileSystem } from "../../fs/FileSystem";
 import { videoSeekTargetSec, waitForVideoFrame } from "../../runtime/videoElementSync";
 import { ImageAssetCache } from "../../runtime/imageAssetCache";
+import { applyRoiMask, type TrackRoi } from "./trackRoi";
 
 export const MOTION_TRACK_TARGET_WIDTH = 640;
 
@@ -19,6 +20,8 @@ export interface FrameExtractOptions {
   trimStart: Frame;
   compFrames: Frame[];
   targetWidth?: number;
+  /** 追跡範囲。ダウンサンプル後に ROI 外を黒塗り（画像サイズ不変）。 */
+  roi?: TrackRoi;
   onProgress?: (current: number, total: number) => void;
   signal?: AbortSignal;
 }
@@ -63,11 +66,13 @@ function downsampleDimensions(srcW: number, srcH: number, targetWidth: number): 
 
 /**
  * hidden video + seek + canvas → ImageData（640 幅目安へダウンサンプル）。
+ * ROI 指定時はダウンサンプル後に矩形外を黒塗り（mask）。画像サイズは変えない。
  */
 export async function extractFramesForMotionTrack(
   opts: FrameExtractOptions,
 ): Promise<ExtractedFrame[]> {
   const targetWidth = opts.targetWidth ?? MOTION_TRACK_TARGET_WIDTH;
+  const roi = opts.roi;
   const video = document.createElement("video");
   video.muted = true;
   video.playsInline = true;
@@ -123,11 +128,12 @@ export async function extractFramesForMotionTrack(
       await waitForVideoFrame(video, seekSec);
       ctx.drawImage(video, 0, 0, w, h);
       const imageData = ctx.getImageData(0, 0, w, h);
+      const rgba = applyRoiMask(new Uint8ClampedArray(imageData.data), w, h, roi);
       out.push({
         compFrame,
         width: w,
         height: h,
-        rgba: new Uint8ClampedArray(imageData.data),
+        rgba,
       });
       opts.onProgress?.(i + 1, total);
     }

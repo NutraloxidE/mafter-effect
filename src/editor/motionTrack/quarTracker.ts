@@ -201,6 +201,7 @@ export async function runMotionTrack(input: RunMotionTrackInput): Promise<RunMot
       trimStart,
       compFrames,
       targetWidth: options.targetWidth,
+      roi: options.roi,
       signal,
       onProgress: (current, total) => onProgress?.({ phase: "extracting", current, total }),
     });
@@ -450,6 +451,7 @@ export async function runRotationTrack(input: RunRotationTrackInput): Promise<Ru
       trimStart,
       compFrames,
       targetWidth: options.targetWidth,
+      roi: options.roi,
       signal,
       onProgress: (current, total) => onProgress?.({ phase: "extracting", current, total }),
     });
@@ -566,6 +568,7 @@ export async function runCombinedMotionTrack(
       trimStart,
       compFrames,
       targetWidth: options.targetWidth,
+      roi: options.roi,
       signal,
       onProgress: (current, total) => onProgress?.({ phase: "extracting", current, total }),
     });
