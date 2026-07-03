@@ -44,6 +44,7 @@ import { precompChildToParentFrame } from "../../cache/precompFrameKey";
 import { feedbackCollector } from "../feedbackCollector";
 import { loadWorkArea } from "../workAreaStorage";
 import { isValidParent, listParentCandidates } from "../parentLink";
+import { isLayerLocked, unlockedVisibilityPatches } from "../layerLock";
 import { buildReparentPatch } from "../reparent";
 import { loadAudioBuffer, peekAudioBuffer } from "../audioBufferCache";
 import { computePeaksForFrameRange, type WaveformMode } from "../../audio/waveform";
@@ -569,6 +570,8 @@ export function TimelinePanel() {
   // P1-6: Shift/Ctrl クリックで複数レイヤー選択。
   const handleLayerSelect = (id: string, e: React.MouseEvent) => {
     if (dragMovedRef.current) return;
+    const target = objects.find((o) => o.id === id);
+    const locked = target ? isLayerLocked(target) : false;
     if (e.shiftKey && lastSelectedIdRef.current) {
       const ids = objects.map((o) => o.id);
       const lastIdx = ids.indexOf(lastSelectedIdRef.current);
@@ -576,18 +579,37 @@ export function TimelinePanel() {
       if (lastIdx >= 0 && thisIdx >= 0) {
         const lo = Math.min(lastIdx, thisIdx);
         const hi = Math.max(lastIdx, thisIdx);
-        const range = ids.slice(lo, hi + 1);
+        const range = ids.slice(lo, hi + 1).filter((rid) => {
+          if (selectedIds.includes(rid)) return true;
+          const o = objects.find((x) => x.id === rid);
+          return !o || !isLayerLocked(o);
+        });
         selectObjects([...new Set([...selectedIds, ...range])]);
         return;
       }
     }
     if (e.ctrlKey || e.metaKey) {
       if (selectedIds.includes(id)) selectObjects(selectedIds.filter((s) => s !== id));
-      else { selectObjects([...selectedIds, id]); lastSelectedIdRef.current = id; }
+      else {
+        if (locked) return;
+        selectObjects([...selectedIds, id]);
+        lastSelectedIdRef.current = id;
+      }
       return;
     }
+    if (locked && !selectedIds.includes(id)) return;
     selectObjects([id]);
     lastSelectedIdRef.current = id;
+  };
+
+  const handleToggleLayersLock = (clickedId: string, targetIds: string[]) => {
+    const clicked = objects.find((o) => o.id === clickedId);
+    if (!clicked) return;
+    const nextLocked = !isLayerLocked(clicked);
+    updateObjects(
+      targetIds.map((tid) => ({ id: tid, patch: { locked: nextLocked ? true : undefined } })),
+      nextLocked ? "Lock layers" : "Unlock layers",
+    );
   };
 
   // P1-5: レイヤードラッグ並べ替え。objects は zOrder 降順表示なので、
@@ -602,7 +624,7 @@ export function TimelinePanel() {
     }
     const reordered = [...objects];
     const dragged = reordered.splice(drag.dragIdx, 1)[0];
-    if (!dragged) {
+    if (!dragged || isLayerLocked(dragged)) {
       layerDragRef.current = null;
       layerDragIdRef.current = null;
       setLayerDrag(null);
@@ -628,7 +650,7 @@ export function TimelinePanel() {
     e.stopPropagation();
     const ids = selectedIds.includes(grabbedId) && selectedIds.length > 1 ? [...selectedIds] : [grabbedId];
     const idSet = new Set(ids);
-    const moving = objects.filter((o) => idSet.has(o.id));
+    const moving = objects.filter((o) => idSet.has(o.id) && !isLayerLocked(o));
     if (moving.length === 0) return;
     const grabbed = moving.find((o) => o.id === grabbedId) ?? moving[0]!;
     const repEdge = mode === "out" ? grabbed.outPoint : grabbed.inPoint;
@@ -1204,6 +1226,7 @@ export function TimelinePanel() {
             labelTargetIds={selectedIds.includes(obj.id) && selectedIds.length > 1 ? selectedIds : [obj.id]}
             onSetLabelIndex={setLayerLabelIndex}
             onSetParent={handleSetParent}
+            onToggleLayersLock={handleToggleLayersLock}
             allObjects={objects}
             activeCameraId={autoActiveCameraId}
             onPreviewPatch={(id, patch) => setPreviewOverride({ objectId: id, patch })}
@@ -1214,6 +1237,7 @@ export function TimelinePanel() {
             fps={fps}
             getFs={getFs}
             onLayerDragStart={() => {
+              if (isLayerLocked(obj)) return;
               layerDragIdRef.current = obj.id;
               layerDragRef.current = { dragIdx: i, dropIdx: i };
               setLayerDrag(layerDragRef.current);
@@ -1790,6 +1814,7 @@ interface LayerRowProps {
   onRename: (name: string) => void;
   labelTargetIds: string[];
   onSetLabelIndex: (ids: string[], index: LabelIndex | undefined) => void;
+  onToggleLayersLock: (clickedId: string, targetIds: string[]) => void;
   onSetParent: (sourceObjId: string, newParentId: string | null) => void;
   allObjects: SceneObject[];
   activeCameraId: string | null;
@@ -1940,10 +1965,12 @@ function ParentSelect({
   obj,
   candidates,
   onChange,
+  disabled = false,
 }: {
   obj: SceneObject;
   candidates: SceneObject[];
   onChange: (parentId: string | null) => void;
+  disabled?: boolean;
 }) {
   const currentName = obj.parent
     ? candidates.find((c) => c.id === obj.parent)?.name ?? obj.parent.slice(0, 6)
@@ -1951,6 +1978,7 @@ function ParentSelect({
   return (
     <select
       value={obj.parent ?? ""}
+      disabled={disabled}
       title={`Parent: ${currentName}`}
       onClick={(e) => e.stopPropagation()}
       onMouseDown={(e) => e.stopPropagation()}
@@ -1981,25 +2009,28 @@ function ParentSelect({
 }
 
 function LayerRow(props: LayerRowProps) {
-  const { obj, index, frame, selected, expandMode, selectedKfs, kfDrag, isDropTarget, barDrag, graphMode, viewRange, cachedLocalFrames, cachedPrecompFrames, sourceExtent, audio, waveformMode, fps, getFs, onSetProp, beginKfDrag, beginLayerBarDrag, onKfRightClick, onToggleExpand, onSelectLayer, onRemove, onUpdate, onRename, labelTargetIds, onSetLabelIndex, onSetParent, allObjects, activeCameraId, onPreviewPatch, frameToPercent, onLayerDragStart, onLayerDragOver, onLayerDrop, onLayerDragEnd } = props;
+  const { obj, index, frame, selected, expandMode, selectedKfs, kfDrag, isDropTarget, barDrag, graphMode, viewRange, cachedLocalFrames, cachedPrecompFrames, sourceExtent, audio, waveformMode, fps, getFs, onSetProp, beginKfDrag, beginLayerBarDrag, onKfRightClick, onToggleExpand, onSelectLayer, onRemove, onUpdate, onRename, labelTargetIds, onSetLabelIndex, onToggleLayersLock, onSetParent, allObjects, activeCameraId, onPreviewPatch, frameToPercent, onLayerDragStart, onLayerDragOver, onLayerDrop, onLayerDragEnd } = props;
   const [renaming, setRenaming] = useState(false);
+  const locked = isLayerLocked(obj);
 
   // レイヤー行の右クリックメニュー（汎用基盤の実例）。既存ストアアクションを再利用する。
   const openContextMenu = useContextMenuStore((s) => s.openContextMenu);
   const selectObjects = useEditorStore((s) => s.selectObjects);
   const selectedObjectIds = useEditorStore((s) => s.selectedObjectIds);
+  const updateObjects = useEditorStore((s) => s.updateObjects);
   const duplicateSelected = useEditorStore((s) => s.duplicateSelected);
   const splitSelected = useEditorStore((s) => s.splitSelected);
   const removeObjects = useEditorStore((s) => s.removeObjects);
 
   const handleRowContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
-    // 未選択行を右クリックしたら先に単独選択（AE 挙動）。複数選択中はその集合を維持。
-    if (!selected) selectObjects([obj.id]);
+    // 未選択行を右クリックしたら先に単独選択（AE 挙動）。ロック中は選択しない。
+    if (!selected && !locked) selectObjects([obj.id]);
+    if (!selected && locked) return;
     const targetIds = selected && selectedObjectIds.length > 0 ? selectedObjectIds : [obj.id];
     const multi = targetIds.length > 1;
     const items: ContextMenuItem[] = [
-      { kind: "action", label: "名前を変更", disabled: multi, onSelect: () => setRenaming(true) },
+      { kind: "action", label: "名前を変更", disabled: multi || locked, onSelect: () => setRenaming(true) },
       { kind: "action", label: multi ? `複製 (${targetIds.length})` : "複製", shortcut: "Ctrl+D", onSelect: () => duplicateSelected() },
       { kind: "action", label: "レイヤーを分割", shortcut: "Ctrl+Shift+D", onSelect: () => splitSelected() },
       { kind: "separator" },
@@ -2028,6 +2059,37 @@ function LayerRow(props: LayerRowProps) {
 
   const rowBg = labelRowTint(obj.labelIndex, selected) ?? (selected ? "#2a3a4a" : "transparent");
   const barFill = timelineBarFill(obj.labelIndex, selected);
+  const visibilityTitle = locked
+    ? (obj.enabled
+      ? "表示中（ロック）— クリック: 非表示 / Shift+クリック: ロック解除 / 右クリック: 一括表示"
+      : "非表示（ロック）— クリック: 表示 / Shift+クリック: ロック解除 / 右クリック: 一括表示")
+    : (obj.enabled
+      ? "表示中 — クリック: 非表示 / Shift+クリック: ロック / 右クリック: 一括表示"
+      : "非表示 — クリック: 表示 / Shift+クリック: ロック / 右クリック: 一括表示");
+
+  const handleVisibilityContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const items: ContextMenuItem[] = [
+      {
+        kind: "action",
+        label: "すべて表示",
+        onSelect: () => {
+          const patches = unlockedVisibilityPatches(allObjects, true);
+          if (patches.length > 0) updateObjects(patches, "Show all unlocked layers");
+        },
+      },
+      {
+        kind: "action",
+        label: "すべて非表示",
+        onSelect: () => {
+          const patches = unlockedVisibilityPatches(allObjects, false);
+          if (patches.length > 0) updateObjects(patches, "Hide all unlocked layers");
+        },
+      },
+    ];
+    openContextMenu(e.clientX, e.clientY, items);
+  };
 
   const commitRename = (raw: string) => {
     setRenaming(false);
@@ -2050,7 +2112,7 @@ function LayerRow(props: LayerRowProps) {
       }}
     >
       {/* layer header row */}
-      <div style={{ display: "flex", alignItems: "stretch", background: rowBg }} onContextMenu={handleRowContextMenu}>
+      <div style={{ display: "flex", alignItems: "stretch", background: rowBg, filter: locked ? "saturate(0.75)" : undefined }} onContextMenu={handleRowContextMenu}>
         {/* label column（幅は LABEL_W 固定。左端ストリップ = ラベル色） */}
         <div
           style={{ width: LABEL_W, boxSizing: "border-box", flexShrink: 0, display: "flex", alignItems: "stretch", borderRight: "1px solid #2a2a2a" }}
@@ -2065,8 +2127,9 @@ function LayerRow(props: LayerRowProps) {
           >
           {/* P1-5: ドラッグハンドル */}
           <span
-            draggable
+            draggable={!locked}
             onDragStart={(e) => {
+              if (locked) { e.preventDefault(); return; }
               e.dataTransfer.setData("text/x-layer-drag", obj.id);
               e.dataTransfer.setData("text/plain", obj.id);
               e.dataTransfer.effectAllowed = "move";
@@ -2074,30 +2137,42 @@ function LayerRow(props: LayerRowProps) {
             }}
             onDragEnd={onLayerDragEnd}
             onClick={(e) => e.stopPropagation()}
-            style={{ color: "#555", cursor: "grab", fontSize: 10, flexShrink: 0, lineHeight: 1 }}
-            title="ドラッグでレイヤー順を変更"
+            style={{ color: locked ? "#444" : "#555", cursor: locked ? "not-allowed" : "grab", fontSize: 10, flexShrink: 0, lineHeight: 1 }}
+            title={locked ? "ロック中 — 並べ替え不可" : "ドラッグでレイヤー順を変更"}
           >⋮⋮</span>
           <button onClick={(e) => { e.stopPropagation(); onToggleExpand(); }} style={caretStyle} title="プロパティを展開（U=KF / UU=変更済み）">
             {expandMode ? "▾" : "▸"}
           </button>
           <span style={{ color: "#666", width: 16, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{index}</span>
           <button
-            onClick={(e) => { e.stopPropagation(); onUpdate(obj.id, { enabled: !obj.enabled }, "Toggle visibility"); }}
-            style={{ ...iconBtn, opacity: obj.enabled ? 1 : 0.35 }}
-            title="表示/非表示"
+            onClick={(e) => {
+              e.stopPropagation();
+              if (e.shiftKey) {
+                onToggleLayersLock(obj.id, labelTargetIds);
+              } else {
+                onUpdate(obj.id, { enabled: !obj.enabled }, "Toggle visibility");
+              }
+            }}
+            onContextMenu={handleVisibilityContextMenu}
+            style={{ ...iconBtn, opacity: obj.enabled ? 1 : 0.35, position: "relative" }}
+            title={visibilityTitle}
           >
             {obj.enabled ? "👁" : "—"}
+            {locked && (
+              <span style={{ position: "absolute", right: -1, bottom: -1, fontSize: 7, lineHeight: 1 }}>🔒</span>
+            )}
           </button>
           {!obj.components.some((c) => c.type === "camera") && (
             <button
-              onClick={(e) => { e.stopPropagation(); onUpdate(obj.id, { threeD: obj.threeD ? undefined : true }, obj.threeD ? "Disable 3D layer" : "Enable 3D layer"); }}
+              onClick={(e) => { e.stopPropagation(); if (locked) return; onUpdate(obj.id, { threeD: obj.threeD ? undefined : true }, obj.threeD ? "Disable 3D layer" : "Enable 3D layer"); }}
+              disabled={locked}
               style={{ ...iconBtn, fontSize: 9, fontWeight: 700, opacity: obj.threeD ? 1 : 0.4, color: obj.threeD ? "#7fd0a8" : "#888" }}
               title="3D レイヤー切替（§5.4b）"
             >
               3D
             </button>
           )}
-          <SolidColorChip obj={obj} frame={frame} onUpdate={onUpdate} onPreviewPatch={onPreviewPatch} />
+          <SolidColorChip obj={obj} frame={frame} onUpdate={onUpdate} onPreviewPatch={onPreviewPatch} readOnly={locked} />
           {renaming ? (
             <input
               autoFocus
@@ -2124,7 +2199,7 @@ function LayerRow(props: LayerRowProps) {
           ) : (
           <span
             style={{ flex: 1, color: selected ? "#7fb8f0" : "#bbb", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-            onDoubleClick={(e) => { e.stopPropagation(); setRenaming(true); }}
+            onDoubleClick={(e) => { e.stopPropagation(); if (!locked) setRenaming(true); }}
             title="ダブルクリックで名前を変更"
           >
             {obj.name}
@@ -2155,8 +2230,9 @@ function LayerRow(props: LayerRowProps) {
             obj={obj}
             candidates={listParentCandidates(allObjects, obj.id)}
             onChange={(parentId) => onSetParent(obj.id, parentId)}
+            disabled={locked}
           />
-          <button onClick={(e) => { e.stopPropagation(); onRemove(); }} style={{ ...iconBtn, color: "#f44" }} title="レイヤーを削除">×</button>
+          <button onClick={(e) => { e.stopPropagation(); if (!locked) onRemove(); }} disabled={locked} style={{ ...iconBtn, color: locked ? "#633" : "#f44" }} title={locked ? "ロック中 — 削除不可" : "レイヤーを削除"}>×</button>
           </div>
         </div>
         {/* graph column: layer bar */}
@@ -2348,12 +2424,13 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
 }
 
 function SolidColorChip({
-  obj, frame, onUpdate, onPreviewPatch,
+  obj, frame, onUpdate, onPreviewPatch, readOnly = false,
 }: {
   obj: SceneObject;
   frame: number;
   onUpdate: (id: string, patch: Partial<SceneObject>, label?: string) => void;
   onPreviewPatch?: (id: string, patch: Partial<SceneObject>) => void;
+  readOnly?: boolean;
 }) {
   const compIdx = obj.components.findIndex((c) => c.type === "solid");
   if (compIdx < 0 || obj.isNull || obj.isAdjustment) return null;
@@ -2371,12 +2448,13 @@ function SolidColorChip({
       cur={cur}
       onUpdate={onUpdate}
       onPreviewPatch={onPreviewPatch}
+      readOnly={readOnly}
     />
   );
 }
 
 function SolidColorChipInner({
-  objId, components, compIdx, colorProp, frame, cur, onUpdate, onPreviewPatch,
+  objId, components, compIdx, colorProp, frame, cur, onUpdate, onPreviewPatch, readOnly = false,
 }: {
   objId: string;
   components: Component[];
@@ -2386,6 +2464,7 @@ function SolidColorChipInner({
   cur: RGBA;
   onUpdate: (id: string, patch: Partial<SceneObject>, label?: string) => void;
   onPreviewPatch?: (id: string, patch: Partial<SceneObject>) => void;
+  readOnly?: boolean;
 }) {
   const curHex = rgbToHex(cur);
   // ピッカー操作中は preview のみ更新（obj は未変更）。controlled な value が
@@ -2418,8 +2497,10 @@ function SolidColorChipInner({
     <input
       type="color"
       value={draft}
+      disabled={readOnly}
       onClick={(e) => e.stopPropagation()}
       onChange={(e) => {
+        if (readOnly) return;
         editingRef.current = true;
         setDraft(e.target.value);
         onPreviewPatch?.(objId, { components: buildComponents(e.target.value) });
@@ -2431,8 +2512,8 @@ function SolidColorChipInner({
           baseRef.current = draft;
         }
       }}
-      title="ソリッドの色"
-      style={{ width: 16, height: 16, padding: 0, border: "1px solid #555", background: "transparent", cursor: "pointer", flexShrink: 0, borderRadius: 2 }}
+      title={readOnly ? "ロック中" : "ソリッドの色"}
+      style={{ width: 16, height: 16, padding: 0, border: "1px solid #555", background: "transparent", cursor: readOnly ? "not-allowed" : "pointer", flexShrink: 0, borderRadius: 2, opacity: readOnly ? 0.5 : 1 }}
     />
   );
 }

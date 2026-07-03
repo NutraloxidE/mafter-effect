@@ -143,6 +143,13 @@ function validateTimeline(
         obj.adjustmentMode = undefined;
       }
     }
+    // §5.4e: locked は boolean のみ有効。
+    if (obj.locked !== undefined && typeof obj.locked !== "boolean") {
+      warnings.push(
+        `comp ${comp.id}: object ${obj.id} has invalid locked ${String(obj.locked)}; clearing`,
+      );
+      obj.locked = undefined;
+    }
   }
 
   // 存在しない parent → root 化 + warn。

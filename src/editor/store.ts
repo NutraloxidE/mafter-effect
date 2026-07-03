@@ -34,6 +34,7 @@ import { IndexedDbFs } from "../fs/IndexedDbFs";
 import { compositionDir, DIR_ASSETS, pluginEntryPath, pluginManifestPath } from "../core/paths";
 import { compLayerDefaultOutPoint, compWouldCreateCycle } from "../runtime/compLayer";
 import { rescaleCompFps, resizeCompCentered } from "./compEdit";
+import { isLayerLocked } from "./layerLock";
 import { registerBuiltinComponents } from "../runtime/builtinComponents";
 import { registerBuiltinEffects } from "../runtime/builtinEffects";
 import { sampleScalar } from "../runtime/interpolate";
@@ -697,6 +698,13 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const before = get().project;
     if (!before) return;
     const compId = get().currentCompId;
+    const comp = before.compositions.find(
+      (c) => c.id === compId && c.kind === "timeline",
+    );
+    const obj = comp?.kind === "timeline"
+      ? comp.objects.find((o) => o.id === id)
+      : undefined;
+    if (obj && isLayerLocked(obj)) return;
     const after: Project = {
       ...before,
       compositions: before.compositions.map((c) => {

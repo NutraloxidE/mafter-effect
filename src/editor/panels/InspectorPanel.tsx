@@ -8,6 +8,7 @@ import {
   setKeyframe,
   useEditorStore,
 } from "../store";
+import { isLayerLocked } from "../layerLock";
 import { EXPRESSED_VALUE_COLOR, isPropExpressed, staticProp } from "../../core/props";
 import { pulseCycleT, pulseModulation } from "../../runtime/pulseScaleWave";
 import { ColorSwatch, isRgba } from "../ColorSwatch";
@@ -489,6 +490,8 @@ export function InspectorPanel() {
     });
   };
 
+  const layerLocked = isLayerLocked(obj);
+
   return (
     <div ref={panelScrollRef} style={INSPECTOR_ROOT_STYLE}>
       <div style={{ ...INSPECTOR_HEADER_STYLE, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
@@ -502,6 +505,12 @@ export function InspectorPanel() {
           <span style={{ marginLeft: 6, fontSize: 10, color: "#e07070", fontWeight: 600 }}>NULL</span>
         )}
       </div>
+      {layerLocked && (
+        <div style={{ padding: "6px 12px", fontSize: 11, color: "#c9a227", background: "#2a2418", borderBottom: "1px solid #3a3020" }}>
+          ロック中 — タイムラインの目アイコンを Shift+クリックで解除
+        </div>
+      )}
+      <div style={{ opacity: layerLocked ? 0.55 : 1, pointerEvents: layerLocked ? "none" : "auto" }}>
 
       <InspectorFoldout label="Transform" expanded={isExpanded("transform")} onToggle={() => toggleExpanded("transform")}>
         <Vec3Row label="Position" vals={pos}
@@ -1047,6 +1056,7 @@ export function InspectorPanel() {
           />
         </Row>
       </InspectorFoldout>
+      </div>
     </div>
   );
 }

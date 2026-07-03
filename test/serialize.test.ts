@@ -117,6 +117,25 @@ describe("serializeProject", () => {
     expect(serializeProject(canon)).not.toContain("labelIndex");
   });
 
+  it("serializes locked when true and strips false", () => {
+    const base = createProject({ now: "2026-01-01T00:00:00.000Z" });
+    const p: Project = structuredClone(base);
+    const o = obj("01A");
+    o.locked = true;
+    timeline(p).objects = [o];
+    expect(serializeProject(p)).toContain('"locked": true');
+
+    const off: Project = structuredClone(p);
+    timeline(off).objects[0] = { ...o, locked: false };
+    const canon = canonicalizeProject(off);
+    const tcomp = canon.compositions[0];
+    expect(tcomp?.kind).toBe("timeline");
+    if (tcomp?.kind === "timeline") {
+      expect(tcomp.objects[0]?.locked).toBeUndefined();
+    }
+    expect(serializeProject(canon)).not.toContain("locked");
+  });
+
   it("serializes blendMode when known and strips unknown values", () => {
     const base = createProject({ now: "2026-01-01T00:00:00.000Z" });
     const p: Project = structuredClone(base);

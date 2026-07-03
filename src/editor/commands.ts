@@ -2,6 +2,7 @@ import { newObjectId } from "../core/ids";
 import type { Frame, Project, SceneObject, TimelineComposition } from "../core/schema";
 import { duplicateObjectsWithRemap } from "./duplicateObjects";
 import { defaultLabelIndexForObject } from "./layerLabels";
+import { canEditLayer, isLayerLocked } from "./layerLock";
 import { shiftFootageSourceOffset } from "./layerSourceOffset";
 import type { EditorStore } from "./store";
 
@@ -94,6 +95,8 @@ export function cmdRemoveObject(
 ): void {
   const before = store.project;
   if (!before) return;
+  const obj = findCompObject(before, store.currentCompId, objectId);
+  if (obj && isLayerLocked(obj)) return;
   const after = withCompObjects(before, store.currentCompId, (objs) =>
     objs.filter((o) => o.id !== objectId),
   );
@@ -107,11 +110,13 @@ export function cmdRemoveObjects(
 ): void {
   const before = store.project;
   if (!before || objectIds.length === 0) return;
-  const idSet = new Set(objectIds);
+  const removable = filterUnlockedIds(before, store.currentCompId, objectIds);
+  if (removable.length === 0) return;
+  const idSet = new Set(removable);
   const after = withCompObjects(before, store.currentCompId, (objs) =>
     objs.filter((o) => !idSet.has(o.id)),
   );
-  store.applyCommand({ label: `Remove ${objectIds.length} object(s)`, before, after });
+  store.applyCommand({ label: `Remove ${removable.length} object(s)`, before, after });
 }
 
 export function cmdUpdateObject(
@@ -122,6 +127,8 @@ export function cmdUpdateObject(
 ): void {
   const before = store.project;
   if (!before) return;
+  const obj = findCompObject(before, store.currentCompId, objectId);
+  if (obj && !canEditLayer(obj, patch)) return;
   const after = withCompObjects(before, store.currentCompId, (objs) =>
     objs.map((o) => (o.id === objectId ? { ...o, ...patch } : o)),
   );
@@ -137,7 +144,12 @@ export function cmdUpdateObjects(
 ): void {
   const before = store.project;
   if (!before || patches.length === 0) return;
-  const map = new Map(patches.map((p) => [p.id, p.patch]));
+  const allowed = patches.filter(({ id, patch }) => {
+    const obj = findCompObject(before, store.currentCompId, id);
+    return !obj || canEditLayer(obj, patch);
+  });
+  if (allowed.length === 0) return;
+  const map = new Map(allowed.map((p) => [p.id, p.patch]));
   const after = withCompObjects(before, store.currentCompId, (objs) =>
     objs.map((o) => (map.has(o.id) ? { ...o, ...map.get(o.id)! } : o)),
   );
@@ -150,13 +162,14 @@ export function cmdDuplicateObjects(
   store: EditorStore,
   objects: SceneObject[],
 ): string[] {
+  const editable = objects.filter((o) => !isLayerLocked(o));
   const before = store.project;
-  if (!before || objects.length === 0) return [];
+  if (!before || editable.length === 0) return [];
   const comp = before.compositions.find(
     (c) => c.id === store.currentCompId && c.kind === "timeline",
   ) as TimelineComposition | undefined;
   const existingIds = new Set(comp?.objects.map((o) => o.id) ?? []);
-  const copies = duplicateObjectsWithRemap(objects, existingIds);
+  const copies = duplicateObjectsWithRemap(editable, existingIds);
   const after = withCompObjects(before, store.currentCompId, (objs) => [...objs, ...copies]);
   store.applyCommand({ label: "Duplicate", before, after });
   return copies.map((c) => c.id);
@@ -170,9 +183,10 @@ export function cmdSplitObjects(
   objects: SceneObject[],
   frame: Frame,
 ): string[] {
+  const editable = objects.filter((o) => !isLayerLocked(o));
   const before = store.project;
-  if (!before || objects.length === 0) return [];
-  const splittable = objects.filter((o) => frame > o.inPoint && frame < o.outPoint);
+  if (!before || editable.length === 0) return [];
+  const splittable = editable.filter((o) => frame > o.inPoint && frame < o.outPoint);
   if (splittable.length === 0) return [];
   const newIds: string[] = [];
   const after = withCompObjects(before, store.currentCompId, (objs) => {
@@ -211,6 +225,28 @@ export function cmdSplitObjects(
 }
 
 // ---- ヘルパー ----
+
+function findCompObject(
+  project: Project,
+  compId: string,
+  objectId: string,
+): SceneObject | undefined {
+  const comp = project.compositions.find(
+    (c) => c.id === compId && c.kind === "timeline",
+  ) as TimelineComposition | undefined;
+  return comp?.objects.find((o) => o.id === objectId);
+}
+
+function filterUnlockedIds(
+  project: Project,
+  compId: string,
+  objectIds: string[],
+): string[] {
+  return objectIds.filter((id) => {
+    const obj = findCompObject(project, compId, id);
+    return !obj || !isLayerLocked(obj);
+  });
+}
 
 function withCompObjects(
   project: Project,

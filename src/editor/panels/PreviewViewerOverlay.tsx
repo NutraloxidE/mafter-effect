@@ -3,6 +3,7 @@ import type { Font } from "opentype.js";
 import type { AnimatedProp, Frame, Project, SceneObject, TimelineComposition, Transform, Vec3 } from "../../core/schema";
 import type { ResolveContext } from "../../runtime/resolve";
 import { setKeyframe, type PreviewOverride } from "../store";
+import { isLayerLocked } from "../layerLock";
 import { sampleAny } from "../../runtime/interpolate";
 import { staticProp } from "../../core/props";
 import {
@@ -206,6 +207,7 @@ export function PreviewViewerOverlay({
 
   const beginDrag = useCallback(
     (mode: DragMode, e: React.MouseEvent) => {
+      if (mode.kind !== "pan" && effectiveObject && isLayerLocked(effectiveObject)) return;
       if (!effectiveObject || !activeTransform || !activeResolved) {
         if (mode.kind === "pan") {
           dragRef.current = {
@@ -485,7 +487,7 @@ export function PreviewViewerOverlay({
         );
       })}
 
-      {selectionAabb && effectiveObject && activeResolved && (
+      {selectionAabb && effectiveObject && activeResolved && !isLayerLocked(effectiveObject) && (
         <SelectionHandles
           aabb={selectionAabb}
           resolved={activeResolved}

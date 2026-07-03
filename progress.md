@@ -924,3 +924,15 @@ canvas 化結果は以降から見て通常の背面ピクセルと等価（zOrd
   - [PreviewPanel.tsx](src/editor/panels/PreviewPanel.tsx) — overlay 経路を `shouldPreferCacheOverlay` に接続。live フォールバック時は stale overlay `src` を除去。
 - **検証**: `npm run typecheck` 緑 / `test/previewCache.test.ts` 16 緑 / `npm run build:player` 実行済み。`probe-cache-wonky.mjs` で `w3_overlayToggles` **3→0**（ちらつき改善）。**未解決**: Comp 10 `probe-comp10-capture-bisect` の full capture 依然 `inkRatio≈0.05`（video + 複合 comp の capture parity）。draft 単体 text capture も低 ink のまま。
 - **Next steps**: (1) offscreen `compFrameCapture` の video フレーム inline を `verify-video-export` 同等まで引き上げ。(2) draft テキストの foreignObject 非対応を canvas 焼き or precise 強制で閉じる。(3) `probe-cache-real` の Comp 19/20 大乖離（ネスト precomp）を precomp raster 経路で追跡。
+
+### 2026-07-04（Cursor）— レイヤーロック（Timeline Tier B 部分実装）✅
+
+- **spec**: §5.4e `SceneObject.locked?`（エディタ専用・resolve/export 無影響）+ §21.11 UI 規約（目アイコン: クリック=表示切替 / **Shift+クリック=ロック**、4状態、複数選択時は Shift で一括ロック、ラベル色はロック中も可）。
+- **実装**: [layerLock.ts](src/editor/layerLock.ts)、[commands.ts](src/editor/commands.ts)（locked ガード + remove/duplicate/split スキップ）、[TimelinePanel.tsx](src/editor/panels/TimelinePanel.tsx)（4状態アイコン・選択/編集ブロック）、[InspectorPanel.tsx](src/editor/panels/InspectorPanel.tsx)（read-only）、[PreviewViewerOverlay.tsx](src/editor/panels/PreviewViewerOverlay.tsx)（ギズモ非表示）。
+- **検証**: `npm test` — [test/layerLock.test.ts](test/layerLock.test.ts) / [test/layerLockCommands.test.ts](test/layerLockCommands.test.ts) / [test/serialize.test.ts](test/serialize.test.ts) 緑。`npm run build`（tsc）緑。runtime 変更なし（player 再ビルドは `npm run build` 経由のみ）。
+
+### 2026-07-04（Cursor）— 目アイコン右クリックで一括表示/非表示 ✅
+
+- **操作**: 目アイコン右クリック → 「すべて表示」「すべて非表示」。対象は現在コンポの**ロック以外**のみ（ロック済み `enabled` は不変）。1 command / 1 undo。
+- **実装**: [layerLock.ts](src/editor/layerLock.ts) `unlockedVisibilityPatches`、[TimelinePanel.tsx](src/editor/panels/TimelinePanel.tsx) コンテキストメニュー。spec §21.11.1 追記。
+- **検証**: `test/layerLock.test.ts` 追加ケース。

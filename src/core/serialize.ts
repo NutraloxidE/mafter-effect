@@ -36,6 +36,10 @@ function canonicalizeObject(obj: SceneObject): SceneObject {
   if (obj.labelIndex !== undefined && (obj.labelIndex < 0 || obj.labelIndex > 16)) {
     strip({ labelIndex: undefined });
   }
+  // §5.4e: locked は true のときだけ書く。
+  if (obj.locked !== true && obj.locked !== undefined) {
+    strip({ locked: undefined });
+  }
   // §5.4d: blendMode は "normal" 以外のときだけ書く（既定 normal・省略は byte 等価維持）。
   if (obj.blendMode === "normal" || (obj.blendMode !== undefined && !isKnownBlendMode(obj.blendMode))) {
     strip({ blendMode: undefined });

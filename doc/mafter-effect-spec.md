@@ -225,6 +225,20 @@ interface SceneObject {
 
 - 直列化: `labelIndex` は **0–16 のときのみ**書く。範囲外は strip。UI は [src/editor/layerLabels.ts](../src/editor/layerLabels.ts) のパレット（AE 16 色 + index 16 = 旧 LayerBar ベージュ `#b89b6a`、§21.10）。
 
+### §5.4e レイヤーロック（additive スキーマ・確定）
+
+> AE のレイヤーロックに準拠。**エディタ UI のみ** — `resolve()` / export / preview / bundle player には影響しない（INV-1〜3 不変）。
+
+```ts
+interface SceneObject {
+  // ...既存フィールド...
+  locked?: boolean;  // true = ロック（編集不可）。省略/false = 編集可
+}
+```
+
+- 直列化: `locked === true` のときのみ `project.json` に書く。`false` / `undefined` はキー省略（§5.6 正準化）。
+- UI 規約は §21.11。
+
 ### §5.4d 描画モード / ブレンドモード（additive スキーマ・確定）
 
 > AE の「描画モード」に準拠。レイヤー描画結果を**背面に積まれた合成結果**と合成する。**Web ネイティブ合成**を採り、preview / Live バンドルはラスター化ゼロ（CSS）、動画キャプチャは Canvas で合成し直して INV-2 を守る。
@@ -886,7 +900,7 @@ SSoT 違反を避けるため、scope と正準性を分離する:
 | パネルのデタッチ（別ウィンドウ：browser=window.open+同期, app=OS窓） | 将来 |
 | インタラクティブ bundle（入力応答） / alpha-bake（color+matte） | 将来 |
 | compRef / nested composition（precomp, 時間マッピング） | 将来 |
-| Timeline Tier B（ラベル色 / solo / lock / shy / parent ドロップダウン UI, §21.0） | 将来（優先度高） |
+| Timeline Tier B（ラベル色 / **lock（§21.11 部分実装済み）** / solo / shy / parent ドロップダウン UI, §21.0） | 部分実装（優先度高） |
 | Timeline Tier C ブレンドモード（§5.4d / §21.0） | 実装済み |
 | Timeline Tier C トラックマット（§21.0） | 将来（優先度高） |
 | Timeline Tier D（モーションブラー / フレームブレンド / 3D レイヤー / 調整レイヤー, §21.0） | 将来 |
@@ -1155,7 +1169,7 @@ AE タイムラインの機能を **Tier A〜D** に分け、本リビジョン�
 | Tier | 内容 | スキーマ影響 | 区分 |
 |---|---|---|---|
 | **A** | プロパティツリー展開 / per-property ストップウォッチ＋値編集 / KF 行 / レイヤーバーの drag（in/out トリム・スライド）/ 時間ルーラー＋SMPTE タイムコード / レイヤー番号 | **なし**（既存スキーマで成立） | **本リビジョン** |
-| **B** | **ラベル色（§21.10 部分実装済み）** / solo / lock / shy / **親とリンク(parent) ドロップダウン UI（§21.8 部分実装済み）** | additive（`SceneObject` にフラグ追加） | 将来（優先度高） |
+| **B** | **ラベル色（§21.10 部分実装済み）** / **lock（§21.11 部分実装済み）** / solo / shy / **親とリンク(parent) ドロップダウン UI（§21.8 部分実装済み）** | additive（`SceneObject` にフラグ追加） | 将来（優先度高） |
 | **C** | **ブレンドモード（§5.4d 実装済み）** / トラックマット | renderer(INV-3)＋export 経路拡張 | ブレンドモード=本実装 / トラックマット=将来（優先度高） |
 | **D** | モーションブラー / フレームブレンド / 3D レイヤー / 調整レイヤー | 大規模・決定論モデル評価要 | 将来 |
 
@@ -1341,6 +1355,33 @@ setLayerLabelIndex(ids: ObjectId[], index: LabelIndex | undefined): void
 
 - `index === undefined` でラベル色をクリア（「なし」→ 中立グレー表示）。
 - command 経由で undo 可能（§17）。
+
+### §21.11 レイヤーロック UI（Tier B 部分実装・確定）
+
+AE のレイヤーロック相当。**additive スキーマ** — `SceneObject.locked`（§5.4e）。**`resolve()` / export / preview には影響しない**。
+
+#### §21.11.1 操作（確定）
+
+ロック操作の**唯一の入口**: タイムライン各行の**目アイコン**への **Shift+クリック**（独立ロック列・ショートカットは v1 では設けない）。
+
+| 入力 | 効果 |
+|------|------|
+| 目アイコン **クリック**（Shift なし） | `enabled` トグルのみ（当該行）。`locked` 不変 |
+| 目アイコン **Shift+クリック** | `locked` トグル。単独選択時はその行、**複数選択時は選択中全レイヤー**に一括適用（クリック行の `locked` を反転した値）。`enabled` 不変 |
+| 目アイコン **右クリック** | コンテキストメニュー: **すべて表示** / **すべて非表示**。対象は**現在コンポ内のロックされていないレイヤーのみ**（ロック済みの `enabled` は変えない）。1 command / 1 undo |
+
+4状態表示（`enabled` × `locked`）: 見える `👁` / 見えない `—` / 各ロック時は小さな `🔒` を併記。ツールチップで「クリック: 表示切替 / Shift+クリック: ロック切替 / 右クリック: 一括表示」を案内。
+
+#### §21.11.2 ロック中の編集制限（AE 準拠）
+
+- **ブロック**: 新規選択（行クリック・範囲選択の追加）・Inspector 編集・タイムライン KF/バー操作・リネーム・並べ替え・プレビューギズモ・削除・Duplicate / Split。複数選択にロック混在時は**ロック分をスキップ**して残りのみ操作。
+- **許可**: 目アイコン（表示/ロック切替）、**ラベル色**（`labelIndex`）。
+- **選択済みをロック**: 選択は**維持**（Inspector read-only・ギズモ非表示）。
+
+#### §21.11.3 store / command
+
+- `locked` / `enabled` / `labelIndex` の patch はロック中でも通過（exempt）。
+- その他の patch は locked オブジェクトで no-op（command 不発行）。
 
 ---
 

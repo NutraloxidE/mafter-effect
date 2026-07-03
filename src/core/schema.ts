@@ -117,6 +117,7 @@ export interface SceneObject {
   threeD?: boolean; // §5.4b true = 3D 空間に配置（AE の 3D レイヤースイッチ）。省略/false = 平面 2D
   threeDMode?: ThreeDMode; // §5.4b 描画経路。省略 = "auto"（comp.renderer3d に従う）
   labelIndex?: LabelIndex; // §5.4c AE ラベル色。省略 = 無色（エディタ UI のみ）
+  locked?: boolean; // §5.4e true = ロック（エディタ UI のみ）。省略/false = 編集可
   blendMode?: BlendMode; // §5.4d 描画モード。省略 = "normal"
 }
 
