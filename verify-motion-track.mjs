@@ -1,6 +1,5 @@
-// Phase 1a — Video Motion Track 実機検証。
-// ffmpeg 生成の水平パン合成 mp4 → import → runMotionTrack → resolve position 方向チェック。
-// Null ターゲット（並進 x/y）+ Camera ターゲット（同一 track を再適用）+ expression クリア経路を検証する。
+// Phase 1a+1b-a — Video Motion Track 実機検証。
+// ffmpeg 生成クリップ → import → runMotionTrack / runRotationTrack → resolve チェック。
 import { chromium } from "playwright";
 import { execSync } from "node:child_process";
 import fs from "node:fs";
@@ -11,6 +10,7 @@ const URL = `http://localhost:${PORT}/`;
 const DEBUG_DIR = path.join("for-debug-data");
 const CLIP_PATH = path.join(DEBUG_DIR, "motion-track-pan.mp4");
 const DOLLY_CLIP_PATH = path.join(DEBUG_DIR, "motion-track-dolly.mp4");
+const YAW_CLIP_PATH = path.join(DEBUG_DIR, "motion-track-yaw.mp4");
 const HEADED = process.env.HEADED === "1";
 
 function ensurePanClip() {
@@ -45,10 +45,28 @@ function ensureDollyClip() {
   execSync(cmd, { stdio: "inherit" });
 }
 
+function ensureYawClip() {
+  fs.mkdirSync(DEBUG_DIR, { recursive: true });
+  if (fs.existsSync(YAW_CLIP_PATH)) return;
+  const vf = "rotate=angle='0.008726646*n':c=black:ow=640:oh=480";
+  const cmd = [
+    "ffmpeg", "-y",
+    "-f", "lavfi", "-i", "testsrc2=size=800x600:rate=30:duration=2",
+    "-vf", vf,
+    "-frames:v", "60",
+    "-c:v", "libx264", "-pix_fmt", "yuv420p",
+    YAW_CLIP_PATH,
+  ].join(" ");
+  console.log("[verify-motion-track] generating yaw clip:", cmd);
+  execSync(cmd, { stdio: "inherit" });
+}
+
 ensurePanClip();
 ensureDollyClip();
+ensureYawClip();
 const videoBytes = fs.readFileSync(CLIP_PATH);
 const dollyBytes = fs.readFileSync(DOLLY_CLIP_PATH);
+const yawBytes = fs.readFileSync(YAW_CLIP_PATH);
 
 const browser = await chromium.launch({
   headless: !HEADED,
@@ -63,10 +81,18 @@ await page.goto(URL, { waitUntil: "domcontentloaded", timeout: 60000 });
 await page.evaluate(() => indexedDB.deleteDatabase("mafter-effect-fs"));
 await page.reload({ waitUntil: "domcontentloaded", timeout: 60000 });
 
-const result = await page.evaluate(async ({ panBytes, panName, dollyBytes, dollyName }) => {
+const result = await page.evaluate(async ({ panBytes, panName, dollyBytes, dollyName, yawBytes, yawName }) => {
   const storeMod = await import("/src/editor/store.ts");
-  const { runMotionTrack, finalizeMotionTrackBake } = await import("/src/editor/motionTrack/quarTracker.ts");
-  const { applyMotionTrackToProject } = await import("/src/editor/motionTrack/applyMotionTrack.ts");
+  const {
+    runMotionTrack,
+    finalizeMotionTrackBake,
+    runRotationTrack,
+    finalizeRotationTrackBake,
+  } = await import("/src/editor/motionTrack/quarTracker.ts");
+  const {
+    applyMotionTrackToProject,
+    applyRotationTrackToProject,
+  } = await import("/src/editor/motionTrack/applyMotionTrack.ts");
   const { sampleVec3 } = await import("/src/runtime/interpolate.ts");
   const { resolve } = await import("/src/runtime/resolve.ts");
 
@@ -155,10 +181,76 @@ const result = await page.evaluate(async ({ panBytes, panName, dollyBytes, dolly
   const cameraPan = await trackAndBake({ bytes: panBytes, name: panName, targetKind: "camera", userScale: 80 });
   const nullDolly = await trackAndBake({ bytes: dollyBytes, name: dollyName, targetKind: "null", userScale: 500 });
 
-  return { nullPan, cameraPan, nullDolly };
+  async function trackRotationAndBake({ bytes, name, focalLength }) {
+    await S().newProject();
+    const file = new File([new Uint8Array(bytes)], name, { type: "video/mp4" });
+    const assetId = await S().importVideoAsset(file);
+    if (!assetId) throw new Error("importVideoAsset failed");
+    const videoLayerId = S().addVideoLayer(assetId, "motion-track-yaw-src");
+    if (!videoLayerId) throw new Error("addVideoLayer failed");
+    const targetId = S().addNullLayer("motion-track-yaw-target");
+    if (!targetId) throw new Error("addNull failed");
+
+    await new Promise((r) => setTimeout(r, 2000));
+
+    const project = S().project;
+    const compId = S().currentCompId;
+    const comp = project.compositions.find((c) => c.id === compId);
+    if (!comp || comp.kind !== "timeline") throw new Error("timeline comp missing");
+    const videoLayer = comp.objects.find((o) => o.id === videoLayerId);
+    const target = comp.objects.find((o) => o.id === targetId);
+    if (!videoLayer || !target) throw new Error("layers missing");
+
+    const track = await runRotationTrack({
+      project,
+      comp,
+      videoLayer,
+      assetId,
+      fs: S().getFs(),
+      options: { userScale: 1, sampleInterval: 1, focalLength },
+    });
+
+    const baseline = sampleVec3(target.transform.rotation, 0);
+    const rotationsByFrame = finalizeRotationTrackBake(
+      track.compFrames,
+      track.track.smoothed,
+      track.validMask,
+      baseline,
+    );
+
+    const { before, after } = applyRotationTrackToProject(project, comp.id, targetId, {
+      baselineRotation: baseline,
+      rotationsByFrame,
+      bakeStart: track.bakeStart,
+      bakeEnd: track.bakeEnd,
+      clearExpression: false,
+    });
+    S().applyCommand({ label: "Motion Track Rotation Bake (verify)", before, after });
+
+    const bakedComp = S().project.compositions.find((c) => c.id === compId);
+    const bakedTarget = bakedComp.objects.find((o) => o.id === targetId);
+    const sampleRot = (frame) => sampleVec3(bakedTarget.transform.rotation, frame);
+
+    return {
+      frameCount: track.compFrames.length,
+      f0: sampleRot(0),
+      fMid: sampleRot(15),
+      fLate: sampleRot(30),
+      validFrames: track.validMask.filter(Boolean).length,
+    };
+  }
+
+  const yawPanRotation = await trackRotationAndBake({
+    bytes: yawBytes,
+    name: yawName,
+    focalLength: 550,
+  });
+
+  return { nullPan, cameraPan, nullDolly, yawPanRotation };
 }, {
   panBytes: [...videoBytes], panName: "motion-track-pan.mp4",
   dollyBytes: [...dollyBytes], dollyName: "motion-track-dolly.mp4",
+  yawBytes: [...yawBytes], yawName: "motion-track-yaw.mp4",
 });
 
 console.log("track result:", JSON.stringify(result, null, 2));
@@ -213,6 +305,28 @@ if (!result.cameraPan.poiUnchanged) {
   }
   if (dzMid < 0.05) {
     console.error(`FAIL[nullDolly]: expected some z displacement at f15, got dz=${dzMid} (z-axis pipeline may not be wired)`);
+    pass = false;
+  }
+}
+
+{
+  const r = result.yawPanRotation;
+  const dyMid = r.fMid.y - r.f0.y;
+  const dyLate = r.fLate.y - r.f0.y;
+  if (r.frameCount < 10) {
+    console.error(`FAIL[yawPanRotation]: too few frames (${r.frameCount})`);
+    pass = false;
+  }
+  if (r.validFrames < 15) {
+    console.error(`FAIL[yawPanRotation]: too few valid estimates (${r.validFrames})`);
+    pass = false;
+  }
+  if (Math.abs(dyMid) < 0.3) {
+    console.error(`FAIL[yawPanRotation]: expected yaw at f15, got dy=${dyMid}`);
+    pass = false;
+  }
+  if (Math.abs(dyLate) <= Math.abs(dyMid)) {
+    console.error(`FAIL[yawPanRotation]: expected increasing |yaw| (f30=${dyLate}, f15=${dyMid})`);
     pass = false;
   }
 }

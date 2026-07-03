@@ -907,8 +907,9 @@ SSoT 違反を避けるため、scope と正準性を分離する:
 | Monetization / entitlement 層（feature-flag, account/app レベル, §29） | 将来（MVP 後・スキーマ/INV 非変更） |
 | watermark（raster 出力, §29.2） | 将来（MVP 後・依存: raster export=M3） |
 | tier ゲート（bundle=§11.7 / headless=M3.5 / native=§14, §29.3） | 将来（MVP 後・依存: §11.7 / M3.5 / §14） |
-| Motion Track from footage — 並進のみ（§16.1・editor-only WASM VO） | **実装中（2026-07 Phase 1a）** |
-| Motion Track 回転 / POI / zoom 推定・COLMAP/Blender カメラ import | 将来（§16.1 Phase 1b/2） |
+| Motion Track from footage — 並進（§16.1 Phase 1a・editor-only WASM VO） | **実装済み（2026-07 Phase 1a）** |
+| Motion Track 回転推定（§16.1 Phase 1b-a・editor-only） | **実装中（2026-07 Phase 1b）** |
+| Motion Track POI / zoom・COLMAP/Blender カメラ import | 将来（§16.1 Phase 1b-b / Phase 2） |
 
 ---
 
@@ -925,9 +926,11 @@ video レイヤーのフッテージから単眼 visual odometry（vendored WASM
 
 **スコープと制約（正直な期待値）**:
 
-- **並進（position）のみ**。回転・pointOfInterest・zoom は推定しない（Phase 1b/2。単眼の回転/並進曖昧性と上流トラッカーの 6DoF pose 段が未成熟なため、2026-07-03 スパイク実測でスコープ確定）。
-- 単眼スケール不定: 推定量は方向のみ信頼可・大きさは非メトリック。UI のスケール係数（既定 1.0）でユーザー補正する（AE 3D Camera Tracker と同型の制約）。
-- カメラが動き背景が静止しているフッテージが前提。被写体のみが動く映像・強いモーションブラーでは破綻しうる。冒頭数フレーム（トラッカー warmup）は frame 0 の値をホールドする。
+- **並進（position）— Phase 1a**: QUAR `TrackerHandle` でカメラ並進**方向**のみ推定し、Null / Camera の `transform.position` に dense KF ベイク。方向のみ信頼可・大きさは非メトリック（UI スケール係数で補正）。
+- **回転（パン/チルト/ロール）— Phase 1b-a**: 特徴点対応から rotation-only モデル（ベアリングベクトルの四元数フィット + RANSAC）で推定し、Null / one-node Camera の `transform.rotation`（euler ZYX deg）に dense KF ベイク。**ノーダルパン（カメラがその場で回る）前提**。並進が混在するフレームはフィット残差で低信頼としてホールド（Phase 1a の warmup/confidence 方針と同型）。焦点距離はアクティブ camera の `zoom`（px）を初期推定に用い、UI スライダーで上書き可。two-node Camera への回転ベイクは **Phase 1b-b** で POI 軌道（`poi' = position + R·(poi₀ − position)`）として扱う。**Position モードでは pointOfInterest を変更しない**（Phase 1a 契約を維持）。two-node のロールはパン/チルトのみ（lookAt + `transform.rotation` 併用は未対応とする）。
+- **zoom — Phase 1b-b**: camera component の `zoom` への KF ベイク。zoom とドリーは単眼で原理的に不可分のため、解釈はモード選択でユーザーが指定する。
+- 対応点抽出は vendored OpenCV.js（`calcOpticalFlowPyrLK` 等、Apache-2.0、`public/motion-track/opencv/`、PROVENANCE.md 併置）を worker 内 lazy load。QUAR `inlier_points()` は inlier **件数**のみ返し座標ペアは供給しない（2026-07 Phase 0b スパイク実測）。いずれも **editor-only・Track Motion 実行時のみ**。メインバンドル・player.js・Web bundle export（§11.7）非同梱（Phase 1a と同一境界）。
+- ローリングシャッター・強いモーションブラー・画面の大半を占める動体では破綻しうる。冒頭数フレーム（warmup）は frame 0 をホールド。
 - 「AE 3D Camera Tracker 級」の本格ソルブは Phase 2 の外部 import（COLMAP / Blender camera, §6.5 の ImporterDef 経路）で扱う。本機能は「手持ち参考値・ラフパス」の位置づけ。
 
 ---

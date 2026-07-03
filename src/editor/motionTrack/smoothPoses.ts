@@ -1,4 +1,6 @@
-import type { RawTranslation } from "./types";
+import type { RawQuaternion, RawTranslation } from "./types";
+import { slamRotationToMafterEuler } from "./coordConvert";
+import { quaternionNormalize } from "./rotationEstimator";
 
 const ZERO: RawTranslation = [0, 0, 0];
 
@@ -70,6 +72,73 @@ export function smoothTranslations(
     const dz = cur[2] - prev[2];
     const jump = Math.hypot(dx, dy, dz);
     if (jump > outlierThreshold) {
+      out.push([...prev]);
+    } else {
+      out.push(cur);
+    }
+  }
+  return out;
+}
+
+const IDENTITY_QUAT: RawQuaternion = [0, 0, 0, 1];
+
+/**
+ * 四元数列の median + 外れ値ホールド。符号は直前フレームと dot>0 に揃える。
+ */
+export function smoothRotations(
+  input: Array<RawQuaternion | null>,
+  options?: { window?: number; outlierThresholdDeg?: number },
+): RawQuaternion[] {
+  const window = options?.window ?? 3;
+  const outlierThresholdDeg = options?.outlierThresholdDeg ?? 25;
+  const n = input.length;
+  if (n === 0) return [];
+
+  const filled: RawQuaternion[] = input.map((q, i) => {
+    if (q) return quaternionNormalize(q);
+    for (let j = i - 1; j >= 0; j--) {
+      if (input[j]) return quaternionNormalize(input[j]!);
+    }
+    return [...IDENTITY_QUAT];
+  });
+
+  const half = Math.max(1, Math.floor(window / 2));
+  const medFiltered: RawQuaternion[] = filled.map((_, i) => {
+    const xs: number[] = [];
+    const ys: number[] = [];
+    const zs: number[] = [];
+    const ws: number[] = [];
+    for (let j = Math.max(0, i - half); j <= Math.min(n - 1, i + half); j++) {
+      const q = filled[j]!;
+      xs.push(q[0]);
+      ys.push(q[1]);
+      zs.push(q[2]);
+      ws.push(q[3]);
+    }
+    const pick = (vals: number[]) =>
+      vals.length === 2
+        ? (vals[0]! + vals[1]!) / 2
+        : vals.length === 3
+          ? median3(vals[0]!, vals[1]!, vals[2]!)
+          : medianComponent(vals);
+    const qMed: RawQuaternion = [pick(xs), pick(ys), pick(zs), pick(ws)];
+    return quaternionNormalize(qMed);
+  });
+
+  const out: RawQuaternion[] = [medFiltered[0] ?? [...IDENTITY_QUAT]];
+  for (let i = 1; i < medFiltered.length; i++) {
+    const prev = out[i - 1]!;
+    let cur = medFiltered[i]!;
+    const dot = prev[0] * cur[0] + prev[1] * cur[1] + prev[2] * cur[2] + prev[3] * cur[3];
+    if (dot < 0) cur = [-cur[0], -cur[1], -cur[2], -cur[3]];
+    const prevEuler = slamRotationToMafterEuler(prev);
+    const curEuler = slamRotationToMafterEuler(cur);
+    const jump = Math.hypot(
+      curEuler.x - prevEuler.x,
+      curEuler.y - prevEuler.y,
+      curEuler.z - prevEuler.z,
+    );
+    if (jump > outlierThresholdDeg) {
       out.push([...prev]);
     } else {
       out.push(cur);

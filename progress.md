@@ -6,6 +6,30 @@
 
 ---
 
+### 2026-07-03（Cursor）— Motion Track Phase 1b-a 回転ベイク ✅（DG-20260703-01 worktree → main マージ）
+
+- **委任**: `cursor-agent`（worktree `cursor-motion-track-1ba-20260703`）— エージェントは ~46 分ハングしたが worktree 実装は完了済み。ユーザー承認で main に手動マージ。
+- **実装**: `rotationEstimator.ts` + `rotationTrackWorker.ts`（OpenCV.js KLT lazy load）+ `slamRotationToMafterEuler` + `smoothRotations` + `bakeRotationKeyframes` + `runRotationTrack` + Inspector Mode（Position / Rotation）。Phase 1a 既存関数は無改変（`motionTrackWorker.ts` / `bakePositionKeyframes` / `smoothTranslations`）。
+- **vendor**: `public/motion-track/opencv/`（Apache-2.0・PROVENANCE.md）。
+- **検証**: `tsc` 緑・motion track vitest **25 PASS**・`verify-motion-track.mjs` **4 シナリオ PASS**（nullPan / cameraPan / nullDolly / yawPanRotation）。
+- **次**: 1b-b（two-node POI + zoom）は実写フィードバック後。worktree 後始末可。
+
+### 2026-07-03（Cursor + Claude Code `claude -p` 思考委任 RG-20260703-01）— Motion Track Phase 1b 実装計画 ✅
+
+- **委任**: `delegate-to-thinking-model` → `claude -p --permission-mode plan --model fable`（session `28df82f0-675e-4348-aac1-31a6f7e27891`）。
+- **成果物**: [`.cursor/plans/video_motion_track_phase1b.plan.md`](.cursor/plans/video_motion_track_phase1b.plan.md)（計画正本）、[`.cursor/delegations/handoffs/RG-20260703-01.md`](.cursor/delegations/handoffs/RG-20260703-01.md)（Handback）。
+- **推奨経路 (E)**: QUAR 並進（Phase 1a 無改変）+ **rotation-only 推定器**（Horn + RANSAC、別ワーカー）。§5/INV 変更なし。
+- **フェーズ**: **0b** ミニスパイク（`inlier_points()` 確認・ゲート）→ **1b-a** 回転ベイク（Null + one-node Camera）→ **1b-b** POI/zoom（実写後）。
+- **次**: ~~ユーザー確認 6 問~~ **承認済み** → §16.1 散文更新済み → **Phase 0b スパイク PASS** → DG 起票で 1b-a 実装委任。
+
+### 2026-07-03（Cursor）— Motion Track Phase 0b スパイク PASS ✅
+
+- **0b-1**: QUAR `inlier_points()` は **件数のみ**（座標ペア不可）→ OpenCV.js KLT 経路確定（ユーザー承認済み）。
+- **0b-3**: Horn 四元数フィット + 合成ヨークリップ — 累積ヨー誤差 **0.10%**、|axis·Y| **1.0**、**0.10 ms/frame**（ゲート全 PASS）。
+- **産物**: `probe-rotation-spike.mjs` + `probe-rotation-spike-report.md`。
+- **spec**: §16 テーブル + §16.1 散文を Phase 1b 内容に更新（§5/INV 不変）。
+- **次**: `delegation.mjs` で DG 起票 → 1b-a を cursor-agent に委任。
+
 ### 2026-07-03（Claude Fable 5 指揮・Opus 4.8 スパイク・Cursor 委任実装）— Video Motion Track Phase 0+1a（並進のみ）✅
 
 - **計画**: `.cursor/plans/video_motion_tracking_99321e75.plan.md`（正本。ゲート判定・実装ファイル表・フェーズ分割まで更新済み）。ユーザーからの依頼「精査して完成された PLAN に」「実装は Fable がやらず delegate-to-cursor か Opus/Sonnet」「テストまでやって完成」を受けて実施。
@@ -884,3 +908,19 @@ canvas 化結果は以降から見て通常の背面ピクセルと等価（zOrd
 - **実装**: [ditherReveal.ts](src/runtime/ditherReveal.ts)（純関数）、[effectSvg.ts](src/runtime/effectSvg.ts)（`bayerMaskSvg` / `ditherDissolveMask`）、[builtinEffects.ts](src/runtime/builtinEffects.ts)（`DITHER_DISSOLVE_EFFECT_DEF` category=ワイプ）、[plugin.ts](src/runtime/plugin.ts) / [effectChain.ts](src/runtime/effectChain.ts)（`layerOpacity`）、[DomRenderer.ts](src/runtime/DomRenderer.ts)（layerOpacity 注入 + opacity 強制）。spec §27.3 + §5.4d 移行注記。
 - **検証**: `npm run typecheck` / `npm test` 660 件 / `playerBuildFreshness` 緑。Playwright: [verify-dither-dissolve.mjs](verify-dither-dissolve.mjs) PASS（preview screenshot 計測・dither 純色ピクセル vs smooth opacity 中間色を対照）、[verify-blend-mode.mjs](verify-blend-mode.mjs) / [verify-missing-blend-mode.mjs](verify-missing-blend-mode.mjs) 無回帰 PASS。unit: [test/ditherReveal.test.ts](test/ditherReveal.test.ts)、[test/effects.test.ts](test/effects.test.ts)、[test/effectSvg.test.ts](test/effectSvg.test.ts)。
 - **(goal-cursor)** ditherDissolve live エフェクト実装・verify PASS まで完了。
+
+### 2026-07-02（Cursor）— Preview cache wonky 調査続行（Claude limit 引き継ぎ）— 部分修正
+
+- **背景**: Claude Code が「cache wonky」調査を完了（実機再現・特定）し、修正タスクを Cursor 委任する直前に session limit で停止。Cursor agent transcripts には Claude セッション本体は無く、リポジトリに残った probe 脚本（`probe-cache-wonky.mjs` / `probe-cache-real.mjs` / `probe-cache-parity.mjs` / `probe-comp10-capture-bisect.mjs` 等）から状態を復元。
+- **特定した真因候補**:
+  1. **RAM Preview キャッシュ PNG（`compFrameCapture`）と live preview の fidelity 乖離** — overlay 表示時に別物が見える。Comp 10 f30 で capture `inkRatio≈0.05`（ほぼ空）vs video 無効化で異常値。video 単体 capture も `inkRatio=0`。
+  2. **再生中の overlay/live ちらつき** — 部分キャッシュ時 `w3_overlayToggles=3`（キャッシュ hit/miss で毎フレーム切替）。
+  3. **draft テキスト + foreignObject** — 単体 text capture も `inkRatio≈0.001`（solid は `≈0.058` で正常）。export 経路（precise + 実プロジェクト）は `verify-comp10-export-parity` で成立するが、RAM cache 用 offscreen capture は別条件で弱い。
+- **実装（今回）**:
+  - [exportComposite.ts](src/runtime/exportComposite.ts) / [DomRenderer.ts](src/runtime/DomRenderer.ts) — `hasThreeDContent()` 追加。threeD レイヤーがあるフレームは root 一括 foreignObject 高速経路を使わず per-layer perspective capture へ。
+  - [rasterCapture.ts](src/runtime/rasterCapture.ts) — `inlineVideoFrames` の寸法フォールバック強化。decode 未完了 video は clone から **除去**（黒矩形で下層を覆い隠すのを防止）。
+  - [compFrameCapture.ts](src/runtime/compFrameCapture.ts) — `primeMountedVideos` + `flushVideoFrames(4000)` で offscreen video decode 待ちを延長。
+  - [ramPreview.ts](src/editor/ramPreview.ts) — キャッシュ PNG は常に `textQuality: "precise"`。`shouldPreferCacheOverlay(isPlaying)` 追加（ビルド進捗 <50% の再生中は overlay を使わず flicker 抑制）。
+  - [PreviewPanel.tsx](src/editor/panels/PreviewPanel.tsx) — overlay 経路を `shouldPreferCacheOverlay` に接続。live フォールバック時は stale overlay `src` を除去。
+- **検証**: `npm run typecheck` 緑 / `test/previewCache.test.ts` 16 緑 / `npm run build:player` 実行済み。`probe-cache-wonky.mjs` で `w3_overlayToggles` **3→0**（ちらつき改善）。**未解決**: Comp 10 `probe-comp10-capture-bisect` の full capture 依然 `inkRatio≈0.05`（video + 複合 comp の capture parity）。draft 単体 text capture も低 ink のまま。
+- **Next steps**: (1) offscreen `compFrameCapture` の video フレーム inline を `verify-video-export` 同等まで引き上げ。(2) draft テキストの foreignObject 非対応を canvas 焼き or precise 強制で閉じる。(3) `probe-cache-real` の Comp 19/20 大乖離（ネスト precomp）を precomp raster 経路で追跡。

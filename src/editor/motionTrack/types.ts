@@ -1,5 +1,10 @@
 import type { Frame, Vec3 } from "../../core/schema";
 
+export type TrackMode = "position" | "rotation" | "both";
+
+/** [qx, qy, qz, qw] — rotation-only 推定器の出力。 */
+export type RawQuaternion = [number, number, number, number];
+
 /** QUAR TrackerHandle process_frame の translation（カメラ運動・+z 前方）。 */
 export type RawTranslation = [number, number, number];
 
@@ -27,6 +32,24 @@ export interface TrackProgress {
 export interface TrackResult {
   poses: RawPose[];
   smoothed: RawTranslation[];
+}
+
+export interface RawRotationPose {
+  frame: Frame;
+  rotation: RawQuaternion | null;
+  inlierRatio: number;
+  residual: number;
+  processMs: number;
+}
+
+export interface RotationTrackResult {
+  poses: RawRotationPose[];
+  smoothed: RawQuaternion[];
+}
+
+export interface RotationTrackOptions extends TrackOptions {
+  /** ピンホール焦点距離（px）。fx = fy = focalLength。 */
+  focalLength: number;
 }
 
 export interface MotionTrackWorkerInit {
@@ -84,3 +107,60 @@ export interface ApplyMotionTrackParams {
   bakeEnd: Frame;
   clearExpression: boolean;
 }
+
+export interface ApplyRotationTrackParams {
+  baselineRotation: Vec3;
+  rotationsByFrame: Map<Frame, Vec3>;
+  bakeStart: Frame;
+  bakeEnd: Frame;
+  clearExpression: boolean;
+}
+
+export interface RotationTrackWorkerInit {
+  type: "init";
+  opencvUrl: string;
+}
+
+export interface RotationTrackWorkerFrame {
+  type: "frame";
+  idx: number;
+  data: ArrayBuffer;
+  w: number;
+  h: number;
+  focalLength: number;
+  reset: boolean;
+}
+
+export interface RotationTrackWorkerDispose {
+  type: "dispose";
+}
+
+export type RotationTrackWorkerRequest =
+  | RotationTrackWorkerInit
+  | RotationTrackWorkerFrame
+  | RotationTrackWorkerDispose;
+
+export interface RotationTrackWorkerReady {
+  type: "ready";
+  initMs: number;
+}
+
+export interface RotationTrackWorkerRotation {
+  type: "rotation";
+  idx: number;
+  rotation: RawQuaternion | null;
+  inlierRatio: number;
+  residual: number;
+  processMs: number;
+  error?: string;
+}
+
+export interface RotationTrackWorkerError {
+  type: "error";
+  message: string;
+}
+
+export type RotationTrackWorkerResponse =
+  | RotationTrackWorkerReady
+  | RotationTrackWorkerRotation
+  | RotationTrackWorkerError;

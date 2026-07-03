@@ -1,7 +1,7 @@
 import type { Project, SceneObject, TimelineComposition, Vec3 } from "../../core/schema";
 import { isPropExpressed } from "../../core/props";
 import type { AnimatedProp } from "../../core/schema";
-import type { ApplyMotionTrackParams } from "./types";
+import type { ApplyMotionTrackParams, ApplyRotationTrackParams } from "./types";
 
 const LINEAR = { type: "linear" as const };
 
@@ -72,4 +72,108 @@ export function applyMotionTrackToProject(
 
 export function targetHasPositionExpression(target: SceneObject): boolean {
   return isPropExpressed(target.transform.position);
+}
+
+export function bakeRotationKeyframes(
+  rotation: AnimatedProp<Vec3>,
+  params: ApplyRotationTrackParams,
+): AnimatedProp<Vec3> {
+  const { rotationsByFrame, bakeStart, bakeEnd, clearExpression } = params;
+  const kept = rotation.keyframes.filter((kf) => kf.frame < bakeStart || kf.frame >= bakeEnd);
+  const baked = [...rotationsByFrame.entries()]
+    .filter(([f]) => f >= bakeStart && f < bakeEnd)
+    .map(([frame, value]) => ({ frame, value, easing: LINEAR }))
+    .sort((a, b) => a.frame - b.frame);
+  const merged = [...kept, ...baked].sort((a, b) => a.frame - b.frame);
+  const baseValue = merged.length > 0 ? merged[0]!.value : params.baselineRotation;
+  let next: AnimatedProp<Vec3> = { value: baseValue, keyframes: merged };
+  if (clearExpression && rotation.expression) {
+    const { expression: _ex, ...rest } = next;
+    next = rest;
+  }
+  return next;
+}
+
+export function applyRotationTrackToObject(
+  target: SceneObject,
+  params: ApplyRotationTrackParams,
+): SceneObject {
+  const rot = bakeRotationKeyframes(target.transform.rotation, params);
+  return {
+    ...target,
+    transform: {
+      ...target.transform,
+      rotation: rot,
+    },
+  };
+}
+
+export function applyRotationTrackToProject(
+  project: Project,
+  compId: string,
+  targetId: string,
+  params: ApplyRotationTrackParams,
+): { before: Project; after: Project } {
+  const before = project;
+  const comp = before.compositions.find((c) => c.id === compId && c.kind === "timeline") as
+    | TimelineComposition
+    | undefined;
+  if (!comp) throw new Error("composition not found");
+  const target = comp.objects.find((o) => o.id === targetId);
+  if (!target) throw new Error("target object not found");
+
+  const updated = applyRotationTrackToObject(target, params);
+  const after: Project = {
+    ...before,
+    compositions: before.compositions.map((c) => {
+      if (c.id !== compId || c.kind !== "timeline") return c;
+      return {
+        ...c,
+        objects: c.objects.map((o) => (o.id === targetId ? updated : o)),
+      };
+    }),
+  };
+  return { before, after };
+}
+
+export function applyCombinedTrackToObject(
+  target: SceneObject,
+  positionParams: ApplyMotionTrackParams,
+  rotationParams: ApplyRotationTrackParams,
+): SceneObject {
+  const withPosition = applyMotionTrackToObject(target, positionParams);
+  return applyRotationTrackToObject(withPosition, rotationParams);
+}
+
+export function applyCombinedTrackToProject(
+  project: Project,
+  compId: string,
+  targetId: string,
+  positionParams: ApplyMotionTrackParams,
+  rotationParams: ApplyRotationTrackParams,
+): { before: Project; after: Project } {
+  const before = project;
+  const comp = before.compositions.find((c) => c.id === compId && c.kind === "timeline") as
+    | TimelineComposition
+    | undefined;
+  if (!comp) throw new Error("composition not found");
+  const target = comp.objects.find((o) => o.id === targetId);
+  if (!target) throw new Error("target object not found");
+
+  const updated = applyCombinedTrackToObject(target, positionParams, rotationParams);
+  const after: Project = {
+    ...before,
+    compositions: before.compositions.map((c) => {
+      if (c.id !== compId || c.kind !== "timeline") return c;
+      return {
+        ...c,
+        objects: c.objects.map((o) => (o.id === targetId ? updated : o)),
+      };
+    }),
+  };
+  return { before, after };
+}
+
+export function targetHasRotationExpression(target: SceneObject): boolean {
+  return isPropExpressed(target.transform.rotation);
 }
