@@ -62,6 +62,24 @@ export async function inlineCanvasBitmaps(cloned: HTMLElement, source: HTMLEleme
  * SVG foreignObject は <video> を描画できずブラウザのプレイヤー UI が出るため。
  * flushVideoFrames 済み前提（ここでは二重 wait しない）。表示サイズで JPEG 化して export を軽くする。
  */
+function videoInlineDimensions(video: HTMLVideoElement): { dw: number; dh: number } {
+  let dw = video.clientWidth > 0 ? Math.round(video.clientWidth) : video.videoWidth;
+  let dh = video.clientHeight > 0 ? Math.round(video.clientHeight) : video.videoHeight;
+  if (dw <= 0 || dh <= 0) {
+    const sw = parseInt(video.style.width, 10);
+    const sh = parseInt(video.style.height, 10);
+    if (sw > 0) dw = sw;
+    if (sh > 0) dh = sh;
+  }
+  if (dw <= 0 || dh <= 0) {
+    const aw = parseInt(video.getAttribute("width") ?? "", 10);
+    const ah = parseInt(video.getAttribute("height") ?? "", 10);
+    if (aw > 0) dw = aw;
+    if (ah > 0) dh = ah;
+  }
+  return { dw, dh };
+}
+
 export function inlineVideoFrames(cloned: HTMLElement, source: HTMLElement): void {
   const sources = [...source.querySelectorAll("video")];
   const clones = [...cloned.querySelectorAll("video")];
@@ -69,9 +87,12 @@ export function inlineVideoFrames(cloned: HTMLElement, source: HTMLElement): voi
     const node = clones[i];
     const srcVideo = sources[i];
     if (!(node instanceof HTMLVideoElement) || !(srcVideo instanceof HTMLVideoElement)) continue;
-    const dw = srcVideo.clientWidth > 0 ? Math.round(srcVideo.clientWidth) : srcVideo.videoWidth;
-    const dh = srcVideo.clientHeight > 0 ? Math.round(srcVideo.clientHeight) : srcVideo.videoHeight;
-    if (dw <= 0 || dh <= 0) continue;
+    const { dw, dh } = videoInlineDimensions(srcVideo);
+    if (dw <= 0 || dh <= 0) {
+      // decode 未完了の <video> を foreignObject に残すと黒矩形で下層を覆い隠す。
+      node.remove();
+      continue;
+    }
     const canvas = document.createElement("canvas");
     canvas.width = dw;
     canvas.height = dh;

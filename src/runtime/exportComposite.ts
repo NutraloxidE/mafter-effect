@@ -84,6 +84,8 @@ export interface ExportCompositeSource {
   hasCssBlendLayers(): boolean;
   /** 現フレームに「再帰合成が必要なネスト comp」があるか（高速経路を外す判定）。 */
   hasNestedComposite(): boolean;
+  /** 現フレームに threeD レイヤーがあるか（高速経路を外す判定）。 */
+  hasThreeDContent(): boolean;
 }
 
 function makeCanvas(w: number, h: number): HTMLCanvasElement {
@@ -277,8 +279,14 @@ export async function compositeExportFrame(
   const root = src.getRoot();
   if (!root) throw new Error("compositeExportFrame: no root");
 
-  // 高速経路: 調整も blend も再帰合成も無いフレームは root を 1 枚 capture（全レイヤ・3D・perspective 保持）。
-  if (!src.hasAdjustmentLayers() && !src.hasCssBlendLayers() && !src.hasNestedComposite()) {
+  // 高速経路: 調整 / blend / 再帰合成 / threeD が無いフレームは root を 1 枚 capture。
+  // threeD は per-layer perspective capture が必要（root 一括 foreignObject は 3D を潰す）。
+  if (
+    !src.hasAdjustmentLayers()
+    && !src.hasCssBlendLayers()
+    && !src.hasNestedComposite()
+    && !src.hasThreeDContent()
+  ) {
     return captureElementToCanvas(root, nw, nh, bg, w, h);
   }
 

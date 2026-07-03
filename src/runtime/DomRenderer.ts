@@ -464,14 +464,14 @@ export class DomRenderer implements Renderer {
   }
 
   /** export 前に video seek / decode 完了を待つ（foreignObject は video を描けない）。 */
-  async flushVideoFrames(): Promise<void> {
+  async flushVideoFrames(timeoutMs?: number): Promise<void> {
     if (!this.root) return;
     const videos = [...this.root.querySelectorAll("video")];
     if (videos.length === 0) return;
     await Promise.all(videos.map((v) => {
       const raw = v.getAttribute(EXPORT_VIDEO_TARGET_ATTR);
       const target = raw !== null && raw !== "" ? Number(raw) : undefined;
-      return waitForVideoFrame(v, Number.isFinite(target) ? target : undefined);
+      return waitForVideoFrame(v, Number.isFinite(target) ? target : undefined, timeoutMs);
     }));
   }
 
@@ -785,6 +785,18 @@ export class DomRenderer implements Renderer {
   /** §23.3d — 現フレームに「再帰合成が必要なネスト comp」があるか（exportComposite の経路選択用）。 */
   hasNestedComposite(): boolean {
     return this.frameHasNestedComposite;
+  }
+
+  /**
+   * §6.5b / §28 — 現フレームに threeD レイヤーがあるか。
+   * root 一括 foreignObject capture（高速経路）は 3D 層を潰すため、true のときは
+   * exportComposite の per-layer perspective capture を使う。
+   */
+  hasThreeDContent(): boolean {
+    for (const e of this.entries.values()) {
+      if (e.threeD && !e.isAdjustment) return true;
+    }
+    return false;
   }
 
   /** §27.4.1 — exportComposite 用の z 昇順レイヤ列。調整レイヤーは effect chain 付き。 */

@@ -146,7 +146,9 @@ export async function captureCompFramePng(
   ctx.renderer.renderFrame(resolve(comp, frame, { expressions: ctx.evaluator }), frame);
   // レイヤ直付け raster の完了のみ待つ。調整合成は compositeExportFrame が行う。
   await ctx.renderer.flushRasterEffects();
-  await ctx.renderer.flushVideoFrames();
+  // オフスクリーン初回 decode は preview より遅いことがあるため余裕を持って待つ。
+  await ctx.renderer.primeMountedVideos(comp.fps, 4000);
+  await ctx.renderer.flushVideoFrames(4000);
   await nextTick();
   const bg = compBackground(comp);
   const canvas = await compositeExportFrame(ctx.renderer, ctx.nw, ctx.nh, ctx.nw, ctx.nh, bg);

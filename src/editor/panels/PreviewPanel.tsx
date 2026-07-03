@@ -224,7 +224,7 @@ export function PreviewPanel() {
       previewOverrideRef.current !== null ||
       draftTransformRef.current !== null ||
       previewCameraOverride !== null;
-    const preferCache = !editingLive && (ram?.shouldPreferCacheDisplay() ?? false);
+    const preferCache = !editingLive && (ram?.shouldPreferCacheOverlay(isPlayingRef.current) ?? false);
     const resolveCtx = {
       expressions: evaluatorRef.current,
       previewCamera: previewCameraOverride ?? undefined,
@@ -258,6 +258,7 @@ export function PreviewPanel() {
       return;
     }
     setUseCachedFrame(false);
+    if (cacheOverlayRef.current) cacheOverlayRef.current.removeAttribute("src");
     if (isPlayingRef.current) ram?.notePlaybackFrame(false);
     const t0 = performance.now();
     renderer.renderFrame(
@@ -493,7 +494,7 @@ export function PreviewPanel() {
     if (draftPlaybackActive) return;
 
     const ram = previewCacheService.getController();
-    const preferCache = !editingLive && (ram?.shouldPreferCacheDisplay() ?? false);
+    const preferCache = !editingLive && (ram?.shouldPreferCacheOverlay(isPlayingRef.current) ?? false);
 
     const afterLiveRender = () => {
       if (editingLive) return;
@@ -530,6 +531,7 @@ export function PreviewPanel() {
         return;
       }
       setUseCachedFrame(false);
+      if (cacheOverlayRef.current) cacheOverlayRef.current.removeAttribute("src");
       if (isPlaying) ram?.notePlaybackFrame(false);
       const t0 = performance.now();
       rendererRef.current!.renderFrame(

@@ -170,6 +170,17 @@ export class RamPreviewController {
     return !this.detector.isRealtimeCapable(this.config.comp.fps);
   }
 
+  /**
+   * 再生中に cached overlay と live を頻繁に切り替えない。
+   * ビルド途中（カバー率 < 50%）は live のままにして flicker を抑える。
+   */
+  shouldPreferCacheOverlay(isPlaying: boolean): boolean {
+    if (!this.shouldPreferCacheDisplay()) return false;
+    if (!isPlaying) return true;
+    if (this.buildTotal <= 0) return true;
+    return this.buildProgress >= this.buildTotal * 0.5;
+  }
+
   /** スクラブで live 表示したフレームを最優先でキャッシュ。 */
   cacheScrubbedFrame(frame: number): void {
     this.enqueueFrame(frame, "scrub");
@@ -347,7 +358,8 @@ export class RamPreviewController {
       this.config.project,
       this.config.comp.id,
       this.fs,
-      { textQuality: this.config.quality, proxyScale: this.config.proxyScale, proxyMaxDim },
+      // キャッシュ PNG は live preview との parity を優先し、常に precise テキストで焼く。
+      { textQuality: "precise", proxyScale: this.config.proxyScale, proxyMaxDim },
       // §28.11 — comp 全体キャッシュもライブと同じ rasterizer でネスト comp を焼き、一致させる。
       precompRasterService.rasterizer,
     );
