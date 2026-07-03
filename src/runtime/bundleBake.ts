@@ -4,6 +4,7 @@ import type { FileSystem } from "../fs/FileSystem";
 import { captureCompFramePng, createCompFrameCaptureContext } from "./compFrameCapture";
 import { componentNeedsBake } from "./bundleCollect";
 import type { ProgressCallback } from "./exporter";
+import { resolveExportVideoEncode } from "./exportVideoEncode";
 
 export interface BakeTarget {
   compId: string;
@@ -66,6 +67,7 @@ async function encodePngSequenceToWebm(
   w: number,
   h: number,
   fps: number,
+  config: ExportConfig,
 ): Promise<Uint8Array> {
   if (typeof VideoEncoder === "undefined") {
     throw new Error("WebCodecs unavailable for bake");
@@ -81,13 +83,15 @@ async function encodePngSequenceToWebm(
     error: (e) => { throw e; },
   });
 
+  const encode = resolveExportVideoEncode(config);
   await encoder.configure({
     codec: "vp09.00.10.08",
     width: w,
     height: h,
-    bitrate: 8_000_000,
+    bitrate: encode.bitrate,
     framerate: fps,
     alpha: "keep",
+    ...(encode.latencyMode ? { latencyMode: encode.latencyMode } : {}),
   });
 
   const usDuration = Math.round(1_000_000 / fps);
@@ -148,7 +152,7 @@ export async function bakeLayerToWebm(
     ctx.dispose();
   }
 
-  const webm = await encodePngSequenceToWebm(frames, w, h, config.fps);
+  const webm = await encodePngSequenceToWebm(frames, w, h, config.fps, config);
   const bakedPath = `assets/baked/${target.objectId}.webm`;
   const assetId = `baked_${target.objectId}`;
 

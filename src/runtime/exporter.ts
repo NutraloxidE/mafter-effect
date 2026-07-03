@@ -19,6 +19,7 @@ import { compositeExportFrame } from "./exportComposite";
 import { collectFootageAudioSources, scheduleGainAutomation } from "./footageAudio";
 import { collectFadeClips, computeFadeSuppression, fadeSec, isAutoFadeEnabled, scheduleDeclickRamps } from "./footageAutoFade";
 import { resolveFootageAudioPath } from "./footagePlayback";
+import { resolveExportVideoEncode } from "./exportVideoEncode";
 
 export type ExportPhase = "prepare" | "render" | "encode" | "audio" | "bake" | "pack" | "done" | "error";
 
@@ -267,7 +268,7 @@ async function runMp4(
   comp: TimelineComposition,
   renderer: DomRenderer,
   evaluator: ExpressionEvaluator | undefined,
-  _config: ExportConfig,
+  config: ExportConfig,
   startFrame: number,
   totalFrames: number,
   nw: number, nh: number, w: number, h: number,
@@ -293,14 +294,16 @@ async function runMp4(
   const videoEncoder = createVideoEncoder((chunk, meta) => {
     muxer.addVideoChunk(chunk, meta);
   });
+  const encode = resolveExportVideoEncode(config);
   try {
     await configureVideoEncoder(videoEncoder.encoder, {
       // AVC level は解像度に合わせて選ぶ。固定 3.1 だと 1080p で coded-area 超過エラーになる。
       codec: avcCodecString(w, h, fps),
       width: w,
       height: h,
-      bitrate: 8_000_000,
+      bitrate: encode.bitrate,
       framerate: fps,
+      ...(encode.latencyMode ? { latencyMode: encode.latencyMode } : {}),
     });
 
     await encodeVideoFrames(
@@ -355,14 +358,16 @@ async function runWebm(
   const videoEncoder = createVideoEncoder((chunk, meta) => {
     muxer.addVideoChunk(chunk, meta);
   });
+  const encode = resolveExportVideoEncode(config);
   try {
     await configureVideoEncoder(videoEncoder.encoder, {
       codec: "vp09.00.10.08",
       width: w,
       height: h,
-      bitrate: 8_000_000,
+      bitrate: encode.bitrate,
       framerate: fps,
       alpha: config.alpha ? "keep" : "discard",
+      ...(encode.latencyMode ? { latencyMode: encode.latencyMode } : {}),
     });
 
     await encodeVideoFrames(

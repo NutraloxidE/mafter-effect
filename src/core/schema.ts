@@ -254,7 +254,9 @@ export interface Project {
 
 export const CURRENT_SCHEMA_VERSION = 1 as const;
 
-// §11.2 ExportConfig — browser best-effort エクスポート設定。
+// §11.2 ExportConfig — browser best-effort エクスポート設定（セッション用・project.json 非直列化）。
+export type ExportVideoQuality = "low" | "medium" | "high" | "max" | "custom";
+
 export interface ExportConfig {
   range: [Frame, Frame];
   fps: number;
@@ -265,4 +267,13 @@ export interface ExportConfig {
   textRenderMode?: "precise" | "draft";
   /** §11.7 html-bundle のみ。true=ループ再生 / false=1回再生。未指定時 true。 */
   bundleLoop?: boolean;
+  /** 映像エンコード品質プリセット。未指定 = "high"（bitrate 8_000_000）。mp4/webm / bundle bake のみ。 */
+  videoQuality?: ExportVideoQuality;
+  /** bps。`videoQuality === "custom"` のとき使用。clamp 50_000..50_000_000。 */
+  videoBitrate?: number;
+  /**
+   * WebCodecs `latencyMode`。未指定 = フィールドを渡さない（ブラウザ既定）。
+   * "quality" = 画質優先 / "realtime" = 速度優先。
+   */
+  encodeLatencyMode?: "quality" | "realtime";
 }

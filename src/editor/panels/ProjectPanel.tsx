@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { ExportDialog } from "../ExportDialog";
+import { ExportDialog, type ExportDialogMode } from "../ExportDialog";
 import { useEditorStore } from "../store";
 import { exportZip, exportProjectZip, importZip, type ZipExportProgress } from "../../fs/zip";
 import { globalPluginRegistry } from "../../runtime/pluginRegistry";
@@ -45,7 +45,7 @@ export function ProjectPanel() {
   const imageInput = useRef<HTMLInputElement>(null);
   const videoInput = useRef<HTMLInputElement>(null);
 
-  const [showExport, setShowExport] = useState(false);
+  const [exportMode, setExportMode] = useState<ExportDialogMode | null>(null);
   /** §20.4b: 現在プロジェクトを破棄する操作の保存確認（New / zip インポート） */
   const [discardConfirmAction, setDiscardConfirmAction] = useState<"new" | "import" | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -183,13 +183,20 @@ export function ProjectPanel() {
           <input ref={fileInput} type="file" accept=".zip" style={{ display: "none" }}
             onChange={(e) => { const f = e.target.files?.[0]; if (f) void onImportZip(f); e.target.value = ""; }} />
         </div>
-        <div style={{ marginTop: 4 }}>
+        <div style={{ marginTop: 4, display: "flex", gap: 4 }}>
           <button
-            onClick={() => setShowExport(true)}
+            onClick={() => setExportMode("download")}
             disabled={!project || !compId}
-            style={{ ...btnStyle, background: "#2a4a3a", color: "#8da", borderColor: "#4a7a5a", width: "100%" }}
+            style={{ ...btnStyle, background: "#2a4a3a", color: "#8da", borderColor: "#4a7a5a", flex: 1 }}
           >
-            ▶ Export Video…
+            ▶ Export…
+          </button>
+          <button
+            onClick={() => setExportMode("prerender")}
+            disabled={!project || !compId}
+            style={{ ...btnStyle, background: "#2a3a4a", color: "#8ad", borderColor: "#4a6a7a", flex: 1 }}
+          >
+            Pre-render…
           </button>
         </div>
       </div>
@@ -278,12 +285,13 @@ export function ProjectPanel() {
         )}
       </div>
 
-      {/* Export Dialog */}
-      {showExport && project && (
+      {/* Export / Pre-render Dialog */}
+      {exportMode && project && compId && (
         <ExportDialog
           project={project}
           compId={compId}
-          onClose={() => setShowExport(false)}
+          mode={exportMode}
+          onClose={() => setExportMode(null)}
         />
       )}
 

@@ -686,13 +686,38 @@ interface ExportConfig {
   range: [Frame, Frame];
   fps: number;
   scale: number;                 // 解像度倍率
-  format: "webm" | "mp4" | "png-seq" | "gif";
+  format: "mp4" | "webm" | "png-seq" | "html-bundle";
   alpha: boolean;                // 透過（webm/vp9 alpha or png-seq）
+  textRenderMode?: "precise" | "draft"; // §26.7。未指定時 precise
+  bundleLoop?: boolean;          // html-bundle のみ。未指定時 true
+  /** 映像エンコード品質プリセット。未指定 = "high"（bitrate 8_000_000・現行互換）。mp4/webm / bundle bake のみ。 */
+  videoQuality?: "low" | "medium" | "high" | "max" | "custom";
+  /** bps。`videoQuality === "custom"` のとき使用。clamp 50_000..50_000_000。未指定 custom は 8_000_000。 */
+  videoBitrate?: number;
+  /**
+   * WebCodecs `latencyMode`。未指定 = フィールドを渡さない（ブラウザ既定・現行互換）。
+   * "quality" = 画質優先 / "realtime" = 速度優先。
+   */
+  encodeLatencyMode?: "quality" | "realtime";
 }
 ```
 
+- **映像品質プリセット（確定）**: `low`=1 Mbps / `medium`=4 Mbps / `high`=8 Mbps（既定）/ `max`=20 Mbps / `custom`=`videoBitrate`。未指定フィールドは現行どおり 8 Mbps・`latencyMode` 未設定。ピクセル解決（`resolve` → raster）は不変で、変わるのは WebCodecs エンコード段のみ（INV-2 の scene 一致は維持）。
 - **成功条件はここ（M3）で満たされる**: browser best-effort で 5 秒尺を webm/mp4/連番に書き出せれば「アーティストが公開できる」が成立する。
 - **音声の mux（確定）**: 映像フレームを決定論ステップで描き終えた後、`audio` レイヤ群を各自の `trimStart`/タイムライン配置と `gain` に従って **ffmpeg で mux**（png-seq/webm/mp4 へ）。音声はフレームステップせず元ソースをオフセット合成する。
+
+### §11.2b Pre-render（editor-only）
+
+編集の軽量化・表現の確定・低 bitrate のエンコード表現をタイムラインに固定するための操作。**INV / `project.json` 直列化規則は非変更**（既存の `enabled` / `locked` / video asset / `zOrder` のみ）。
+
+1. アクティブ timeline comp を §11.2 と同じ `ExportConfig` で **mp4 / webm のみ**エンコードする（現状の見た目そのまま＝ロック層も含めて焼く）。
+2. 書き出し blob を `assets/<ulid>.mp4|webm` に書き、`project.assets` に video として登録する。登録先は Project パネルのルート直下フォルダ **`pre-rendered`**（無ければ作成。既存なら再利用。`asset.binId` + `treeOrder`）。
+3. **ロックされていないレイヤー**をタイムライン全体で `enabled=false`（§21.11 の一括非表示と同契約。ロック済みの `enabled` は変えない）。
+4. コンポ **最上段**（`nextZOrder`）に video レイヤーを置く（`fit: "fill"`、`inPoint`/`outPoint` = export `range`）。
+5. 上記 2–4（フォルダ作成含む）は **1 command / 1 undo**（label: `"Pre-render"`）。ファイルダウンロードはしない。
+6. UI 既定: format=mp4、`videoQuality: "max"`（実用上の劣化最小。ロスレス容器は video レイヤー化できないため非対応）。ガビガビ表現時は Low / Custom に下げる。
+7. ロックしたまま残したレイヤーに音声があると、焼き込み音声と二重になり得る（ユーザー責任。自動ミュートしない）。
+8. PNG-seq フォールバック時は Pre-render 失敗（video asset 化できない）。
 
 ### §11.4 video コンポーネント（MVP / best-effort）
 
@@ -922,7 +947,8 @@ SSoT 違反を避けるため、scope と正準性を分離する:
 | watermark（raster 出力, §29.2） | 将来（MVP 後・依存: raster export=M3） |
 | tier ゲート（bundle=§11.7 / headless=M3.5 / native=§14, §29.3） | 将来（MVP 後・依存: §11.7 / M3.5 / §14） |
 | Motion Track from footage — 並進（§16.1 Phase 1a・editor-only WASM VO） | **実装済み（2026-07 Phase 1a）** |
-| Motion Track 回転推定（§16.1 Phase 1b-a・editor-only） | **実装中（2026-07 Phase 1b）** |
+| Motion Track 回転推定（§16.1 Phase 1b-a・editor-only） | **実装済み（2026-07 Phase 1b-a）** |
+| Motion Track 追跡範囲 ROI（§16.1 Phase 1c・mask） | **実装済み（2026-07 Phase 1c）** |
 | Motion Track POI / zoom・COLMAP/Blender カメラ import | 将来（§16.1 Phase 1b-b / Phase 2） |
 
 ---
@@ -945,6 +971,7 @@ video レイヤーのフッテージから単眼 visual odometry（vendored WASM
 - **zoom — Phase 1b-b**: camera component の `zoom` への KF ベイク。zoom とドリーは単眼で原理的に不可分のため、解釈はモード選択でユーザーが指定する。
 - 対応点抽出は vendored OpenCV.js（`calcOpticalFlowPyrLK` 等、Apache-2.0、`public/motion-track/opencv/`、PROVENANCE.md 併置）を worker 内 lazy load。QUAR `inlier_points()` は inlier **件数**のみ返し座標ペアは供給しない（2026-07 Phase 0b スパイク実測）。いずれも **editor-only・Track Motion 実行時のみ**。メインバンドル・player.js・Web bundle export（§11.7）非同梱（Phase 1a と同一境界）。
 - ローリングシャッター・強いモーションブラー・画面の大半を占める動体では破綻しうる。冒頭数フレーム（warmup）は frame 0 をホールド。
+- **追跡範囲（ROI）— Phase 1c**: Inspector Video の Motion Track で正規化矩形（プリセット / カスタム）を指定できる。フレーム抽出後に ROI 外を黒塗り（mask）し、画像サイズは変えない（回転推定の主点を維持）。セッション UI 状態のみで `project.json` には永続しない。人が多いシーンでは背景側の ROI を指定すると安定しやすい。
 - 「AE 3D Camera Tracker 級」の本格ソルブは Phase 2 の外部 import（COLMAP / Blender camera, §6.5 の ImporterDef 経路）で扱う。本機能は「手持ち参考値・ラフパス」の位置づけ。
 
 ---

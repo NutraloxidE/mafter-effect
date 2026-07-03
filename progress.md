@@ -6,6 +6,21 @@
 
 ---
 
+### 2026-07-04（Cursor）— Motion Track Phase 1c ROI（追跡範囲 mask）✅
+
+- **方針**: crop ではなく **ダウンサンプル後に ROI 外を黒塗り（mask）**。画像サイズ不変 → 回転推定の主点 `w/2,h/2` を維持。Worker API 変更なし。
+- **実装**: `trackRoi.ts`（`normalizeTrackRoi` / `applyRoiMask` / プリセット）+ `frameExtractor` 配線 + `quarTracker` の position/rotation/both 3 経路へ `options.roi` 伝播 + Inspector Video 内 UI（全体/中央/上下左右半分/カスタム %）。
+- **spec**: §16.1 に ROI 1 行 + §16 テーブル更新（§5/INV 不変）。
+- **検証**: `test/motionTrackRoi.test.ts` 純関数テスト。`npm test` motion track 系 + typecheck。
+- **次**: Phase 1b-b（two-node POI + zoom）は実写フィードバック後。Preview 上 ROI ドラッグは Phase 1d。
+
+### 2026-07-04（Cursor）— Export 品質選択 + Pre-render ✅
+
+- **Phase 1（品質）**: `ExportConfig` に任意 `videoQuality` / `videoBitrate` / `encodeLatencyMode`（未指定 = 8 Mbps・latencyMode なし＝現行互換）。`exportVideoEncode.ts` 純関数 → `exporter` mp4/webm + `bundleBake`。ExportDialog に Quality / Bitrate / Encode UI。
+- **Phase 2（Pre-render）**: ProjectPanel で Export 右に **Pre-render…**。同じダイアログ `mode: "prerender"`（既定 mp4 + Max 20 Mbps、DL なし）。書き出し後 `applyPreRenderToProject` で未ロック全体 `enabled=false` + 最上段 video（`fit: fill`、range = export range）を **1 undo**。成果物 asset はルート直下フォルダ **`pre-rendered`**（無ければ作成・既存再利用）。
+- **spec**: §11.2 ExportConfig 更新 + **§11.2b Pre-render**（editor-only・§5/INV 不変）。
+- **検証**: `tsc` 緑。新規 unit `exportVideoEncode` 6 + `preRender` 2 PASS。`npm test` **717 PASS**（`projectBins` の treeOrder 1 件失敗は pre-existing・本変更無関係）。`build:player` 不要。
+
 ### 2026-07-03（Cursor）— Motion Track Phase 1b-a 回転ベイク ✅（DG-20260703-01 worktree → main マージ）
 
 - **委任**: `cursor-agent`（worktree `cursor-motion-track-1ba-20260703`）— エージェントは ~46 分ハングしたが worktree 実装は完了済み。ユーザー承認で main に手動マージ。
