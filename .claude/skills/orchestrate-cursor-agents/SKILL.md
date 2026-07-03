@@ -23,16 +23,30 @@ description: Claude Code が cursor-agent CLI で Cursor Agent（--model auto）
 
 **使わない**: spec / INV / §5 スキーマが未確定、ユーザーが委任を明示していない（自発的に Cursor を起動しない）。
 
+## 追跡レジストリ（Claude セッション跨ぎの正本）
+
+**委任の状態・worktree パス・chatId は [`.cursor/delegations/registry.json`](mdc:.cursor/delegations/registry.json) が正本。** progress.md は散文の履歴、registry は機械可読な台帳。
+
+セッション開始時（委任関連タスクの有無確認）:
+
+```powershell
+node .claude/skills/delegate-to-cursor/scripts/delegation.mjs list --active
+```
+
+各委任は **DG-ID**（`DG-YYYYMMDD-NN`）で識別。起動前に `new`、各フェーズで `update`、完了で `merged`。詳細手順は [delegate-to-cursor](../delegate-to-cursor/SKILL.md) が正本。
+
 ## 前提（起動前に 1 回確認）
 
 ```powershell
 cursor-agent status
 cursor-agent models
+node .claude/skills/delegate-to-cursor/scripts/delegation.mjs list --active
 ```
 
 - 未ログイン → ユーザーに `cursor-agent login` を依頼してから再開。
 - 実装モデルは **`auto`**（Cursor がタスクに応じてモデルを選択）。**`--model` を省略しない**（CLI デフォルトは composer-2.5-fast 等になり得る）。
 - リポジトリルートを cwd にする（`.cursor/rules` と `.claude/skills` が効く）。
+- **`pending_review` / `review_failed` の DG-ID がある** → 新規起動より先にレビュー or resume を優先。
 
 ## CLI 形式（headless 実行）
 
@@ -91,7 +105,8 @@ Cursor 側にも `.cursor/rules` は効くが、**重要制約はプロンプト
 - §5 スキーマ・project.json 直列化形式・INV の変更はしない（曖昧なら止めて報告）
 - spec/CLAUDE.md を勝手に改変しない（散文追記のみで済む場合はユーザー確認）
 - 実装ループ: .claude/skills/implementation-loop/SKILL.md を読んでから着手
-- progress.md 末尾に (Cursor 委任) で 1 行追記
+- progress.md 末尾に `(Cursor 委任) DG-YYYYMMDD-NN <要約>` を 1 行追記
+- registry: `node .claude/skills/delegate-to-cursor/scripts/delegation.mjs update <DG-id> --status ...` で各フェーズを記録
 
 <stop>: 仕様が曖昧・設計判断が必要・テストが通らない原因がアーキテクチャ変更 → 変更を最小に留め、ブロッカーを箇条書きで報告して止める。
 ```
@@ -99,11 +114,11 @@ Cursor 側にも `.cursor/rules` は効くが、**重要制約はプロンプト
 ## パターン A — 単発委任
 
 1. タスクが spec 確定済みか確認（未確定なら Claude が先に spec を固める）。
-2. worktree 名は **`cursor-<topic>-<YYYYMMDD>`**（例: `cursor-video-warmup-20260702`）。
-3. 上記 CLI で起動。完了までブロック（長時間なら `block_until_ms` を十分に）。
-4. worktree パスを出力から控える → **レビューゲート**（下記）→ ユーザーにマージ確認。
+2. **`delegation.mjs new`** で DG-ID 発行 + worktree 名確定（`cursor-<topic>-<YYYYMMDD>`）。
+3. `update --status running` → 上記 CLI で起動（**`--output-format json`** で chatId 保存推奨）。
+4. 完了後 `update --status pending_review --chat-id ... --worktree-path ...` → **レビューゲート** → ユーザーにマージ確認。
 
-詳細の最小手順は [delegate-to-cursor](../delegate-to-cursor/SKILL.md) と同内容。
+詳細の最小手順は [delegate-to-cursor](../delegate-to-cursor/SKILL.md) が正本。
 
 ## パターン B — 並列 fan-out
 
@@ -207,8 +222,9 @@ git worktree remove <worktree-path>
 
 ## 記録
 
-- 各委任完了: [progress.md](mdc:progress.md) 末尾に `(Cursor 委任) <要約>` 1 行。
-- バッチ: FB-ID ごとに 1 行でも可。
+- **registry（必須）**: [`.cursor/delegations/registry.json`](mdc:.cursor/delegations/registry.json) — 起動前 `new`、各フェーズ `update`、マージ後 `merged`。
+- **progress.md（散文）**: 末尾に `(Cursor 委任) DG-YYYYMMDD-NN <要約>` 1 行（DG-ID 必須）。
+- バッチ: FB-ID ごとに DG-ID 1 本（`new --fb FB-...`）。
 
 ## アンチパターン
 

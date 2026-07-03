@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "delegations": [
+    {
+      "id": "RG-20260703-01",
+      "kind": "reasoning",
+      "status": "closed",
+      "createdAt": "2026-07-03T03:14:02.145Z",
+      "updatedAt": "2026-07-03T03:23:16.425Z",
+      "task": "Motion Track Phase 1b implementation plan",
+      "model": "fable",
+      "claudeModel": "fable",
+      "readonly": true,
+      "specRef": "§16.1",
+      "sessionId": "28df82f0-675e-4348-aac1-31a6f7e27891",
+      "agentId": null,
+      "chatId": null,
+      "handoffPath": "C:/Workspace/mafter-effect/.cursor/delegations/handoffs/RG-20260703-01.md",
+      "parentActions": [],
+      "notes": [
+        {
+          "at": "2026-07-03T03:14:36.967Z",
+          "text": "launching claude -p plan"
+        },
+        {
+          "at": "2026-07-03T03:23:07.259Z",
+          "text": "handback received; plan written"
+        },
+        {
+          "at": "2026-07-03T03:23:16.425Z",
+          "text": "parent summarized to user"
+        }
+      ]
+    }
+  ]
+}

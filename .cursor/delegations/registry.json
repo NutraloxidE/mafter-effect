@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "delegations": [
+    {
+      "id": "DG-20260703-01",
+      "status": "merged",
+      "createdAt": "2026-07-03T12:48:13.801Z",
+      "updatedAt": "2026-07-03T14:11:03.254Z",
+      "task": "Motion Track Phase 1b-a rotation bake",
+      "specRef": "§16.1",
+      "fbId": null,
+      "worktreeName": "cursor-motion-track-1ba-20260703",
+      "worktreePath": null,
+      "baseRef": null,
+      "chatId": null,
+      "model": "auto",
+      "retryCount": 0,
+      "acceptance": [
+        "tsc",
+        "vitest",
+        "verify-motion-track"
+      ],
+      "review": {},
+      "blockers": [],
+      "notes": [
+        {
+          "at": "2026-07-03T12:48:24.446Z",
+          "text": "cursor-agent launched"
+        },
+        {
+          "at": "2026-07-03T13:35:59.192Z",
+          "text": "agent hung ~45min; worktree verify PASS; parent took over"
+        },
+        {
+          "at": "2026-07-03T14:11:03.254Z",
+          "text": "worktree merged to main by user approval"
+        }
+      ]
+    }
+  ]
+}
