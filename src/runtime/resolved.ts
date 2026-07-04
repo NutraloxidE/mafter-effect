@@ -1,4 +1,4 @@
-import type { BlendMode, Frame, ObjectId } from "../core/schema";
+import type { BlendMode, Frame, ObjectId, TrackMatteMode } from "../core/schema";
 import type { Mat4 } from "./mat4";
 
 // §8 resolve() の出力。レンダラはこれだけを受け取る (INV-3)。フラット・兄弟・ネストしない。
@@ -29,6 +29,10 @@ export interface ResolvedObject {
   isNull?: boolean;
   threeD?: boolean; // §5.4b 3D 空間に配置
   mode3d?: "dom" | "raster3d"; // §5.4b 実効描画経路（threeD 時のみ）。resolve で確定
+  /** §5.4f 塗り側トラックマット（有効ペアのみ）。マット非可視フレームでも残る（空マット）。 */
+  trackMatte?: { mode: TrackMatteMode; matteId: ObjectId };
+  /** §5.4f 当該フレームでマット源として描画するが最終合成には出さない。 */
+  isTrackMatteSource?: boolean;
 }
 
 export interface ResolvedScene {

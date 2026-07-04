@@ -141,6 +141,8 @@ export async function captureLayerWithPerspective(
   const cloned = flattenShadow(layerDiv) as HTMLElement;
   cloned.setAttribute("xmlns", XHTML);
   await inlineExportMedia(cloned, layerDiv);
+  // §5.4f: トラックマットは fillHost 内の destination-in/out（マット子を含む）。
+  // クローンにマット子が入っていれば isolation 内 blend が foreignObject で焼ける。
   return rasterizeClonedLayer(cloned, perspective, perspectiveOrigin, nw, nh);
 }
 

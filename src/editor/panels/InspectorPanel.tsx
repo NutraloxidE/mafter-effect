@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { sampleAny, sampleScalar, sampleVec3 } from "../../runtime/interpolate";
-import type { AnimatedProp, BlendMode, Component, Easing, EffectInstance, ExpressionPresetInstance, ParamDescriptor, RGBA, SceneObject, ThreeDMode, Transform, Vec3 } from "../../core/schema";
-import { BLEND_MODES } from "../../core/schema";
+import type { AnimatedProp, BlendMode, Component, Easing, EffectInstance, ExpressionPresetInstance, ParamDescriptor, RGBA, SceneObject, ThreeDMode, TrackMatteMode, Transform, Vec3 } from "../../core/schema";
+import { BLEND_MODES, TRACK_MATTE_MODES } from "../../core/schema";
 import { formatMissingBlendModeLabel } from "../../core/blendMode";
+import { isTrackMatteIneligible, resolveTrackMattePairs } from "../../core/trackMatte";
 import {
   currentTimelineComp,
   setKeyframe,
@@ -44,6 +45,13 @@ const EASING_PRESETS: { label: string; easing: Easing }[] = [
 ];
 
 // §5.4d ブレンドモードの表示名（AE 風）。
+const TRACK_MATTE_LABELS: Record<TrackMatteMode, string> = {
+  alpha: "Alpha",
+  alphaInverted: "Alpha Inverted",
+  luma: "Luma",
+  lumaInverted: "Luma Inverted",
+};
+
 const BLEND_MODE_LABELS: Record<BlendMode, string> = {
   normal: "Normal",
   multiply: "Multiply",
@@ -106,6 +114,7 @@ export function InspectorPanel() {
   const setThreeD = useEditorStore((s) => s.setThreeD);
   const setThreeDMode = useEditorStore((s) => s.setThreeDMode);
   const setBlendMode = useEditorStore((s) => s.setBlendMode);
+  const setTrackMatteMode = useEditorStore((s) => s.setTrackMatteMode);
   const missingBlendModes = useEditorStore((s) => s.missingBlendModes);
   const setCompBackground = useEditorStore((s) => s.setCompBackground);
   const resizeComp = useEditorStore((s) => s.resizeComp);
@@ -581,6 +590,47 @@ export function InspectorPanel() {
               <option key={m} value={m}>{BLEND_MODE_LABELS[m]}</option>
             ))}
           </select>
+        </Row>
+        <Row label="Track Matte">
+          {(() => {
+            const ineligible = isTrackMatteIneligible(obj);
+            const pairs = resolveTrackMattePairs(comp?.objects ?? []);
+            const hasAbove = (comp?.objects ?? []).some(
+              (o) =>
+                o.id !== obj.id &&
+                !isTrackMatteIneligible(o) &&
+                (o.zOrder > obj.zOrder || (o.zOrder === obj.zOrder && o.id > obj.id)),
+            );
+            const isMatteSource = pairs.some((p) => p.matteId === obj.id);
+            const disabled = layerLocked || ineligible || !hasAbove;
+            return (
+              <select
+                value={obj.trackMatteMode ?? ""}
+                disabled={disabled}
+                title={
+                  isMatteSource
+                    ? "このレイヤーは直下のトラックマット源です"
+                    : !hasAbove
+                      ? "直上レイヤーがありません"
+                      : ineligible
+                        ? "このレイヤータイプではトラックマットを使えません"
+                        : "直上レイヤーをマット源に使う（§5.4f）"
+                }
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setTrackMatteMode(obj.id, v === "" ? null : (v as TrackMatteMode));
+                }}
+                style={selectStyle}
+              >
+                <option value="">なし</option>
+                {TRACK_MATTE_MODES.map((m) => (
+                  <option key={m} value={m}>
+                    {TRACK_MATTE_LABELS[m]}
+                  </option>
+                ))}
+              </select>
+            );
+          })()}
         </Row>
       </InspectorFoldout>
 

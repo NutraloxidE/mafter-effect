@@ -6,6 +6,56 @@
 
 ---
 
+### 2026-07-04（Cursor）— トラックマット canvas 正準（Opus RG-20260704-04）✅
+
+- **診断（Opus）**: 初版 SVG mask+foreignObject は text 非描画で全透明。応急 `mix-blend-mode: destination-in` は **不正 CSS（Porter-Duff は canvas 専用）→ no-op**。verify は false-green。
+- **正準**: preview/export とも **`applyTrackMatte` 純関数**（fill/matte を comp 空間ラスタ → 合成 → result canvas）。`trackMatteCapture.ts` + DomRenderer `flushTrackMattes`（`flushRasterEffects` に包含）。
+- **検証**: `trackMatte.test.ts` 15 PASS。`verify-track-matte.mjs` PASS（solid 内外画素・text coverage∈(0,0.4)・clear）。`build:player` 済み。
+- **非目標（残）**: ペン/パスマスク、OpenCV 切り抜き、ネスト precomp 完全対称、sig メモ化による静的マット最適化。
+
+### 2026-07-04（Cursor）— トラックマット（§5.4f・初版〜応急）⚠️ 正準差し替え済み
+
+- 初版 SVG mask / 応急 destination-in は上エントリで置換。スキーマ `trackMatteMode` と UI は継続。
+
+### 2026-07-04（Cursor）— Motion Track UI を Video プロパティから分離 ✅
+
+- **動機**: Video プロパティが増える前提で Motion Track を非破壊分離。
+- **実装**: [`MotionTrackFields.tsx`](src/editor/panels/MotionTrackFields.tsx) にロジック・UI を移設。[`VideoComponentFields.tsx`](src/editor/panels/VideoComponentFields.tsx) は本体 props + `<MotionTrackFields />` のみ。
+- **UI**: Inspector 同型の折りたたみ（既定クローズ、▶/▼）。ベイク経路・モードは不変。
+
+### 2026-07-04（Cursor）— 3D Solve 既定並進スケールを 10 倍に ✅
+
+- **フィードバック**: スケール係数 10 で「えぐいしっくり」。旧 auto 目標（高さ 15%）が弱すぎた。
+- **対応**: Solve の auto-scale 目標を高さ **1.5 倍**（旧の 10 倍）に。係数 1 で旧係数 10 相当。Position/Walk は 0.15 のまま。
+- **検証**: `defaultSolveAutoScaleTargetPx` unit test。
+
+### 2026-07-04（Cursor）— 3D Solve 見切れ後の相対伝播 + 地図再構築 ✅
+
+- **フィードバック**: 再検出強化だけでは体感ほぼ変わらず。
+- **本命**: 再検出点は 2D には載るが **3D 地図に載らず** PnP が死に、`fillUnsolved` 補間で並進が潰れる。
+- **対策（ソルバ）**:
+  - `triangulateAllTracks` — pose 済みフレームの任意ペアで未マップ全トラックを三角測量
+  - 局所化成功フレームを昇格 → 再三角測量を最大 2 パス
+  - PnP 不足フレームは **直前ポーズ + essential 相対伝播**（スケールは直近ステップ長）で補間を避ける
+- **検証**: motionTrackSfm 等 **35 PASS**。
+
+### 2026-07-04（Cursor）— 3D Solve 後半地図薄さ対策（再検出強化）✅
+
+- **症状**: 序盤に写っていた物体が見切れ始めると奥行きが弱くなる。
+- **診断**: 序盤点のみではない（再検出はあった）が、地図/PnP が長寿命序盤トラック依存。見切れで対応点減 → 補間で並進が弱い。
+- **対策（sfm のみ）**: `REDISCOVER_INTERVAL_SFM=3` / `MIN_TRACK_COUNT_SFM=60`、画面外・ROI 外点を追跡リストから即ドロップ。完了 status に前半/後半 `numPoints` 中央値（`点 前半N/後半M`）。
+- **検証**: featureQuality / buildTrackTable late id / halfStats unit tests。
+- **続き**: 体感変化薄 → 上エントリのソルバ側へ。
+
+### 2026-07-04（Cursor）— 3D Solve 奥行きスケール（等方 userScale）✅
+
+- **症状**: 回転は良い・前後が弱い・横は悪くない（横移動時に回転が少しおかしい程度）。
+- **原因**: `runSolveTrack` が `userScale` を traj に先掛け → autoScale が支配軸を固定ターゲットへ正規化して **打ち消し**。Solve UI にスケール係数も出ていなかった。
+- **修正**: traj は単位スケール、`applyAutoScaleToPositions(..., userScale)` で auto **後**に等方乗算。Solve（+ Walk）UI にスケール係数。完了メッセージに auto× / user× / 実効×。
+- **spec**: §16.1 に「auto-scale 後に UI スケール等方乗算・回転は不変」。
+- **検証**: `motionTrackAutoScale`（userScale 後段・等方）+ 既存 autoScale。depthBoost / 横移動時回転は未着手。
+- **運用**: 前後が弱ければスケール係数を 1.5〜3 で再ベイク。
+
 ### 2026-07-04（Cursor）— Motion Track 3D Solve（オフライン SfM）締め ✅
 
 - **背景**: Claude Code セッション「3D カメラトラッキング精度の向上」（`63074e58-…`）で Fable が SfM 本実装まで完了したが、session limit で progress / spec / 実機 verify / デバッグ残骸が未了。

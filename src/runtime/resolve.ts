@@ -10,6 +10,7 @@ import type {
   Vec3,
 } from "../core/schema";
 import { normalizeBlendMode } from "../core/blendMode";
+import { resolveTrackMattePairs } from "../core/trackMatte";
 import { sampleAny, sampleScalar, sampleVec3 } from "./interpolate";
 import { identity, invert, localMatrix, lookAt, multiply, type Mat4 } from "./mat4";
 import type { ResolvedComponent, ResolvedEffect, ResolvedObject, ResolvedScene } from "./resolved";
@@ -233,12 +234,17 @@ export function resolve(
   };
 
   const renderer3d = comp.renderer3d ?? "classic";
+  // §5.4f: enabled スタックで直上ペアをフレーム非依存に決定。
+  const trackMattePairs = resolveTrackMattePairs(comp.objects);
+  const trackMatteByFill = new Map(trackMattePairs.map((p) => [p.fillId, p]));
+  const trackMatteSourceIds = new Set(trackMattePairs.map((p) => p.matteId));
   // §11.5.2 declick: video 内蔵音声の gain に焼き込むカット端フェードの抑制判定（§11.4 シームレス境界は抑制）。
   // audio comp は clocks/exporter 側、export video 音声は buildAudioMix 側で同一純関数を使う（INV-2）。
   const fadeSuppression = computeFadeSuppression(collectFadeClips(comp));
   const objects: ResolvedObject[] = [];
   for (const obj of comp.objects) {
     if (!isVisible(obj, frame)) continue;
+    const pair = trackMatteByFill.get(obj.id);
     const resolved: ResolvedObject = {
       id: obj.id,
       worldTransform: worldOf(obj.id),
@@ -250,6 +256,12 @@ export function resolve(
         ? []
         : obj.components.map((c) => resolveComponent(c, frame, obj.id, obj.inPoint)),
     };
+    if (pair) {
+      resolved.trackMatte = { mode: pair.mode, matteId: pair.matteId };
+    }
+    if (trackMatteSourceIds.has(obj.id)) {
+      resolved.isTrackMatteSource = true;
+    }
     // §11.5.2 declick: video 内蔵音声の gain にカット端フェードを乗算（preview/bundle の video.volume）。
     for (const rc of resolved.components) {
       if (rc.type !== "video" || !isAutoFadeEnabled(rc.props)) continue;

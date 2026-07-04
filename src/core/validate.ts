@@ -1,6 +1,7 @@
 import type { ObjectId, Project, SceneObject, TimelineComposition } from "./schema";
 import { CURRENT_SCHEMA_VERSION } from "./schema";
 import { isKnownBlendMode } from "./blendMode";
+import { isKnownTrackMatteMode, isTrackMatteIneligible } from "./trackMatte";
 import { ensureProjectTree } from "./projectTree";
 
 export interface ValidationResult {
@@ -149,6 +150,15 @@ function validateTimeline(
         `comp ${comp.id}: object ${obj.id} has invalid locked ${String(obj.locked)}; clearing`,
       );
       obj.locked = undefined;
+    }
+    // §5.4f: 不明 / 対象外レイヤーの trackMatteMode は strip。
+    if (obj.trackMatteMode !== undefined) {
+      if (!isKnownTrackMatteMode(obj.trackMatteMode) || isTrackMatteIneligible(obj)) {
+        warnings.push(
+          `comp ${comp.id}: object ${obj.id} has invalid trackMatteMode ${String(obj.trackMatteMode)}; clearing`,
+        );
+        obj.trackMatteMode = undefined;
+      }
     }
   }
 

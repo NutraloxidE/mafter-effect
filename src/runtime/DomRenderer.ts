@@ -28,9 +28,20 @@ import {
 } from "./videoLookaheadWarmup";
 import type { ExportChain, ExportLayer, NestedCompositeMeta, ExportTaggedElement } from "./exportComposite";
 import type { EffectFilter } from "./plugin";
-import type { BlendMode } from "../core/schema";
+import type { BlendMode, TrackMatteMode } from "../core/schema";
 import { isCssBlendMode } from "./blendCompose";
 import { multiply, translation, type Mat4 } from "./mat4";
+import {
+  applyMatteSourceLayout,
+  clearMatteSourceStyle,
+  clearTrackMatteFillHost,
+  ensureTrackMatteFillStructure,
+  ensureTrackMatteResultCanvas,
+  hideTrackMatteSources,
+  markTrackMatteFillHost,
+  showTrackMatteSourcesForTeardown,
+} from "./trackMatteDom";
+import { composeTrackMatteToCanvas } from "./trackMatteCapture";
 
 // §8 DomRenderer — フラット matrix3d レンダラ。
 // 各 ResolvedObject を root の兄弟 div として並べる。ネストしない。
@@ -69,6 +80,8 @@ function setBlendModeStyle(el: HTMLElement, blend: BlendMode): void {
 
 interface ObjectEntry {
   div: HTMLDivElement;
+  /** §5.4f トラックマット塗り時は inner（transform+content）。それ以外は div。 */
+  contentRoot: HTMLDivElement;
   childSig: string; // component 型の連結。変化したら子を作り直す
   fxSig: string; // effect 型/順序/有効状態/props。変化したら svg defs を作り直す
   children: HTMLElement[];
@@ -94,6 +107,10 @@ interface ObjectEntry {
   isAdjustment: boolean;
   /** §27.4 export — 解決済み effect chain（exportComposite が背面 master へ適用）。非調整は null。 */
   exportChain: ExportChain | null;
+  /** §5.4f マット源（最終合成に出さない） */
+  isTrackMatteSource: boolean;
+  /** §5.4f トラックマット塗り（full-comp host + mask） */
+  hasTrackMatte: boolean;
 }
 
 interface RasterWorkItem {
@@ -108,6 +125,21 @@ export class DomRenderer implements Renderer {
   private entries = new Map<string, ObjectEntry>();
   private currentComp: CompositionMeta | null = null;
   private rasterPending = new Set<Promise<void>>();
+  /** §5.4f 現フレームにトラックマット塗りがあるか。 */
+  private frameHasTrackMatte = false;
+
+  /** §5.4f export / 経路判定。 */
+  hasTrackMatteLayers(): boolean {
+    return this.frameHasTrackMatte;
+  }
+  /** §5.4f matteId → mode。 */
+  private trackMatteModeBySourceId = new Map<string, TrackMatteMode>();
+  /** §5.4f fillId → matteId（可視マットのみ）。 */
+  private trackMattePairByFillId = new Map<string, string>();
+  /** §5.4f 非同期合成の in-flight。 */
+  private trackMattePending = new Set<Promise<void>>();
+  /** §5.4f ペア sig → 再合成スキップ。 */
+  private trackMatteSigByFillId = new Map<string, string>();
 
   /**
    * §11.4 カット境界の `<video>` 要素再利用プール。key=assetId、value=離脱して空いた要素。
@@ -230,9 +262,25 @@ export class DomRenderer implements Renderer {
 
     // §23.3d export — renderNestedComp が「再帰合成が必要なネスト comp」を見つけたら true にする。
     this.frameHasNestedComposite = false;
+    this.frameHasTrackMatte = scene.objects.some((o) => o.trackMatte !== undefined);
 
     // camera / perspective (§6.5 / §6.5b)
     this.cameraPre = this.setupCameraRig(this.root, scene);
+
+    // §5.4f: matteId → fill（マット源を fillHost 内へ載せるため）
+    const fillByMatteId = new Map<string, ResolvedObject>();
+    this.trackMatteModeBySourceId.clear();
+    this.trackMattePairByFillId.clear();
+    const visibleIds = new Set(scene.objects.map((o) => o.id));
+    for (const obj of scene.objects) {
+      if (obj.trackMatte) {
+        fillByMatteId.set(obj.trackMatte.matteId, obj);
+        this.trackMatteModeBySourceId.set(obj.trackMatte.matteId, obj.trackMatte.mode);
+        if (visibleIds.has(obj.trackMatte.matteId)) {
+          this.trackMattePairByFillId.set(obj.id, obj.trackMatte.matteId);
+        }
+      }
+    }
 
     const seen = new Set<string>();
     for (const obj of scene.objects) {
@@ -253,6 +301,9 @@ export class DomRenderer implements Renderer {
       }
     }
 
+    const compW = scene.width;
+    const compH = scene.height;
+
     for (const obj of scene.objects) {
       if (obj.isNull) continue;
       let entry = this.entries.get(obj.id);
@@ -266,6 +317,7 @@ export class DomRenderer implements Renderer {
         this.root.appendChild(div);
         entry = {
           div,
+          contentRoot: div,
           childSig: "",
           fxSig: "",
           children: [],
@@ -284,11 +336,34 @@ export class DomRenderer implements Renderer {
           threeD: false,
           isAdjustment: false,
           exportChain: null,
+          isTrackMatteSource: false,
+          hasTrackMatte: false,
         };
         this.entries.set(obj.id, entry);
       }
       entry.threeD = obj.threeD === true;
-      this.applyObject(entry, obj, frame);
+      entry.isTrackMatteSource = obj.isTrackMatteSource === true;
+      entry.hasTrackMatte = obj.trackMatte !== undefined;
+
+      // §5.4f: 塗りを先に host 化し、マット源は fillHost の子（destination-in/out）。
+      if (obj.trackMatte) {
+        if (entry.div.parentElement !== this.root) this.root.appendChild(entry.div);
+        ensureTrackMatteFillStructure(entry.div, compW, compH);
+      } else if (obj.isTrackMatteSource) {
+        const fillObj = fillByMatteId.get(obj.id);
+        const fillEntry = fillObj ? this.entries.get(fillObj.id) : undefined;
+        if (fillEntry) {
+          ensureTrackMatteFillStructure(fillEntry.div, compW, compH);
+          if (entry.div.parentElement !== fillEntry.div) {
+            fillEntry.div.appendChild(entry.div);
+          }
+        }
+      } else if (entry.div.parentElement !== this.root) {
+        this.root.appendChild(entry.div);
+        clearMatteSourceStyle(entry.div);
+      }
+
+      this.applyObject(entry, obj, frame, compW, compH);
     }
 
     // §11.4 入場処理で再利用されずプールに残った <video> を静音（離脱クリップの音漏れ防止）。
@@ -457,10 +532,67 @@ export class DomRenderer implements Renderer {
     return this.root;
   }
 
-  /** §27.1 raster — 非同期 raster effect 完了を待つ（export 用・INV-2）。 */
+  /** §27.1 raster — 非同期 raster effect 完了を待つ（export 用・INV-2）。トラックマット合成も含む。 */
   async flushRasterEffects(): Promise<void> {
-    if (this.rasterPending.size === 0) return;
-    await Promise.all([...this.rasterPending]);
+    await Promise.all([
+      this.rasterPending.size > 0 ? Promise.all([...this.rasterPending]) : Promise.resolve(),
+      this.flushTrackMattes(),
+    ]);
+  }
+
+  /** §5.4f — canvas applyTrackMatte 合成の完了を待つ。 */
+  async flushTrackMattes(): Promise<void> {
+    if (this.trackMattePending.size === 0) return;
+    await Promise.all([...this.trackMattePending]);
+  }
+
+  /**
+   * §5.4f 正準: fill / matte をラスタ → applyTrackMatte → result canvas。
+   * 画面上は result のみ表示（fillInner / matte は visibility:hidden）。
+   */
+  private scheduleTrackMatteCompose(
+    obj: ResolvedObject,
+    entry: ObjectEntry,
+    frame: Frame,
+    compW: number,
+    compH: number,
+  ): void {
+    if (!obj.trackMatte) return;
+    const fillInner = entry.contentRoot;
+    const matteId = this.trackMattePairByFillId.get(obj.id);
+    const matteEl = matteId ? (this.entries.get(matteId)?.div ?? null) : null;
+    const mode = obj.trackMatte.mode;
+    const result = ensureTrackMatteResultCanvas(entry.div, compW, compH);
+
+    const perspective = this.root?.style.perspective ?? "";
+    const perspectiveOrigin = this.root?.style.perspectiveOrigin || "50% 50%";
+    const runKey = `${obj.id}|${matteId ?? ""}|${mode}|${frame}`;
+    this.trackMatteSigByFillId.set(obj.id, runKey);
+
+    const work = (async () => {
+      try {
+        await composeTrackMatteToCanvas(
+          fillInner,
+          matteEl,
+          mode,
+          compW,
+          compH,
+          result,
+          perspective,
+          perspectiveOrigin,
+        );
+        // 古いフレームの完了が新しい結果を上書きしない
+        if (this.trackMatteSigByFillId.get(obj.id) !== runKey) return;
+        hideTrackMatteSources(fillInner, matteEl);
+      } catch (err) {
+        console.warn("[trackMatte] compose failed", obj.id, err);
+      }
+    })();
+
+    this.trackMattePending.add(work);
+    void work.finally(() => {
+      this.trackMattePending.delete(work);
+    });
   }
 
   /** export 前に video seek / decode 完了を待つ（foreignObject は video を描けない）。 */
@@ -626,32 +758,77 @@ export class DomRenderer implements Renderer {
     this.quiescePooledVideos();
   }
 
-  private applyObject(entry: ObjectEntry, obj: ResolvedObject, frame: Frame): void {
+  private applyObject(
+    entry: ObjectEntry,
+    obj: ResolvedObject,
+    frame: Frame,
+    compW = this.currentComp?.width ?? 0,
+    compH = this.currentComp?.height ?? 0,
+  ): void {
     // §6.5b/§5.4b 3D 層（threeD）のみカメラ view を per-object で焼く（root perspective を受けて
     // dolly/zoom が効く）。2D 層は素の worldTransform = カメラ免除（AE 準拠, z=0 で perspective 無歪み）。
     const xform = objectWorldTransformWithCamera(this.cameraPre, obj);
-    entry.div.style.transform = mat4ToCss(xform);
-    entry.div.style.opacity = shouldForceOpaqueForDither(obj.effects, obj.opacity)
+    const opacity = shouldForceOpaqueForDither(obj.effects, obj.opacity)
       ? "1"
       : String(obj.opacity);
-    entry.div.style.zIndex = String(Math.round(obj.zOrder * BASE_Z));
 
-    // §5.4d 描画モード。毎フレーム明示設定/クリア（前フレームの残留を防ぐ）。
-    this.applyBlendMode(entry, obj.blendMode);
+    if (obj.isTrackMatteSource) {
+      // §5.4f: fillHost 内に置きキャプチャ専用（画面には出さない）。
+      entry.contentRoot = entry.div;
+      entry.blendMode = "normal";
+      applyMatteSourceLayout(entry.div, mat4ToCss(xform), Number(opacity));
+    } else if (obj.trackMatte) {
+      // §5.4f: full-comp host + inner + result canvas（正準 = applyTrackMatte）。
+      const inner = ensureTrackMatteFillStructure(entry.div, compW, compH);
+      entry.contentRoot = inner;
+      inner.style.transform = mat4ToCss(xform);
+      inner.style.opacity = opacity;
+      entry.div.style.opacity = "1";
+      entry.div.style.zIndex = String(Math.round(obj.zOrder * BASE_Z));
+      this.applyBlendMode(entry, obj.blendMode);
+      markTrackMatteFillHost(entry.div, obj.id);
+      ensureTrackMatteResultCanvas(entry.div, compW, compH);
+    } else {
+      entry.contentRoot = entry.div;
+      entry.div.style.transform = mat4ToCss(xform);
+      entry.div.style.opacity = opacity;
+      entry.div.style.zIndex = String(Math.round(obj.zOrder * BASE_Z));
+      this.applyBlendMode(entry, obj.blendMode);
+      clearTrackMatteFillHost(entry.div);
+      clearMatteSourceStyle(entry.div);
+      this.trackMatteSigByFillId.delete(obj.id);
+      // host 構造から通常へ戻るとき inner を畳む（マット子は先に外へ）
+      const inner = entry.div.querySelector(":scope > [data-track-matte-inner]") as HTMLDivElement | null;
+      if (inner) {
+        for (const child of [...entry.div.children]) {
+          if (child instanceof HTMLElement && child.dataset.objectId && this.root) {
+            this.root.appendChild(child);
+            clearMatteSourceStyle(child);
+            showTrackMatteSourcesForTeardown(inner, child);
+          }
+        }
+        showTrackMatteSourcesForTeardown(inner, null);
+        while (inner.firstChild) entry.div.appendChild(inner.firstChild);
+        inner.remove();
+        entry.contentRoot = entry.div;
+        entry.div.style.isolation = "";
+      }
+    }
 
     if (obj.isAdjustment) {
-      const w = this.currentComp?.width ?? 0;
-      const h = this.currentComp?.height ?? 0;
+      const w = compW;
+      const h = compH;
       entry.div.style.width = `${w}px`;
       entry.div.style.height = `${h}px`;
       entry.div.style.background = "transparent";
       entry.div.style.pointerEvents = "none";
-    } else {
+    } else if (!obj.trackMatte && !obj.isTrackMatteSource) {
       entry.div.style.width = "";
       entry.div.style.height = "";
       entry.div.style.background = "";
     }
 
+    const contentRoot = entry.contentRoot;
     const sig = obj.components.map((c) => c.type).join("|");
     // §11.4 このフレームで entry の子要素を作り直した＝カット境界（プールから別クリップ用に
     // <video> を再取得した可能性がある）。video の resync を半フレーム精度に強制する合図として使う。
@@ -661,10 +838,14 @@ export class DomRenderer implements Renderer {
       if (entry.childSig.split("|").includes("html")) {
         this.htmlPlayer?.unmountObject(obj.id);
       }
-      // 構造が変わった: 子を作り直す（svgRoot は残す）
+      // 構造が変わった: 子を作り直す（svgRoot は host に残す）
       const svgRoot = entry.svgRoot;
-      entry.div.innerHTML = "";
-      if (svgRoot) entry.div.appendChild(svgRoot);
+      for (const child of [...contentRoot.childNodes]) {
+        if (child !== svgRoot) child.parentNode?.removeChild(child);
+      }
+      if (svgRoot && svgRoot.parentElement !== entry.div) {
+        entry.div.appendChild(svgRoot);
+      }
       entry.children = obj.components.map((c) => {
         // §11.4 video は同一アセットの decode 済み要素をプールから再利用（境界の空フレーム回避）。
         const assetId = c.type === "video" ? (c.props["asset"] as string | undefined) : undefined;
@@ -672,7 +853,7 @@ export class DomRenderer implements Renderer {
           assetId && assetId !== ""
             ? (this.acquireVideoFromPool(assetId) ?? createComponentEl("video"))
             : createComponentEl(c.type);
-        entry.div.appendChild(el);
+        contentRoot.appendChild(el);
         return el;
       });
       entry.childSig = sig;
@@ -747,6 +928,11 @@ export class DomRenderer implements Renderer {
     // effects は子要素のサイズ確定後に適用する（マスク/displacement map を
     // レイヤーの実寸に合わせるため offsetWidth/Height を測る・§27.1）。
     this.applyEffects(entry, obj, frame);
+
+    // §5.4f: 塗り+マットの canvas 合成をスケジュール（flushTrackMattes / flushRasterEffects で待つ）。
+    if (obj.trackMatte) {
+      this.scheduleTrackMatteCompose(obj, entry, frame, compW, compH);
+    }
   }
 
   /**
@@ -754,6 +940,8 @@ export class DomRenderer implements Renderer {
    */
   private applyBlendMode(entry: ObjectEntry, blend: BlendMode): void {
     entry.blendMode = blend;
+    // マット源は destination-in/out を持つので layer blendMode を載せない。
+    if (entry.isTrackMatteSource) return;
     setBlendModeStyle(entry.div, blend);
   }
 
@@ -765,13 +953,15 @@ export class DomRenderer implements Renderer {
     return false;
   }
 
-  /** §5.4d capture — z 順（昇順）のレイヤー div と描画モードを返す。Canvas 合成用。 */
+  /** §5.4d capture — z 順（昇順）のレイヤー div と描画モードを返す。Canvas 合成用。マット源は除外。 */
   getCompositeLayers(): { div: HTMLElement; blendMode: BlendMode }[] {
-    const layers = [...this.entries.values()].map((e) => ({
-      div: e.div as HTMLElement,
-      blendMode: e.blendMode,
-      z: Number(e.div.style.zIndex) || 0,
-    }));
+    const layers = [...this.entries.values()]
+      .filter((e) => !e.isTrackMatteSource)
+      .map((e) => ({
+        div: e.div as HTMLElement,
+        blendMode: e.blendMode,
+        z: Number(e.div.style.zIndex) || 0,
+      }));
     layers.sort((a, b) => a.z - b.z);
     return layers.map(({ div, blendMode }) => ({ div, blendMode }));
   }
@@ -799,15 +989,17 @@ export class DomRenderer implements Renderer {
     return false;
   }
 
-  /** §27.4.1 — exportComposite 用の z 昇順レイヤ列。調整レイヤーは effect chain 付き。 */
+  /** §27.4.1 — exportComposite 用の z 昇順レイヤ列。調整レイヤーは effect chain 付き。マット源は除外。 */
   getExportLayers(): ExportLayer[] {
-    const layers = [...this.entries.values()].map((e) => ({
-      div: e.div as HTMLElement,
-      blendMode: e.blendMode,
-      isAdjustment: e.isAdjustment,
-      exportChain: e.isAdjustment ? e.exportChain : null,
-      z: Number(e.div.style.zIndex) || 0,
-    }));
+    const layers = [...this.entries.values()]
+      .filter((e) => !e.isTrackMatteSource)
+      .map((e) => ({
+        div: e.div as HTMLElement,
+        blendMode: e.blendMode,
+        isAdjustment: e.isAdjustment,
+        exportChain: e.isAdjustment ? e.exportChain : null,
+        z: Number(e.div.style.zIndex) || 0,
+      }));
     layers.sort((a, b) => a.z - b.z);
     return layers.map(({ div, blendMode, isAdjustment, exportChain }) => ({
       div,
@@ -970,14 +1162,17 @@ export class DomRenderer implements Renderer {
     svgFilters: { id: string; primitives: string }[],
   ): void {
     const filterStr = tokens.join(" ");
+    // §5.4f: トラックマット塗りは mask を host に残し、effect filter は inner（contentRoot）へ。
+    entry.div.style.filter = "";
+    if (entry.contentRoot !== entry.div) entry.contentRoot.style.filter = "";
     if (obj.isAdjustment) {
-      entry.div.style.filter = "";
       entry.div.style.backdropFilter = filterStr;
       (entry.div.style as CSSStyleDeclaration & { webkitBackdropFilter?: string }).webkitBackdropFilter = filterStr;
     } else {
       entry.div.style.backdropFilter = "";
       (entry.div.style as CSSStyleDeclaration & { webkitBackdropFilter?: string }).webkitBackdropFilter = "";
-      entry.div.style.filter = filterStr;
+      const filterTarget = entry.hasTrackMatte ? entry.contentRoot : entry.div;
+      filterTarget.style.filter = filterStr;
     }
     this.syncSvgFilters(entry, svgFilters);
   }

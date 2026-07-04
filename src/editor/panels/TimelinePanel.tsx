@@ -36,6 +36,7 @@ import type {
 } from "../../core/schema";
 import { sampleAny, sampleScalar, sampleVec3 } from "../../runtime/interpolate";
 import { activeCameraAt } from "../../runtime/resolve";
+import { resolveTrackMattePairs } from "../../core/trackMatte";
 import { globalPluginRegistry } from "../../runtime/pluginRegistry";
 import { EXPRESSION_PRESETS, type ExpressionPresetId } from "../expressionPresets";
 import { previewCacheService } from "../previewCacheService";
@@ -2210,6 +2211,16 @@ function LayerRow(props: LayerRowProps) {
             )}
             {obj.isNull && (
               <span style={{ marginLeft: 4, fontSize: 9, color: "#e07070", fontWeight: 600 }}>NULL</span>
+            )}
+            {obj.trackMatteMode && (
+              <span style={{ marginLeft: 4, fontSize: 9, color: "#c090e0", fontWeight: 600 }} title={`Track Matte: ${obj.trackMatteMode}`}>
+                TrkMat
+              </span>
+            )}
+            {resolveTrackMattePairs(allObjects).some((p) => p.matteId === obj.id) && (
+              <span style={{ marginLeft: 4, fontSize: 9, color: "#a080c0", fontWeight: 600 }} title="直下レイヤーのトラックマット源（合成には出ない）">
+                マット
+              </span>
             )}
             {obj.threeD && (
               <span style={{ marginLeft: 4, fontSize: 9, color: "#7fd0a8", fontWeight: 600 }}>

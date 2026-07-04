@@ -119,6 +119,7 @@ export interface SceneObject {
   labelIndex?: LabelIndex; // §5.4c AE ラベル色。省略 = 無色（エディタ UI のみ）
   locked?: boolean; // §5.4e true = ロック（エディタ UI のみ）。省略/false = 編集可
   blendMode?: BlendMode; // §5.4d 描画モード。省略 = "normal"
+  trackMatteMode?: TrackMatteMode; // §5.4f トラックマット。省略 = なし。マット源は直上レイヤー
 }
 
 // §5.4b 3D レイヤー描画経路。"auto" は comp.renderer3d に従う。
@@ -160,6 +161,15 @@ export const BLEND_MODES: readonly BlendMode[] = [
   "color",
   "luminosity",
 ];
+// §5.4f トラックマット（塗り側）。マット源は enabled スタックの直上レイヤー（ID 参照なし）。
+export type TrackMatteMode = "alpha" | "alphaInverted" | "luma" | "lumaInverted";
+export const TRACK_MATTE_MODES: readonly TrackMatteMode[] = [
+  "alpha",
+  "alphaInverted",
+  "luma",
+  "lumaInverted",
+];
+
 // §5.4c AE ラベル色インデックス 0–15。
 export type LabelIndex = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16;
 // §5.4b comp の 3D レンダラー。"classic"≈dom / "advanced"≈raster3d。

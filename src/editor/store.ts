@@ -15,6 +15,7 @@ import type {
   AnimatedProp,
   AssetEntry,
   BlendMode,
+  TrackMatteMode,
   Easing,
   EffectInstance,
   ExpressionPresetInstance,
@@ -324,6 +325,7 @@ export interface EditorStore {
 
   // §5.4d 描画モード
   setBlendMode: (objId: string, mode: BlendMode) => void;
+  setTrackMatteMode: (objId: string, mode: TrackMatteMode | null) => void;
 
   /** §5.4d エディタ専用: 未知 blendMode の raw 名（load 時 validate が記録）。非直列化。 */
   missingBlendModes: Record<string, string>;
@@ -1803,6 +1805,18 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       const { [objId]: _removed, ...missingBlendModes } = s.missingBlendModes;
       return { missingBlendModes };
     });
+  },
+
+  // §5.4f: 未設定は undefined にして直列化省略。
+  setTrackMatteMode: (objId, mode) => {
+    const comp = currentTimelineComp(get().project, get().currentCompId);
+    const obj = comp?.objects.find((o) => o.id === objId);
+    if (!obj) return;
+    get().updateObject(
+      objId,
+      { trackMatteMode: mode === null ? undefined : mode },
+      mode === null ? "Clear track matte" : `Track matte: ${mode}`,
+    );
   },
 
   setCompRenderer3d: (mode) => {

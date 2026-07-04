@@ -178,6 +178,7 @@ interface SceneObject {
   components: Component[];
   labelIndex?: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16; // §5.4c ラベル色。省略 = 無色
   blendMode?: BlendMode;         // §5.4d 描画モード。省略 = "normal"
+  trackMatteMode?: TrackMatteMode; // §5.4f トラックマット。省略 = なし
 }
 ```
 
@@ -266,6 +267,28 @@ interface SceneObject {
   - **動画キャプチャ書き出し（mp4 / webm / png 連番）**: `foreignObject` は backdrop 合成をしないため、comp 内に非 `normal` の 15 種が 1 つでもあれば **レイヤー別キャプチャ → Canvas 2D `globalCompositeOperation`**（`normal`→`source-over`、他 15 種は同名）で z 順に合成し直す。これで preview ≡ export（INV-2）を守る。非 blend comp は従来の単一スナップショット高速経路を維持。
 - **INVARIANTS**: `blendMode` は `ResolvedObject` に焼くためレンダラ非依存（INV-3）、optional 省略で byte 等価（INV-4）。
 - **Dither Dissolve**: 旧 `blendMode: "ditherDissolve"` は廃止。§27 `ditherDissolve` **live エフェクト**を使用（マスク型ディザ・`blendMode` ではない）。
+
+### §5.4f トラックマット（additive スキーマ・確定・2026-07）
+
+> AE の TrkMat（直上レイヤーをマット源）に準拠。**レイヤーパスマスク（ペン / ベジェ）は含まない**（将来）。正準は **live**（comp 空間 SVG `<mask>`）。export / bundle は live DOM を撮影して INV-2 を守る。
+
+```ts
+type TrackMatteMode = "alpha" | "alphaInverted" | "luma" | "lumaInverted";
+
+interface SceneObject {
+  // ...既存フィールド...
+  trackMatteMode?: TrackMatteMode;  // 省略 = なし。マット源はスタック直上（ID 参照なし）
+}
+```
+
+- **ペアリング**: `zOrder` 昇順（タイは id）のスタックで、塗りから見て**次の適格レイヤー**がマット源。フレーム非依存。`enabled` / in-out で**再バインドしない**。マットが当該フレーム非可視なら**空マット**（alpha では塗り全消し）。
+- **対象外**（塗り・マット源とも無視 / validate strip）: `isAdjustment` / `isNull` / camera のみ。
+- **連鎖なし（v1）**: マット源自身の `trackMatteMode` は無視。1 マット源は 1 塗りにのみ使用。
+- **直列化**: 有効値のときだけ書く。不明値は strip。省略時 byte 等価（INV-4）。
+- **resolve（INV-3）**: 塗りに `trackMatte: { mode, matteId }`、可視マット源に `isTrackMatteSource: true`。
+- **描画正準（preview / export 共通）**: 塗り = full-comp host + inner（`matrix3d` + content）。マット源は host の子（画面非表示・キャプチャ専用）。両者を comp 空間へラスタし、純関数 `applyTrackMatte`（`src/runtime/trackMatteApply.ts`）で合成した結果を host 上の canvas に blit。**CSS `mask-image` / SVG mask+foreignObject / `mix-blend-mode: destination-*` は使わない**（Chromium で text マット不可、または不正 CSS で no-op）。
+- **export**: 合成済み result canvas を含む fillHost をキャプチャ（マット源は通常レイヤー列から除外）。INV-2 は同一純関数で担保。
+- **非目標（v1）**: レイヤーパスマスク、マット連鎖、人物セグメンテーション（OpenCV 等は後続）。
 
 ### §5.5 Component（タグ付き union + プラグイン拡張）
 
@@ -927,7 +950,7 @@ SSoT 違反を避けるため、scope と正準性を分離する:
 | compRef / nested composition（precomp, 時間マッピング） | 将来 |
 | Timeline Tier B（ラベル色 / **lock（§21.11 部分実装済み）** / solo / shy / parent ドロップダウン UI, §21.0） | 部分実装（優先度高） |
 | Timeline Tier C ブレンドモード（§5.4d / §21.0） | 実装済み |
-| Timeline Tier C トラックマット（§21.0） | 将来（優先度高） |
+| Timeline Tier C トラックマット（§5.4f / §21.0） | **実装済み（2026-07・live SVG mask）** |
 | Timeline Tier D（モーションブラー / フレームブレンド / 3D レイヤー / 調整レイヤー, §21.0） | 将来 |
 | タイムコード ドロップフレーム表示（0;00;00;00, §21.1） | 将来 |
 | Model B（DOM 内省で要素を Object 化） | 将来 |
@@ -978,7 +1001,7 @@ video レイヤーのフッテージから単眼 visual odometry（vendored WASM
 - **特徴品質・補間 — Phase 1d**: 回転経路は forward-backward LK・LK 誤差閾値・グリッド分散再検出・ROI 縁マージン棄却で動体/偽特徴を抑える。並進ベイクは無効フレームを baseline にスナップせず前後有効値で線形補間（スロープ制限）する。
 - **追跡マスク — Phase 1d+ / Comp 27 修正**: **既定は「全体」**。オプトインの「背景優先（人混み）」は手前中央の群衆帯のみ exclude（道路全体は消さない）。フレーム抽出後に逆光向けコントラスト伸長（マスク黒は維持）。回転経路の `equalizeHist` は full mask 時のみ。回転の有効率が低いときは identity KF を黙って焼かず警告する。マスク境界の静止エッジは QUAR 並進がロックしうる既知制約（境界フェザリングでは防げない）。
 - **Walk モード — Phase 2a/2b/2c（連続性ファースト）**: 歩き撮り向け。OpenCV WASM は **KLT / 特徴検出のみ**。毎フレーム FOE/発散フローで予測ステップを出し、地図（DLT 三角測量）が十分なら DLT-PnP 候補を作るが、**ベイク入力は常に相対ステップ 1 本**（`walkAccumulate` のみ絶対化）。PnP は予測との回転角・並進方向が近いときだけ向きを補正し、scale は予測のまま（単眼スケール不定でもゲートが機能する）。絶対ポーズ直書きは禁止（ジャンプ防止）。並進 auto-scale あり。Rotation（その場）はノーダルパン専用。逐次 VO のため AE 級フル BA は対象外（一括解法は **3D Solve**）。
-- **3D Solve（オフライン SfM）— 推奨既定**: AE の 3D Camera Tracker 相当の**一括**カメラ解析。OpenCV WASM で長寿命特徴トラックを蓄積したあと、純 TypeScript の SfM（キーフレーム選択 → essential 2-view 初期化 + 焦点距離スイープ → 逐次 PnP + 三角測量 → 全体バンドル調整（LM + Schur・Huber）→ 全フレーム pose-only 局所化）で position + rotation を同時ベイク。カメラ対象では推定焦点距離を `zoom`（静的）へ任意適用可。視差が検出できないクリップ（純パン/チルト・平面シーン）は **rotationOnly** にフォールバック（並進は baseline 維持）。単眼スケールは不定のため auto-scale / UI スケールで補正。既存 Position / Rotation / Walk 経路とは**隔離**（`src/editor/motionTrack/sfm/`）。editor-only・Track Motion 実行時のみ（INV-1/INV-2 はベイク済み KF の再生にのみ関与）。合成シーンでの受け入れ基準は軌道 RMSE < 全長の 1%・回転中央値 < 0.2°・焦点誤差 < 5%（`test/motionTrackSfm.test.ts`）。
+- **3D Solve（オフライン SfM）— 推奨既定**: AE の 3D Camera Tracker 相当の**一括**カメラ解析。OpenCV WASM で長寿命特徴トラックを蓄積したあと、純 TypeScript の SfM（キーフレーム選択 → essential 2-view 初期化 + 焦点距離スイープ → 逐次 PnP + 三角測量 → 全体バンドル調整（LM + Schur・Huber）→ 全フレーム pose-only 局所化）で position + rotation を同時ベイク。カメラ対象では推定焦点距離を `zoom`（静的）へ任意適用可。視差が検出できないクリップ（純パン/チルト・平面シーン）は **rotationOnly** にフォールバック（並進は baseline 維持）。単眼スケールは不定のため **auto-scale（支配軸 range → comp 高さの 1.5 倍を既定目標。Position/Walk の 0.15 倍より強い）の後に UI スケール係数を等方乗算**して補正する（回転 KF はスケール非依存で不変。係数 1 が実写でしっくり来る強さの目安）。特徴追跡は序盤シードに加え **短間隔の再検出**と画面外点の即ドロップで後半トラックを維持する（見切れ以降の地図薄さ対策）。既存 Position / Rotation / Walk 経路とは**隔離**（`src/editor/motionTrack/sfm/`）。editor-only・Track Motion 実行時のみ（INV-1/INV-2 はベイク済み KF の再生にのみ関与）。合成シーンでの受け入れ基準は軌道 RMSE < 全長の 1%・回転中央値 < 0.2°・焦点誤差 < 5%（`test/motionTrackSfm.test.ts`）。
 - さらに高精度が必要な場合の外部 import（COLMAP / Blender camera, §6.5 の ImporterDef 経路）は将来。two-node Camera の POI 軌道ベイクは Phase 1b-b。
 
 ---
@@ -1204,7 +1227,7 @@ AE タイムラインの機能を **Tier A〜D** に分け、本リビジョン�
 |---|---|---|---|
 | **A** | プロパティツリー展開 / per-property ストップウォッチ＋値編集 / KF 行 / レイヤーバーの drag（in/out トリム・スライド）/ 時間ルーラー＋SMPTE タイムコード / レイヤー番号 | **なし**（既存スキーマで成立） | **本リビジョン** |
 | **B** | **ラベル色（§21.10 部分実装済み）** / **lock（§21.11 部分実装済み）** / solo / shy / **親とリンク(parent) ドロップダウン UI（§21.8 部分実装済み）** | additive（`SceneObject` にフラグ追加） | 将来（優先度高） |
-| **C** | **ブレンドモード（§5.4d 実装済み）** / トラックマット | renderer(INV-3)＋export 経路拡張 | ブレンドモード=本実装 / トラックマット=将来（優先度高） |
+| **C** | **ブレンドモード（§5.4d 実装済み）** / **トラックマット（§5.4f 実装済み）** | renderer(INV-3)＋export 経路拡張 | 本実装（live SVG mask） |
 | **D** | モーションブラー / フレームブレンド / 3D レイヤー / 調整レイヤー | 大規模・決定論モデル評価要 | 将来 |
 
 ### §21.1 タイムコード表示（確定）
