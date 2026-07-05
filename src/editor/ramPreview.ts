@@ -49,6 +49,8 @@ export class RamPreviewController {
   private playbackAttempts = 0;
   private blobUrlCache = new Map<string, string>();
   private readonly frameQueue = new FrameCacheQueue();
+  /** §28.4 — 再生中は bake 休止（読み取りのみ）。 */
+  private playbackActive = false;
   /** §28.9 session 限定 Auto Preview Cache。 */
   private autoCacheSession = false;
   onFrameCached?: () => void;
@@ -171,14 +173,38 @@ export class RamPreviewController {
   }
 
   /**
-   * 再生中に cached overlay と live を頻繁に切り替えない。
-   * ビルド途中（カバー率 < 50%）は live のままにして flicker を抑える。
+   * §28.4 — 再生中の overlay はワークエリア build 完了後のみ。
+   * 未完了時は live（bake と競合させない・hit/miss フリッカー回避）。
    */
   shouldPreferCacheOverlay(isPlaying: boolean): boolean {
     if (!this.shouldPreferCacheDisplay()) return false;
     if (!isPlaying) return true;
-    if (this.buildTotal <= 0) return true;
-    return this.buildProgress >= this.buildTotal * 0.5;
+    return this.isWorkAreaBuildComplete();
+  }
+
+  /** ワークエリア全フレームが bake 済みか（progress 完了）。 */
+  isWorkAreaBuildComplete(): boolean {
+    return this.buildTotal > 0 && this.buildProgress >= this.buildTotal;
+  }
+
+  /**
+   * §28.4 — 再生中はキャッシュ書き込みを pause。停止後に pump / build 再開。
+   */
+  setPlaybackActive(playing: boolean): void {
+    if (this.playbackActive === playing) return;
+    this.playbackActive = playing;
+    this.frameQueue.setPaused(playing);
+    if (!playing) {
+      if (this.frameQueue.pendingCount() > 0) {
+        this.pumpCacheQueue();
+      } else if (!this.isWorkAreaBuildComplete()) {
+        this.startBackgroundBuildIfNeeded();
+      }
+    }
+  }
+
+  isPlaybackActive(): boolean {
+    return this.playbackActive;
   }
 
   /** スクラブで live 表示したフレームを最優先でキャッシュ。 */
@@ -186,13 +212,13 @@ export class RamPreviewController {
     this.enqueueFrame(frame, "scrub");
   }
 
-  /** 再生中ミスフレームをキャッシュ（background より優先）。 */
+  /** 再生中ミスフレームをキャッシュ（background より優先）。再生中は no-op。 */
   cachePlaybackFrame(frame: number): void {
     this.enqueueFrame(frame, "playback");
   }
 
   private enqueueFrame(frame: number, priority: "scrub" | "playback" | "background"): void {
-    if (!this.settings.enabled || !this.config) return;
+    if (!this.settings.enabled || !this.config || this.playbackActive) return;
     this.frameQueue.enqueue(frame, priority);
     this.pumpCacheQueue();
   }
@@ -250,11 +276,22 @@ export class RamPreviewController {
   }
 
   startBackgroundBuildIfNeeded(): void {
-    if (!this.settings.enabled || !this.config) return;
+    if (!this.settings.enabled || !this.config || this.playbackActive) return;
     if (this.isRealtimeCapable()) return;
     const { start, end } = this.getBuildRange();
     const total = Math.max(0, end - start);
     if (total === 0) return;
+    // 既に同一レンジで進行中なら再 enqueue しない（progress 二重加算を避ける）。
+    if (
+      this.buildRange
+      && this.buildRange.start === start
+      && this.buildRange.end === end
+      && this.buildTotal === total
+      && (this.frameQueue.pendingCount() > 0 || this.buildProgress >= this.buildTotal)
+    ) {
+      this.pumpCacheQueue();
+      return;
+    }
     this.buildRange = { start, end };
     this.buildTotal = total;
     this.frameQueue.enqueueRange(start, end, "background");
@@ -292,6 +329,7 @@ export class RamPreviewController {
   }
 
   private pumpCacheQueue(): void {
+    if (this.playbackActive) return;
     this.frameQueue.pump((frame, gen) => this.processCacheFrame(frame, gen));
   }
 

@@ -4,8 +4,11 @@ import {
   filterTrackedPoints,
   selectGridDispersedPoints,
   shouldRediscover,
+  filterPointsInFrame,
   MIN_TRACK_COUNT,
+  MIN_TRACK_COUNT_SFM,
   REDISCOVER_INTERVAL,
+  REDISCOVER_INTERVAL_SFM,
 } from "../src/editor/motionTrack/featureQuality";
 import { TRACK_ROI_PRESETS, isInsideRoiInterior, roiToPixelRect } from "../src/editor/motionTrack/trackRoi";
 
@@ -127,5 +130,33 @@ describe("shouldRediscover", () => {
   it("triggers every REDISCOVER_INTERVAL frames", () => {
     expect(shouldRediscover(REDISCOVER_INTERVAL, MIN_TRACK_COUNT + 10)).toBe(true);
     expect(shouldRediscover(REDISCOVER_INTERVAL + 1, MIN_TRACK_COUNT + 10)).toBe(false);
+  });
+
+  it("sfm options use shorter interval and higher min count", () => {
+    const sfm = { interval: REDISCOVER_INTERVAL_SFM, minCount: MIN_TRACK_COUNT_SFM };
+    expect(shouldRediscover(REDISCOVER_INTERVAL_SFM, MIN_TRACK_COUNT_SFM + 10, sfm)).toBe(true);
+    expect(shouldRediscover(REDISCOVER_INTERVAL_SFM + 1, MIN_TRACK_COUNT_SFM + 10, sfm)).toBe(
+      false,
+    );
+    expect(shouldRediscover(1, MIN_TRACK_COUNT_SFM - 1, sfm)).toBe(true);
+    // default interval would not fire at frame 3
+    expect(shouldRediscover(REDISCOVER_INTERVAL_SFM, MIN_TRACK_COUNT + 10)).toBe(false);
+  });
+});
+
+describe("filterPointsInFrame", () => {
+  it("drops points on or outside the border", () => {
+    const kept = filterPointsInFrame(
+      [
+        { x: 0, y: 50 },
+        { x: 50, y: 50 },
+        { x: 99, y: 50 },
+        { x: 50, y: 1 },
+      ],
+      100,
+      100,
+      2,
+    );
+    expect(kept).toEqual([{ x: 50, y: 50 }]);
   });
 });

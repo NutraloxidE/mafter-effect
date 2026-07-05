@@ -21,6 +21,8 @@ export class FrameCacheQueue {
   private seq = 0;
   private generation = 0;
   private pumping = false;
+  /** §28.4 — 再生中は bake を止め、停止後に resume。 */
+  private paused = false;
 
   enqueue(frame: number, priority: FrameCachePriority): void {
     const existing = this.pending.get(frame);
@@ -36,6 +38,15 @@ export class FrameCacheQueue {
 
   pendingCount(): number {
     return this.pending.size;
+  }
+
+  isPaused(): boolean {
+    return this.paused;
+  }
+
+  /** pause 中は新規 job を取らない（進行中の 1 フレームは完了してよい）。 */
+  setPaused(paused: boolean): void {
+    this.paused = paused;
   }
 
   abort(): void {
@@ -65,11 +76,11 @@ export class FrameCacheQueue {
   }
 
   private async runPump(processor: FrameCacheProcessor): Promise<void> {
-    if (this.pumping) return;
+    if (this.pumping || this.paused) return;
     this.pumping = true;
     const gen = this.generation;
     try {
-      while (gen === this.generation) {
+      while (gen === this.generation && !this.paused) {
         const job = this.pickNext();
         if (!job) break;
         this.pending.delete(job.frame);
@@ -78,7 +89,7 @@ export class FrameCacheQueue {
       }
     } finally {
       this.pumping = false;
-      if (this.pending.size > 0 && gen === this.generation) {
+      if (!this.paused && this.pending.size > 0 && gen === this.generation) {
         void this.runPump(processor);
       }
     }

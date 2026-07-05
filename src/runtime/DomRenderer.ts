@@ -19,8 +19,23 @@ import { processRasterChainAsync } from "./rasterProcessAsync";
 import { applyFilterChainToBuffer } from "./effectRaster";
 import { resolveEffectChain } from "./effectChain";
 import { EXPORT_VIDEO_TARGET_ATTR, isSourceContinuousAcrossCut, primeVideoElement, syncVideoElementTime, waitForVideoFrame } from "./videoElementSync";
+import {
+  isVideoReadyAtTarget,
+  type VideoClockSample,
+} from "./playbackVideoSync";
 import { normalizeFootageQuality } from "./footageQuality";
 import { ensureVideosPrimed, peekVideoPrimed, type VideoPrimeTarget } from "./videoWarmupCache";
+import {
+  drawSplitAlphaComposite,
+  ensureSplitAlphaCompanion,
+  findSplitAlphaVideo,
+  mirrorSplitAlphaVideoState,
+  scheduleSplitAlphaRedrawWhenReady,
+  setSplitAlphaPresentation,
+  SPLIT_ALPHA_CANVAS_CLASS,
+  SPLIT_ALPHA_MASK_SCRATCH_CLASS,
+  SPLIT_ALPHA_VIDEO_CLASS,
+} from "./videoSplitAlpha";
 import { KeyedElementPool } from "./videoElementPool";
 import {
   computeVideoLookaheadWarmupTargets,
@@ -184,6 +199,8 @@ export class DomRenderer implements Renderer {
   private previewVideoPlayback = false;
   /** export 中は video を play ステップで進め、毎フレーム seek を避ける。 */
   private exportVideoStep = false;
+  /** §11.4 映像先行ゲート: playback 中に video を pause（seek しない）。 */
+  private playbackPauseForSync = false;
 
   setPreviewRenderOptions(opts: {
     holdLastRaster?: boolean;
@@ -198,11 +215,39 @@ export class DomRenderer implements Renderer {
     if (opts.exportVideoStep !== undefined) this.exportVideoStep = opts.exportVideoStep;
     if (opts.previewVideoPlayback !== undefined) {
       if (this.previewVideoPlayback && !opts.previewVideoPlayback) {
+        this.playbackPauseForSync = false;
         this.pauseAllVideos();
         this.clearVideoLookaheadWarmups();
       }
       this.previewVideoPlayback = opts.previewVideoPlayback;
     }
+  }
+
+  /**
+   * §11.4 双方向同期 — 映像先行時にマウント video を即 pause / 解除で play 再開。
+   * seek はしない（旧 HW スタッタ対策 A）。
+   */
+  setPlaybackPauseForSync(pause: boolean): void {
+    if (this.playbackPauseForSync === pause) return;
+    this.playbackPauseForSync = pause;
+    if (pause) {
+      this.forEachVideoElement((video) => {
+        try {
+          if (!video.paused) video.pause();
+        } catch {
+          /* best-effort */
+        }
+      });
+      return;
+    }
+    if (!this.previewVideoPlayback) return;
+    this.forEachVideoElement((video) => {
+      try {
+        void video.play();
+      } catch {
+        /* best-effort */
+      }
+    });
   }
 
   setTextQuality(mode: "draft" | "precise"): void {
@@ -605,12 +650,26 @@ export class DomRenderer implements Renderer {
       const target = raw !== null && raw !== "" ? Number(raw) : undefined;
       return waitForVideoFrame(v, Number.isFinite(target) ? target : undefined, timeoutMs);
     }));
+    for (const v of videos) {
+      if (v.classList.contains(SPLIT_ALPHA_VIDEO_CLASS)) continue;
+      const parent = v.parentElement;
+      if (!parent) continue;
+      const alpha = parent.querySelector(`video.${SPLIT_ALPHA_VIDEO_CLASS}`) as HTMLVideoElement | null;
+      const canvas = parent.querySelector(`canvas.${SPLIT_ALPHA_CANVAS_CLASS}`) as HTMLCanvasElement | null;
+      if (alpha && canvas) {
+        const scratch = parent.querySelector(
+          `canvas.${SPLIT_ALPHA_MASK_SCRATCH_CLASS}`,
+        ) as HTMLCanvasElement | null;
+        if (scratch) drawSplitAlphaComposite(v, alpha, canvas, scratch);
+      }
+    }
   }
 
   /** §11.4 preview/bundle warm-up — マウント済み video 要素を列挙（ネスト comp 内も含む）。 */
   forEachVideoElement(cb: (video: HTMLVideoElement, objectId: string) => void): void {
     if (!this.root) return;
     for (const v of this.root.querySelectorAll("video")) {
+      if (v.classList.contains(SPLIT_ALPHA_VIDEO_CLASS)) continue;
       const host = (v as HTMLElement).closest("[data-object-id]") as HTMLElement | null;
       cb(v, host?.dataset.objectId ?? "");
     }
@@ -636,6 +695,15 @@ export class DomRenderer implements Renderer {
         fps,
         prime: () => primeVideoElement(video, targetSec, fps, timeoutMs),
       });
+      const alpha = findSplitAlphaVideo(video);
+      if (alpha) {
+        targets.push({
+          assetId: `${assetId}:alpha`,
+          targetSec,
+          fps,
+          prime: () => primeVideoElement(alpha, targetSec, fps, timeoutMs),
+        });
+      }
     });
     return ensureVideosPrimed(targets);
   }
@@ -653,6 +721,62 @@ export class DomRenderer implements Renderer {
       if (!peekVideoPrimed(assetId, targetSec, fps)) allPrimed = false;
     });
     return allPrimed;
+  }
+
+  /**
+   * §11.4 Play 直前 barrier — primed キャッシュを信用せず、実要素を現 target へ seek+ready。
+   * 既に半フレーム以内かつ data ready なら pause/seek しない（毎 Play の音声ブリップ防止）。
+   * lookahead 要素は root 外のため対象外。
+   */
+  async syncMountedVideosForPlay(fps: number, timeoutMs?: number): Promise<boolean> {
+    if (!this.root) return true;
+    const jobs: Promise<boolean>[] = [];
+    this.forEachVideoElement((video) => {
+      const rawT = video.dataset.mafterTargetSec;
+      if (rawT === undefined) return;
+      const targetSec = Number(rawT);
+      if (!Number.isFinite(targetSec)) return;
+      if (isVideoReadyAtTarget(video, targetSec, fps)) return;
+      jobs.push(primeVideoElement(video, targetSec, fps, timeoutMs));
+      const alpha = findSplitAlphaVideo(video);
+      if (alpha && !isVideoReadyAtTarget(alpha, targetSec, fps)) {
+        jobs.push(primeVideoElement(alpha, targetSec, fps, timeoutMs));
+      }
+    });
+    if (jobs.length === 0) return true;
+    const results = await Promise.all(jobs);
+    return results.every(Boolean);
+  }
+
+  /**
+   * §11.4 playback hold 用 — マウント済み表示中 video の target / currentTime を列挙。
+   * lookahead（root 外）は含まれない。適格判定は playbackVideoSync 側。
+   */
+  sampleMountedVideoClocks(): VideoClockSample[] {
+    const samples: VideoClockSample[] = [];
+    const pushSample = (video: HTMLVideoElement): void => {
+      const rawT = video.dataset.mafterTargetSec;
+      if (rawT === undefined) return;
+      const targetSec = Number(rawT);
+      if (!Number.isFinite(targetSec)) return;
+      const duration = Number(video.duration);
+      samples.push({
+        targetSec,
+        currentTimeSec: video.currentTime,
+        paused: video.paused,
+        ended: video.ended,
+        error: video.error !== null,
+        duration: Number.isFinite(duration) ? duration : Number.POSITIVE_INFINITY,
+      });
+    };
+    this.forEachVideoElement((video) => {
+      pushSample(video);
+      // §16.2 split alpha: color と alpha は独立デコード（ビットレート差が大きい）ので、
+      // alpha 側だけが遅れても hold/pause 判定に反映されるよう companion も併せてサンプルする。
+      const alpha = findSplitAlphaVideo(video);
+      if (alpha) pushSample(alpha);
+    });
+    return samples;
   }
 
   /**
@@ -790,12 +914,14 @@ export class DomRenderer implements Renderer {
       ensureTrackMatteResultCanvas(entry.div, compW, compH);
     } else {
       entry.contentRoot = entry.div;
+      // §5.4f 後始末を先に行う（matte source 用の zIndex 等を消してから現在値を設定する。
+      // 逆順だと clearMatteSourceStyle の zIndex="" が直後の設定を上書きしてしまう）。
+      clearTrackMatteFillHost(entry.div);
+      clearMatteSourceStyle(entry.div);
       entry.div.style.transform = mat4ToCss(xform);
       entry.div.style.opacity = opacity;
       entry.div.style.zIndex = String(Math.round(obj.zOrder * BASE_Z));
       this.applyBlendMode(entry, obj.blendMode);
-      clearTrackMatteFillHost(entry.div);
-      clearMatteSourceStyle(entry.div);
       this.trackMatteSigByFillId.delete(obj.id);
       // host 構造から通常へ戻るとき inner を畳む（マット子は先に外へ）
       const inner = entry.div.querySelector(":scope > [data-track-matte-inner]") as HTMLDivElement | null;
@@ -864,7 +990,7 @@ export class DomRenderer implements Renderer {
       const el = entry.children[i];
       if (el) {
         const hostInPoint = (c.props["_hostInPoint"] as number | undefined) ?? 0;
-        updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, frame, hostInPoint, this.currentComp?.fps ?? 30, this.previewVideoPlayback, this.exportVideoStep, childrenRebuilt);
+        updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, frame, hostInPoint, this.currentComp?.fps ?? 30, this.previewVideoPlayback, this.exportVideoStep, childrenRebuilt, this.playbackPauseForSync);
       }
 
       // Plugin component: registry から ComponentDef.render を呼ぶ（組み込み型は未登録でスキップ）
@@ -1697,7 +1823,7 @@ export class DomRenderer implements Renderer {
           }
           const el = createComponentEl(c.type);
           const hostInPoint = (c.props["_hostInPoint"] as number | undefined) ?? 0;
-          updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, childFrame, hostInPoint, childComp.fps, this.previewVideoPlayback, this.exportVideoStep);
+          updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, childFrame, hostInPoint, childComp.fps, this.previewVideoPlayback, this.exportVideoStep, false, this.playbackPauseForSync);
           div.appendChild(el);
         }
       }
@@ -1872,6 +1998,7 @@ function updateComponentEl(
   previewVideoPlayback = false,
   exportVideoStep = false,
   forceSeek = false,
+  pauseForSync = false,
 ): void {
   switch (type) {
     case "solid": {
@@ -1949,7 +2076,12 @@ function updateComponentEl(
           hostFrame,
           fps,
         );
-      syncVideoElementTime(video, t, fps, { playbackMode: previewVideoPlayback, exportStep: exportVideoStep, forceSeek: cutSeek });
+      syncVideoElementTime(video, t, fps, {
+        playbackMode: previewVideoPlayback,
+        exportStep: exportVideoStep,
+        forceSeek: cutSeek,
+        pauseForSync: previewVideoPlayback && pauseForSync,
+      });
       if (exportVideoStep) {
         video.setAttribute(EXPORT_VIDEO_TARGET_ATTR, String(t));
       } else {
@@ -1965,6 +2097,62 @@ function updateComponentEl(
       if (size) {
         video.style.width = `${size.width}px`;
         video.style.height = `${size.height}px`;
+      }
+      const alphaUrl = assetId ? imageCache?.getAlphaVideoUrl(assetId) : null;
+      if (alphaUrl) {
+        const companion = ensureSplitAlphaCompanion(video);
+        if (companion.alphaVideo.getAttribute("src") !== alphaUrl) {
+          companion.alphaVideo.src = alphaUrl;
+          companion.alphaVideo.muted = true;
+          companion.alphaVideo.playsInline = true;
+          companion.alphaVideo.preload = "auto";
+          companion.alphaVideo.controls = false;
+        }
+        mirrorSplitAlphaVideoState(video, companion.alphaVideo);
+        syncVideoElementTime(companion.alphaVideo, t, fps, {
+          playbackMode: previewVideoPlayback,
+          exportStep: exportVideoStep,
+          forceSeek: cutSeek,
+          pauseForSync: previewVideoPlayback && pauseForSync,
+        });
+        if (exportVideoStep) {
+          companion.alphaVideo.setAttribute(EXPORT_VIDEO_TARGET_ATTR, String(t));
+        } else {
+          companion.alphaVideo.removeAttribute(EXPORT_VIDEO_TARGET_ATTR);
+        }
+        setSplitAlphaPresentation(
+          video,
+          companion,
+          true,
+          size?.width ?? 100,
+          size?.height ?? 100,
+        );
+        const drew = drawSplitAlphaComposite(
+          video,
+          companion.alphaVideo,
+          companion.canvas,
+          companion.maskScratch,
+        );
+        // §16.2 scrub 直後は seek/decode 中で読めないことがある。1 回描画に失敗した
+        // ときだけ ready 後の再描画を予約する（stale canvas 固定の防止）。
+        if (!drew) {
+          scheduleSplitAlphaRedrawWhenReady(
+            video,
+            companion.alphaVideo,
+            companion.canvas,
+            companion.maskScratch,
+          );
+        }
+      } else {
+        const parent = video.parentElement;
+        if (parent) {
+          for (const node of parent.querySelectorAll(
+            `video.${SPLIT_ALPHA_VIDEO_CLASS}, canvas.${SPLIT_ALPHA_CANVAS_CLASS}, canvas.${SPLIT_ALPHA_MASK_SCRATCH_CLASS}`,
+          )) {
+            node.remove();
+          }
+        }
+        video.style.opacity = "";
       }
       break;
     }

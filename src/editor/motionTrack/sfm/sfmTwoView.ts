@@ -195,7 +195,7 @@ export function estimateTwoViewInit(
   cx: number,
   cy: number,
   rng: SfmRng,
-  opts?: { iterations?: number; threshPx?: number; minAngleDeg?: number },
+  opts?: { iterations?: number; threshPx?: number; minAngleDeg?: number; minPoints?: number },
 ): TwoViewInit | null {
   const res = ransacEssential(pairs, f, cx, cy, rng, opts);
   if (!res) return null;
@@ -254,7 +254,8 @@ export function estimateTwoViewInit(
     angles.push(ang);
     reprojErrs.push(err);
   }
-  if (points.length < 12) return null;
+  const minPoints = opts?.minPoints ?? 12;
+  if (points.length < minPoints) return null;
 
   return {
     pose,

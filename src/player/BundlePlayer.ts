@@ -111,9 +111,9 @@ export class BundlePlayer {
     this.currentFrame = rangeStart;
     this.renderFrame(this.currentFrame);
 
-    // §11.4: 自動再生開始前に 1 回だけ動画を warm-up（seek + decode）。開幕の「動画だけ遅れて登場」を防ぐ。
-    // export ではなく live player 経路。失敗は best-effort（再生中に再試行）。
-    await this.renderer.primeMountedVideos(this.manifest.fps).catch(() => false);
+    // §11.4: Play barrier — primed キャッシュを信用せず実要素を現フレームへ再同期してから再生。
+    // hold は autoplay ブロックで currentTime が進まず凍結するため bundle には配線しない。
+    await this.renderer.syncMountedVideosForPlay(this.manifest.fps).catch(() => false);
 
     const hasAudio = hasAudioLayers(project, comp);
     if (hasAudio) {

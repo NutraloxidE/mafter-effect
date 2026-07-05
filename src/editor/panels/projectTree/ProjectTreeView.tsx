@@ -11,6 +11,7 @@ import {
   parseTreeDragPayload,
   serializeTreeDragPayload,
 } from "./projectTreeSelection";
+import { PROJECT_TREE_ROW_PAD_RIGHT, projectTreeRowPadLeft } from "./projectTreeLayout";
 import { ResourceAddMenu } from "./ResourceAddMenu";
 import { toolbarBtn } from "./toolbarStyles";
 
@@ -257,7 +258,7 @@ export function ProjectTreeView(props: ProjectTreeViewProps) {
   );
 
   const renderEntry = (entry: ProjectTreeEntry, depth: number) => {
-    const pad = 10 + depth * 14;
+    const pad = projectTreeRowPadLeft(depth);
     const key = entryKey(entry);
     const selected = selectedSet.has(key);
     const hovered = hoveredKey === key;
@@ -291,7 +292,8 @@ export function ProjectTreeView(props: ProjectTreeViewProps) {
               display: "flex",
               alignItems: "center",
               gap: 4,
-              padding: `3px ${pad}px 3px 6px`,
+              padding: `3px ${PROJECT_TREE_ROW_PAD_RIGHT}px`,
+              paddingLeft: pad,
               cursor: "pointer",
               userSelect: "none",
               background: rowBackground(selected, false, hovered),
@@ -400,7 +402,7 @@ export function ProjectTreeView(props: ProjectTreeViewProps) {
             display: "flex",
             alignItems: "center",
             gap: 6,
-            padding: `3px ${pad}px`,
+            padding: `3px ${PROJECT_TREE_ROW_PAD_RIGHT}px`,
             paddingLeft: pad,
             background: rowBackground(selected, active && !selected, hovered),
             borderLeft: selected ? "2px solid #6a9fd4" : active ? "2px solid #4a8acf" : "2px solid transparent",
@@ -498,7 +500,7 @@ export function ProjectTreeView(props: ProjectTreeViewProps) {
           display: "flex",
           alignItems: "center",
           gap: 6,
-          padding: `3px ${pad}px`,
+          padding: `3px ${PROJECT_TREE_ROW_PAD_RIGHT}px`,
           paddingLeft: pad,
           cursor: isFootage ? "pointer" : "default",
           background: rowBackground(selected, false, hovered),

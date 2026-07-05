@@ -7,8 +7,11 @@ import {
 } from "./rotationEstimator";
 import { MultiFrameVoState } from "./multiFrameVo";
 import {
+  filterPointsInFrame,
   filterPointsInRoiInterior,
   filterTrackedPoints,
+  MIN_TRACK_COUNT_SFM,
+  REDISCOVER_INTERVAL_SFM,
   selectGridDispersedPoints,
   shouldRediscover,
   type Point2,
@@ -399,17 +402,25 @@ self.onmessage = async (ev: MessageEvent<RotationTrackWorkerRequest>) => {
 
         if (estimateMode === "sfm") {
           const { keptIds, keptCur } = trackWithIds(prevGray, gray, prevPtsList, prevTrackIds);
-          // 現在フレームの観測（マスク内のみ記録。マスク外に出た点も追跡は継続）
+          // 画面外・ROI 外は即ドロップ（見切れ点を残すと再検出枠を食う）
           const obsPts: Array<{ id: number; x: number; y: number }> = [];
+          let nextList: Point2[] = [];
+          const nextIds: number[] = [];
           for (let i = 0; i < keptCur.length; i++) {
             const p = keptCur[i]!;
+            if (filterPointsInFrame([p], msg.w, msg.h).length === 0) continue;
             if (filterPointsInRoiInterior([p], msg.w, msg.h, mask).length === 0) continue;
+            nextList.push(p);
+            nextIds.push(keptIds[i]!);
             obsPts.push({ id: keptIds[i]!, x: p.x, y: p.y });
           }
-          let nextList = keptCur;
-          const nextIds = [...keptIds];
           framesSinceReset += 1;
-          if (shouldRediscover(framesSinceReset, nextList.length)) {
+          if (
+            shouldRediscover(framesSinceReset, nextList.length, {
+              interval: REDISCOVER_INTERVAL_SFM,
+              minCount: MIN_TRACK_COUNT_SFM,
+            })
+          ) {
             const merged = mergeRediscovered(gray, nextList, msg.w, msg.h, mask);
             for (let i = nextList.length; i < merged.length; i++) {
               const p = merged[i]!;
@@ -421,7 +432,7 @@ self.onmessage = async (ev: MessageEvent<RotationTrackWorkerRequest>) => {
           }
           recordSfmFrame(msg.idx, obsPts);
           mapPoints = nextList.length;
-          inlierRatio = Math.min(1, keptCur.length / 40);
+          inlierRatio = Math.min(1, nextList.length / 40);
           prevTrackIds = nextIds;
           prevGray.delete();
           prevGray = gray;

@@ -44,11 +44,23 @@ export function evictPreviewMediaAsset(assetId: string): void {
   previewCacheRef?.evictAsset(assetId);
 }
 
+/** §16.2 split alpha — color + 別 WebM マスク（Chrome 等 VP9 alpha 非対応時）。 */
+export function isSplitAlphaVideoMeta(meta: Record<string, unknown> | undefined): boolean {
+  return (
+    meta?.hasAlpha === true &&
+    meta?.alphaMode === "split" &&
+    typeof meta?.alphaPath === "string" &&
+    meta.alphaPath.length > 0
+  );
+}
+
 /** asset 画像の data: URL / 動画の blob: URL と natural size キャッシュ。 */
 export class ImageAssetCache {
   private readonly byId = new Map<string, ImageEntry>();
   private readonly byPath = new Map<string, ImageEntry>();
   private readonly blobUrls = new Set<string>();
+  /** §16.2 split alpha 用 companion マスク video URL（assetId → url）。 */
+  private readonly alphaUrlById = new Map<string, string>();
   // §11.4b assetId → proxy tier → entry。映像のみ（音声は常に原本）。
   private readonly proxyById = new Map<string, Map<string, ImageEntry>>();
 
@@ -70,6 +82,11 @@ export class ImageAssetCache {
 
   getSize(assetId: string): ImageSize | null {
     return this.byId.get(assetId)?.size ?? null;
+  }
+
+  /** §16.2 split alpha companion マスク video の blob URL。 */
+  getAlphaVideoUrl(assetId: string): string | null {
+    return this.alphaUrlById.get(assetId) ?? null;
   }
 
   /** import 時に確定した meta から size を返す（cache 未ロード時の bounds 用）。 */
@@ -94,6 +111,9 @@ export class ImageAssetCache {
       if (this.byPath.has(ck)) {
         const entry = this.byPath.get(ck)!;
         this.byId.set(asset.id, entry);
+        if (asset.kind === "video" && isSplitAlphaVideoMeta(asset.meta)) {
+          await this.loadSplitAlphaFromFs(asset.id, asset.meta!.alphaPath as string, fs, asset.meta);
+        }
         continue;
       }
       try {
@@ -107,6 +127,9 @@ export class ImageAssetCache {
         this.byPath.set(ck, entry);
         this.byId.set(asset.id, entry);
         if (entry.url.startsWith("blob:")) this.blobUrls.add(entry.url);
+        if (asset.kind === "video" && isSplitAlphaVideoMeta(asset.meta)) {
+          await this.loadSplitAlphaFromFs(asset.id, asset.meta!.alphaPath as string, fs, asset.meta);
+        }
       } catch {
         /* skip unreadable asset */
       }
@@ -155,6 +178,30 @@ export class ImageAssetCache {
     m.set(tier, entry);
   }
 
+  /** §16.2 split alpha companion を FS から blob URL 化。 */
+  private async loadSplitAlphaFromFs(
+    assetId: string,
+    alphaPath: string,
+    fs: FileSystem,
+    meta: Record<string, unknown> | undefined,
+  ): Promise<void> {
+    const ck = `split-alpha|${alphaPath}`;
+    let url = this.byPath.get(ck)?.url;
+    if (!url) {
+      try {
+        const buf = await fs.read(alphaPath);
+        const mime = videoMimeFromPath(alphaPath);
+        const entry = decodeVideoEntry(buf, mime, meta);
+        this.byPath.set(ck, entry);
+        url = entry.url;
+        if (url.startsWith("blob:")) this.blobUrls.add(url);
+      } catch {
+        return;
+      }
+    }
+    this.alphaUrlById.set(assetId, url);
+  }
+
   /** video blob URL を解放しキャッシュから除去する（Footage 削除時）。 */
   evictAsset(assetId: string): void {
     const entry = this.byId.get(assetId);
@@ -180,6 +227,15 @@ export class ImageAssetCache {
       }
       this.proxyById.delete(assetId);
     }
+    const alphaUrl = this.alphaUrlById.get(assetId);
+    if (alphaUrl?.startsWith("blob:")) {
+      URL.revokeObjectURL(alphaUrl);
+      this.blobUrls.delete(alphaUrl);
+      for (const [path, e] of this.byPath) {
+        if (e.url === alphaUrl) this.byPath.delete(path);
+      }
+    }
+    this.alphaUrlById.delete(assetId);
   }
 
   /** §11.7 bundle player: 相対 URL で image / video を参照する。 */
@@ -191,6 +247,10 @@ export class ImageAssetCache {
       const entry = { url, size };
       this.byPath.set(asset.path, entry);
       this.byId.set(asset.id, entry);
+      if (asset.kind === "video" && isSplitAlphaVideoMeta(asset.meta)) {
+        const alphaPath = asset.meta!.alphaPath as string;
+        this.alphaUrlById.set(asset.id, urlForPath(alphaPath));
+      }
       // §11.4b バンドルに含まれる proxy も quality URL として登録（getUrlForQuality 用）。
       this.forEachProxyMeta(asset, (tier, path) => {
         this.registerProxyEntry(asset.id, tier, { url: urlForPath(path), size });
@@ -244,6 +304,12 @@ export class ImageAssetCache {
         this.byPath.set(asset.path, entry);
         this.byId.set(asset.id, entry);
       });
+      if (asset.kind === "video" && isSplitAlphaVideoMeta(asset.meta)) {
+        const alphaPath = asset.meta!.alphaPath as string;
+        await blobify(alphaPath, (entry) => {
+          this.alphaUrlById.set(asset.id, entry.url);
+        });
+      }
       // §11.4b proxy も blob 化（HTTP range 非対応ホストでもなめらか再生・INV-2）。
       const proxyJobs: Promise<void>[] = [];
       this.forEachProxyMeta(asset, (tier, path) => {

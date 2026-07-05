@@ -37,6 +37,11 @@ import { precompRasterService } from "../precompRasterService";
 import { compNeedsAutoPreviewCache } from "../previewCompAnalysis";
 import { runPreviewFrameClock, runPreviewPlaybackLoop } from "../previewPlaybackLoop";
 import { PreviewAudioClock } from "../previewAudioClock";
+import {
+  computePlaybackSyncState,
+  holdThresholdsForFps,
+  initialPlaybackSyncState,
+} from "../../runtime/playbackVideoSync";
 import { hasAudioLayers } from "../../player/BundleAudioClock";
 import { loadAudioBuffer, peekAudioBuffer } from "../audioBufferCache";
 import { loadWorkArea } from "../workAreaStorage";
@@ -374,6 +379,14 @@ export function PreviewPanel() {
     activateAutoCacheIfNeeded();
   }, [isPlaying, comp, activateAutoCacheIfNeeded]);
 
+  // §28.4 — 再生中は bake 休止、停止後に再開（Timeline / Space 含む全 play 入口）。
+  useEffect(() => {
+    previewCacheService.getController()?.setPlaybackActive(isPlaying);
+    return () => {
+      previewCacheService.getController()?.setPlaybackActive(false);
+    };
+  }, [isPlaying]);
+
   // mount/remount renderer when comp changes
   useEffect(() => {
     const el = containerRef.current;
@@ -479,13 +492,17 @@ export function PreviewPanel() {
   const editingLive = previewOverride !== null || draftTransform !== null || previewCamera !== null;
   const draftPlaybackActive = isPlaying && effectiveTextQuality === "draft" && !editingLive;
 
+  // previewVideoPlayback / holdLastRaster の点火は play 開始 async（barrier→render→clock）が正本。
+  // この effect は停止・編集オーバーレイ時にフラグを下ろす専用（点火レース防止）。
   useEffect(() => {
     const renderer = rendererRef.current;
     if (!renderer) return;
-    renderer.setPreviewRenderOptions({
-      holdLastRaster: isPlaying && !editingLive,
-      previewVideoPlayback: isPlaying && !editingLive,
-    });
+    if (!isPlaying || editingLive) {
+      renderer.setPreviewRenderOptions({
+        holdLastRaster: false,
+        previewVideoPlayback: false,
+      });
+    }
   }, [isPlaying, editingLive]);
 
   // render on frame / project / draft transform (§28: scrub=live 初回、表示後キャッシュ・再訪問は cache 可)
@@ -562,8 +579,10 @@ export function PreviewPanel() {
   // §25.6 / §28 / §27.12 / §11.5 再生ループ。
   // 音声レイヤーがあれば AudioContext をマスタークロックにして音と frame を同期させる（無ければ従来 rAF）。
   // Draft=直接 render、Best=frame clock + React effect。
+  // §11.4: barrier（実要素 seek）→ previewVideoPlayback 点火 + 1 回 render（play()）→ clock。
+  // 再生中は双方向ゲート: 映像遅れ→timeline hold / 映像先行→video pause。
   useEffect(() => {
-    if (!isPlaying || !comp) return;
+    if (!isPlaying || !comp || editingLive) return;
 
     const cfg = playbackConfigRef.current;
     const renderFrame = cfg.draftPlayback
@@ -572,6 +591,24 @@ export function PreviewPanel() {
           return performPreviewRender(f, gen);
         }
       : undefined;
+
+    let cancelled = false;
+    let stop: (() => void) | null = null;
+    let syncState = initialPlaybackSyncState();
+    const thresholds = holdThresholdsForFps(cfg.fps);
+
+    const applyPlaybackSync = (): boolean => {
+      const renderer = rendererRef.current;
+      if (!renderer) return false;
+      syncState = computePlaybackSyncState(
+        syncState,
+        renderer.sampleMountedVideoClocks(),
+        thresholds,
+        performance.now(),
+      );
+      renderer.setPlaybackPauseForSync(syncState.pauseVideo);
+      return syncState.holdTimeline;
+    };
 
     const startRafClock = () => {
       if (cfg.draftPlayback) {
@@ -583,6 +620,7 @@ export function PreviewPanel() {
           initialFrame: frameRef.current,
           onFrameChange: (f) => setFrame(f),
           onPlaybackEnd: () => setPlaying(false),
+          shouldHold: applyPlaybackSync,
           renderFrame: (f) => {
             const gen = ++draftPlaybackRenderGenRef.current;
             return performPreviewRender(f, gen);
@@ -597,11 +635,9 @@ export function PreviewPanel() {
         initialFrame: frameRef.current,
         onFrameChange: (f) => setFrame(f),
         onPlaybackEnd: () => setPlaying(false),
+        shouldHold: applyPlaybackSync,
       });
     };
-
-    let cancelled = false;
-    let stop: (() => void) | null = null;
 
     const startClock = (): void => {
       if (cancelled) return;
@@ -609,7 +645,6 @@ export function PreviewPanel() {
         stop = startRafClock();
         return;
       }
-      // 音声あり: AudioContext マスタークロック。decode は非同期なので、成功するまで stop ハンドルを保持。
       let fallbackStop: (() => void) | null = null;
       const clock = new PreviewAudioClock(project, comp, _previewFs, {
         fps: cfg.fps,
@@ -620,12 +655,15 @@ export function PreviewPanel() {
         onFrameChange: (f) => setFrame(f),
         onPlaybackEnd: () => setPlaying(false),
         renderFrame,
-        // live gain（previewOverride / draftTransform を含む編集中の Volume を再生中に反映）。
         getComp: () => renderCompRef.current ?? comp,
+        getVideoClockSamples: () => rendererRef.current?.sampleMountedVideoClocks() ?? [],
+        onPlaybackSyncState: (s) => {
+          rendererRef.current?.setPlaybackPauseForSync(s.pauseVideo);
+        },
       });
       void clock.start().then((ok) => {
         if (cancelled) { clock.stop(); return; }
-        if (!ok) fallbackStop = startRafClock(); // decode 全失敗 → 無音 rAF
+        if (!ok) fallbackStop = startRafClock();
       });
       stop = () => {
         clock.stop();
@@ -633,23 +671,33 @@ export function PreviewPanel() {
       };
     };
 
-    // §11.4 条件付き play gate: warm-up 済みなら遅延ゼロで即開始。未完了の動画があるときだけ
-    // 短時間（PLAY_GATE_TIMEOUT_MS 上限）prime を待ってから再生開始＝開幕の「動画だけ遅れて登場」を防ぐ。
-    const renderer = rendererRef.current;
-    if (renderer && !renderer.areMountedVideosPrimed(cfg.fps)) {
-      void renderer
-        .primeMountedVideos(cfg.fps, PLAY_GATE_TIMEOUT_MS)
-        .catch(() => {}) // best-effort: 失敗しても再生は始める
-        .then(startClock);
-    } else {
+    const startPlaybackSynced = async (): Promise<void> => {
+      const renderer = rendererRef.current;
+      if (renderer) {
+        await renderer.syncMountedVideosForPlay(cfg.fps, PLAY_GATE_TIMEOUT_MS).catch(() => false);
+      }
+      if (cancelled) return;
+      renderer?.setPreviewRenderOptions({
+        previewVideoPlayback: true,
+        holdLastRaster: true,
+      });
+      const f = frameRef.current;
+      const gen = ++draftPlaybackRenderGenRef.current;
+      await performPreviewRender(f, gen).catch(() => {
+        /* best-effort: clock は開始する */
+      });
+      if (cancelled) return;
       startClock();
-    }
+    };
+
+    void startPlaybackSynced();
 
     return () => {
       cancelled = true;
       stop?.();
+      rendererRef.current?.setPlaybackPauseForSync(false);
     };
-  }, [isPlaying, comp?.id, draftPlaybackActive, setFrame, setPlaying, performPreviewRender, project]);
+  }, [isPlaying, comp?.id, draftPlaybackActive, editingLive, setFrame, setPlaying, performPreviewRender, project]);
 
   // §11.5: 編集中 comp に音声レイヤーがあれば decode 済みバッファをメモリ常駐させ、
   // 再生ボタンを押した瞬間に decode 待ちなく発音できるようにする（プリロード）。

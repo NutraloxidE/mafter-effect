@@ -56,3 +56,31 @@ export function solvedFocalToCameraZoom(
   if (!(focalPx > 0) || !(trackHeight > 0) || !(compHeight > 0)) return 0;
   return (focalPx * compHeight) / trackHeight;
 }
+
+export interface SolveHalfStats {
+  earlyMedianPoints: number;
+  lateMedianPoints: number;
+  earlyFrameCount: number;
+  lateFrameCount: number;
+}
+
+/** 前半/後半の PnP 対応点数中央値（見切れ以降の地図薄さを診断）。 */
+export function summarizeSolveHalfStats(
+  frames: Array<{ numPoints: number }>,
+): SolveHalfStats | null {
+  if (frames.length < 2) return null;
+  const mid = Math.floor(frames.length / 2);
+  const medianOf = (xs: number[]): number => {
+    if (xs.length === 0) return 0;
+    const s = [...xs].sort((a, b) => a - b);
+    return s[Math.floor(s.length / 2)]!;
+  };
+  const early = frames.slice(0, mid);
+  const late = frames.slice(mid);
+  return {
+    earlyMedianPoints: medianOf(early.map((f) => f.numPoints)),
+    lateMedianPoints: medianOf(late.map((f) => f.numPoints)),
+    earlyFrameCount: early.length,
+    lateFrameCount: late.length,
+  };
+}

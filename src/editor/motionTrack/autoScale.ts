@@ -1,6 +1,25 @@
 import type { Vec3 } from "../../core/schema";
 
 /**
+ * Position / Walk の auto-scale: 支配軸 range → comp 高さのこの割合。
+ * 3D Solve は単眼で並進が小さく出やすいため、より大きい目標を使う。
+ */
+export const AUTO_SCALE_HEIGHT_FRAC = 0.15;
+/**
+ * 3D Solve 用。実写フィードバックで userScale≈10（旧 0.15 基準）がしっくり来たため、
+ * 既定の auto 目標を 10 倍（高さの 1.5 倍）にし、スケール係数 1 で同程度になるようにする。
+ */
+export const SOLVE_AUTO_SCALE_HEIGHT_FRAC = 1.5;
+
+export function defaultAutoScaleTargetPx(compHeight: number): number {
+  return Math.max(80, compHeight * AUTO_SCALE_HEIGHT_FRAC);
+}
+
+export function defaultSolveAutoScaleTargetPx(compHeight: number): number {
+  return Math.max(80, compHeight * SOLVE_AUTO_SCALE_HEIGHT_FRAC);
+}
+
+/**
  * valid な相対変位列の支配軸 range が targetRange になる倍率を返す。
  * range が極小のときは 1（増幅しない）。
  */

@@ -2,6 +2,7 @@ import { RamPreviewController } from "../src/editor/ramPreview";
 import { MemoryFs } from "../src/fs/MemoryFs";
 import { describe, expect, it, vi } from "vitest";
 import { buildCompFrameCacheKey, compFrameCachePrefix, parseCompFrameFromKey } from "../src/cache/compFrameKey";
+import { FrameCacheQueue } from "../src/cache/frameCacheQueue";
 import { MemoryCacheTier } from "../src/cache/memoryCacheTier";
 import { DefaultTieredCacheStore } from "../src/cache/tieredCacheStore";
 import { InMemoryDiskCacheTier } from "../src/fs/PreviewCacheDb";
@@ -230,6 +231,128 @@ describe("shouldPreferCacheDisplay", () => {
     const ctrl = new RamPreviewController(store, new MemoryFs(), { enabled: true, maxRamMB: 256, enableDiskCache: true });
     expect(ctrl.shouldPreferCacheDisplay()).toBe(false);
     expect(ctrl.shouldUseCacheForPlayback()).toBe(false);
+  });
+});
+
+describe("FrameCacheQueue pause", () => {
+  it("stops taking jobs while paused and resumes after", async () => {
+    const q = new FrameCacheQueue();
+    const processed: number[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+
+    q.enqueueRange(0, 5, "background");
+    q.pump(async (frame) => {
+      processed.push(frame);
+      if (processed.length === 1) await gate;
+    });
+
+    await vi.waitFor(() => expect(processed.length).toBe(1));
+    q.setPaused(true);
+    release();
+    await new Promise((r) => setTimeout(r, 30));
+    expect(processed.length).toBe(1);
+    expect(q.pendingCount()).toBe(4);
+
+    q.setPaused(false);
+    q.pump(async (frame) => {
+      processed.push(frame);
+    });
+    await vi.waitFor(() => expect(processed.length).toBe(5));
+    expect(q.pendingCount()).toBe(0);
+  });
+});
+
+function makeBakeComp(): TimelineComposition {
+  registerBuiltinEffects();
+  const obj: SceneObject = {
+    id: "O1",
+    name: "solid",
+    parent: null,
+    zOrder: 1,
+    enabled: true,
+    inPoint: 0,
+    outPoint: 10,
+    transform: defaultTransform(),
+    opacity: staticProp(1),
+    components: [],
+    effects: [{ id: "FX1", type: "pixelSorter", enabled: true, props: {} }],
+  };
+  return makeComp([obj]);
+}
+
+describe("RamPreviewController playback bake pause (§28.4)", () => {
+  it("defers background build while playback is active and starts on stop", () => {
+    const comp = makeBakeComp();
+    const store = new DefaultTieredCacheStore({
+      maxRamBytes: 1024,
+      diskEnabled: false,
+      disk: new InMemoryDiskCacheTier(),
+    });
+    const settings = { enabled: true, maxRamMB: 256, enableDiskCache: false };
+    const ctrl = new RamPreviewController(store, new MemoryFs(), settings);
+    ctrl.updateConfig(makeRamConfig(comp));
+
+    ctrl.setPlaybackActive(true);
+    ctrl.startBackgroundBuildIfNeeded();
+    expect(ctrl.isPlaybackActive()).toBe(true);
+    expect(ctrl.isWorkAreaBuildComplete()).toBe(false);
+    expect(ctrl.getDisplayStatus(true).kind).toBe("idle");
+
+    ctrl.setPlaybackActive(false);
+    expect(ctrl.isPlaybackActive()).toBe(false);
+    expect(ctrl.getDisplayStatus(false).kind).toBe("building");
+  });
+
+  it("prefers overlay during play only after work-area build completes", async () => {
+    const comp = makeBakeComp();
+    const store = new DefaultTieredCacheStore({
+      maxRamBytes: 1024 * 1024,
+      diskEnabled: false,
+      disk: new InMemoryDiskCacheTier(),
+    });
+    const settings = { enabled: true, maxRamMB: 256, enableDiskCache: false };
+    const ctrl = new RamPreviewController(store, new MemoryFs(), settings);
+    ctrl.updateConfig(makeRamConfig(comp));
+
+    expect(ctrl.shouldPreferCacheOverlay(true)).toBe(false);
+    expect(ctrl.shouldPreferCacheOverlay(false)).toBe(true);
+
+    const meta = { byteSize: 4, width: 1, height: 1, format: "png" as const };
+    for (let f = 0; f < comp.duration; f++) {
+      const key = ctrl.frameCacheKey(f);
+      expect(key).not.toBeNull();
+      await store.put(key!, new Uint8Array(4), meta);
+    }
+
+    ctrl.startBackgroundBuildIfNeeded();
+    await vi.waitFor(() => expect(ctrl.isWorkAreaBuildComplete()).toBe(true));
+    expect(ctrl.shouldPreferCacheOverlay(true)).toBe(true);
+    expect(ctrl.shouldPreferCacheOverlay(false)).toBe(true);
+  });
+
+  it("does not enqueue scrub/playback frames while playback is active", () => {
+    const comp = makeBakeComp();
+    const store = new DefaultTieredCacheStore({
+      maxRamBytes: 1024 * 1024,
+      diskEnabled: false,
+      disk: new InMemoryDiskCacheTier(),
+    });
+    const settings = { enabled: true, maxRamMB: 256, enableDiskCache: false };
+    const ctrl = new RamPreviewController(store, new MemoryFs(), settings);
+    ctrl.updateConfig(makeRamConfig(comp));
+
+    ctrl.setPlaybackActive(true);
+    ctrl.cacheScrubbedFrame(0);
+    ctrl.cachePlaybackFrame(1);
+    // enqueue は no-op。build も未開始。
+    expect(ctrl.getDisplayStatus(true).kind).toBe("idle");
+
+    // 停止時に未完了なら build を開始する。
+    ctrl.setPlaybackActive(false);
+    expect(ctrl.getDisplayStatus(false).kind).toBe("building");
   });
 });
 

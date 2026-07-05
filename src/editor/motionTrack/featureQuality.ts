@@ -10,7 +10,11 @@ export const LK_ERR_MAX = 20;
 export const ROI_EDGE_MARGIN_PX = 3;
 export const FRAME_BORDER_PX = 2;
 export const REDISCOVER_INTERVAL = 10;
+/** 3D Solve: 序盤点が見切れたあと地図が薄くなるのを抑えるため短間隔で再検出。 */
+export const REDISCOVER_INTERVAL_SFM = 3;
 export const MIN_TRACK_COUNT = 40;
+/** 3D Solve: 画面内の追跡点を多めに維持して後半トラックを稼ぐ。 */
+export const MIN_TRACK_COUNT_SFM = 60;
 export const GRID_COLS = 8;
 export const GRID_ROWS = 6;
 export const PER_CELL_MAX = 5;
@@ -150,8 +154,37 @@ export function selectGridDispersedPoints(
   return selected;
 }
 
-export function shouldRediscover(frameIdx: number, trackCount: number): boolean {
-  if (trackCount < MIN_TRACK_COUNT) return true;
-  if (frameIdx > 0 && frameIdx % REDISCOVER_INTERVAL === 0) return true;
+export interface RediscoverOptions {
+  interval?: number;
+  minCount?: number;
+}
+
+export function shouldRediscover(
+  frameIdx: number,
+  trackCount: number,
+  opts?: RediscoverOptions,
+): boolean {
+  const minCount = opts?.minCount ?? MIN_TRACK_COUNT;
+  const interval = opts?.interval ?? REDISCOVER_INTERVAL;
+  if (trackCount < minCount) return true;
+  if (frameIdx > 0 && frameIdx % interval === 0) return true;
   return false;
+}
+
+/** 画像縁・画面外の点を落とす（見切れ点を追跡リストに残さない）。 */
+export function filterPointsInFrame(
+  points: Point2[],
+  w: number,
+  h: number,
+  border = FRAME_BORDER_PX,
+): Point2[] {
+  return points.filter(
+    (p) =>
+      Number.isFinite(p.x) &&
+      Number.isFinite(p.y) &&
+      p.x >= border &&
+      p.y >= border &&
+      p.x < w - border &&
+      p.y < h - border,
+  );
 }

@@ -24,7 +24,9 @@ import {
   projectPoint,
   triangulationAngleDeg,
   triangulateDlt,
+  v3Add,
   v3Norm,
+  v3Scale,
   v3Sub,
   type CamPose,
   type M3,
@@ -74,10 +76,13 @@ const MIN_INIT_COMMON = 40;
 const MIN_INIT_POINTS = 30;
 const MIN_INIT_ANGLE_DEG = 0.8;
 const MIN_PNP_CORRS = 10;
+const MIN_LOCALIZE_CORRS = 6;
+const MIN_PROPAGATE_PAIRS = 16;
 const TRI_MIN_ANGLE_DEG = 0.4;
 const TRI_MAX_REPROJ_PX = 3;
 const OBS_OUTLIER_PX = 3;
 const BA_EVERY_N_KFS = 5;
+const MAP_REFINE_PASSES = 2;
 
 interface SolverState {
   table: TrackTable;
@@ -206,6 +211,32 @@ function findInitPair(state: SolverState, kfs: number[], optimizeFocal: boolean)
   return best;
 }
 
+/** 2 視点から 1 点を三角測量してマップに載せる（失敗時 null）。 */
+function tryTriangulatePair(
+  state: SolverState,
+  pose0: CamPose,
+  pose1: CamPose,
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+): V3 | null {
+  const f = state.focal;
+  const n0 = { x: (x0 - state.cx) / f, y: (y0 - state.cy) / f };
+  const n1 = { x: (x1 - state.cx) / f, y: (y1 - state.cy) / f };
+  const X = triangulateDlt(pose0, pose1, n0.x, n0.y, n1.x, n1.y);
+  if (!X) return null;
+  const Xv: V3 = X;
+  const pr0 = projectPoint(pose0, f, state.cx, state.cy, Xv);
+  const pr1 = projectPoint(pose1, f, state.cx, state.cy, Xv);
+  if (!pr0 || !pr1) return null;
+  if (Math.hypot(pr0.u - x0, pr0.v - y0) > TRI_MAX_REPROJ_PX) return null;
+  if (Math.hypot(pr1.u - x1, pr1.v - y1) > TRI_MAX_REPROJ_PX) return null;
+  const ang = triangulationAngleDeg(cameraCenter(pose0), cameraCenter(pose1), Xv);
+  if (ang < TRI_MIN_ANGLE_DEG) return null;
+  return Xv;
+}
+
 /** frame の新規トラックを、solved KF を相手に三角測量してマップへ追加。 */
 function triangulateNewPoints(state: SolverState, frame: number): number {
   const pose = state.kfPose.get(frame);
@@ -215,7 +246,6 @@ function triangulateNewPoints(state: SolverState, frame: number): number {
   for (const o of obsAt(state, frame)) {
     if (state.pointByTrack.has(o.trackIdx)) continue;
     const track = state.table.tracks[o.trackIdx]!;
-    // 相手: このトラックを観測する solved KF のうち基線最大
     let partner: { frame: number; pose: CamPose; x: number; y: number } | null = null;
     let bestBaseline = 0;
     for (const ob of track.obs) {
@@ -229,24 +259,80 @@ function triangulateNewPoints(state: SolverState, frame: number): number {
       }
     }
     if (!partner || bestBaseline < 1e-9) continue;
-
-    const f = state.focal;
-    const n0 = { x: (partner.x - state.cx) / f, y: (partner.y - state.cy) / f };
-    const n1 = { x: (o.x - state.cx) / f, y: (o.y - state.cy) / f };
-    const X = triangulateDlt(partner.pose, pose, n0.x, n0.y, n1.x, n1.y);
-    if (!X) continue;
-    const Xv: V3 = X;
-    const pr0 = projectPoint(partner.pose, f, state.cx, state.cy, Xv);
-    const pr1 = projectPoint(pose, f, state.cx, state.cy, Xv);
-    if (!pr0 || !pr1) continue;
-    if (Math.hypot(pr0.u - partner.x, pr0.v - partner.y) > TRI_MAX_REPROJ_PX) continue;
-    if (Math.hypot(pr1.u - o.x, pr1.v - o.y) > TRI_MAX_REPROJ_PX) continue;
-    const ang = triangulationAngleDeg(cameraCenter(partner.pose), C1, Xv);
-    if (ang < TRI_MIN_ANGLE_DEG) continue;
+    const Xv = tryTriangulatePair(state, partner.pose, pose, partner.x, partner.y, o.x, o.y);
+    if (!Xv) continue;
     state.pointByTrack.set(o.trackIdx, Xv);
     added++;
   }
   return added;
+}
+
+/**
+ * 未マップの全トラックを、pose 済みフレームの任意ペアで三角測量。
+ * 後半で再検出されたトラックを地図に載せる（見切れ後の PnP 用）。
+ */
+function triangulateAllTracks(state: SolverState): number {
+  let added = 0;
+  for (let ti = 0; ti < state.table.tracks.length; ti++) {
+    if (state.pointByTrack.has(ti)) continue;
+    const track = state.table.tracks[ti]!;
+    const views: Array<{ pose: CamPose; x: number; y: number; frame: number }> = [];
+    for (const ob of track.obs) {
+      if (isObsRemoved(state, ti, ob.frame)) continue;
+      const p = state.kfPose.get(ob.frame);
+      if (!p) continue;
+      views.push({ pose: p, x: ob.x, y: ob.y, frame: ob.frame });
+    }
+    if (views.length < 2) continue;
+    let best: { X: V3; baseline: number } | null = null;
+    for (let i = 0; i < views.length; i++) {
+      for (let j = i + 1; j < views.length; j++) {
+        const a = views[i]!;
+        const b = views[j]!;
+        const baseline = v3Norm(v3Sub(cameraCenter(a.pose), cameraCenter(b.pose)));
+        if (baseline < 1e-9) continue;
+        const X = tryTriangulatePair(state, a.pose, b.pose, a.x, a.y, b.x, b.y);
+        if (!X) continue;
+        if (!best || baseline > best.baseline) best = { X, baseline };
+      }
+    }
+    if (!best) continue;
+    state.pointByTrack.set(ti, best.X);
+    added++;
+  }
+  return added;
+}
+
+/**
+ * PnP が薄いフレーム向け: 直前ポーズ + 2D トラックの essential で相対伝播。
+ * スケールは直近のカメラ中心ステップ長を使う（単眼ゲージ維持）。
+ */
+function tryPropagatePose(
+  state: SolverState,
+  f: number,
+  prevFrame: number,
+  prevPose: CamPose,
+  stepScale: number,
+): CamPose | null {
+  const pairs = commonTrackPairs(state.table, prevFrame, f);
+  if (pairs.length < MIN_PROPAGATE_PAIRS) return null;
+  const px = pairs.map((p) => ({ x0: p.x0, y0: p.y0, x1: p.x1, y1: p.y1 }));
+  const init = estimateTwoViewInit(px, state.focal, state.cx, state.cy, state.rng, {
+    minAngleDeg: 0.1,
+    minPoints: 6,
+  });
+  if (!init) return null;
+  // init.pose: X_f = R * X_prevCam + t（|t|=1）。world へ合成。
+  const Rrel = init.pose.R;
+  const tRel = init.pose.t;
+  const tNorm = v3Norm(tRel);
+  const R = m3Mul(Rrel, prevPose.R);
+  if (tNorm < 1e-9 || stepScale < 1e-10) {
+    return { R, t: m3MulVec(Rrel, prevPose.t) };
+  }
+  const tUnit = v3Scale(tRel, 1 / tNorm);
+  const t = v3Add(m3MulVec(Rrel, prevPose.t), v3Scale(tUnit, stepScale));
+  return { R, t };
 }
 
 /** solved KF + マップ点で全体 BA。外れ値除去付き。anchorFrame をゲージ固定。 */
@@ -340,7 +426,7 @@ function runGlobalBa(
   return { medianErrPx: result.medianErrPx };
 }
 
-/** 全フレーム局所化（PnP tracking モード）+ 補間フィル + frame0 再アンカー。 */
+/** 全フレーム局所化（PnP → 足りなければ 2D 相対伝播）。 */
 function localizeAllFrames(
   state: SolverState,
   onProgress?: SfmSolveOptions["onProgress"],
@@ -366,6 +452,8 @@ function localizeAllFrames(
   };
 
   let prevPose: CamPose | null = null;
+  let prevFrame = -1;
+  let stepScale = 0.01;
   for (let f = 0; f < n; f++) {
     if (f % 20 === 0) onProgress?.("frames", f, n);
     const kfp = state.kfPose.get(f);
@@ -373,21 +461,24 @@ function localizeAllFrames(
       poses[f] = kfp;
       const corrs = collect2d3d(state, f);
       stats[f] = { err: medianReproj(state, kfp, corrs), n: corrs.length };
+      if (prevPose) {
+        const step = v3Norm(v3Sub(cameraCenter(kfp), cameraCenter(prevPose)));
+        if (step > 1e-8) stepScale = step;
+      }
       prevPose = kfp;
+      prevFrame = f;
       continue;
     }
     const corrs = collect2d3d(state, f);
-    if (corrs.length < 8) continue;
     const init = prevPose ?? nearestKfPose(f);
     let pose: CamPose | null = null;
 
-    if (init) {
-      // tracking モード: 予測ポーズの inlier が十分なら RANSAC を省略
+    if (corrs.length >= MIN_LOCALIZE_CORRS && init) {
       const inliers = corrs.filter((c) => {
         const pr = projectPoint(init, state.focal, state.cx, state.cy, c.X);
         return pr !== null && Math.hypot(pr.u - c.u, pr.v - c.v) < 8;
       });
-      if (inliers.length >= Math.max(8, corrs.length * 0.5)) {
+      if (inliers.length >= Math.max(MIN_LOCALIZE_CORRS, corrs.length * 0.45)) {
         pose = refinePoseLm(init, inliers, state.focal, state.cx, state.cy, {
           iterations: 12,
           huberPx: 2,
@@ -396,22 +487,58 @@ function localizeAllFrames(
         if (err > 4) pose = null;
       }
     }
-    if (!pose) {
+    if (!pose && corrs.length >= MIN_LOCALIZE_CORRS) {
       const res = pnpRansac(corrs, state.focal, state.cx, state.cy, state.rng, {
         iterations: 60,
         threshPx: 3,
         initialPose: init ?? undefined,
       });
-      if (res && res.inlierIdx.length >= 8) pose = res.pose;
+      if (res && res.inlierIdx.length >= MIN_LOCALIZE_CORRS) pose = res.pose;
+    }
+    // 地図点が画面外に出たフレーム: 2D トラックで相対伝播（補間より並進を保つ）
+    if (!pose && prevPose && prevFrame >= 0) {
+      pose = tryPropagatePose(state, f, prevFrame, prevPose, stepScale);
+      if (pose) {
+        poses[f] = pose;
+        stats[f] = { err: Infinity, n: commonTrackPairs(state.table, prevFrame, f).length };
+        const step = v3Norm(v3Sub(cameraCenter(pose), cameraCenter(prevPose)));
+        if (step > 1e-8) stepScale = step;
+        prevPose = pose;
+        prevFrame = f;
+        continue;
+      }
     }
     if (pose) {
       poses[f] = pose;
       stats[f] = { err: medianReproj(state, pose, corrs), n: corrs.length };
+      if (prevPose) {
+        const step = v3Norm(v3Sub(cameraCenter(pose), cameraCenter(prevPose)));
+        if (step > 1e-8) stepScale = step;
+      }
       prevPose = pose;
+      prevFrame = f;
     }
   }
   onProgress?.("frames", n, n);
   return { poses, stats };
+}
+
+/** 局所化に成功したフレームを pose 集合へ昇格し、全トラックを再三角測量。 */
+function refineMapFromLocalization(
+  state: SolverState,
+  poses: Array<CamPose | null>,
+  stats: Array<{ err: number; n: number }>,
+): { promoted: number; addedPoints: number } {
+  let promoted = 0;
+  for (let f = 0; f < poses.length; f++) {
+    const p = poses[f];
+    if (!p || state.kfPose.has(f)) continue;
+    if (stats[f]!.n < MIN_LOCALIZE_CORRS) continue;
+    state.kfPose.set(f, p);
+    promoted++;
+  }
+  const addedPoints = triangulateAllTracks(state);
+  return { promoted, addedPoints };
 }
 
 function medianReproj(
@@ -700,8 +827,25 @@ export function solveSfm(table: TrackTable, opts: SfmSolveOptions): SfmSolveResu
   const finalBa = runGlobalBa(state, initPair.kfA, opts.optimizeFocal, 20);
   opts.onProgress?.("ba", 2, 2);
 
-  // 全フレーム局所化 + 補間
-  const { poses, stats } = localizeAllFrames(state, opts.onProgress);
+  // 既存 KF 上で未マップの後半トラックを先に載せる
+  triangulateAllTracks(state);
+
+  // 局所化 → 成功フレーム昇格 → 再三角測量 を反復（見切れ後の地図薄さ対策）
+  let poses: Array<CamPose | null> = [];
+  let stats: Array<{ err: number; n: number }> = [];
+  for (let pass = 0; pass < MAP_REFINE_PASSES; pass++) {
+    const loc = localizeAllFrames(state, opts.onProgress);
+    poses = loc.poses;
+    stats = loc.stats;
+    const { promoted, addedPoints } = refineMapFromLocalization(state, poses, stats);
+    if (promoted === 0 && addedPoints === 0) break;
+  }
+  {
+    const loc = localizeAllFrames(state, opts.onProgress);
+    poses = loc.poses;
+    stats = loc.stats;
+  }
+
   const fill = fillUnsolved(poses);
   if (!fill) {
     return {

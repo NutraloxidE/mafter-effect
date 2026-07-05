@@ -9,6 +9,11 @@ export interface PreviewPlaybackLoopOptions {
   renderFrame: (frame: number) => void | Promise<void>;
   onFrameChange: (frame: number) => void;
   onPlaybackEnd: () => void;
+  /**
+   * true の間は frame を進めない（映像ピクセル待ち）。
+   * wall-clock の lastRafMs は通常どおり消費し、解除時のフレームジャンプを防ぐ。
+   */
+  shouldHold?: () => boolean;
 }
 
 /** BundlePlayer 同型: フレームスキップ + 最新 frame のみ render。stop 関数を返す。 */
@@ -31,6 +36,10 @@ export function runPreviewPlaybackLoop(options: PreviewPlaybackLoopOptions): () 
     const advance = Math.floor(elapsed / msPerFrame);
     if (advance > 0) {
       lastRafMs = now - (elapsed % msPerFrame);
+      if (options.shouldHold?.()) {
+        rafId = requestAnimationFrame(tick);
+        return;
+      }
       let next = currentFrame + advance;
       const { loopStart, loopEnd, loop } = options;
       if (next >= loopEnd) {
@@ -87,6 +96,10 @@ export function runPreviewFrameClock(options: Omit<PreviewPlaybackLoopOptions, "
     const advance = Math.floor(elapsed / msPerFrame);
     if (advance > 0) {
       lastRafMs = now - (elapsed % msPerFrame);
+      if (options.shouldHold?.()) {
+        rafId = requestAnimationFrame(tick);
+        return;
+      }
       let next = currentFrame + advance;
       const { loopStart, loopEnd, loop } = options;
       if (next >= loopEnd) {

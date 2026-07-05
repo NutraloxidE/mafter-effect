@@ -103,6 +103,47 @@
       "handoffPath": "C:/Workspace/mafter-effect/.cursor/delegations/handoffs/RG-20260704-04.md",
       "parentActions": [],
       "notes": []
+    },
+    {
+      "id": "RG-20260704-05",
+      "kind": "reasoning",
+      "status": "closed",
+      "createdAt": "2026-07-04T13:06:08.565Z",
+      "updatedAt": "2026-07-04T13:24:50.595Z",
+      "task": "video+camera bake playback sync plan review",
+      "model": "claude-fable-5-thinking-high",
+      "claudeModel": "fable",
+      "readonly": true,
+      "specRef": "§11.4",
+      "sessionId": "a57031c4-26ab-4815-befb-37a9af1ac980",
+      "agentId": null,
+      "chatId": null,
+      "handoffPath": "C:/Workspace/mafter-effect/.cursor/delegations/handoffs/RG-20260704-05.md",
+      "parentActions": [],
+      "notes": [
+        {
+          "at": "2026-07-04T13:24:50.595Z",
+          "text": "M1-M6 applied and implemented"
+        }
+      ]
+    },
+    {
+      "id": "RG-20260705-01",
+      "kind": "reasoning",
+      "status": "planned",
+      "createdAt": "2026-07-05T03:53:22.651Z",
+      "updatedAt": "2026-07-05T03:53:22.651Z",
+      "task": "Subject Extract Comp30 empty mask fix review",
+      "model": "claude-fable-5-thinking-high",
+      "claudeModel": "fable",
+      "readonly": false,
+      "specRef": "16.2",
+      "sessionId": null,
+      "agentId": null,
+      "chatId": null,
+      "handoffPath": "C:/Workspace/mafter-effect/.cursor/delegations/handoffs/RG-20260705-01.md",
+      "parentActions": [],
+      "notes": []
     }
   ]
 }

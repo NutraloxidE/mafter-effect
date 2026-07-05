@@ -120,6 +120,14 @@ describe("syncVideoElementTime", () => {
     expect(video.currentTime).toBe(1.0);
   });
 
+  it("pauseForSync pauses without seeking when video leads the timeline", () => {
+    const video = mockVideo(1.5, false);
+    syncVideoElementTime(video, 1.0, 30, { playbackMode: true, pauseForSync: true });
+    expect(video.pause).toHaveBeenCalled();
+    expect(video.currentTime).toBe(1.5);
+    expect(video.play).not.toHaveBeenCalled();
+  });
+
   describe("isSourceContinuousAcrossCut", () => {
     // カット境界の seek 要否は ct（decode lag を含む）ではなく target の軌道で判定する。
     // 実測: 再生中の ct は target から 1〜5 フレーム遅れるのが常態で、ct 基準だと

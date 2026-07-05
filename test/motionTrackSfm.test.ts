@@ -24,6 +24,7 @@ import { solveSfm } from "../src/editor/motionTrack/sfm/sfmSolver";
 import {
   sfmFramesToMafterTrajectory,
   solvedFocalToCameraZoom,
+  summarizeSolveHalfStats,
 } from "../src/editor/motionTrack/sfm/sfmConvert";
 import { rotationEuler, type Mat4 } from "../src/runtime/mat4";
 
@@ -485,5 +486,48 @@ describe("sfmConvert", () => {
   it("solvedFocalToCameraZoom scales by height ratio", () => {
     expect(solvedFocalToCameraZoom(550, 360, 1080)).toBeCloseTo(1650, 6);
     expect(solvedFocalToCameraZoom(0, 360, 1080)).toBe(0);
+  });
+
+  it("summarizeSolveHalfStats reports early vs late median point counts", () => {
+    const frames = [
+      { numPoints: 40 },
+      { numPoints: 38 },
+      { numPoints: 36 },
+      { numPoints: 10 },
+      { numPoints: 8 },
+      { numPoints: 6 },
+    ];
+    const s = summarizeSolveHalfStats(frames);
+    expect(s).not.toBeNull();
+    expect(s!.earlyFrameCount).toBe(3);
+    expect(s!.lateFrameCount).toBe(3);
+    expect(s!.earlyMedianPoints).toBe(38);
+    expect(s!.lateMedianPoints).toBe(8);
+  });
+});
+
+describe("buildTrackTable late rediscovery", () => {
+  it("includes tracks that only appear in the second half", () => {
+    const frames: FramePoints[] = [];
+    for (let f = 0; f < 10; f++) {
+      const points: FramePoints["points"] = [];
+      // early-only track
+      if (f < 4) points.push({ id: 1, x: 10 + f, y: 20 });
+      // late-only track (rediscovered mid-clip)
+      if (f >= 5) points.push({ id: 99, x: 100 + f, y: 50 });
+      // bridge track across whole clip
+      points.push({ id: 2, x: 30 + f, y: 40 });
+      frames.push({ points });
+    }
+    const table = buildTrackTable(frames);
+    const ids = table.tracks.map((t) => t.id);
+    expect(ids).toContain(1);
+    expect(ids).toContain(2);
+    expect(ids).toContain(99);
+    const late = table.tracks.find((t) => t.id === 99)!;
+    expect(late.obs[0]!.frame).toBe(5);
+    expect(late.obs.length).toBe(5);
+    // late frames still have observations from new ids
+    expect(table.frameIndex[8]!.some((e) => table.tracks[e.trackIdx]!.id === 99)).toBe(true);
   });
 });

@@ -11,6 +11,7 @@ import { quaternionMultiply, quaternionNormalize } from "./rotationEstimator";
 import { interpolateInvalidVec3Series } from "./positionInterp";
 import {
   applyAutoScaleToPositions,
+  defaultSolveAutoScaleTargetPx,
   isMotionSuspiciouslySmall,
   vec3Range,
 } from "./autoScale";
@@ -909,6 +910,13 @@ export interface RunSolveTrackResult {
   pointCount: number;
   medianReprojErrPx: number;
   message?: string;
+  /** 前半/後半の PnP 対応点数中央値（見切れ以降の地図薄さ診断） */
+  halfStats?: {
+    earlyMedianPoints: number;
+    lateMedianPoints: number;
+    earlyFrameCount: number;
+    lateFrameCount: number;
+  };
 }
 
 /**
@@ -994,25 +1002,39 @@ export async function runSolveTrack(
       throw new Error(solved.message ?? "3D solve failed");
     }
 
-    const { sfmFramesToMafterTrajectory } = await import("./sfm/sfmConvert");
+    const { sfmFramesToMafterTrajectory, summarizeSolveHalfStats } = await import(
+      "./sfm/sfmConvert"
+    );
+    const solvedFrames = solved.frames.map((f) => ({
+      solved: f.solved,
+      q: f.q,
+      c: f.c,
+      reprojErrPx: f.reprojErrPx,
+      numPoints: f.numPoints,
+    }));
+    const halfStats = summarizeSolveHalfStats(solvedFrames) ?? undefined;
+    // 単眼スケール: traj は単位スケールで形だけ。userScale は autoScale の後に掛ける
+    // （先に掛けると autoScale が支配軸を固定ターゲットへ正規化して打ち消す）。
     const traj = sfmFramesToMafterTrajectory(
-      solved.frames.map((f) => ({
-        solved: f.solved,
-        q: f.q,
-        c: f.c,
-        reprojErrPx: f.reprojErrPx,
-        numPoints: f.numPoints,
-      })),
+      solvedFrames,
       baselines.position,
       baselines.rotation,
-      options.userScale,
+      1,
     );
 
-    const targetPx = options.autoScaleTargetPx ?? Math.max(80, comp.height * 0.15);
+    const targetPx = options.autoScaleTargetPx ?? defaultSolveAutoScaleTargetPx(comp.height);
     const useAuto = options.autoScale !== false && solved.mode === "sfm";
+    const userScale = options.userScale > 0 ? options.userScale : 1;
     const scaled = useAuto
-      ? applyAutoScaleToPositions(traj.positions, baselines.position, targetPx, 1)
-      : { positions: traj.positions, autoScale: 1 };
+      ? applyAutoScaleToPositions(traj.positions, baselines.position, targetPx, userScale)
+      : {
+          autoScale: 1,
+          positions: traj.positions.map((p) => ({
+            x: baselines.position.x + (p.x - baselines.position.x) * userScale,
+            y: baselines.position.y + (p.y - baselines.position.y) * userScale,
+            z: baselines.position.z + (p.z - baselines.position.z) * userScale,
+          })),
+        };
 
     const bakeStart = compFrames[0]!;
     const bakeEnd = (compFrames[compFrames.length - 1] ?? bakeStart) + 1;
@@ -1040,6 +1062,7 @@ export async function runSolveTrack(
       pointCount: solved.pointCount,
       medianReprojErrPx: solved.medianReprojErrPx,
       message: solved.message,
+      halfStats,
     };
   } finally {
     tracker.dispose();

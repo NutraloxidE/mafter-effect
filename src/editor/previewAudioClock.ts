@@ -8,6 +8,13 @@ import type { AnimatedProp, Frame, Project, TimelineComposition } from "../core/
 import { loadAudioBuffer, peekAudioBuffer } from "./audioBufferCache";
 import { readGainProp, sampleGain } from "../runtime/footageAudio";
 import { collectFadeClips, computeFadeSuppression, fadeSec, isAutoFadeEnabled, scheduleDeclickRamps, type FadeSuppression } from "../runtime/footageAutoFade";
+import {
+  computePlaybackSyncState,
+  holdThresholdsForFps,
+  initialPlaybackSyncState,
+  type PlaybackSyncState,
+  type VideoClockSample,
+} from "../runtime/playbackVideoSync";
 
 interface PreparedLayer {
   objectId: string;
@@ -36,6 +43,10 @@ export interface PreviewAudioClockOptions {
    * 各 tick で gain を再評価し、編集中の Volume スライダーを再生中に反映する。未指定なら schedule 時のスナップショット。
    */
   getComp?: () => TimelineComposition;
+  /** §11.4 playback hold — マウント video の時計サンプル。未指定なら hold 無効。 */
+  getVideoClockSamples?: () => VideoClockSample[];
+  /** §11.4 双方向同期 — pauseVideo 等を renderer へ伝える。 */
+  onPlaybackSyncState?: (state: PlaybackSyncState) => void;
 }
 
 /** comp 内の audio コンポーネントを集めてデコードする。1 つも無ければ null。 */
@@ -85,6 +96,10 @@ export class PreviewAudioClock {
   private rafId: number | null = null;
   private originCtxTime = 0;
   private originFrame = 0;
+  private syncState: PlaybackSyncState = initialPlaybackSyncState();
+  /** hold 中に報告し続ける frame（suspend 非同期完了前の先行を防ぐ）。 */
+  private frozenFrame: number | null = null;
+  private suspendDesired = false;
 
   constructor(
     private readonly project: Project,
@@ -159,6 +174,33 @@ export class PreviewAudioClock {
 
   private tick = (): void => {
     if (!this.playing || !this.ctx) return;
+
+    // §11.4: 双方向同期 — 映像遅れ→timeline hold / 映像先行→video pause。
+    const samples = this.opts.getVideoClockSamples?.() ?? [];
+    this.syncState = computePlaybackSyncState(
+      this.syncState,
+      samples,
+      holdThresholdsForFps(this.opts.fps),
+      performance.now(),
+    );
+    this.opts.onPlaybackSyncState?.(this.syncState);
+    if (this.syncState.holdTimeline) {
+      if (this.frozenFrame === null) {
+        const elapsedSec = this.ctx.currentTime - this.originCtxTime;
+        this.frozenFrame = this.originFrame + Math.floor(elapsedSec * this.opts.fps);
+      }
+      this.applyAudioHold(true);
+      this.updateLiveGains(this.frozenFrame);
+      this.rafId = requestAnimationFrame(this.tick);
+      return;
+    }
+    if (this.frozenFrame !== null) {
+      this.originFrame = this.frozenFrame;
+      this.originCtxTime = this.ctx.currentTime;
+      this.frozenFrame = null;
+      this.applyAudioHold(false);
+    }
+
     const elapsedSec = this.ctx.currentTime - this.originCtxTime;
     const frame = this.originFrame + Math.floor(elapsedSec * this.opts.fps);
     const { loopStart, loopEnd, loop } = this.opts;
@@ -189,6 +231,31 @@ export class PreviewAudioClock {
     this.rafId = requestAnimationFrame(this.tick);
   };
 
+  /** hold 中は suspend、解除は resume。desired/actual 交錯を suspendDesired で抑止。 */
+  private applyAudioHold(hold: boolean): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    if (hold) {
+      if (this.suspendDesired) return;
+      this.suspendDesired = true;
+      void ctx.suspend().then(() => {
+        // hold が既に解除されていたら即座に resume（suspend 完了レース）。
+        if (!this.suspendDesired) {
+          void ctx.resume().catch(() => {
+            /* best-effort */
+          });
+        }
+      });
+      return;
+    }
+    this.suspendDesired = false;
+    if (ctx.state === "suspended") {
+      void ctx.resume().catch(() => {
+        /* best-effort */
+      });
+    }
+  }
+
   /** 各 tick で live comp から gain を再評価し、編集中の Volume スライダーを再生中に反映する。 */
   private updateLiveGains(frame: number): void {
     const comp = this.opts.getComp?.() ?? this.comp;
@@ -210,6 +277,10 @@ export class PreviewAudioClock {
 
   stop(): void {
     this.playing = false;
+    this.syncState = initialPlaybackSyncState();
+    this.opts.onPlaybackSyncState?.(this.syncState);
+    this.frozenFrame = null;
+    this.suspendDesired = false;
     if (this.rafId !== null) cancelAnimationFrame(this.rafId);
     this.rafId = null;
     this.stopNodes();

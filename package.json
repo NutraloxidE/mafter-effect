@@ -16,6 +16,7 @@
     "summarize:feedback": "node scripts/summarize-feedback.mjs"
   },
   "dependencies": {
+    "@mediapipe/tasks-vision": "^0.10.18",
     "jszip": "^3.10.1",
     "mp4-muxer": "^5.2.2",
     "opentype.js": "^2.0.0",

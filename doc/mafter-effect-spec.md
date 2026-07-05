@@ -753,6 +753,7 @@ interface ExportConfig {
   - **export**: video レイヤーの内蔵音声も §11.2 の mux 対象。`audio` レイヤーと**同一のタイミング式**（`inPoint`/`outPoint`/`trimStart`）で `decodeAudioData`→`OfflineAudioContext` に追加合成し、`gainProp` を §11.5 のフレーム刻み automation で `GainNode` に打つ。decode 失敗（無音動画・非対応コンテナ）は best-effort でスキップ。
   - **既知の制約**: 複数 video が同時再生するとブラウザが音声を自動ミックス（個別 volume は効くがミキサー側のクリッピングはブラウザ依存）。`audio` レイヤーと内蔵音声付き video の併用時、映像クロックは `PreviewAudioClock`/`BundleAudioClock`、video 音声はネイティブ再生で、大きなドリフト時のみ既存 resync が働く（best-effort）。mixing graph は §16 将来。
 - **warm-up（再生レイテンシ回避・非直列化）**: §11.5 音声プリロードと対になる前倒し。preview / HTML bundle player は、編集中 comp の enabled video レイヤーを **idle 中（`requestIdleCallback`）に `<video>` を現フレームのソース時刻へ seek + decode（loadeddata 相当）まで warm-up** し、`assetId@frame` 粒度で primed 状態を共有キャッシュに記録する（多重 prime は inflight 去重）。再生開始時、全 video が warm-up 済みなら遅延ゼロで開始し、未完了の video がある場合のみ短時間（best-effort 上限）prime を待ってから再生する＝開幕の「他レイヤーは即描画されるが動画だけ遅れて登場」を防ぐ。warm-up は present（`requestVideoFrameCallback`）待ちをせず、再生ループは従来どおり軽量（毎フレーム seek しない）。**warm-up は preview/bundle player 専用で、export 経路（決定論 seek + `requestVideoFrameCallback` の present 待ち）は一切変更しない（INV-2 非干渉）。** warm-up 失敗は best-effort（再生開始時に再試行）で、Footage 削除時に primed 状態を破棄する。
+- **preview 再生の映像×タイムライン双方向同期（非直列化）**: preview 再生は映像とタイムライン（カメラ／他レイヤー）のどちらも先行しすぎないよう双方向ゲートする。Play 押下時に全マウント video を現フレームへ再同期（primed キャッシュ非依存・既に半フレーム以内かつ data ready なら seek しない）してから `play()` を発火し clock を起動する。再生中 `error = mafterTargetSec − currentTime` について: **映像遅れ**（`error` が 1 フレーム超）→ frame 進行を保留（video は play 継続）。**映像先行**（`error` が −1 フレーム未満）→ video を `pause`（タイムラインは進行継続・**seek しない**）。解除は半フレームヒステリシス。遅れゲートが先行ゲートより優先（複数 video でデッドロックしない）。各ゲート連続 1 秒で強制解除。再生中 drift seek（0.5s 閾値）は不変（旧 HW スタッタ対策）。ended / error / duration 超えは判定除外（sync pause 中の `paused` は lead 計測のため適格）。HTML bundle player は Play barrier のみ。**export / scrub は本機構を通らない（INV-2）。** `currentTime` はメディア時計であり present 済み画素そのものではない（best-effort）。
   - **カット境界の `<video>` 要素再利用（デコードギャップ回避）**: 同一動画を分割して連結したタイムライン（隣接レイヤーが同一 `asset` を参照）では、カット境界でレイヤー（object id）が入れ替わる。DomRenderer の reconcile が離脱レイヤーの `<video>` を破棄し入場レイヤーに新規 `<video>` を生成すると、新要素のロード＋デコードが境界フレームに間に合わず**数フレーム空フレーム（映像のちらつき）と内蔵音声の再初期化（プチノイズ）**が出る。これを防ぐため、DomRenderer は離脱した `<video>` を破棄せず **`assetId` 単位の要素プール**へ退避（DOM から外すが参照・`src`・デコーダ状態を保持し、**再生は止めない**）し、入場レイヤーが同一アセットなら**プールの要素を再利用**する（src 同一のため再ロード・再デコード不要・現在時刻から映像も内蔵音声もシームレスに継続）。**退避時に `pause`/`mute` しないのが要点**: 同一フレームで再利用される要素を止めると内蔵音声が一瞬ミュート→再 seek→再 play で「音量が急落→急上昇」（ぶつ切り）になる。`<video>` は DOM から外しても再生継続する仕様を利用し、入場処理（reconcile の add パス）の後に**再利用されず残ったプール要素だけを `pause`+`mute`**（遅延静音）して離脱クリップの音漏れを防ぐ。同一アセットの2レイヤーが同フレームに同時存在（クロスディゾルブ等）する場合はプールが空になり新規生成へフォールバックする（要素の重複利用はしない）。この再利用は **preview / HTML bundle player 専用**で、export 経路は要素インスタンスが変わっても `waitForVideoFrame`/`flushVideoFrames` がデコード完了を待つため決定論は不変（INV-2 非干渉）。再利用直後（カット境界を跨いだフレーム）の resync 要否は、`currentTime` と target の差（再生 decode lag を含み常態で半フレームを超える）ではなく**前フレーム target からのソース読み出し位置の連続性**で判定する: target の軌道が連続（半フレーム以内）なら decode lag があっても seek せず映像・内蔵音声の連続を維持し、trim-in がずれた再取得のみ半フレーム精度で seek する。
   - **異なるアセット間カット境界の先読み warm-up**: 上記プール再利用は**同一アセットの連結カット**では有効だが、**異なるアセット同士の境界**では入場側のプールが空のままになり、境界フレームで新規 `<video>` 生成→デコード未完→数フレーム空白が残る。preview / HTML bundle player の**再生中**、in 点が近い（既定 ≈1 秒以内）enabled video レイヤーについて、in 点の trim 時刻へ offscreen で `<video>` を先行生成し `primeVideoElement`（loadeddata 相当）で decode 済みにしてから **`assetId` 単位プールへ stash** する。カット到達時に入場 reconcile が `acquire` すればコールドスタートを避けられる。判定は comp 内 video クリップ一覧と現フレームから純関数で upcoming 集合を求め、**現表示中と同一 assetId の upcoming は除外**（連結カットは退避再利用で足りる）。再生停止・scrub（`previewVideoPlayback=false`）・dispose では先読み要素だけをプールから除去して `src` 解放しリークしない。export 経路（`exportVideoStep` / `waitForVideoFrame` / `flushVideoFrames`）は触らない（INV-2 非干渉）。
 
@@ -976,6 +977,7 @@ SSoT 違反を避けるため、scope と正準性を分離する:
 | Motion Track Walk（前進・揺れ・見回し / R+t）（§16.1 Phase 2a/2b） | **実装済み（2026-07）** |
 | Motion Track 3D Solve（オフライン SfM / バンドル調整）（§16.1） | **実装済み（2026-07）** |
 | Motion Track POI 軌道・COLMAP/Blender カメラ import | 将来（§16.1 Phase 1b-b / 外部 import） |
+| Subject Extract from footage — 人物切り抜き（§16.2・editor-only ML） | **実装済み（2026-07）** |
 
 ---
 
@@ -1003,6 +1005,27 @@ video レイヤーのフッテージから単眼 visual odometry（vendored WASM
 - **Walk モード — Phase 2a/2b/2c（連続性ファースト）**: 歩き撮り向け。OpenCV WASM は **KLT / 特徴検出のみ**。毎フレーム FOE/発散フローで予測ステップを出し、地図（DLT 三角測量）が十分なら DLT-PnP 候補を作るが、**ベイク入力は常に相対ステップ 1 本**（`walkAccumulate` のみ絶対化）。PnP は予測との回転角・並進方向が近いときだけ向きを補正し、scale は予測のまま（単眼スケール不定でもゲートが機能する）。絶対ポーズ直書きは禁止（ジャンプ防止）。並進 auto-scale あり。Rotation（その場）はノーダルパン専用。逐次 VO のため AE 級フル BA は対象外（一括解法は **3D Solve**）。
 - **3D Solve（オフライン SfM）— 推奨既定**: AE の 3D Camera Tracker 相当の**一括**カメラ解析。OpenCV WASM で長寿命特徴トラックを蓄積したあと、純 TypeScript の SfM（キーフレーム選択 → essential 2-view 初期化 + 焦点距離スイープ → 逐次 PnP + 三角測量 → 全体バンドル調整（LM + Schur・Huber）→ 全フレーム pose-only 局所化）で position + rotation を同時ベイク。カメラ対象では推定焦点距離を `zoom`（静的）へ任意適用可。視差が検出できないクリップ（純パン/チルト・平面シーン）は **rotationOnly** にフォールバック（並進は baseline 維持）。単眼スケールは不定のため **auto-scale（支配軸 range → comp 高さの 1.5 倍を既定目標。Position/Walk の 0.15 倍より強い）の後に UI スケール係数を等方乗算**して補正する（回転 KF はスケール非依存で不変。係数 1 が実写でしっくり来る強さの目安）。特徴追跡は序盤シードに加え **短間隔の再検出**と画面外点の即ドロップで後半トラックを維持する（見切れ以降の地図薄さ対策）。既存 Position / Rotation / Walk 経路とは**隔離**（`src/editor/motionTrack/sfm/`）。editor-only・Track Motion 実行時のみ（INV-1/INV-2 はベイク済み KF の再生にのみ関与）。合成シーンでの受け入れ基準は軌道 RMSE < 全長の 1%・回転中央値 < 0.2°・焦点誤差 < 5%（`test/motionTrackSfm.test.ts`）。
 - さらに高精度が必要な場合の外部 import（COLMAP / Blender camera, §6.5 の ImporterDef 経路）は将来。two-node Camera の POI 軌道ベイクは Phase 1b-b。
+
+### §16.2 Subject Extract from footage（映像からの対象切り抜き・editor-only）
+
+video レイヤーのフッテージから **MediaPipe Selfie Segmentation**（Apache-2.0、`public/subject-extract/mediapipe/`、PROVENANCE.md 併置）で人物マスクを推定し、フレームごとに alpha を適用した **WebM VP9 alpha** アセットを生成するエディタ機能。
+
+**アーキテクチャ境界**:
+
+- 推定は **editor-only の非決定的解析**。成果物は通常の `video` asset として `project.json` + FS に保存され、以降の `resolve()`・preview・export は既存 video 経路のまま（INV-1/INV-2 非侵襲）。
+- ML/WASM は **Extract 実行時のみ** lazy load。メインバンドル・`player.js`・Web bundle export（§11.7）非同梱。
+- フレーム抽出は Motion Track と同型（hidden `<video>` + seek + canvas `getImageData`、§16.1 と共有ヘルパ）。
+- 適用は **単一 applyCommand**（Undo 1 件、label: `"Subject Extract"`）。
+
+**出力**:
+
+- **新 video レイヤー**: ソース video レイヤーの **直上**（`zOrder = source.zOrder + 0.5`）。`inPoint` / `outPoint` / `transform` / `parent` / `opacity` / `fit` はソースからコピー。
+- **新 asset**: FS `assets/<ulid>.webm`（透過 VP9）。Chrome 等で VP9 `alpha:keep` 非対応の場合は **split alpha** — 同色 WebM + `assets/<ulid>.alpha.webm`（グレースケールマスク）の 2 本と `meta.alphaMode: "split"` / `meta.alphaPath`。再生は `DomRenderer` が canvas 合成。Project Bin **`Assets` → `VideoSubjectExtract`**（無ければ作成）。`asset.meta.extractedFrom` に元 asset id を記録可。
+- **元レイヤー**: 変更なし。
+
+**UI**: Inspector Video 内の Subject Extract 折りたたみ。対象種別プルダウン（v1: Person）+ sample interval + Extract。プルダウン選択はセッション UI のみ（`project.json` 非永続）。
+
+**制約**: WebM alpha 再生は Chrome/FF 中心（§16 alpha 動画制約と同型）。Safari は弱い。長尺は sample interval で間引き可。
 
 ---
 
@@ -2579,7 +2602,10 @@ comp:{compId}:f{frame}:rev{projectRevision}:q{draft|precise}:proxy{full|half|qua
 | スクラブ（再生位置バー移動） | **初回は live render**。表示完了後そのフレームをバックグラウンドでキャッシュ（緑バー反映）。リアルタイム不可時は再訪問でキャッシュ表示可 |
 | 編集ドラフト / `previewOverride` | **常に live render**（キャッシュ書き込みなし） |
 | 再生中・リアルタイム可能 | live render + UI に `Realtime` 表示。バックグラウンド build は起動しない |
-| 再生中・リアルタイム不可 | キャッシュヒット時はキャッシュ bitmap 表示。ミス時は live + バックグラウンド build |
+| 再生中・リアルタイム不可・ワークエリア build **完了後** | キャッシュ bitmap（overlay）表示。書き込み・background build は休止（読み取りのみ） |
+| 再生中・リアルタイム不可・build **未完了** | **常に live render**（Caching OFF に近い）。bake（background / miss capture）は休止し、メインスレッド競合で再生を悪化させない。停止後に build を再開 |
+
+**再生中の bake 休止（確定）**: キャッシュ ON でも再生中は書き込みキューを pause する（進行中の 1 フレーム capture は完了してよい）。停止時に pending があれば pump 再開、未開始なら `startBackgroundBuildIfNeeded`。ヒット/ミス混在によるフレームコストばらつきと、live + capture の二重仕事を避ける。
 
 **リアルタイム判定**（`settings.enabled === true` のときのみ §28.5 参照）: 直近 live render 時間の中央値 < `(1000/fps) * 0.85`。加えて **`compRequiresPreviewBake(comp) === true`**（enabled effect/component の `previewBakeRequired` 集約。旧「raster effect 推論」の明示フラグ化）、または `resolutionProxy !== "full"` ではリアルタイム不可（強制 non-realtime → キャッシュ優先）。`settings.enabled === false` のときは常に live（§28.5）。
 

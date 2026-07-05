@@ -6,6 +6,64 @@
 
 ---
 
+### 2026-07-05（Cursor）— Subject Extract from footage（§16.2）✅
+
+- **機能**: Video Inspector の Subject Extract 折りたたみ — Person プルダウン + Extract → MediaPipe Selfie Segmentation → WebM VP9 alpha → 新 video レイヤー（ソース `zOrder + 0.5`）+ アセット `Assets/VideoSubjectExtract` bin。
+- **実装**: `src/editor/subjectExtract/*` + `SubjectExtractFields.tsx` + vendored `public/subject-extract/mediapipe/`（@mediapipe/tasks-vision 0.10.18 + selfie_segmenter.tflite）。
+- **spec**: §16.2 新設 + §16 テーブル 1 行（§5/INV 不変）。
+- **検証**: `subjectExtractMask` + `subjectExtractApply` 7 PASS。`npm test` **839 PASS**。`resolve` / `DomRenderer` / `player.js` 非変更 → `build:player` 不要。
+- **非目標（Phase 2）**: OpenCV DNN 矩形 / 複数人物 / Motion Track マスク連携 / Playwright 実機 verify。
+
+### 2026-07-05（Cursor）— Subject Extract Chrome VP9 alpha エンコード修正 ✅
+
+- **症状**: Extract 実行時 `No supported VideoEncoder config for vp09.00.10.08`（Chrome は VP9 `alpha:keep` 非対応）。
+- **対応**: `encodeAlphaWebm.ts` — 先に `isVp9AlphaEncodeSupported` を probe。非対応時は **split alpha**（color `.webm` + グレースケールマスク `.alpha.webm`、`meta.alphaMode: "split"` / `meta.alphaPath`）。Firefox 等は従来の unified VP9 alpha のまま。even 次元 + hardware/software フォールバック。
+- **再生**: `videoSplitAlpha.ts` + `imageAssetCache.getAlphaVideoUrl` + `DomRenderer` canvas 合成（export `flushVideoFrames` 後も composite）。
+- **検証**: `subjectExtractEncode` 3 + 既存 subjectExtract 7 PASS。`typecheck` 緑。`npm run build:player` 実行済み（DomRenderer 変更）。
+
+### 2026-07-05（Cursor）— Subject Extract split alpha 合成バグ修正 ✅
+
+- **症状**: Extract 完了後、人物切り抜きレイヤーが透過にならず元映像相当／export に人物のみ出ない。
+- **真因**: `drawSplitAlphaComposite` が `destination-in`（source **alpha** 参照）を使っていたが、split マスク WebM は VP9 discard-alpha のため **RGB グレースケール**にマスクを載せている。合成が効かず canvas が実質フルカラー。
+- **対応**: マスク R → color ImageData alpha の CPU 合成。color エンコードは straight RGB（`toOpaqueRgbColor`）。export `inlineVideoFrames` は split alpha 時 color/alpha `<video>` を除外し composite canvas のみ PNG 化。
+- **検証**: `subjectExtractEncode` 4 PASS。`build:player` 再実行済み。
+
+### 2026-07-05（Cursor）— Subject Extract 空マスク真因修正（Comp 30 / pj19）✅
+
+- **症状**: mafter-project (19) Comp 30 — Extract 済み alpha.webm が ~2KiB/frame（空）。Person レイヤーに人物 ink なし。
+- **真因**: MediaPipe `categoryMask` が **0/255 バイナリ**なのに `categoryMaskToAlpha` が `=== 1` のみ person 判定 → 全ゼロマスク。`categoryMask` 未取得時も無言で全ゼロ fallback。
+- **対応**: `categoryMaskToAlpha` で 255/非ゼロ対応、`confidenceMasks[0]` フォールバック、MPMask リサイズ、CPU delegate、`outputConfidenceMasks: true`、全フレーム空マスク時 Extract 失敗。
+- **検証**: `subjectExtractMask` 7 PASS。plan: `.cursor/plans/subject_extract_comp30_fix.plan.md`。Fable レビューは model 不可 → Opus 代替。
+- **ユーザー操作**: **既存 Extract アセットは空のまま** — Comp 30 で Subject Extract を**再実行**すること。
+
+### 2026-07-05（Cursor）— Preview cache 再生中 bake 休止（即効薬）✅
+
+- **症状**: Caching ON かつ build 未完了だと、再生が Cache OFF より悪化してもたつく。
+- **真因**: background `captureCompFramePng` が再生中もメインスレッドを奪う + 未完了時 hit/miss 混在 + miss 時 live+capture 二重仕事。
+- **対応（プラン B のみ）**: 再生中は bake キュー pause・enqueue no-op。overlay はワークエリア build **完了後のみ**（未完了は常に live）。停止後に pump / build 再開。
+- **実装**: `FrameCacheQueue.setPaused` / `RamPreviewController.setPlaybackActive` / `isWorkAreaBuildComplete` / PreviewPanel `isPlaying` 配線。spec §28.4 散文。
+- **検証**: `test/previewCache.test.ts` 20 PASS。export/bundle/player 非対象（preview 専用）。
+- **非目標**: 完了待ち UI（A）、先読み bake（C）、WASM Worker レンダラ。
+
+### 2026-07-04（Cursor）— 映像×タイムライン双方向再生同期 ✅
+
+- **追加症状**: 片方向 hold 後も「映像以外が遅れる」（映像先行・カメラ／他レイヤー遅れ）。
+- **真因**: `error = targetSec − currentTime < 0` を未処理。render/React 遅延や hold 解除後のわずかな先行で映像だけ進む。
+- **設計**: 経路 H2 — 映像遅れ→timeline hold（既存）、映像先行→**video pause（seek なし）**。遅れ優先の相互排他。paused は適格（sync pause 発振防止）。
+- **実装**: `computePlaybackSyncState` / `pauseForSync` / `DomRenderer.setPlaybackPauseForSync` / PreviewPanel・AudioClock 配線。
+- **検証**: unit 48 PASS（playbackVideoSync 12 + videoElementSync 36）。`verify-video-playback-sync.mjs` **PASS**（steady max|err|=0.030s、人工 lead→pause→catchup）。`build:player` 済み。
+- **PLAN**: `.cursor/plans/video_camera_playback_sync_bidirectional.plan.md`。
+
+### 2026-07-04（Cursor + Fable RG-20260704-05）— 映像×カメラベイク再生同期 ✅
+
+- **症状**: 再生時に映像 Footage とモーショントラック済みカメラがズレ、モーションが早すぎて見える。スクラブは比較的合う。
+- **真因**: カメラ = タイムライン時計、映像ピクセル = `video.play()`。再生中 drift seek は 0.5s までしない（旧 HW 対策 A）ためカメラ先行。
+- **設計**: 経路 H（Play-start barrier + timeline hold）。Fable M1–M6（ヒステリシス enter=1f / exit=半フレーム、適格除外、1s フェイルセーフ、AudioClock suspend、barrier の no-op 条件、flag 点火一本化）。
+- **実装**: `playbackVideoSync.ts` / `DomRenderer.syncMountedVideosForPlay` + `sampleMountedVideoClocks` / `PreviewPanel` barrier→render→clock / rAF・AudioClock hold / BundlePlayer barrier のみ。scrub・export・`PLAYBACK_RESYNC_THRESHOLD_SEC` 不変。
+- **spec**: §11.4 散文のみ。
+- **検証**: 初版 unit。双方向拡張は上エントリ。
+- **PLAN**: `.cursor/plans/video_camera_playback_sync.plan.md`。Handback: `RG-20260704-05.md`。
+
 ### 2026-07-04（Cursor）— トラックマット canvas 正準（Opus RG-20260704-04）✅
 
 - **診断（Opus）**: 初版 SVG mask+foreignObject は text 非描画で全透明。応急 `mix-blend-mode: destination-in` は **不正 CSS（Porter-Duff は canvas 専用）→ no-op**。verify は false-green。
@@ -1063,3 +1121,24 @@ canvas 化結果は以降から見て通常の背面ピクセルと等価（zOrd
 - **操作**: 目アイコン右クリック → 「すべて表示」「すべて非表示」。対象は現在コンポの**ロック以外**のみ（ロック済み `enabled` は不変）。1 command / 1 undo。
 - **実装**: [layerLock.ts](src/editor/layerLock.ts) `unlockedVisibilityPatches`、[TimelinePanel.tsx](src/editor/panels/TimelinePanel.tsx) コンテキストメニュー。spec §21.11.1 追記。
 - **検証**: `test/layerLock.test.ts` 追加ケース。
+
+### 2026-07-05（Cursor）— プロジェクトパネル nested フォルダのインデント修正 ✅
+
+- **症状**: フォルダ展開時、子フォルダだけ左端（depth 0 相当）に表示されネスト構造が視認できない。
+- **原因**: [ProjectTreeView.tsx](src/editor/panels/projectTree/ProjectTreeView.tsx) の bin 行だけ `padding: 3px ${pad}px 3px 6px` と左パディングが常に 6px 固定。composition / asset 行は `paddingLeft: pad`（depth 連動）だった。
+- **修正**: bin 行も `paddingLeft: pad` に統一。[projectTreeLayout.ts](src/editor/panels/projectTree/projectTreeLayout.ts) に `projectTreeRowPadLeft(depth)` を抽出。
+- **追修正（2026-07-05）**: 右パディングも depth 連動していたため `+`/`×` 等のボタンが内側へ寄っていた。`PROJECT_TREE_ROW_PAD_RIGHT = 6` を固定し左インデントのみ depth 連動に。
+- **検証**: `npm run typecheck` 緑 / [test/projectTreeLayout.test.ts](test/projectTreeLayout.test.ts) 緑。
+
+### 2026-07-05（Claude）— webm(split-alpha)レイヤーが mp4 と挙動が違う不具合を修正 ✅
+
+- **要請**: 「webm の扱いが mp4 と違って変な感じがする」— ① レイヤー順を変えても常に mp4 より奥に表示される ② スクラブしてもそのフレームが表示されない ③ 再生時に mp4 よりフレームがズレる。ユーザーの Downloads 最新 zip の Comp 30（mp4+webm混在）で実機 Playwright 再現・特定。
+- **前提確認**: このプロジェクトの `.webm` は全 3 件とも Subject Extract の split-alpha 出力（`meta.alphaMode: "split"`）。素の webm インポートはプロジェクト中に 1 件も存在せず、実質「split-alpha 合成レイヤー vs 通常 `<video>`」の比較だった。
+- **原因A（症状①・実機で確定）**: [DomRenderer.ts](src/runtime/DomRenderer.ts) `applyObject()` の通常分岐で `entry.div.style.zIndex = ...` を設定した直後に `clearMatteSourceStyle(entry.div)`（track matte source 離脱の後始末）が無条件に呼ばれ、`zIndex` を毎フレーム `""` へリセットしていた（mp4/webm 問わず全オブジェクトが対象だが、`resolve()` が zOrder でソート済みのため初回マウント時の DOM 挿入順と一致している間だけ見た目が正しく、**既存オブジェクトの zOrder を後から変更しても DOM 順・z-index どちらも反映されない**——mp4 背景は作成後ほぼ並べ替えないため症状が出ず、後から追加・並べ替えした webm レイヤーだけ「常に元の位置」に見えていた）。**修正**: 後始末呼び出しを transform/opacity/zIndex 設定より前に移動。
+- **原因B（症状②）**: [videoSplitAlpha.ts](src/runtime/videoSplitAlpha.ts) `drawSplitAlphaComposite()` は color/alpha 双方が ready なときのみ描画し、そうでなければ何もせず `false` を返すが、呼び出し側は再試行の仕組みを持たなかった（`<video>` はブラウザが decode 完了時に自動再描画するが、canvas 合成は明示呼び出しでしか更新されないため、scrub 直後の render pass で readyState 不足だと次の render() まで canvas が古い内容のまま固定）。実機計測で canvas が既定 `300×150`（実寸 640×1138 に一度もリサイズされない）のまま固定される再現を確認。**修正**: `scheduleSplitAlphaRedrawWhenReady()` を追加（bounded retry, 既定 2000ms・`canvas.isConnected` チェックで dispose 後の無限ループ防止）。初回描画失敗時のみ発火（型別オプトイン、mp4/plain video 経路は無変更）。
+- **原因C（症状③の一因）**: `sampleMountedVideoClocks()`（再生中の映像↔タイムライン hold/pause 判定用サンプル）が `forEachVideoElement()` 経由のため split-alpha の alpha companion を明示スキップしており、color/alpha のビットレート差（実測 ~8.2Mbps vs ~205kbps）による decode 乖離が hold/pause 判定に反映されなかった。**修正**: `sampleMountedVideoClocks()` で `findSplitAlphaVideo()` を追加チェックし alpha companion もサンプル対象に（`forEachVideoElement` 自体・呼び出し側 `previewAudioClock.ts` は変更不要、samples 配列を汎用集計するだけのため）。
+- **影響経路**: Preview / mp4・webm export / Web bundle player（同一 DomRenderer 経路）。RAM Preview cache は別経路のため無関係。bundle player は hold/pause 自体を持たない（barrier のみ、既存方針で不変）ため原因Cは preview 専用。
+- **検証**: `npm run typecheck` / `npm test`(854件, 既知の無関係 flaky 1件は単独実行で緑) / `npm run build:player` 緑。新規 [test/videoSplitAlpha.test.ts](test/videoSplitAlpha.test.ts) 4件（retry成功・deadline打ち切り・disposed canvas即終了・多重スケジュール防止）。実機 Playwright: ユーザーの実プロジェクト Comp 30 で①（既存オブジェクトの zOrder 変更後 zIndex が正しく更新される）②（scrub 後 canvas が実寸 640×1138 にリサイズされる、修正前は 300×150 に固定）を再現→解消を確認。既存 `verify-track-matte.mjs` 無回帰 PASS。
+- **手法メモ**: `/double-check-the-plan` でレビュー→ bundle 行の未確認ヘッジ・症状③の閾値未確定・使い捨てスクリプトの先送りの3点を修正してから実装。
+- **既知の無関係な発見（対応不要・本タスクスコープ外）**: `verify-blend-mode.mjs`（addSolid 後に要素が見つからない）と `verify-bundle-video-playback.mjs`（NotAllowedError: play() が自動再生ポリシーで拒否）が現在の working tree で失敗するが、本修正を一時的に revert しても同じ結果になることを確認済み＝**本修正が原因ではない**（別の未コミット作業に起因する既存の問題、または autoplay unlock 導入前からの検証スクリプトのギャップ）。ユーザー/次セッションへの申し送り事項として記録。
+- **build:player**: 実行済み（`src/runtime/DomRenderer.ts` / `src/runtime/videoSplitAlpha.ts` 変更のため必須・`playerBuildFreshness` 緑）。

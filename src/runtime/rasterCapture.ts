@@ -1,3 +1,9 @@
+import {
+  hasSplitAlphaCanvas,
+  SPLIT_ALPHA_MASK_SCRATCH_CLASS,
+  SPLIT_ALPHA_VIDEO_CLASS,
+} from "./videoSplitAlpha";
+
 // DOM → canvas ラスタ化（exporter §11.4 と共有・foreignObject 経路）
 
 /** Shadow DOM を持つノードを再帰的に clone し、shadowRoot の内容を inline に展開する。 */
@@ -38,6 +44,7 @@ export async function inlineCanvasBitmaps(cloned: HTMLElement, source: HTMLEleme
     const node = clones[i];
     const srcCanvas = sources[i];
     if (!(node instanceof HTMLCanvasElement) || !(srcCanvas instanceof HTMLCanvasElement)) continue;
+    if (srcCanvas.classList.contains(SPLIT_ALPHA_MASK_SCRATCH_CLASS)) continue;
     if (srcCanvas.width === 0 || srcCanvas.height === 0) continue;
     const img = document.createElement("img");
     img.setAttribute("width", String(srcCanvas.width));
@@ -87,6 +94,15 @@ export function inlineVideoFrames(cloned: HTMLElement, source: HTMLElement): voi
     const node = clones[i];
     const srcVideo = sources[i];
     if (!(node instanceof HTMLVideoElement) || !(srcVideo instanceof HTMLVideoElement)) continue;
+    if (srcVideo.classList.contains(SPLIT_ALPHA_VIDEO_CLASS)) {
+      node.remove();
+      continue;
+    }
+    const parent = srcVideo.parentElement;
+    if (parent && hasSplitAlphaCanvas(parent)) {
+      node.remove();
+      continue;
+    }
     const { dw, dh } = videoInlineDimensions(srcVideo);
     if (dw <= 0 || dh <= 0) {
       // decode 未完了の <video> を foreignObject に残すと黒矩形で下層を覆い隠す。

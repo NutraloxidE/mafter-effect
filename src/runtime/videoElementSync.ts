@@ -150,6 +150,11 @@ export interface VideoElementSyncOptions {
    * ケースで seek が抜けるのを防ぐ（真に連続するカットは半フレーム以内なら無音継続を維持）。
    */
   forceSeek?: boolean;
+  /**
+   * true = 映像がタイムラインより先行しているので pause して待つ（seek しない）。
+   * playbackMode 中のみ意味を持つ。旧 HW seek 連鎖を避けつつ双方向同期する。
+   */
+  pauseForSync?: boolean;
 }
 
 /** 半フレーム未満の差は無視（scrub/export の過剰 seek 抑制）。 */
@@ -253,6 +258,17 @@ export function syncVideoElementTime(
       video.muted = false;
     } catch {
       /* muted best-effort */
+    }
+    // 映像先行ゲート: pause のみ（seek しない＝旧 HW スタッタ対策 A を維持）。
+    if (options.pauseForSync) {
+      if (!video.paused) {
+        try {
+          video.pause();
+        } catch {
+          /* pause best-effort */
+        }
+      }
+      return;
     }
     if (video.paused) {
       try {
