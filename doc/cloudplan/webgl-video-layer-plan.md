@@ -236,7 +236,7 @@ interface SceneObject {
 - **Phase 3**: グループ（共有 ON 連続）で複数動画を 1 GL シーンに投入・深度交差。カメラ共有。
 - **Phase 4**: UI（fold-out トグル＋グループ境界可視化）。
 - **Phase 5**: export 全経路（mp4/webm/PNG 連番/bundle）で GL readPixels 配線・INV-2 verify。**`public/player.js` 再ビルド**（bundle export が GL 経路に触れるため・CLAUDE.md 必須）。
-- **Phase 6**: 既存コンポ回帰（§3 マトリクス）・progress.md 更新。
+- **Phase 6**: 既存コンポ回帰（§3 マトリクス）・**§8.1 最終チェックゲート（mp4/webm/PNG連番/live bundle 全経路）を全項目 PASS**・progress.md 更新。**§8.1 が全て緑になるまで完了報告しない**。
 
 ---
 
@@ -250,6 +250,37 @@ interface SceneObject {
   - `verify-webgl-group-depth.mjs`: 共有 ON 2 動画の深度交差。
   - `verify-webgl-noop-regression.mjs`: 動画なしコンポが GL 経路に一切入らない（frame 出力 byte 一致）。
 - **計測**（perf 主目的の証明）: アルファ動画 N 枚で現行 vs GL の平均 frame time を実機比較。
+
+### 8.1 実装完了直前の最終チェックゲート（必須・mp4 / live 書き出し中心）
+
+> ユーザー指示（2026-07-06）: 「既存の経路を破壊しないように、mp4 書き出し・live 書き出しが動作大丈夫か、実装の最後に可能な限り各種チェックをする」。**Phase 6（§7）の最終ステップとして、以下を全て緑にしてから完了報告する**。1 つでも壊れたら §9 の revert 判断材料にする。
+
+**A. mp4 書き出し（browser export・WebCodecs 経路）**
+
+- [ ] 動画レイヤーを**含まない**既存コンポ（solid+text+image のみ）を mp4 書き出し → GL 経路実装**前**の出力と **byte 一致 or フレーム画素完全一致**（§3 の「完全無変化」不変を実地確認）。
+- [ ] **通常動画のみ**（3D 化しない・GL 対象外）のコンポを mp4 書き出し → 素の `<video>` 経路のまま出力が変わらないこと。
+- [ ] **アルファ動画 1 枚**（GL 化 ON）を mp4 書き出し → 現行 split-alpha canvas 版と画素一致（許容差内、`verify-webgl-alpha-video.mjs` 準拠）。
+- [ ] **共有グループ（動画 2 枚以上・深度交差あり）**を mp4 書き出し → フレームごとに決定論的（同一 seek で毎回同じ画素、INV-1）。
+- [ ] 既存 `verify-*-export*.mjs`（blend / 調整レイヤー / displacement 系 / トラックマット等、動画を含まないものも含め）を**全部再実行**して PASS を確認。
+
+**B. webm / PNG 連番書き出し**
+
+- [ ] mp4 と同じ観点（動画なし → 無変化、通常動画 → 無変化、アルファ動画 → GL 版一致、グループ → 決定論）を webm でも確認。
+- [ ] PNG 連番書き出しも同様（フレーム単位のため GL readPixels タイミングのズレが出やすい・§6-3 の decode ズレ懸念と関連づけて確認）。
+
+**C. live 書き出し（Web bundle export・`executionPath:"live"` 経路）**
+
+- [ ] **`public/player.js` を `npm run build:player` で再ビルド済みか**を確認（CLAUDE.md 必須事項・`src/runtime` を触っていれば必ず対象）。
+- [ ] 動画を含まない bundle（既存プロジェクト）を書き出し、ブラウザで再生 → 見た目・タイミングが実装前と変わらないこと。
+- [ ] アルファ動画入り bundle を書き出し、ブラウザで再生 → GL 合成がその場（bundle player 内）でも正しく動作すること（bundle 側は独立した `player.js` 実行環境のため、preview/export 側だけ直して bundle 側の配線を忘れる「片側だけ壊れる」事故を明示的に潰す）。
+- [ ] `executionPath:"live"` の既存エフェクト（`fastWave`/`fastRipple`/`fastTurbulentDisplace` 等）を動画レイヤーの**上下 DOM バンド**で使ったコンポを bundle 化 → ライブ効果が GL グループ導入後も従来通り効くこと（DOM バンドと WebGL グループの境界でエフェクトが壊れないか）。
+- [ ] bundle bake 件数（`executionPath:"bake"` に自動フォールバックする対象数）が実装前後で変わっていないこと（動画以外の対象が誤って bake 判定されていないか）。
+
+**D. 横断確認**
+
+- [ ] `npm test` の export / raster / bundle / playerBuildFreshness 関連テストを全実行し PASS。
+- [ ] ネスト precomp（動画を含まない・含む双方）の mp4 / bundle 書き出しが崩れていないこと（§6-6 のスコープ確認と合わせて、v1 スコープ外なら「素通りして dom 経路のまま」になっていることを確認）。
+- [ ] 上記 A〜D のいずれかで既存出力との差分が出た場合、**差分の原因（意図した仕様変更か・回帰か）を明記してから**次に進む。原因不明の差分を残したまま完了報告しない。
 
 ---
 
