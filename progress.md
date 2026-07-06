@@ -6,6 +6,20 @@
 
 ---
 
+### 2026-07-07（Claude Fable 5）— 透過動画軽量化プラン v2（v1 失敗検証 + 全面改稿）+ shape 救出コミット ✅
+
+- **経緯**: WebGL 動画レイヤー v1（`webgl-implement-failed` ブランチ）はユーザー実利用で失敗判定 → main リセット済みだった。ユーザー依頼「実装前に、WebGL 化が本当に透過動画を軽量化するのか検証し、Sonnet 5 でも実装できる明確さまでプランを充実させる」。AskUserQuestion で失敗症状・スコープ・worktree 整理方針を確認。
+- **検証結論（プラン v2 の根拠）**:
+  1. GPU 化で**合成**は確実に軽くなる（v1 Phase 0 実測 17.4ms→3.1ms は本物）。
+  2. しかし体感 stall の**主因は software VP9 decode ×2本 + 2クロック同期 → holdTimeline**（issue doc 実測 stall 93%）で、v1 はここに触れていなかった＝「実装完了・verify 緑なのに体感が改善しない」の説明。
+  3. v1 は目的（軽量化）を「3D レイヤー機能」として実装する取り違えがあり（動画がカメラに捕まる）、エフェクト/ブレンド消失のサイレント regression もあった。
+- **プラン v2**（[doc/cloudplan/webgl-video-layer-plan.md](doc/cloudplan/webgl-video-layer-plan.md) 全面改稿・ユーザー承認方針反映）: **(A) packed 1本化**（color|mask 上下パック・H.264 優先・§16.2 meta 追加＝主因対策）+ **(B) per-layer GL 合成**（split-alpha 2D canvas を同じ DOM 座席で WebGL canvas に差し替え＝副因対策）。THREE 不使用・スキーマ（§5）変更なし・3D/深度交差/scene3d seam は明示スコープ外。v1 の技術的教訓（UV 反転・preserveDrawingBuffer・flush 後 re-render・playerBuildFreshness 非決定性等）は §1.2 に集約。実装前承認事項は同プラン §7。
+- **shape 救出コミット**（`207ed6d`）: 下記注記参照。
+- **worktree 掃除**: WebGL 実装差分（`threeDGroupWithPrev`/`renderBatch`/`WebglBatchRenderer`/three 依存/spec §5.4b-webgl）を外科的に除去。0 バイトの probe/verify 残骸ファイルは未処理のまま残置（削除は任意）。
+- **Next steps**: プラン v2 §7 の承認 4 点をユーザーに確認 → Phase 0（実プロジェクト診断・実 Chrome）→ Phase 1〜4。実装は Sonnet 5 / Cursor 委任可の粒度に分割済み。
+
+---
+
 > **2026-07-07 救出コミット注記**: 下の2エントリ（shape Bake / Phase 3）の実装は WebGL 動画レイヤー試行と同じ作業ツリーで行われ、`webgl-implement-failed` ブランチ退避 → main リセット時に未コミットのまま取り残されていた。本日 WebGL 分だけを除去して救出コミットした（`three` 依存も除去・`polygon-clipping` は shape 用に残置）。**このとき main 単体は `src/runtime/shapePath.ts` 欠落で typecheck 不能だった**（Phase 1+2 のコミットに新規ファイルが含まれていなかった）ことも本コミットで修復済み。
 
 ### 2026-07-06（Claude Code）— shape kind="merge" の Bake（Illustrator Expand 相当）実装 ✅

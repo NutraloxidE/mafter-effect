@@ -1,274 +1,199 @@
-# WebGL 動画レイヤー（3D 空間共有トグル）設計・実現可能性プラン
+# 透過動画（split alpha）プレビュー軽量化プラン v2 — packed 1本化 + per-layer GL 合成
 
-> **ステータス**: ドラフト（未承認・実装未着手）。本ファイルは `doc/mafter-effect-spec.md`（SSoT）を置き換えない。
-> **⚠️ 承認必須**: 本プランは **§5 データスキーマの追加**（`SceneObject` への新フィールド）と、**§5.4b/§6.5b の「comp 共有 WebGL シーンは 1 枚」制約の緩和**を含む。CLAUDE.md 運用体制により、これらは **ユーザー承認なしに実装してはならない**。§4 では承認が必要な項目に `[要承認]` を付す。
-> 作成日: 2026-07-06 / 対象ブランチ: `claude/3d-alpha-video-performance-iz1o8i`
-
----
-
-## 0. TL;DR（先に結論）
-
-- **狙いは 2 つ**、優先度が違う:
-  1. **【主目的・パフォーマンス】** アルファ動画の合成を、現行の **2D canvas 上での毎フレーム `getImageData`/`putImageData`**（`videoSplitAlpha.ts`・メインスレッド CPU 合成）から、**WebGL テクスチャ + シェーダのアルファ乗算（GPU）** に移す。これはグルーピングの有無に関係なく達成できる。
-  2. **【副目的・表現力】** 連続する動画/3D レイヤーを **1 つの WebGL シーンにまとめ**、per-pixel の真の深度交差（相互貫通）を可能にする。UI は各レイヤーの fold-out に **「上の 3D オブジェクトと空間を共有する」トグル**を置く。
-- **設計の核**: 「comp 全体で 1 枚の WebGL canvas」（現行 spec §6.5b の制約）を緩め、**zOrder 連続する“空間共有 ON”レイヤーの run（連続区間）ごとに 1 グループ**を作る。DOM レイヤー（text/shape）や共有 OFF のレイヤーが run を断ち切る。結果として画面は **「DOM ↔ WebGL グループ ↔ DOM …」のサンドイッチ**になる。
-- **v1 スコープは動画レイヤーのみ**。text/shape/HTML comp はライブ DOM のまま（現行 `dom` 経路）。これにより「エフェクト適用後にラスタライズしてテクスチャ化」問題を、動画以外には持ち込まない。
-- **グルーピング判定は `resolve()`（純関数）に置く**。レンダラはその結果を受け取るだけ（INV-1/INV-2/INV-3 を守る）。preview・browser export・headless export で必ず同一グルーピングになる。
-- **【重要・ラスター化フリー】** spec §5.4b の `raster3d` が警告する「代償＝静止テクスチャ化（ライブ HTML 不可）」は、**text/shape/HTML のようなライブなベクター/DOM 内容を焼き込むときの話**。**本プランは破壊的ラスター化を一切伴わない**（§2.0 で詳述）:
-  - **動画は元からピクセル**。`VideoTexture` に載せても焼き込みではなく、デコード中の動画から**毎フレーム更新されるライブテクスチャ**。失うべきライブ HTML/ベクターが無いので**ラスター化の代償が発生しない**。
-  - **DOM レイヤー（text/shape）は WebGL シーンに入れず DOM バンドのまま**にするので、こちらも焼き込まれない。
-  - 唯一残る制約は「DOM 層 ↔ WebGL 動画は per-pixel 相互貫通できず、バンド境界のペインター順」——これは現行 spec §6.5b が既に課す制約と同じで、**新たな損失ではない**。
-- **最大の未確定点**は「WebGL レイヤーに既存エフェクトがどう効くか」と「WebGL コンテキスト数の上限」。§4・§5 で掘り下げる。**素の CSS filter 系エフェクトは単独 canvas 要素にそのまま効く**。**グループ内の per-layer エフェクトも GPU シェーダで“ライブ”実装可能**（焼き込みは必須ではない・§4.2）。
+> **ステータス**: v2 ドラフト（2026-07-07 全面改稿・ユーザー回答反映済み）。
+> **v1（2026-07-06〜07 の「WebGL 動画レイヤー（3D 空間共有トグル）」）は実装後に破棄された** — 経緯と教訓は §1。v1 実装の全容は `webgl-implement-failed` ブランチに保存（参照用・復活させないこと）。
+> 本ファイルは spec（SSoT）を置き換えない。実装時は §7 の承認事項を確定してから spec（§16.2 ほか）→ 実装の順。
 
 ---
 
-## 1. 現状アーキテクチャ（コード根拠）
+## 0. TL;DR
 
-### 1.1 動画レンダリング（現行）
+**目的（唯一）**: 「アルファチャンネル付き透過動画（Subject Extract の split alpha）があると preview が重くなる／comp 全体がフリーズする」の解消。**3D 機能ではない**。
 
-- **通常（不透明）動画**: 素の `<video>` を DOM の兄弟として置き、`matrix3d(worldTransform)` で配置。デコード/描画はブラウザネイティブ経路 → 安い（`DomRenderer.ts`, `videoElementSync.ts`, `playbackVideoSync.ts`）。
-- **アルファ動画**: ネイティブ VP9 `alpha:keep` が Chrome の `VideoEncoder` で使えない（progress.md: `No supported VideoEncoder config for vp09.00.10.08`）ため、**split-alpha 方式**を採用:
-  - color 用と grayscale-mask（alpha）用の **2 枚の `<video>`** を同位置に置く。
-  - 毎フレーム 2D `<canvas>` 上で `ctx.drawImage` → `ImageData` の alpha チャンネルを手書き（`videoSplitAlpha.ts`: `drawSplitAlphaComposite`, `applyGrayscaleMaskToAlphaChannel`）。
-  - color/alpha の decode を再 seek せず揃えるため `alphaVideo.playbackRate` を ±8% 微調整する **genlock**（`computeAlphaGenlockRate`/`applyAlphaGenlock`）。ドリフト実測 平均 33–50ms・最大 147ms（progress.md §16.2）。
-  - **⇒ これが本プランの主対象**。アルファ動画 1 枚ごとに毎フレーム 2 回の `getImageData`/`putImageData` がメインスレッドに乗る。複数枚同時再生でコストが線形に積み上がる。
+体感の重さは 2 つの独立したコストの合算で、対策もレバーが別:
 
-### 1.2 3D は現状すべて CSS（WebGL 未導入）
+| # | コスト | 実測 | 対策 |
+|---|---|---|---|
+| **主因** | **ソフトウェア VP9 decode ×2本（color + mask）+ 2クロック同期**。companion ドリフト → `holdTimeline` → comp 全体凍結（stall がサンプル時間の約93%、[issue doc](../issue/subject-extract-split-alpha-webm-preview-instability.md) 実機実測） | decode がボトルネック | **(A) packed 1本化**: color と mask を 1 本の動画に上下パック。1 ストリーム＝1 クロック＝genlock/ドリフト/companion hold が**構造的に消滅**。コーデックは H.264 優先（ハードウェアデコード） |
+| 副因 | **毎フレーム CPU 合成**（`getImageData`×2 + `putImageData`、1080p で平均 17.4ms/frame — v1 Phase 0 実測） | 合成もメインスレッドを圧迫 | **(B) per-layer GL 合成**: レイヤー div 内の合成用 2D canvas を**同じ場所で** WebGL canvas に差し替え、シェーダで合成（v1 実測 平均 3.1ms / p50 0.9ms） |
 
-- `src/` に `three` パッケージも WebGL コンテキスト生成も**存在しない**。
-- 3D は純 CSS: `DomRenderer` が root に `perspective`/`perspective-origin`、各 3D レイヤーに `matrix3d(translate(cx,cy,P)·view·world)`、root に `preserve-3d`（spec §6.5, §6.5b）。カメラ数学は `mat4.ts`（`perspective`/`lookAt` は Three.js 互換に書いてある）。
-- **spec は WebGL/Three.js を将来モードとして既に設計済み**（§5.4b, §6.5b）:
-  - `SceneObject.threeD?`, `threeDMode?: "auto"|"dom"|"raster3d"`, `TimelineComposition.renderer3d?: "classic"|"advanced"`（**スキーマは既存・実装は未着手**）。
-  - `raster3d` = レイヤーをラスタライズし **comp 共有の WebGL シーンにテクスチャ板として投入**、per-pixel 深度交差。代償＝静止テクスチャ化（ライブ HTML 不可）。「実装は §6.5 / Phase 2 / 将来」と明記。
-  - §6.5b: 「**共有 WebGL シーンは 1 枚の `<canvas>`（= z スタック上の 1 要素）**。dom 層 ↔ GL 層の交差はペインター級」。← **本プランはこの「1 枚」を「run ごとに N 枚」に緩める**。
+**設計の核（v1 との決定的な違い）**: WebGL は「シーン」ではなく「**canvas のピクセルを作る手段**」としてだけ使う。
+レイヤーの div・`matrix3d`・CSS 3D カメラ・blendMode・filter・トラックマット・調整レイヤー・export のレイヤー列挙は**一切触らない**（今の 2D canvas と同じ DOM の座席に GL canvas が座るだけ）。したがって:
 
-### 1.3 エフェクト適用（現行）
-
-- `DomRenderer.applyEffects()`（`DomRenderer.ts:1148-`）が、各オブジェクト DOM 要素へエフェクトを適用:
-  - `{kind:"css"}`（blur/tint/wipe 等）→ 要素の CSS `filter:`。
-  - `{kind:"svg"}`（displacement 等・§27）→ `effectSvg.ts` の `<filter>` を CSS `filter:` として適用。
-  - `{kind:"raster"}`（`processPixels`）→ DOM→canvas キャプチャして JS ピクセル処理。
-  - **調整レイヤー**は `backdrop-filter` で「下の層」に到達（§23.3d）。export では `foreignObject` ラスタ化で `backdrop-filter` が消えるため特殊処理。
-- **重要**: 現状エフェクトは **DOM 要素に対する CSS/SVG フィルタ**が基本。動画を WebGL に移すと、この前提が動画レイヤーについて変わる（§4 で詳述）。
-
-### 1.4 ネスト（precomp）と合成
-
-- `DomRenderer` は parent/child で **DOM をネストしない**。`resolve()` が world transform を焼き、全オブジェクトを root の兄弟として並べる（§5.4-note）。
-- **ネスト comp（precomp）**: 専用 `isolation:isolate` コンテナ div を持ち（§23.3a）、`NestedCompRasterizer`（`compFrameCapture.ts`）でオンデマンド・ラスタライズ（RAM Preview / export bake）可能。ネストカメラはコンテナ単位の `perspective`（§23.3b）。
-- **エフェクト（SVG filter）**: `effectSvg.ts` が `<filter>` primitive を組む。canvas/WebGL パイプラインではない。
+- **カメラに捕まらない**（レイヤーとしての 3D/2D 挙動は現状から変化ゼロ）
+- **blend/エフェクトはボツにならない**（canvas は今までどおり 1 個の DOM 要素。CSS がそのまま効く）
+- **THREE.js 不要**（素の WebGL の小さなシェーダ 1 本。`three` 依存・player.js +510KB は要らない）
+- **スキーマ変更なし**（`SceneObject`/§5 は不変。変わるのはアセット meta の §16.2 だけ）
+- **スコープ外を明確化**: 3D 深度交差・GL シーン共有・scene3d/glTF/light の seam は**全部やらない**（ユーザー指示: スコープを絞る）
 
 ---
 
-## 2. 提案設計
+## 1. v1 の失敗から学んだこと（post-mortem・必読）
 
-### 2.0 ラスター化フリーの根拠（前向き採用の理由）
+v1 は「Phase 0〜6 実装・verify 緑・typecheck 緑」で完了報告されたが、ユーザー実利用で失敗と判定され main がリセットされた。**「テストが緑」と「目的が達成された」は別物**だった。
 
-> ユーザー要望「ラスター化無しで 3D がいけるならそれを前向きに検討」への直接回答。**結論: この設計はどこも破壊的ラスター化しない**。
+### 1.1 何がズレたか
 
-spec §5.4b の `raster3d` は「**任意のレイヤー（text/shape/HTML 含む）**を GL シーンに入れる」汎用モードなので、ライブ HTML/ベクターを**静止テクスチャに焼き込む代償**が避けられなかった。本プランは対象を絞ることでその代償を回避する:
+1. **目的の取り違え（最重要）**: ユーザーの目的は「透過動画の軽量化」。v1 は `threeD=true` の動画を `THREE.Scene`+`THREE.PerspectiveCamera` に入れる「3D レイヤー機能」として作った。結果、**軽量化のためのレイヤーが comp カメラに捕まる**という意味論の変化が起き、ユーザーの期待と食い違った。
+2. **ボトルネックの見立て違い**: v1 は合成（副因）だけを GPU 化した。しかし実測済みの主因は **ソフトウェア VP9 decode ×2 + holdTimeline**（issue doc: stall 93%、両ストリームともソフトウェアデコード確認済み）。decode 側を触らない限り体感は改善しない。**Phase 0 のマイクロベンチ（合成 17.4ms→3.1ms）は本物だが、体感の支配項ではなかった**。
+3. **サイレントな見た目 regression**: `threeD=true` の動画が自動で GL 経路に入る設計だったため、(a) エフェクト付きレイヤーは CSS filter が「隠された DOM 側」にだけ掛かり **GL canvas には未配線＝エフェクト消失**、(b) batch wrapper に `mix-blend-mode` 未配線（export では `blendMode:"normal"` ハードコード）＝**ブレンド消失**、(c) DOM 3D レイヤーと GL カメラの整合 verify なし。
+4. **スコープ膨張**: scene3d/glTF/light 用の「将来 seam」を最初から作り込み、実装とレビューの認知負荷を上げた（ユーザー自身も「余分に言った」と認めており、今回は削る）。
 
-| レイヤー種別 | 本プランでの扱い | ラスター化するか |
-|---|---|---|
-| **動画（通常/アルファ）** | WebGL `VideoTexture`（GPU 側で毎フレーム更新） | **しない**。動画は元からピクセル列＝失うライブ内容が無い。テクスチャは静止ではなく**ライブ**（再生し続ける） |
-| **text / shape / HTML comp** | **DOM バンドのまま**（現行 dom 経路・CSS 3D） | **しない**。GL シーンに入れないので焼き込み不要 |
-| **調整レイヤー / エフェクト** | §4.2（単独=CSS ライブ / グループ=GPU シェーダでライブ） | **原則しない**（焼き込みは最終手段） |
+### 1.2 v1 から引き継ぐ価値のある技術的教訓（実機デバッグで確定済み）
 
-- **「ライブテクスチャ」と「静止テクスチャ化」は別物**。`VideoTexture` は decode の進行に追随してフレームごとに GPU テクスチャを更新する。したがって動画を GL に載せても、AE の raster3d が失う「編集可能なライブ内容」に相当するものは**そもそも動画に存在しない**。むしろ現行の 2D-canvas split-alpha 合成（`getImageData`/`putImageData`）の方が CPU ラスタ往復を含んでおり、**GL 化はラスタ往復を減らす方向**。
-- **唯一の割り切り**は「DOM 層 ↔ WebGL 動画層の per-pixel 相互貫通は不可（バンド境界のペインター順）」。ただしこれは §6.5b が既存 dom 経路にも課している制約と同一で、**本プランで新たに失うものではない**。
-- **⇒ 前向き採用の判断**: 「ラスター化フリーで動画の 3D 空間配置＋深度交差＋GPU アルファ合成」は、**対象を動画に限定する限り成立する**。汎用 raster3d（text 等の焼き込み）は本プランのスコープ外に置き、必要になったとき別途 opt-in する。
+新実装でも同じ罠を踏むので必ず守る:
 
-### 2.1 レイヤーモデル（v1 = 動画のみ WebGL 化）
-
-画面の z スタックは、zOrder 昇順に走査して次の 3 種の**バンド**に動的分割される:
-
-```
-（例）zOrder 昇順
-┌─────────────────────────────┐
-│ DOM バンド   : 背景 solid / text        │  ← ライブ DOM（現行 dom 経路）
-├─────────────────────────────┤
-│ WebGL グループ A : 通常動画 + アルファ動画  │  ← 1 canvas / 1 GL シーン（空間共有 ON 連続）
-├─────────────────────────────┤
-│ DOM バンド   : キャプション text / shape   │  ← ライブ DOM
-├─────────────────────────────┤
-│ WebGL グループ B : オーバーレイ透過動画    │  ← 別 canvas / 別 GL シーン
-└─────────────────────────────┘
-```
-
-- **WebGL グループ**の生成規則（`resolve()` で確定）:
-  - あるレイヤーが WebGL 対象（動画かつ 3D 化）で、**「上と空間共有」ON** かつ **直上のレイヤーも同一 WebGL グループに属する**なら、そのグループへ join。
-  - そうでなければ**新しいグループを開始**。
-  - DOM レイヤー・共有 OFF レイヤー・非動画レイヤーが挟まると run が切れる。
-- **カメラ共有**: どのグループも comp の active camera（§6.5）を参照。view は全経路一致、各グループの GL projection は `mat4.perspective`。これで DOM cube と GL video が画面上で整合（§6.5b の原則を維持）。
-
-### 2.2 UI — WebGL レイヤーパネル（fold-out）
-
-- 動画レイヤーのプロパティパネルに fold-out セクション「3D / WebGL」を追加。
-- トグル **「上の 3D オブジェクトと空間を共有する」**（`threeDGroupWithPrev` 相当・§5 で確定）。
-  - **直上のレイヤーが WebGL 対象でないとき**はトグルを **disabled + 説明**（共有相手がいない）。
-  - 並べ替え（ドラッグ）でチェーンが変わったら、トグルの実効が変わる。UI は「実効グループ境界」を可視化（例: グループを縦線でくくる）。
-- 「3D レイヤーとして扱う」トグル（= 既存 `threeD`）と直交。動画を WebGL 化するには `threeD=true` かつ実効モードが GL 経路であること。
-
-### 2.3 レンダラ側（新規 `WebglLayerRenderer`）
-
-- **1 GL コンテキスト / N 表示 canvas** を推奨（§4.2 コンテキスト枯渇対策）:
-  - 単一の `WebGLRenderer`（オフスクリーン / framebuffer）で各グループを描画 →
-    グループごとの表示用 `<canvas>`（z スタック上の要素）へ `drawImage` で転送。
-  - 各グループ canvas は DOM 上で通常オブジェクトと同じく `z-index`/`matrix3d` 配置。
-- 動画は `THREE.VideoTexture`（通常）＋ mask 用 `VideoTexture` をシェーダでアルファ結合（split-alpha を GPU 化）。genlock は不要になる可能性が高い（両テクスチャを同一 render tick でサンプルするため）— ただし **decode タイミングのズレは残る**ので §6 で要検証。
-- export（INV-2）: GL → `readPixels` でブラウザ内取り込み（spec §5.4b の既定方針どおり）。
-
-### 2.4 拡張性 — 将来の `scene3d`（3D モデル/glTF）ロードへの備え
-
-> **一言メモ**: 本プランの「1 グループ = 1 `THREE.Scene` + 共有カメラ」という骨組みは、動画専用に閉じずに設計しておけば、将来 `scene3d` メッシュ（glTF 等の実 3D モデル）をそのまま**同じグループに投入するだけ**で済む。progress.md の旧 3D Phase 2 計画（「`raster3d` 層と `scene3d` メッシュが同一 GL シーンで per-pixel 交差」）とも整合する延長線であり、後付けの改築ではなく**最初からその形で作る**。
-
-**実装時に備えておく具体的な "seam"（当面は動画しか使わないが、型・命名はメッシュを想定しておく）**:
-
-| 箇所 | 動画専用にしない書き方 | 理由 |
-|---|---|---|
-| グループの中身の型 | `WebglGroupContent = VideoPlaneContent \| /* future: Scene3dMeshContent */` の**判別可能 union**にし、`kind: "videoPlane"` を持たせる。今は videoPlane しか実装しないが、union の形だけ先に用意しておくと将来の追加が switch 一本 | 追加時に既存コードの前提を壊さない |
-| 各コンテンツの Object3D 生成 | 「videoPlane 用の `THREE.PlaneGeometry` + `VideoTexture`」を作る関数を、グループ管理（シーン生成・カメラ設定・render loop）から**分離した関数**にする（例: `createVideoPlaneObject3D(obj): THREE.Object3D`）。グループ側は `Object3D` を受け取るだけで中身を知らない | 将来 `createSceneMeshObject3D(obj): THREE.Object3D`（GLTFLoader 経由）を同じ形で足せる |
-| Transform 適用 | `resolve()` の `worldTransform`（`Mat4`）→ `THREE.Matrix4` へ変換する処理を**共有ヘルパ**にする（videoPlane・将来 mesh 共通で使う） | 動画もメッシュも同じ Transform/keyframe パイプラインに乗る前提（§既存 AnimatedProp<Vec3>）と一致させる |
-| アセット参照 | 動画アセットの参照解決（FS パス → Blob/URL）を「アセット種別に依存しない**アセット解決口**」として書く（今は video だけ扱うが、関数シグネチャに `assetKind` を持たせておく） | 将来 `model3d` アセット種別（`.glb`）を同じ FS 経由の参照・stable ID（INV-6）で追加できる |
-| `ResolvedObject` のグループ情報 | §5.3 の注意どおり、group/batch 境界情報は「GL 固有語を含まない中立な形」で持つ（既定方針のまま・変更なし） | scene3d オブジェクトも同じフィールドを共有でき、INV-3 を保ったまま拡張できる |
-| ライティング拡張点 | v1 の videoPlane は unlit（シェーダに light 入力なし）だが、グループの `THREE.Scene` 自体には将来 `light` コンポーネント型のオブジェクトを追加できる余地を残す（v1 では何も追加しない・シーンに light が無ければ unlit のまま動作） | `light`（将来）コンポーネント追加時に GL シーン側の配線を新設せずに済む |
-
-- **v1 でやらないこと（明確化）**: glTFLoader 統合・`scene3d` コンポーネント型の追加・ライトコンポーネント・アセット種別 `model3d` の追加は**すべて本プランのスコープ外**。上記は「後で足すときに書き直しにならないための命名・分離」だけを今回のコードに入れる、という話であり、実装量が増える大改造ではない。
+- **UV/上下反転**: video テクスチャ（`UNPACK_FLIP_Y_WEBGL` なし）は row0 が v=0。素直な UV だと上下反転する。**非ゼロピクセル判定では検出できない** — スクリーンショット比較（人物が正立しているか）を必ず verify に入れる（[debug-visual-render-bug](../../.claude/skills/debug-visual-render-bug/SKILL.md) の教訓どおり）。
+- **未バインド sampler**: シェーダが必ず sample する sampler2D に有効テクスチャを bind しないと incomplete texture で黒抜けする。mask 無しモードでは 1x1 白テクスチャを既定 bind。
+- **export 用 re-render**: `renderFrame()` 時点では video が seek/decode 中のことがある。既存 2D 経路が `flushVideoFrames()` 内で `drawSplitAlphaComposite` を再実行するのと同じ理由で、**GL 合成も `waitForVideoFrame` 完了後に再実行が必要**（今回は差し替え設計なので、既存の再実行呼び出しがそのまま GL 版を呼ぶ形になる＝v1 のような専用キャッシュ機構は不要）。
+- **`preserveDrawingBuffer: true`**: export（`inlineCanvasBitmaps` の `toDataURL`）が render 直後以外のタイミングで canvas を読むため必須。
+- **`playerBuildFreshness.test.ts` の緑を信用しない**: v1 セッション中、stale なのに緑になる非決定性を複数回確認。ランタイム変更時は**必ず明示的に `npm run build:player` を実行**してから `git diff public/player.js` で更新を確認。
+- **`npm install`/`npm uninstall` は playwright を prune する**: 前後で `node -e "require.resolve('playwright')"`、消えたら `npm i playwright@1.61.0 --no-save`。
+- **headless Chromium の限界**: WebGL は SwiftShader（ソフトウェア GL）になるため **perf 計測は headed 実 Chrome でのみ有効**。VP9 の decode 挙動も headless と実機で大きく違う（既知）。正しさの verify は headless 可、体感・stall% の判定は実 Chrome。
 
 ---
 
-## 3. 既存コンポジットでの動作（回帰マトリクス）
+## 2. 設計
 
-「一気に実装 → 既存コンポで挙動確認」の観点。**動画を含まないコンポは一切変化しないこと**が最優先の不変。
+### 2.1 (B) per-layer GL 合成 — 2D canvas の「その場差し替え」
 
-| 既存シナリオ | 期待挙動 | リスク |
-|---|---|---|
-| solid+text+image のみ（動画なし） | **完全無変化**（GL 経路に一切入らない） | 低（`resolve()` で GL 対象 0 → 従来経路） |
-| 通常動画 1 枚（3D 化しない） | **現行の素 `<video>` 経路のまま**（GL 化は opt-in） | 低 |
-| アルファ動画 1 枚（3D 化 ON） | GL 合成に切替、見た目一致・軽くなる | 中（アルファ境界のにじみ・decode ズレ） |
-| アルファ動画＋通常動画（共有 ON） | 1 グループで深度交差 | 中（順序・ブレンド） |
-| 動画の上に text（DOM）を重ねる | DOM サンドイッチで text が前面 | 中（z-index 境界） |
-| ネスト precomp 内の動画 | precomp 側の GL 経路 or ラスタ化 | **高**（§6 未確定） |
-| 調整レイヤー + 動画 | `backdrop-filter` が GL canvas に効くか | **高**（§4.1） |
-| トラックマット源が動画 | マット合成が GL 経路で成立するか | **高**（§4.1） |
-| export（mp4/webm/PNG 連番/bundle） | 全経路で GL readPixels 一致（INV-2） | **高**（§5） |
+**現行**（[videoSplitAlpha.ts](../../src/runtime/videoSplitAlpha.ts)）: レイヤー div 内に `color <video>`（opacity:0）+ `mask <video>`（display:block, 不可視配置）+ **合成結果を表示する `<canvas class="mafter-split-alpha-canvas">`** が並び、毎フレーム `drawSplitAlphaComposite()` が canvas 2D で `drawImage`→`getImageData`×2→alpha 差し替え→`putImageData` する。呼び出し元は 3 箇所: `DomRenderer.updateComponentEl`（video ケース）・`DomRenderer.flushVideoFrames`（export 用 re-draw）・`scheduleSplitAlphaRedrawWhenReady`（ready 待ちリトライ）。
 
----
+**変更**: 同じ座席の `<canvas>` を WebGL コンテキストで取得し、合成をシェーダで行う。DOM 構造・クラス名・`setSplitAlphaPresentation` のサイズ/可視制御・呼び出し 3 箇所の**呼び出し規約（引数・bool 戻り値）は不変**。
 
-## 4. 既存エフェクトが WebGL レイヤーにどう働くか（最重要検討）
-
-現状エフェクトは「DOM 要素への CSS/SVG フィルタ」が基本。動画を WebGL 化したときの効き方を種別ごとに整理する。
-
-### 4.1 エフェクト種別ごとの効き方
-
-| エフェクト種別 | **単独 WebGL レイヤー**（1 canvas / 1 動画） | **グループ内 WebGL レイヤー**（1 canvas に複数動画） |
-|---|---|---|
-| `{kind:"css"}`（blur/tint/wipe） | **そのまま効く**（表示 canvas 要素に CSS `filter:` を掛けられる。DOM 要素と同じ） | **効かない**（filter は canvas 全体＝グループ全体に掛かる）→ **per-layer は GPU シェーダ実装 or テクスチャ焼き込みが必要** |
-| `{kind:"svg"}`（displacement 等） | canvas 要素に CSS `filter:url(#…)` を掛けられる → **原理上効くが要検証**（SVG filter が canvas ソースに対して正しく働くか） | 同上・グループ全体に掛かる問題あり |
-| `{kind:"raster"}`（`processPixels`） | GL 出力を canvas キャプチャ → 既存 raster 経路に流せる（ただし GPU→CPU 往復が発生し**主目的の軽量化を相殺**しうる） | 同上 |
-| **調整レイヤー**（`backdrop-filter`） | `backdrop-filter` は下層の**描画済みピクセル**に効く。GL canvas も通常の描画要素なので**下にあれば効く見込み**（要検証） | 同上・境界がグループ単位になる |
-| **トラックマット**（§5.4f） | マット源/被マットのどちらかが GL の場合、合成をどこで行うか（DOM 合成か GL 内か）を決める必要 | GL 内で解決するのが自然 |
-| **ブレンドモード**（§5.4d） | GL canvas 要素に CSS `mix-blend-mode` を掛けられる（単独なら OK） | グループ内の per-layer blend は GL 側で実装 |
-
-### 4.2 設計判断（エフェクト × グルーピングのトレードオフ）
-
-- **原則**: **単独 WebGL レイヤー（1 canvas/動画）は CSS/SVG/blend エフェクトをライブ維持できる**（canvas も 1 個の DOM 要素なので、そのまま CSS `filter:`/`mix-blend-mode` を掛けられる）。**破壊的ラスター化は不要**。
-- **グルーピング（共有 ON）時**: per-layer の CSS filter は「グループ全体の canvas」に掛かってしまうため per-layer には使えない。ただし選択肢は 2 つ:
-  - **(a) GPU シェーダで per-layer エフェクトを“ライブ”実装**（blur/tint 等をフラグメントシェーダで再現）。**ラスター化しない**。実装コストは上がるが、§2.0 のラスター化フリー方針と整合。
-  - **(b) テクスチャ焼き込み**（最終手段・raster3d 相当）。**本プランでは避ける**。
-- **v1 の割り切り案（要承認・実装簡素化のため）**: 「**エフェクト付き動画レイヤーは共有グループに join できない**（トグル自動 disabled）」。これで v1 は「(a) の GPU シェーダ実装」も「(b) 焼き込み」も**どちらも不要**になり、主目的（アルファ動画の GPU 化）＋副目的（**エフェクト無し**動画同士の深度交差）を最小実装で両立。エフェクト付き動画の深度交差（= (a) GPU シェーダ路線）は Phase 2 送り。この割り切りでも **v1 は完全にラスター化フリー**。
-
----
-
-## 5. スキーマ / INV への影響 `[要承認]`
-
-### 5.1 新規スキーマ `[要承認・§5]`
+新規ファイル `src/runtime/videoAlphaGl.ts`（THREE 不使用・素の WebGL1）:
 
 ```ts
-interface SceneObject {
-  // 既存: threeD?, threeDMode?, ...
-  threeDGroupWithPrev?: boolean;  // 提案: true = zOrder 直上の WebGL レイヤーと同一 GL シーンを共有。省略/false = 独立
+export interface GlAlphaCompositor {
+  /** drawSplitAlphaComposite と同じ契約: 両ソース ready なら描画して true。 */
+  compositeSplit(colorVideo: HTMLVideoElement, alphaVideo: HTMLVideoElement): boolean;
+  /** packed 1本: 上半分=color, 下半分=mask を UV で振り分けて合成。 */
+  compositePacked(packedVideo: HTMLVideoElement, layout: PackedAlphaLayout): boolean;
+  /** context lost 等で使用不能になったら true（呼び出し側は CPU 経路へフォールバック）。 */
+  readonly broken: boolean;
+  dispose(): void;
 }
+export function createGlAlphaCompositor(canvas: HTMLCanvasElement): GlAlphaCompositor | null;
 ```
 
-- **代替案**: 新フィールドを足さず `threeDMode` の値を増やす（例 `"raster3d-shared"`）／グループ ID を持たせる、等。**フィールド追加が最小で diff が読みやすい**と考えるが、命名・意味論はユーザー確認事項。
-- 直列化: `true` のときのみ書く（既存 project.json は byte 等価維持・INV-4）。
+- コンテキスト取得: `canvas.getContext("webgl", { alpha: true, premultipliedAlpha: true, preserveDrawingBuffer: true, antialias: false })`。取得失敗（`null`）なら呼び出し側が**既存 CPU 経路をそのまま使う**（フォールバックは削除しない）。
+- フラグメントシェーダ（split 用・packed 用の 2 プログラム or uniform 分岐）:
+  ```glsl
+  // split: gl_FragColor = vec4(color.rgb * mask.r, mask.r);   ← premultiplied
+  // packed: color = texture2D(tex, vec2(u, v*0.5)); mask = texture2D(tex, vec2(u, 0.5 + v*0.5));
+  //         （gutter 分の inset は uniform で渡す。§2.2）
+  ```
+  現行 CPU 実装（`applyGrayscaleMaskToAlphaChannel` = mask の R をそのまま alpha に）と一致させる。premultiply は canvas 側 `premultipliedAlpha:true` との整合をピクセル一致 verify で確認する（§5）。
+- テクスチャ: `texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video)` を毎 composite 実行（video→GPU 直行。`getImageData` の CPU 往復が消えるのが本体）。`UNPACK_FLIP_Y_WEBGL=true` にして UV は素直に書く（§1.2 反転教訓の最小回避）。
+- readyState ガード・サイズ変更追随は現行 `drawSplitAlphaComposite` と同一条件（`HAVE_CURRENT_DATA` 未満なら false）。
+- **context loss**: `webglcontextlost`（preventDefault）/`webglcontextrestored` を listen。lost 中は `broken=true` → 呼び出し側がその canvas について CPU 経路に切替（`getContext("2d")` は GL 取得済み canvas では取れないため、**canvas 要素を作り直して差し替える**。`ensureSplitAlphaCompanion` に再生成パスを足す）。
+- **コンテキスト予算**: 1 split/packed レイヤー = 1 GL context。同時マウント数が `MAX_GL_ALPHA_CONTEXTS = 8` を超えた分は zOrder 昇順で CPU 経路に落とす（決定論・ブラウザの ~16 上限への安全マージン）。dispose 時は `WEBGL_lose_context.loseContext()` で明示解放。
+- **キルスイッチ**: `localStorage.mafterDisableGlAlpha === "1"` で全面 CPU 経路（フィールド診断用）。
 
-### 5.2 spec 制約の緩和 `[要承認・§6.5b]`
+**DomRenderer 側の変更は最小**: `SplitAlphaCompanion` に `gl: GlAlphaCompositor | null` を持たせ、`drawSplitAlphaComposite(...)` 呼び出し 3 箇所を「`gl` が生きていれば `gl.compositeSplit(...)`、だめなら従来関数」にする薄いラッパ `compositeSplitAlpha(companion, colorVideo, alphaVideo)` 経由に置換。**per-object entry・zOrder・export 列挙・blend/filter/matte の配線には触れない**。
 
-- 現行 §6.5b:「共有 WebGL シーンは **1 枚**の canvas」。→ **「zOrder 連続する共有 ON レイヤーの run ごとに 1 枚（=comp 内に複数枚可）」**へ緩和する追記が必要。
-- カメラ共有原則（§6.5b「dom/raster3d は同一カメラ」）は**維持**（全グループが active camera を参照）。
+### 2.2 (A) packed 1本化 — §16.2 アセット形式の追加（要承認・§7）
 
-### 5.3 INV 影響（**追加・変更なしを目標**）
+**フォーマット**: color の直下に grayscale mask を**上下（top-bottom）パック**した 1 本の動画。
 
-| INV | 影響 | 対応 |
-|---|---|---|
-| INV-1（resolve 純関数） | グルーピング判定を resolve に入れる。乱数/DOM 不使用を厳守 | グルーピングは zOrder + フラグの純計算 |
-| INV-2（preview=export 一致） | GL ラスタ忠実度差は許容だが**グルーピング結果は完全一致必須** | グルーピングを resolve 出力に焼く。レンダラは従うだけ |
-| INV-3（型はレンダラ非依存） | `ResolvedScene` に「グループ割当」を焼くと GL 前提が漏れないか | グループ割当は「連続 run の区切り」情報として中立に持つ（GL 固有語を型に入れない） |
-| INV-4（FS パス等価） | 新フィールドは optional・省略時無出力 | 既存 project.json 不変 |
-| INV-5/INV-6 | 影響なし | — |
+```
+┌──────────────┐  y=0
+│  color (w×h)   │
+├──────────────┤  y=h      ← gutter 8px（黒）: 4:2:0 クロマの越境にじみ防止
+│  mask  (w×h)   │
+└──────────────┘  y=2h+8
+```
 
-> **INV-3 の要注意点**: `ResolvedObject` に「WebGL グループ番号」を焼くと、型がレンダラ（GL）を知ってしまう懸念。中立化のため「**描画バッチ境界**（連続 run の group index）」という抽象で持ち、dom レンダラも同じ境界情報を無害に無視できる形にする。← **設計レビュー項目**。
+- **上下（横並びでない）理由**: mask は grayscale＝輝度（Y）にだけ情報を持ち、4:2:0 サブサンプリングの影響を受けない。上下パックなら width が変わらず、エンコーダのマクロブロック幅・H.264 level 制約に当たりにくい。
+- **gutter**: 境界の 2x2 クロマブロック越境で color 最下行の色が mask 最上行の Y に混ざるのを防ぐ緩衝帯（8px 黒、シェーダ側は gutter を除いた領域を sample）。`PACKED_ALPHA_GUTTER_PX = 8` を encode/decode 共有定数に。
+- **コーデック**: `avc1.640028`（H.264 High）を第一候補に `VideoEncoder.isConfigSupported` で交渉（`hardwareAcceleration: "prefer-hardware"` → 無印の順、既存 `configureVideoEncoder` と同型）。コンテナは mp4（`mp4-muxer` は既存依存）。**AVC 不可環境は VP9/webm の packed にフォールバック**（それでも 1 ストリーム化の利益は残る）。
+- **サイズ上限**: packed 高さ `2h+8` が 4096 を超える場合（source h > 2044、つまり 4K 素材）は v1 では **split のまま**にする（無理に対応しない・既知の制約として §16.2 に明記）。Subject Extract の実用は 1080p 帯。
+- **アセット meta**（`asset.meta` は自由形の record・`SceneObject`/§5 は不変）:
+  ```jsonc
+  { "alphaMode": "packed", "packedLayout": "topBottom", "contentHeight": 1080, "gutterPx": 8 }
+  ```
+  既存 `alphaMode: "split"`（+`alphaPath`）はそのまま有効（後方互換・既存プロジェクトは無変更で再生継続）。判定ヘルパ `isPackedAlphaVideoMeta()` を `imageAssetCache.ts` の `isSplitAlphaVideoMeta()` の隣に追加。
+- **生成元**: Subject Extract（[encodeAlphaWebm.ts](../../src/editor/subjectExtract/encodeAlphaWebm.ts)）の出力を今後 packed に切替（`mode: "packed"` を union に追加。フレームは既存の `toOpaqueRgbColor`/`toGrayscaleAlpha` の出力を 1 枚のパックフレームに合成してから encode）。既存 split アセットの再パック変換ツールは**スコープ外**（§6）。
 
----
+**packed の再生配線**（ここが体感改善の本体）:
 
-## 6. 懸念点・未確定点（Open Questions）
+- `<video>` は **1 本だけ**。companion `<video>`・`ensureSplitAlphaCompanion` の alphaVideo・genlock（`applyAlphaGenlock` 一式）・`mirrorSplitAlphaVideoState`・`sampleMountedVideoClocks` の companion サンプル — **packed アセットではすべて不発**（コードは split 用に残す）。1 クロックなので holdTimeline 判定は通常動画と完全に同型になる。
+- 表示は split と同じく「video を opacity:0 にして合成 canvas を表示」。合成は `gl.compositePacked()`（GL 必須ではなく、CPU フォールバック `drawPackedAlphaComposite()` も実装する — `drawImage` の source rect 指定 ×2 + alpha 差し替えで、split の CPU 実装より `getImageData` が 1 回減る）。
+- `bundleCollect.ts`: packed は単一ファイル＝`alphaPath` 同梱の特殊処理が**そもそも不要**（split で起きた「companion 同梱漏れ」バグの類型が構造的に消える）。
+- Pipeline パネルの `alphaWarnings`（split 二重描画警告）: packed は対象外にする（警告理由が消滅するため）。
 
-1. **[perf 本丸] GPU 化で本当に軽くなるか未計測**。`getImageData`/`putImageData` 撤廃で軽くなる見込みだが、**GL コンテキスト生成コスト・VideoTexture アップロード帯域**が新たに乗る。→ **Phase 0 で単発プロトタイプ計測**（アルファ動画 1 枚: 現行 canvas vs WebGL の frame time）を先に取るべき。**プロトタイプ計測を実装前ゲートにするか**はユーザー判断。
-2. **WebGL コンテキスト枯渇**。ブラウザ上限 ~16 contexts。「1 動画 = 1 グループ = 1 context」だと簡単に超える。→ **§2.3 の「1 GL コンテキスト / N 表示 canvas」方式**で回避する前提。実装難度は上がる。
-3. **color/alpha decode ズレ**。GL で同一 tick サンプルにしても、2 本の `<video>` の decode 位置は独立。genlock 不要になるか、別方式（`requestVideoFrameCallback` 同期）が要るか **要実測**。
-4. **エフェクト付き動画のグループ join 可否**（§4.2）。v1 は「不可（自動 disabled）」で割り切る案。ユーザー承認事項。
-5. **調整レイヤー `backdrop-filter` / トラックマット / ブレンド**が GL canvas をまたいで正しく効くか（§4.1 の「要検証」群）。export 経路（foreignObject ラスタで backdrop-filter 消滅の既知問題）との相互作用も。
-6. **ネスト precomp 内の動画**。precomp 内で GL 経路に入るか、precomp を丸ごとラスタ化するか。`NestedCompRasterizer` との整合。**v1 スコープ外にするか要確認**。
-7. **export 決定論（INV-2）**。GL `readPixels` の色・アルファが CSS/canvas 経路と小数点いくつまで一致すべきか。既存 verify の許容差に合わせる。
-8. **並べ替え時のトグル意味変化の UX**。実効グループ境界の可視化方法。
-9. **依存追加**: `three` を入れるか、素の WebGL で最小実装するか。`mat4.ts` が既に Three.js 互換なので `three` 採用が自然だが、バンドルサイズ・`public/player.js` 再ビルド（bundle export）への影響を確認。
+### 2.3 変わらないもの（回帰不変条件）
 
----
-
-## 7. 実装フェーズ（「一気に実装」の内訳）
-
-> ユーザー要望は「一気に実装 → 既存コンポで挙動確認 → ダメなら revert」。以下は一気通貫で入れる想定の順序。**§5 承認後**に着手。
-
-- **Phase 0（推奨・任意）**: 単発 WebGL プロトタイプでアルファ動画 1 枚を GPU 合成し frame time 計測。実装続行の go/no-go。
-- **Phase 1**: `resolve()` にグルーピング判定を追加（`threeDGroupWithPrev` → 連続 run の group 境界を `ResolvedScene` に焼く）。純関数テストで固定。**この段階ではレンダラ未変更＝挙動不変**。
-- **Phase 2**: `WebglLayerRenderer`（1 GL コンテキスト / N 表示 canvas）を新規追加。単独 WebGL 動画レイヤーの preview を成立させる（アルファ動画の split-alpha を GPU 化）。
-- **Phase 3**: グループ（共有 ON 連続）で複数動画を 1 GL シーンに投入・深度交差。カメラ共有。
-- **Phase 4**: UI（fold-out トグル＋グループ境界可視化）。
-- **Phase 5**: export 全経路（mp4/webm/PNG 連番/bundle）で GL readPixels 配線・INV-2 verify。**`public/player.js` 再ビルド**（bundle export が GL 経路に触れるため・CLAUDE.md 必須）。
-- **Phase 6**: 既存コンポ回帰（§3 マトリクス）・progress.md 更新。
-
----
-
-## 8. 検証計画
-
-- **INV-2 全経路**（implementation-loop / add-layer-component-type の §E 準拠）:
-  - preview / browser export（mp4・webm・PNG 連番）/ `compFrameCapture`（ネスト・調整 raster）/ Web bundle player。
-  - **新型 verify だけ緑にして終わらない**。既存 `verify-*-export*.mjs`・blend/調整/displacement・solid+text+image のみコンプ・bundle bake 件数・`npm test` の export/raster/bundle 関連を**無回帰確認**。
-- **新規 verify（想定）**:
-  - `verify-webgl-alpha-video.mjs`: アルファ動画 GPU 合成が現行 canvas 版と画素一致（許容差内）。
-  - `verify-webgl-group-depth.mjs`: 共有 ON 2 動画の深度交差。
-  - `verify-webgl-noop-regression.mjs`: 動画なしコンポが GL 経路に一切入らない（frame 出力 byte 一致）。
-- **計測**（perf 主目的の証明）: アルファ動画 N 枚で現行 vs GL の平均 frame time を実機比較。
+| 項目 | 保証の根拠 |
+|---|---|
+| 動画なし comp / 通常動画 / unified alpha | コード経路に一切触れない |
+| split アセットの見た目（GL 化後） | 同一 canvas 座席・同一合成式。ピクセル一致 verify（§5） |
+| blendMode / filter / SVG filter / 調整レイヤー / トラックマット | レイヤー div 構造不変。canvas は従来と同じ 1 DOM 要素 |
+| 3D（threeD/カメラ）| per-layer 差し替えなので CSS 3D 経路のまま。GL はカメラを知らない |
+| export（mp4/webm/PNG 連番/bundle）・INV-2 | export は「レイヤー div → canvas 発見 → 焼き込み」の既存機構。canvas の中身の作り方が変わるだけ。flush 後 re-draw も既存呼び出しが GL 版を呼ぶ |
+| ネスト precomp 内の split alpha | `renderNestedComp` も同じ `updateComponentEl` を通るため自動で恩恵を受ける（v1 と違い「トップレベル専用機構」が無い）。ただし §5 で明示 verify |
+| project.json byte 等価（INV-4） | 既存アセットの meta は書き換えない。packed は新規生成アセットのみ |
 
 ---
 
-## 9. Revert / ブランチ戦略
+## 3. スキーマ / spec / INV への影響
 
-- 現行ブランチ `claude/3d-alpha-video-performance-iz1o8i` が実験隔離そのもの。**新規ブランチ不要**。
-- **実装前にベースライン固定**: `git commit --allow-empty -m "baseline: before webgl-video-layer impl"`（またはタグ `baseline-webgl-video`）。
-- 失敗時は `git reset --hard <baseline>`（未 push なら綺麗に消える）。push 済みなら `--force-with-lease`。
-- 段階コミット（Phase 単位）にしておけば、部分採用（例: Phase 1-2 の GPU 化だけ残しグルーピングは捨てる）も選べる。
+- **§5（TypeScript 型）: 変更なし**。`SceneObject` に新フィールドを足さない（v1 の `threeDGroupWithPrev` は撤去済み・2026-07-07 救出コミット）。
+- **§16.2（要更新・散文）**: packed フォーマット（レイアウト・gutter・コーデック交渉順・サイズ上限・meta フィールド）を追記。`alphaMode` の値域が `"unified" | "split" | "packed"` になる旨。
+- **§19.5**: Pipeline 警告の対象から packed を除外する旨を 1 行追記。
+- **INV-1〜6: 影響なし**（resolve() は触らない。GL はレンダラ内部の実装詳細で `ResolvedScene` に何も足さない＝INV-3 は v1 より自然に守られる）。
+- **INV-2**: preview と export は同一の合成実装（GL または CPU フォールバック）を通る。GL/CPU 間の許容差は verify で ±2/255 以内に固定（§5）。
 
 ---
 
-## 10. 次アクション（ユーザー確認事項）
+## 4. 実装フェーズ（Sonnet 5 向け・各フェーズが独立に緑になる粒度）
 
-1. **§5.1 の新フィールド `threeDGroupWithPrev`（or 代替案）を承認するか**。
-2. **§5.2 の「WebGL シーン 1 枚 → run ごと N 枚」緩和を spec に追記して良いか**。
-3. **§4.2 の割り切り（エフェクト付き動画はグループ join 不可 = v1）で良いか**。
-4. **Phase 0 プロトタイプ計測を実装前ゲートにするか**、それとも計測せず「一気に実装」まで進めるか。
-5. **`three` 依存を入れて良いか**（bundle/player 再ビルド影響あり）。
-6. **ネスト precomp 内動画（§6-6）を v1 スコープに含めるか**。
+> 各フェーズ完了時: `npm run typecheck`・`npm test`・**ランタイム変更時は `npm run build:player` を明示実行**（§1.2）。着手前に [implementation-loop](../../.claude/skills/implementation-loop/SKILL.md) を読むこと。
 
-> **採用済み方針（ユーザー指示 2026-07-06）**: 「**ラスター化フリーで進める**」。動画は `VideoTexture`（ライブ）、DOM は DOM バンド維持、エフェクトは焼き込みでなく単独=CSS / グループ=GPU シェーダで対応。破壊的な静止テクスチャ化（汎用 raster3d）は v1 スコープ外。詳細は §2.0。
+- **Phase 0（診断・軽量・任意だが推奨）**: ユーザー実プロジェクト（Comp 30/32 相当）を実 Chrome で再生し、CDP Media ドメインで (a) decoder 種別（software/hardware）、(b) holdTimeline 発火率、(c) メインスレッド frame time を記録 → **改善判定のベースライン**にする。既存 `verify-comp32-webm-instability.mjs` を headed + 実プロジェクト zip で流用可。
+- **Phase 1（GL 合成・split 対応）**: `videoAlphaGl.ts` 新規（§2.1 API）+ `SplitAlphaCompanion.gl` + 呼び出し 3 箇所のラッパ置換 + context loss/予算/キルスイッチ。
+  - テスト: シェーダ合成式の期待値は CPU 実装（`applyGrayscaleMaskToAlphaChannel`）が正なので、**実ブラウザ verify でピクセル一致**（合成済み canvas の `getImageData` を GL/CPU 両経路で比較、±2/255）。unit test は「フォールバック分岐・予算・broken 遷移」の純ロジック。
+  - **視覚 verify 必須**: 人物正立スクリーンショット比較（§1.2 反転教訓）。
+- **Phase 2（packed 形式）**: encode（`mode:"packed"` + avc/mp4 交渉 + gutter）→ アセット meta/判定ヘルパ → 再生配線（単一 video・companion 不発・`compositePacked`/CPU 版）→ `bundleCollect`（単一ファイル）→ Pipeline 警告除外。
+  - テスト: packed フレーム合成の純関数（gutter 込み UV/rect 計算）unit test。encode→import→再生の e2e verify（実ブラウザ）。
+- **Phase 3（export 全経路・無回帰）**: §5 の verify 一式 + 既存 export verify の再実行 + `npm run build:player`。
+- **Phase 4（実地受け入れ）**: Phase 0 と同条件で再計測し、stall%・decoder 種別（packed が hardware H.264 で decode されているか）・体感をユーザーが確認して close。
+
+各フェーズは単独でコミット可能・単独で revert 可能。Phase 1 だけでも副因（CPU 合成）は解消し、Phase 2 が主因（decode/2クロック）を解消する。
+
+---
+
+## 5. 検証計画
+
+- **新規 verify（実ブラウザ・Playwright headed または channel:"chrome"）**:
+  - `verify-gl-alpha-parity.mjs`: split アセット 1 枚、GL 合成 ON/OFF（キルスイッチ）で同一フレームの canvas ピクセル比較（±2/255）+ スクリーンショットの向き確認。
+  - `verify-packed-alpha-playback.mjs`: packed アセット生成→import→再生。companion `<video>` が存在しないこと・合成結果が split 版と視覚一致すること・`sampleMountedVideoClocks` に companion サンプルが出ないこと。
+  - `verify-packed-export.mjs`: packed レイヤーを含む comp の mp4/PNG 連番/HTML bundle export が非ブランク・向き正立・bundle zip に単一動画ファイルのみ。
+  - `verify-gl-alpha-nested.mjs`: ネスト precomp 内の split alpha レイヤー（過去クラッシュ回帰の `verify-nested-split-alpha-crash.mjs` を GL 化後に再実行でも可）。
+- **既存無回帰**（[add-layer-component-type §E](../../.claude/skills/add-layer-component-type/SKILL.md) 準拠）: `verify-video-export.mjs`・`verify-bundle-export.mjs`・`verify-bundle-split-alpha-playback.mjs`・blend/調整/displacement 系・solid+text+image のみ comp・`npm test` の export/raster/bundle 群。
+- **perf 計測（headed 実 Chrome のみ有効・§1.2）**: Phase 0 ベースライン vs Phase 1 後 vs Phase 2 後。指標: stall%（holdTimeline 発火時間比）・メインスレッド長タスク・decoder 種別。**マイクロベンチ単独で「軽くなった」と結論しない**（v1 の教訓）。
+
+---
+
+## 6. スコープ外（明示・ユーザー指示による）
+
+- 3D 深度交差・GL シーン共有・`threeDGroupWithPrev`（v1 で撤去済み。将来やる場合も本プランとは別軸）
+- scene3d / glTF / light の拡張 seam（v1 の §2.4 は破棄）
+- `raster3d`（§5.4b の汎用ラスタライズ 3D）
+- 既存 split アセットの一括再パック変換ツール（要望が出たら別タスク）
+- 4K 超の packed 対応（§2.2 サイズ上限）
+- track matte 合成・調整レイヤー自体の GPU 化（現行のまま）
+
+## 7. 実装前の承認事項（§5/直列化ルールに基づく）
+
+1. **§16.2 への packed 追記**（meta フィールド名 `alphaMode:"packed"` / `packedLayout` / `contentHeight` / `gutterPx`）— アセット meta は自由形だが、直列化される値なので命名はここで確定する。
+2. **コーデック方針**: H.264(mp4) 優先 + VP9(webm) フォールバックで良いか。
+3. **Phase 0 診断を実装前ゲートにするか**（推奨: する。実測ベースラインが Phase 4 の合否基準になる）。
+4. Subject Extract の**新規出力を packed に切替**して良いか（既存アセットは split のまま共存）。
+
+## 8. 残リスク
+
+- **H.264 VideoEncoder が使えない環境**: VP9 packed フォールバックで機能は成立するが、decode がソフトウェアのままなら主因の改善幅は縮む（1 クロック化の利益は残る）。Phase 0 でユーザー環境の対応状況を先に確認する。
+- **GL テクスチャアップロード帯域**: `texImage2D(video)` は 1080p で通常 1ms 未満（GPU 直行）だが、SwiftShader 環境（headless・GPU 無効化時）では逆に遅い → キルスイッチ/フォールバックが保険。
+- **premultiplied alpha の色ズレ**: canvas `premultipliedAlpha:true` とシェーダ出力の整合は理屈で合わせた上で、必ずピクセル一致 verify で固定（±2/255 を超えたら sRGB/リニアの扱いを疑う）。
+- **mask 圧縮画質**: packed でも mask は非可逆圧縮。split と同一 bitrate 配分なら劣化は同等以下の見込みだが、輪郭のちらつき（segmenter 由来・issue doc 記載）は本プランでは直らない（別軸）。
