@@ -4,6 +4,7 @@ import { orderedEntriesForParent } from "../../../core/projectTree";
 import { useDragEdgeAutoScroll } from "../../dragEdgeAutoScroll";
 import { isBinExpanded, toggleBinExpanded } from "../../projectBinStorage";
 import { DRAG_MIME } from "../dragMime";
+import { useContextMenuStore, type ContextMenuItem } from "../../contextMenu/contextMenuStore";
 import {
   entryKey,
   filterMovableEntries,
@@ -43,6 +44,7 @@ export interface ProjectTreeViewProps {
   onAddVideoLayer: (assetId: string) => string | null;
   onAddAudioLayer: (assetId: string) => string | null;
   onSelectObjects: (ids: string[]) => void;
+  onCreateCompFromAsset: (assetId: string) => void;
 }
 
 function matchesSearch(name: string, query: string): boolean {
@@ -151,7 +153,9 @@ export function ProjectTreeView(props: ProjectTreeViewProps) {
     onAddVideoLayer,
     onAddAudioLayer,
     onSelectObjects,
+    onCreateCompFromAsset,
   } = props;
+  const openContextMenu = useContextMenuStore((s) => s.openContextMenu);
 
   const [search, setSearch] = useState("");
   const [renamingBinId, setRenamingBinId] = useState<string | null>(null);
@@ -470,11 +474,20 @@ export function ProjectTreeView(props: ProjectTreeViewProps) {
       asset.kind === "audio" ? "♪" : asset.kind === "image" ? "🖼" : asset.kind === "video" ? "▶" : "▭";
     const iconColor =
       asset.kind === "audio" ? "#a88" : asset.kind === "image" ? "#8a8" : asset.kind === "video" ? "#88a" : "#888";
+    const canCreateCompFromAsset = asset.kind === "image" || asset.kind === "video";
+    const handleAssetContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+      const items: ContextMenuItem[] = [
+        { kind: "action", label: "このファイルでコンポジットを作成", onSelect: () => onCreateCompFromAsset(asset.id) },
+      ];
+      openContextMenu(e.clientX, e.clientY, items);
+    };
 
     return (
       <div
         key={`asset:${entry.id}`}
         draggable={isFootage}
+        onContextMenu={canCreateCompFromAsset ? handleAssetContextMenu : undefined}
         onDragStart={(e) => {
           onTreeDragStart(e, entry);
           if (asset.kind === "audio") {

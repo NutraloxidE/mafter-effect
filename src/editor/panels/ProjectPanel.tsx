@@ -3,6 +3,7 @@ import { ExportDialog, type ExportDialogMode } from "../ExportDialog";
 import { useEditorStore } from "../store";
 import { exportZip, exportProjectZip, importZip, type ZipExportProgress } from "../../fs/zip";
 import { globalPluginRegistry } from "../../runtime/pluginRegistry";
+import { BUILTIN_COMPONENT_TYPES } from "../../runtime/builtinComponents";
 import type { Project } from "../../core/schema";
 import { DRAG_MIME } from "./dragMime";
 import { ProjectTreeView } from "./projectTree/ProjectTreeView";
@@ -25,6 +26,7 @@ export function ProjectPanel() {
   const addImageLayer = useEditorStore((s) => s.addImageLayer);
   const importVideoAsset = useEditorStore((s) => s.importVideoAsset);
   const addVideoLayer = useEditorStore((s) => s.addVideoLayer);
+  const addCompositionFromAsset = useEditorStore((s) => s.addCompositionFromAsset);
   const removeAsset = useEditorStore((s) => s.removeAsset);
   const selectObjects = useEditorStore((s) => s.selectObjects);
   const newProject = useEditorStore((s) => s.newProject);
@@ -55,7 +57,9 @@ export function ProjectPanel() {
   const [zipStatus, setZipStatus] = useState<string | null>(null);
   const [showFeedbackModal, setShowFeedbackModal] = useState(false);
 
-  const registeredComponents = pluginsVersion >= 0 ? globalPluginRegistry.getComponentDefs() : [];
+  const registeredComponents = pluginsVersion >= 0
+    ? globalPluginRegistry.getComponentDefs().filter((def) => !BUILTIN_COMPONENT_TYPES.has(def.type))
+    : [];
 
   const formatZipProgress = (p: ZipExportProgress): string => {
     switch (p.phase) {
@@ -225,6 +229,7 @@ export function ProjectPanel() {
             onAddVideoLayer={addVideoLayer}
             onAddAudioLayer={addAudioLayer}
             onSelectObjects={selectObjects}
+            onCreateCompFromAsset={addCompositionFromAsset}
           />
           <input ref={imageInput} type="file" accept="image/*" style={{ display: "none" }}
             onChange={(e) => { const f = e.target.files?.[0]; if (f) void onImportImage(f); e.target.value = ""; }} />

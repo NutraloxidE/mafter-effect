@@ -65,6 +65,14 @@ export function PipelinePanel() {
       >
         <span style={{ fontWeight: 600, color: "#9bc" }}>Pipeline</span>
         <span style={{ color: toneColor, fontWeight: 600 }}>{analysis.summaryLabel}</span>
+        {analysis.alphaWarnings.length > 0 && (
+          <span
+            title="split alpha 透過レイヤー — 毎フレーム二重描画"
+            style={{ fontSize: 9, fontWeight: 700, padding: "1px 4px", borderRadius: 2, background: "#3a1a2a", color: "#e08fb0" }}
+          >
+            α×{analysis.alphaWarnings.length}
+          </span>
+        )}
         <span style={{ marginLeft: "auto", color: "#666", fontSize: 10 }}>{expanded ? "▾" : "▸"}</span>
       </button>
 
@@ -103,6 +111,23 @@ export function PipelinePanel() {
               }}
             >
               ⚠ {cliff.message}
+            </div>
+          ))}
+          {analysis.alphaWarnings.map((warning, i) => (
+            <div
+              key={`alpha-${i}`}
+              style={{
+                margin: "4px 8px",
+                padding: "5px 8px",
+                background: "#3a1a2a",
+                border: "1px solid #6a3050",
+                borderRadius: 3,
+                color: "#d87090",
+                fontSize: 10,
+                lineHeight: 1.4,
+              }}
+            >
+              ◐ {warning.objectName}: {warning.message}
             </div>
           ))}
         </div>

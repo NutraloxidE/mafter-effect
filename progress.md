@@ -6,6 +6,109 @@
 
 ---
 
+### 2026-07-06（Claude Code）— 非破壊シェイプ編集 Phase 1（rect/ellipse 完成配線）+ Phase 2（頂点/パス, Inspector数値編集）実装 ✅
+
+- **経緯**: [doc/cloudplan/shape-editing-plan.md](doc/cloudplan/shape-editing-plan.md)（ドラフト設計プラン、未承認）をユーザー指示でレビュー → コード根拠を検証（全項目が実コードと一致）→ ユーザーに要件確認（AskUserQuestion）した結果、当初プランの Phase 1 のみでなく **Phase 2（頂点/ベジェパス編集）も今回スコープに含める**ことで合意。§5 スキーマ変更（`ShapeVertex` 型新設）はユーザー承認済み。オンキャンバス頂点ドラッグ gizmo（ペンツール相当）は今回スコープ外・Inspector 数値編集のみで合意。
+- **Phase 1（矩形/楕円 shape の完成配線・§5 変更なし）**: `shape` は spec/DomRenderer/bundleCollect/previewViewer に「幽霊配線」として存在していたが ComponentDef 登録・store アクション・Inspector UI・タイムラインボタンが丸ごと欠落していた。
+  - [builtinComponents.ts](src/runtime/builtinComponents.ts) に `SHAPE_COMPONENT_DEF` 登録（kind/fill/radiusTL・TR・BR・BL/size）。
+  - radius はユーザー指示で**四隅個別**（`radiusTL/TR/BR/BL` 4つの scalar prop）に変更（spec 記載の単一 `radius` から更新）。
+  - [store.ts](src/editor/store.ts) に `addShape()` 追加（`addSolid` 同型）。[TimelinePanel.tsx](src/editor/panels/TimelinePanel.tsx) に `+ Shape` ボタン追加。[layerLabels.ts](src/editor/layerLabels.ts) に `case "shape"` 追加。
+  - [InspectorPanel.tsx](src/editor/panels/InspectorPanel.tsx) 型許可リストに `shape` を追加し `ShapeComponentFields` 新設（kind プルダウンを単一入口に、fill/4隅 radius/size を集約。§3.3 の UI 集約方針どおり）。
+- **Phase 2（頂点/ベジェパス編集・§5 追加型・承認済み）**: [schema.ts](src/core/schema.ts) に `ShapeVertex`（`id: ULID` / `pos` / `inTangent?` / `outTangent?`、すべて additive-optional）を追加。`Component.props.vertices?: ShapeVertex[]`。
+  - [resolve.ts](src/runtime/resolve.ts): `vertices` は「AnimatedProp を内包するオブジェクトの配列」で通常のトップレベル AnimatedProp 判定を素通りするため、`resolveComponent` に専用の resolve 分岐を追加（INV-1 純関数のまま）。
+  - 新規 [shapePath.ts](src/runtime/shapePath.ts): `buildShapePathD()` — resolve 済み頂点配列から閉じた SVG path `d` 文字列を組み立てる純関数（tangent 無しは直線、片方でもあれば3次ベジェ）。unit test 済み。
+  - [DomRenderer.ts](src/runtime/DomRenderer.ts) `case "shape"`: `kind==="path"` のとき子 `<svg data-mafter-shape-path>` を遅延生成して描画（textRender.ts の precise text と同パターン）。rect/ellipse 復帰時は残置 svg を除去。
+  - [previewViewer.ts](src/editor/previewViewer.ts) `boundsForComponent`: path 時は頂点の bounding box から算出（size prop を持たないため）。
+  - Inspector: path 時は頂点リスト（x/y・in/out tangent 数値編集・追加/削除/並べ替え）。**オンキャンバスドラッグ gizmo は今回実装しない**（ユーザー合意）。kind を path に切替えた瞬間、頂点未設定なら既定三角形を自動生成。
+  - `vertices` は単一 AnimatedProp ではないため `ComponentDef.params` には載せない（Timeline の汎用 KF 行・generic ComponentFields の対象外。Inspector 専用編集）。
+  - `project.json` 直列化: `vertices` 配列順はパス順として保持（`objects` の id 昇順ソートとは異なり、serialize.ts の配列ソート対象外であることを確認・回帰テスト追加）。
+- **spec 更新**: [doc/mafter-effect-spec.md](doc/mafter-effect-spec.md) §5.5 の shape 行を実装内容に合わせ更新、`ShapeVertex` 型を追記。
+- **検証**: `npm run typecheck` 緑・`npm test` 905 PASS（新規: shapePath.test.ts 4件、resolve/serialize/bundleExport に shape+vertices ケース追加）・`npm run build` 緑。Runtime 変更（resolve.ts/DomRenderer.ts）は Claude Code hook が自動で `npm run build:player` を実行済み（`playerBuildFreshness.test.ts` 緑で確認）。Playwright 実機で `+ Shape` ボタンクリック→rect 描画→Inspector で ellipse/path 切替→`+ 頂点を追加`ボタンで頂点追加→SVG path 反映、を実際の UI 操作で確認。`findBakeTargets`/`componentNeedsBake` で shape（rect・path 両方）が誤 bake 対象にならないことも確認（camera bundle-bake 誤判定と同型の回帰）。
+- **副次的発見（今回は対応せず・別 issue 化済み）**: [doc/issue/project-panel-plugins-leak-builtin-components.md](doc/issue/project-panel-plugins-leak-builtin-components.md) — `ProjectPanel.tsx` の「Plugins」セクションが builtin 型（text/image/video/audio/camera、今回から shape も）を無フィルタで列挙している pre-existing gap。詳細・修正案は issue doc 参照。
+- **Next steps**: Phase 2 のオンキャンバス頂点ドラッグ gizmo（ペンツール相当・既存 `SelectionHandles` とは別根の新規オーバーレイ）は今回スコープ外のまま。Phase 3（Boolean/Pathfinder 合成）はプラン記載のみで未着手（Phase 2 の頂点/パス基盤が前提）。
+
+---
+
+### 2026-07-06（Claude Code）— HTML bundle（§11.7）の再生パスを preview（§11.4）に揃える ✅
+
+- **ユーザー報告**: 「live html が映像のみフリーズして再生おかしい。経路をプレビューにしっかり合わせてほしい」。Plan モードで根本原因を2系統に切り分け、両方対応。
+- **root cause #1（常に再現するバグ）**: bundle は page load 直後にユーザー操作なしで自動再生を始めるが、共有コード `syncVideoElementTime`（[videoElementSync.ts](src/runtime/videoElementSync.ts)）は再生中に無条件で `video.muted = false` してから `play()` する。ジェスチャー無しの unmute 付き `play()` はブラウザの autoplay ポリシーで拒否され、`<video>` が `paused=true` のまま固まる（editor Preview は Play 自体がユーザー操作なので発生しない）。最初のユーザー操作（`installAutoplayUnlock`）で初めて再生が始まるが、その間の分だけ大きくジャンプ seek していた。split-alpha companion（透過マスク動画）も同じ経路で同様にフリーズしていた。
+  - **対応**: `VideoElementSyncOptions.forceMuted` を追加（true の間は unmute をスキップし muted のまま play() を進める）。[DomRenderer.ts](src/runtime/DomRenderer.ts) に `muteVideoPlayback` オプションを追加し `updateComponentEl` の video ケース（primary + split-alpha companion 両方）に配線。[BundlePlayer.ts](src/player/BundlePlayer.ts) は起動時に `muteVideoPlayback: true` を設定し、最初のジェスチャーで `false` に切り替える（`installAutoplayUnlock` 内）。結果: 起動直後から映像は無音のまま自然に再生が進み、初回操作で音が鳴るという結果自体は変えずにフリーズを解消。
+- **root cause #2（設計ギャップ・要望の本体）**: editor Preview の双方向同期（§11.4 `holdTimeline`/`pauseVideo`、[playbackVideoSync.ts](src/runtime/playbackVideoSync.ts)）が bundle に一切配線されておらず、`BundlePlayer.play()`/`BundleAudioClock.tick()` は独自の手書き rAF ループだった（コメント曰く「autoplay ブロックで凍結するため配線していない」＝root cause #1 が理由で意図的に見送られていた）。
+  - **対応**: `src/editor/previewPlaybackLoop.ts`（外部依存ゼロの純粋な rAF ループ）を `src/runtime/previewPlaybackLoop.ts` に移動し、editor（`PreviewPanel.tsx`）と bundle の両方が同一実装を共有するようにした。`BundlePlayer.play()` の手書きループを `runPreviewPlaybackLoop` 呼び出しに置き換え、`shouldHold` に `applyPlaybackSync()`（`sampleMountedVideoClocks` → `filterPrimaryVideoSamples` → `computePlaybackSyncState` → `setPlaybackPauseForSync`、PreviewPanel と同型）を配線。`BundleAudioClock` にも同じ判定関数（`computePlaybackSyncState` 等）を使った hold/pause 配線を追加（`PreviewAudioClock` とはクラス統合せず、Web Audio グラフ vs 実 `<audio>` 要素という file:// 互換のための意図的な設計差異は維持）。hold 中は `<audio>` 要素を pause し `onFrame` を呼ばない（editor と同じ「全レイヤー凍結」セマンティクス）。hold 解除時は held 分だけ `startWallMs` を前進させ frame 連続性を保つ（`reanchorStartWallMsAfterHold`、純関数として切り出しユニットテスト済み）。`unlock()` も hold-aware にし（`bundleAudioUnlockElapsedSec`）、hold 中に初回ジェスチャーが来ても音声だけ先行しないようにした。
+  - **受け入れたトレードオフ**: 非力なビューア環境では、今まで「映像だけガクつく」だったものが「テキスト等も含め comp 全体が最大1秒単位で繰り返し凍結する」に変わりうる（doc/issue/subject-extract-split-alpha-webm-preview-instability.md の実測: ソフトウェア VP9 デコード環境で stall が再生時間の約93%に達した事例あり）。これは preview と同じ挙動にする、というユーザー要望どおりの結果として許容。
+- **検証**:
+  - `test/videoElementSync.test.ts` に `forceMuted` のケース追加。新規 `test/bundleAudioClock.test.ts`（`bundleAudioUnlockElapsedSec`/`reanchorStartWallMsAfterHold` の純関数テスト＝frame 連続性・drift 非蓄積・hold 中の unlock 正しさを固定）。
+  - `npm run typecheck` 緑・`npm test` 895 PASS・`npm run build:player` 実行済み（`test/playerBuildFreshness.test.ts` 緑）。
+  - Playwright 実機（`--autoplay-policy=document-user-activation-required` で起動）で3本の使い捨て verify script を実行し PASS 確認:
+    - `verify-bundle-autoplay-unlock.mjs`（既存・アサーション更新）: ジェスチャー前は muted かつ再生継続（フリーズしない）、ジェスチャー後に unmute。
+    - `verify-bundle-video-playback.mjs`（既存）: playRate 1.00x でネイティブ再生、pausedSamples=0/20。
+    - 新規 `verify-bundle-split-alpha-playback.mjs`: split-alpha companion が zip に同梱され、color/alpha 両 `<video>` がジェスチャー無しで再生継続（ユーザー報告の直接確認）。
+    - 新規 `verify-bundle-hold-parity.mjs`: CPU throttle（rate=12）下でも `holdTimeline`/`pauseVideo` 配線がエラー無く動作し再生が破綻しない（疎通確認・厳密な stall% 検証はしていない）。
+  - 上記 verify script はリポジトリに残置（一時物・コミット対象外）。
+- **非目標**: exact stall% の実測・比較（環境依存が大きいため見送り）。editor 側 `holdTimeline` 自体の閾値緩和は範囲外。
+
+---
+
+### 2026-07-06（Claude Code）— HTML bundle export で split alpha の透過 webm が再生されない不具合を修正 ✅
+
+- **ユーザー報告**: 「透過webmが書き出されたhtmlで再生されない」— [doc/issue/subject-extract-split-alpha-webm-preview-instability.md](doc/issue/subject-extract-split-alpha-webm-preview-instability.md)（preview 再生の不安定さ）とは別件で、**HTML bundle export（§11.7）そのものが split alpha 動画を再生できない**というバグ。
+- **根本原因**: [bundleCollect.ts](src/runtime/bundleCollect.ts) `collectObjectAssets()` の `video` 分岐が color 本体（`resolveFootageVideoPath`）と内蔵音声のみを `binaryPaths` に積んでおり、**split alpha companion（`asset.meta.alphaPath` のグレースケールマスク `.alpha.webm`）を zip に含めていなかった**。再生側（`BundlePlayer`/`ImageAssetCache`/`DomRenderer`）は既に split alpha 合成に対応済み（`registerProjectUrls`/`loadVideoBlobsFromUrls` が `alphaUrlById` を配線する設計）だが、そもそも zip 内にファイルが存在しないため companion の `fetch` が失敗し、色/透明度の CPU 合成（`drawSplitAlphaComposite`）が一度も成立しない＝該当レイヤーが実質再生されない状態だった。
+- **対応**: `collectObjectAssets()` の video 分岐に `isSplitAlphaVideoMeta(asset.meta)` チェックを追加し、`asset.meta.alphaPath` を `binaryPaths` に同梱（quality tier 非依存・DomRenderer が companion を常に原本参照するのと一致）。
+- **検証**: `test/bundleExport.test.ts` に split alpha 動画の依存収集を固定する回帰テストを追加。`npm run typecheck` 緑・`npm test` 885 PASS（`projectBins.test.ts` の1件は既存 ULID 順序 flake で本修正と無関係・pre-existing）。`bundleCollect.ts`（export 収集ロジックのみ・`src/player/` 非経由）の変更のため `npm run build:player` 不要（`playerBuildFreshness.test.ts` 緑で確認）。
+- **非目標**: preview 再生の holdTimeline 巻き込み凍結・輪郭ズレ（上記 issue doc の修正1〜4）は本修正の対象外・別件のまま。
+
+---
+
+### 2026-07-06（Claude Code）— Subject Extract split alpha 再生不安定 修正1・2 ✅
+
+- **背景**: [doc/issue/subject-extract-split-alpha-webm-preview-instability.md](doc/issue/subject-extract-split-alpha-webm-preview-instability.md) の調査（実機 Playwright + CDP Media ドメイン検証済み・Comp 32 で holdTimeline 実発火をサンプル時間の約93%という規模で確認）を受け、修正1・2 を実装。
+- **修正1（グローバル凍結の解消）**: `VideoClockSample` に `role: "primary" | "companion"` を追加（[playbackVideoSync.ts](src/runtime/playbackVideoSync.ts)）。`DomRenderer.sampleMountedVideoClocks()` は split alpha companion を `role:"companion"` としてタグ付けし、新設 `filterPrimaryVideoSamples()` で `holdTimeline`/`pauseVideo` の判定（[PreviewPanel.tsx](src/editor/panels/PreviewPanel.tsx) の `applyPlaybackSync` と `getVideoClockSamples`）からは除外。companion 自体の per-element resync（`syncVideoElementTime`）は従来どおり効くため、無補正になるわけではない。
+- **修正2（輪郭ズレの改善）**: `videoSplitAlpha.ts` に `computeAlphaGenlockRate` / `applyAlphaGenlock` / `resetAlphaGenlockRate` を追加。定常再生中（`previewVideoPlayback && !cutSeek && !pauseForSync` かつ両 video が再生中）のみ、color の実 `currentTime` に合わせて alpha の `playbackRate` を穏やかに調整（±8%、ドリフト 0.03〜0.5s 帯）。0.5s（`PLAYBACK_RESYNC_THRESHOLD_SEC`、`videoElementSync.ts` からエクスポートに変更）超はハードシークにフォールバック。scrub/export/カット境界/映像先行pause 時は `resetAlphaGenlockRate` で必ず 1 に戻す（INV-2 非干渉）。定数は実機検証の実測ドリフト（平均33〜50ms・最大147ms）を根拠に設定。
+- **検証**: `npm run typecheck` / `npm test`（884 PASS、新規 11 件: `playbackVideoSync.test.ts` に companion 除外の対照実験込み、`videoSplitAlpha.test.ts` に genlock 境界値）。`DomRenderer.ts`/`videoSplitAlpha.ts`/`playbackVideoSync.ts`/`videoElementSync.ts` 変更のため `npm run build:player` 実行済み（`playerBuildFreshness.test.ts` 緑）。
+- **実機確認は未実施**: ユーザー希望により Playwright ではなく実 Chrome での手動確認待ち（Playwright は headless 起因の decode 挙動差が大きく確認手段として不適と判断）。次セッションでは Comp 32 相当のデータで実 Chrome 上の holdTimeline 頻度・輪郭ズレ改善を目視確認すること。
+- **非目標**: 修正0（warm-up タイミング調整・実測で効果限定的と判明のため見送り）、修正3（合成コスト削減）、修正4（1本パック化・§16.2 資産フォーマット変更のため要ユーザー確認）は未着手。
+
+---
+
+### 2026-07-06（Claude Code）— Pipeline パネル: split alpha 透過レイヤーの二重描画警告 ✅
+
+- **要望**: split alpha（Subject Extract, `meta.alphaMode:"split"`）のレイヤーは毎フレーム CPU で color+mask を二重描画するため live 再生の同期ドリフト要因になる（[doc/issue/subject-extract-split-alpha-webm-preview-instability.md](doc/issue/subject-extract-split-alpha-webm-preview-instability.md)）。この状態を Pipeline パネルで警告表示してほしいという要望。
+- **設計**: 既存の live/raster セグメント・崖（cliff）警告とは独立の軸として `PipelineAnalysisResult.alphaWarnings` を追加。`video` component の asset が `isSplitAlphaVideoMeta`（既存 [imageAssetCache.ts](src/runtime/imageAssetCache.ts)）を満たすレイヤーを検出する。effect の有無に関わらず検出するため（split alpha レイヤーは通常 effect を持たない）、`analyzeComp` の live/raster 判定ループとは別に `collectAlphaWarnings` を新設し precomp nested も再帰集約（cliffs は現状 nested を伝播しない既存挙動と異なる点、意図的）。
+- **対象外**: unified alpha（単一 VP9 alpha WebM・ブラウザネイティブ透過・二重描画なし）、track matte（`applyTrackMatte` も毎フレーム canvas 合成だが別機構・別タスク候補）。
+- **spec**: §19.5 に prose 追記（§5/INV 不変・`meta.alphaMode` は既存フィールド）。
+- **実装**: [pipelineAnalysis.ts](src/editor/pipelineAnalysis.ts)（`alphaWarnings` フィールド・`collectAlphaWarnings`）+ [PipelinePanel.tsx](src/editor/panels/PipelinePanel.tsx)（ヘッダー `α×N` バッジ + 展開時の警告 box、cliff と色味で区別）。
+- **検証**: `test/pipelineAnalysis.test.ts` に3ケース追加（split alpha 検出・unified/通常動画は非検出・nested precomp 内 depth 付き検出）— 12 PASS。`npm test` 872 PASS（`projectBins.test.ts` の1件は既存 ULID flake で無関係）。`typecheck` 緑。`src/runtime`/`src/player` 非変更のため `build:player` 不要（`playerBuildFreshness.test.ts` 緑で確認）。
+- **非目標**: 二重描画自体の解消（doc の修正1〜4は別タスク・未着手のまま）。Playwright 実機での目視確認は未実施（純粋な UI 表示ロジックのため unit test で代替、必要なら次セッションで合成 split alpha asset を使った実機確認を追加）。
+
+---
+
+### 2026-07-06（Claude Code）— Subject Extract split alpha レイヤーをネストするとクラッシュ ✅
+
+- **症状**: split alpha（`meta.alphaMode:"split"`）の Subject Extract レイヤーを含む comp（ユーザー報告: 最新 zip の Comp 32）を、別の comp に precomp としてネストすると Preview が例外で丸ごと落ちる（`ErrorBoundary` 不在のため React ルート全体がアンマウント＝白画面）。コンソール: `split alpha: video has no parent`（[videoSplitAlpha.ts:28](src/runtime/videoSplitAlpha.ts#L28)）、stack は `DomRenderer.ts:2103`→`1826`→`1019` 経由。
+- **真因**: [DomRenderer.ts](src/runtime/DomRenderer.ts) `renderNestedComp()`（ネストcomp専用のライブDOM描画経路、L1824–1827）が `createComponentEl` → `updateComponentEl` → `div.appendChild(el)` の順で呼んでいた。`updateComponentEl` の `"video"` ケースは split alpha 資産なら `ensureSplitAlphaCompanion(video)` を呼び `video.parentElement` に依存するため、append 前に呼ぶと**常に**例外になる。トップレベル描画（L975–993）は append→update の正しい順序のため、comp を直接再生する分には発生しない — ネストしたときだけ別コードパスを通るため顕在化。
+- **対応**: 3行の順序入れ替えのみ（append を先に）。`renderNestedCompRaster`（§28.11 ラスタ経路）・トップレベル描画・他コンポーネント型は無関係のため無変更。
+- **検証**: `npm run typecheck` / `npm test`（870 PASS、`projectBins.test.ts` の 1 件は既存 ULID flake で無関係）緑。`npm run build:player` 実行済み（DomRenderer 変更のため必須）。実データが無かったため ffmpeg で合成 color/alpha webm ペアを作り、Playwright で「comp にネストされた split alpha レイヤー」を実機再現 — 修正前は同一エラーで再現、修正後は例外なく合成 canvas が正しく描画されることを確認（`verify-nested-split-alpha-crash.mjs`、恒久 verify として残置）。
+- **非目標**: 本 issue と別件の [doc/issue/subject-extract-split-alpha-webm-preview-instability.md](doc/issue/subject-extract-split-alpha-webm-preview-instability.md)（再生中の holdTimeline 巻き込みフリーズ・輪郭ズレ）は未着手のまま。ErrorBoundary 不在（例外で全画面が落ちる一般的な脆弱性）は今回のスコープ外・将来の防御的改善候補として記録のみ。
+
+---
+
+### 2026-07-06（Claude Code）— Project パネル: アセットから右クリックでコンポジット作成（§20.2c）✅
+
+- **機能**: Project パネルの image/video アセット行を右クリック →「このファイルでコンポジットを作成」。
+  アセットの `meta.width/height`（無ければ 1920x1080）・video は `meta.duration秒×30fps`（無ければ 150f 既定）
+  に合わせた新規 timeline comp を作成し、その asset のレイヤーを配置・選択・アクティブ化する。audio/font/other は対象外。
+- **実装**: `src/editor/store.ts` の `addTimelineComp` に `{width,height,fps,duration}` opts を追加（後方互換）+
+  新規 `addCompositionFromAsset(assetId)`（既存 `addImageLayer`/`addVideoLayer` を連鎖呼び出し、SceneObject 構築は複製しない）。
+  `ProjectTreeView.tsx` の asset 行に `onContextMenu`（既存 `useContextMenuStore` 基盤を再利用）。
+- **spec**: §20.2c 新設（§5/INV 不変）。
+- **検証**: `test/addCompositionFromAsset.test.ts` 7 PASS。`npm test` 869 PASS（`test/projectBins.test.ts` の
+  "preserves treeOrder entry order" は **本変更と無関係の pre-existing flake** — 変更前の main でも単体 3 回中 2 回失敗を確認済み。
+  ULID 同一ミリ秒時の `defaultEntriesForParent` 全種混合 id ソートに依存した test の脆さが原因、別途要修正）。
+  typecheck 緑。Playwright 実機で右クリック→メニュー→新 comp（寸法/尺/レイヤー/選択）を確認済み。
+  `src/runtime`/`src/player` 非変更のため `build:player` 不要。
+- **非目標**: ソース fps の probe（既存 `addTimelineComp` 同様 30 固定）、新 comp を asset と同じ bin に配置（常にルート）。
+
 ### 2026-07-05（Cursor）— Subject Extract from footage（§16.2）✅
 
 - **機能**: Video Inspector の Subject Extract 折りたたみ — Person プルダウン + Extract → MediaPipe Selfie Segmentation → WebM VP9 alpha → 新 video レイヤー（ソース `zOrder + 0.5`）+ アセット `Assets/VideoSubjectExtract` bin。
@@ -1142,3 +1245,53 @@ canvas 化結果は以降から見て通常の背面ピクセルと等価（zOrd
 - **手法メモ**: `/double-check-the-plan` でレビュー→ bundle 行の未確認ヘッジ・症状③の閾値未確定・使い捨てスクリプトの先送りの3点を修正してから実装。
 - **既知の無関係な発見（対応不要・本タスクスコープ外）**: `verify-blend-mode.mjs`（addSolid 後に要素が見つからない）と `verify-bundle-video-playback.mjs`（NotAllowedError: play() が自動再生ポリシーで拒否）が現在の working tree で失敗するが、本修正を一時的に revert しても同じ結果になることを確認済み＝**本修正が原因ではない**（別の未コミット作業に起因する既存の問題、または autoplay unlock 導入前からの検証スクリプトのギャップ）。ユーザー/次セッションへの申し送り事項として記録。
 - **build:player**: 実行済み（`src/runtime/DomRenderer.ts` / `src/runtime/videoSplitAlpha.ts` 変更のため必須・`playerBuildFreshness` 緑）。
+
+### 2026-07-06（Claude）— Electron ラッパー対応（開発起動 + 自前タイトルバー + FB送信）✅
+
+- **要請**: このアプリを Electron ラッパーで起動できるようにしたい。① 枠を隠蔽し VS Code 風の自前タイトルバー（右端に最小化/最大化/閉じる）。② フィードバックは Electron でも `https://maftereffect.gycp.party` の既存エンドポイントへ送信。
+- **確定事項**: パッケージング範囲は開発起動のみ（electron-builder 等インストーラは未対応・後回し）。ウィンドウ操作ボタンは全 OS で自前（VS Code 風・右上、mac 信号機は出さない）。フィードバック送信先は env 既定＋ハードコード fallback。
+- **設計判断（CORS）**: フィードバックは `Authorization: Bearer` ヘッダ付き POST のため、Electron（file:// / 別オリジン）からレンダラで直接 fetch すると CORS プリフライトが発生し、既存 `scripts/mafter_http_server.py` は OPTIONS 未対応で失敗する。**メインプロセス経由の IPC**（`feedback:post`）で回避し、サーバ側は無改修。
+- **実装**:
+  - 新規 `electron/main.ts`（`frame:false` BrowserWindow、win:minimize/toggleMaximize/close/isMaximized IPC、feedback:post IPC → Node fetch で `MAFTER_FEEDBACK_ORIGIN ?? "https://maftereffect.gycp.party"` へ POST）、`electron/preload.ts`（`contextBridge` で `window.mafterDesktop` 公開）、`electron/build.mjs`（esbuild で CJS バンドル → `dist-electron/*.cjs`）、`electron/tsconfig.json`。
+  - [src/desktop.d.ts](src/desktop.d.ts) — `window.mafterDesktop` 型宣言（新規）。
+  - [src/editor/feedbackCollector.ts](src/editor/feedbackCollector.ts) `postPayload` — `window.mafterDesktop?.isElectron` なら IPC 経由、それ以外は従来の相対 `fetch('/api/feedback')`（web 挙動は完全不変）。
+  - [src/App.tsx](src/App.tsx) — menu bar に `WebkitAppRegion:'drag'`、各ボタンに `no-drag`、`isDesktop` 時のみ `WindowControls`（最小化/最大化⇄復元/閉じる、`mafterDesktop.onMaximizeChange` で最大化アイコン切替）を右端に追加。web では非表示。
+  - [vite.config.ts](vite.config.ts) — `base: process.env.ELECTRON_FILE ? "./" : "/"`（file:// 起動用）、`ELECTRON_DEV_PORT` 指定時は `server.port` + `strictPort:true`（後述のポートドリフト対策）。
+  - `package.json` — `main: "dist-electron/main.cjs"`、`electron:build-main` / `electron:dev` / `electron:start` 追加。devDeps: `electron`（後述の理由で `^35.7.5` に固定）、`esbuild`、`concurrently`、`wait-on`、`cross-env`、`@types/node`。
+  - `.env.example` — `MAFTER_FEEDBACK_TOKEN` / `MAFTER_FEEDBACK_ORIGIN` を追記。
+  - spec §20.3 のデスクトップ版記述を「Electron シェル起動のみ実装済み・ネイティブ保存ダイアログは未実装」に更新。
+- **ハマった点と対処**:
+  1. **Electron 43 が Node 20 で動かない**: `electron@43` 系は `@electron/get` 等が Node ≥22.12 前提の ESM で、Node 20.15 環境では `npm install` 後の postinstall バイナリダウンロードが `ERR_REQUIRE_ESM` で失敗する。→ `@electron/get@^2.0.0`（CJS・Node ≥12.20.55）を使う **`electron@^35.7.5`** に固定して解消。ユーザー環境の Node が 22 以上なら新しい major に上げても良いが、現状は 35 系で固定。
+  2. **`wait-on http://localhost:5173` のポートドリフト**: 5173 が使用中だと vite が自動で別ポートへ繰り上がるが、`electron:dev` は 5173 固定で待っていたため、古い/無関係な別プロセスが 5173 を握っていると Electron が誤ったサーバに繋がりうる（実機検証中に実際に踏んだ）。→ `ELECTRON_DEV_PORT=5183` を vite/`wait-on`/`ELECTRON_RENDERER_URL` の三者で共有し、vite 側は `strictPort:true` で衝突時は繰り上げず即エラーにするよう変更。
+- **検証**: `npm run typecheck` 緑、`npm test` 853/854（唯一の失敗 `playerBuildFreshness` はセッション開始前からの `public/player.js` 未コミット差分によるもので本作業とは無関係・`src/runtime`/`src/player` 無変更）。実機: `npm run electron:dev` 相当を実行し、`frame:false` ウィンドウが Vite dev サーバ（固定ポート 5183）に接続してタイトル「Mafter Effect」で起動することを確認（このツールのシェルは VS Code 拡張ホスト由来で `ELECTRON_RUN_AS_NODE=1` が継承されており、素の `electron .` 実行だと GUI 化されず `require('electron').app` が undefined になる罠を踏んだ→ユーザーの通常ターミナルではこの変数は無いため無関係、原因を切り分けて確認）。build:player 不要（`src/runtime`/`src/player` 無変更）。
+- **Next steps**: ネイティブ保存ダイアログ（File System Access API 相当）は未実装で TODO のまま。electron-builder 等でのインストーラ配布も未着手（ユーザーが必要になったタイミングで対応）。
+
+### 2026-07-06（Claude）— ポータブル .exe 配布ビルド（electron-builder）✅
+
+- **要請**: 「頒布できるポータブル.exeの出力ってできる？」→ electron-builder の portable ターゲット（インストール不要・単体 .exe）で対応。
+- **実装**: `package.json` に `"build"`（electron-builder 設定: `appId: "party.gycp.maftereffect"`, `productName: "Mafter Effect"`, `directories.output: "release"`, `files: ["dist/**/*", "dist-electron/**/*", "package.json"]`（node_modules は同梱しない——main は esbuild 単一バンドル・renderer は Vite バンドル済みで実行時に不要）, `asar: true`, `win.target: ["portable"]`）、`electron:dist` スクリプト（`ELECTRON_FILE=1` で `base:"./"` ビルド → `electron:build-main` → `electron-builder --win portable`）。devDep `electron-builder` 追加。`.gitignore` に `release/` 追加。
+- **ハマった点と対処**:
+  1. **`electron-builder@26` が Node 20 で動かない**: `app-builder-lib@26` が `@noble/hashes@^2.2.0`（ESM 専用）に依存し、`ERR_REQUIRE_ESM` で `electron-builder` 実行が即死。25.x 系はこの依存自体が無い。→ **`electron-builder@25.1.8`** に固定。
+  2. **winCodeSign 展開が Windows でシンボリックリンク不可により失敗**: portable（Windows 専用）ビルドでも electron-builder は無条件に macOS 用署名ツール一式（`winCodeSign`、内部に darwin dylib のシンボリックリンクを含む 7z）をダウンロード・展開しようとし、Windows は既定でシンボリックリンク作成に開発者モード or 管理者権限が必要なため `7za.exe` の展開が `Sub items Errors: 2` で失敗し続ける。`CSC_IDENTITY_AUTO_DISCOVERY=false` では回避できなかった。→ ユーザーに確認の上、Windows 開発者モードを ON（`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock\AllowDevelopmentWithoutDevLicense=1`。この値は管理者権限が必要で、非昇格シェルからは設定不可のためユーザー自身に有効化してもらった）にして解消。
+- **検証**: `npm run electron:dist` で `release/Mafter Effect 0.0.0.exe`（約 90.7MB, unsigned）を生成。実機: 生成した exe を直接起動し、ウィンドウが `frame:false` かつタイトル「Mafter Effect」で正常に立ち上がることを確認（プロセスは `dist-electron/main.cjs` を asar 内から正しく読み込み動作）。`npm run typecheck` 緑。
+- **既知の制約**: 未署名（コード署名なし）のため、初回起動時に Windows SmartScreen の警告が出る可能性がある。アプリアイコンは Electron デフォルトのまま（`build.win.icon` で後から差し替え可）。mac/Linux ターゲットは未検証（`win.target` のみ設定）。
+- **Next steps**: コード署名（EV証明書等）・カスタムアイコン・自動アップデート（`electron-updater`）は未着手。必要になったら対応。
+
+### 2026-07-06（Claude, Opus 4.8 レビュー併用）— Electron ポータブル版で Subject Extract / Motion Track が "Failed to fetch" になる件を修正 ✅
+
+- **要請**: 「これElectronビルドだとvideoのextract subject/motion track操作でfailed to fetchになる、他の部分も似たようなバグがあるかも」→ 原因調査 + 修正案 plan → Opus 4.8 サブエージェントにレビューさせ、Sonnet 5（本人）が実装（ユーザーは寝落ち・非対話で完結させた）。
+- **真因**: IndexedDbFs 等 FileSystem 層は無関係（Electron でも Web と同じ IndexedDB）。実際は `public/` 配下アセット（WASM・モデル・フォント・player.js）をコード中で **ルート絶対パス文字列 `"/xxx"`** として直接 `fetch()`/動的 `import()`/`<style> url()` 参照している箇所が原因。`file:///C:/.../dist/index.html` として起動する Electron ポータブル版では、ルート絶対パスがファイルシステムのルートに解決され `dist/` ディレクトリごと消えるため 404 相当（"Failed to fetch"）になる。`vite.config.ts` の `base:"./"`（`import.meta.env.BASE_URL`）は Vite が自動処理するアセット参照（`<script src>` 等）には効くが、`public/` ファイルへの手書き文字列参照はこの恩恵を受けない。`electron:dev` は http 経由のため再現せず、`electron:dist`/`electron:start`（file://）でのみ発症——開発中に見逃されていた理由。
+- **該当 5 箇所（同一パターン）**: ① [personSegmenter.ts](src/editor/subjectExtract/personSegmenter.ts) `WASM_BASE`/`MODEL_PATH`（Subject Extract、報告症状）② [quarTracker.ts](src/editor/motionTrack/quarTracker.ts) `wasmAbsoluteUrl()`/`opencvAbsoluteUrl()`（`window.location.origin` で解決しておりさらに悪化。Motion Track 全モード=Quar/Walk/3D Solve、報告症状）③ [main.tsx](src/main.tsx) `registerBuiltinFonts("/fonts")`（同梱フォントが黙って読み込めない・未報告の同型バグ）④⑤ [bundleExporter.ts](src/runtime/bundleExporter.ts) `fetchBuiltinFontBytes`/`loadPlayerScript`（HTML bundle export 内でフォント欠落・player.js 取得失敗＝Electron からの HTML bundle export が丸ごと失敗、未報告の同型バグ）。
+- **除外確認済み（バグでない）**: `feedbackCollector.ts` の feedback POST は既に `window.mafterDesktop?.isElectron` で IPC 分岐済みで無関係。`public/player.js` 自体（`src/player/`, `vite.player.config.ts`）は "file:// 互換" コメント付きの別ビルドで bundleExporter からは import されておらず無関係。
+- **修正**: 新規 [src/runtime/publicAssetUrl.ts](src/runtime/publicAssetUrl.ts) — 純関数 `resolvePublicAssetUrl(path, basePrefix, documentBaseURI)` + 薄いラッパー `publicAssetUrl(path)`（`import.meta.env?.BASE_URL ?? "/"` と `document.baseURI` を `new URL()` で合成）。web（base "/"）では現状と同一 URL を返す（無変更）、Electron file build（base "./"）では `document.baseURI`（`file:///C:/.../dist/index.html`、ドライブレターと `dist/` を保持）から正しく相対解決する。上記 5 箇所をこのヘルパー経由に置換（`motionTrackWorker.ts`/`rotationTrackWorker.ts` は既に解決済みの絶対 URL を受け取るだけなので無変更）。
+- **レビュー（Opus 4.8 サブエージェント, 実装前）**: 5 箇所の診断・見落とし箇所の有無（`.tsx` 含め再走査したが無し）・ヘルパー実装の edge case（`import.meta.env` 自体が undefined な場合のガード漏れを指摘・修正、MediaPipe の `forVisionTasks` はベースパス末尾に `/` を付けず自前で `${base}/${file}` 連結するため trailing slash 不要と確認）・IPC/preload 代替案との比較（`document.baseURI` の方がシンプルでフィードバック IPC のような分岐が不要と結論）をレビューさせ、指摘を反映した上で実装。
+- **検証**: `npm run typecheck` 緑。新規 [test/publicAssetUrl.test.ts](test/publicAssetUrl.test.ts) 4件（web/Electron 双方の解決結果、多重先頭スラッシュ、trailing slash 無し）。`npm test` 858/858 件緑（既存 `playerBuildFreshness` 含め無回帰、`publicAssetUrl.ts` は `src/player/` から import されないため build:player 不要）。`ELECTRON_FILE=1 vite build` で実際に `dist/` を生成し、Node スクリプトで `file:///.../dist/index.html` を document.baseURI と仮定した場合の解決 URL が実ファイル（wasm/tflite/quar_engine.js/opencv.js/フォント/player.js）に一致することを確認。
+- **未実施（次回以降で推奨）**: 実際の `npm run electron:dist` パッケージ版を起動しての手動確認（Subject Extract 実行・Motion Track 実行・同梱フォント表示・HTML bundle export）は本セッションでは行っていない（ユーザー非対話のため）。次回ユーザーがポータブル版を使うタイミングで実地確認してもらうこと。
+
+### 2026-07-06（Claude）— Subject Extract レイヤーが元動画と違う位置・サイズで表示される不具合を修正 ✅
+
+- **要請**: 「subject extraction、元動画の大きさに合わせて同じ位置で置かれるように実装したい」→ Plan Mode でプラン作成 → `/double-check-the-plan` で二重チェック（ブロッカー 0、軽微な追記2件のみ）→ 実装。
+- **真因**: [SubjectExtractFields.tsx](src/editor/panels/SubjectExtractFields.tsx) `handleExtract` が新規 asset の `meta.width`/`meta.height` に **抽出処理用ダウンスケール解像度**（`result.width`/`height`、`MOTION_TRACK_TARGET_WIDTH`≈640px 基準）をそのまま書き込んでいた。`DomRenderer`（video の `style.width/height`・split-alpha 合成 canvas の CSS サイズ双方）は `imageCache.getSize(assetId)` = `asset.meta.width/height` のみで表示 box サイズを決める設計（`imageAssetCache.ts` `sizeFromMeta` — footage quality プロキシと同じ仕組み、実デコード解像度は無視）ため、`transform` はソースからコピーされているのに **box サイズだけ抽出解像度になり小さく／ズレて描画**されていた。
+- **修正**: 純関数 `resolveSubjectExtractAssetSize(sourceAssetMeta, extracted)` を [applySubjectExtract.ts](src/editor/subjectExtract/applySubjectExtract.ts) に追加（ソース asset の原寸を優先、欠落/非数値/0以下なら抽出解像度へフォールバック）。`SubjectExtractFields.tsx` はこれを使い新規 asset の `meta.width/height` にソース原寸を書き込む。抽出・セグメンテーション・エンコード解像度（640px）自体は無変更（負荷軽減の設計は維持）。ステータス表示に「（抽出解像度）」を付記し実際の表示サイズと混同しないようにした。
+- **検証**: `test/subjectExtractApply.test.ts` に `resolveSubjectExtractAssetSize` 7 件追加（`npm test` 863/863 緑、`playerBuildFreshness` 含め無回帰）。`npm run typecheck` 緑。新規 [verify-subject-extract-size-fix.mjs](verify-subject-extract-size-fix.mjs)（Playwright 実機、小さい test mp4 で軽量に検証・巨大 zip や MediaPipe 不要）で、修正後の meta を使った新規レイヤーの `getBoundingClientRect` がソースレイヤーと完全一致し、旧挙動（抽出解像度のまま）を再現したレイヤーは小さくズレることを確認（PASS）。編集専用機能のため `build:player` 不要（`src/runtime`/`src/player` 非変更、確認済み）。
+- **スコープ外（既知のトレードオフ）**: 抽出内部解像度（~640px）のままソース原寸へアップスケール表示されるため、切り抜き部分は元映像よりやや柔らかく見える。位置・サイズの不一致とは別の問題であり今回は対応しない。

@@ -13,6 +13,7 @@ import { compChildFrame, isCompNestDepthAllowed } from "./compLayer";
 import type { NestedCompRasterizer } from "./compFrameCapture";
 import { resolve, type ExpressionEvaluator } from "./resolve";
 import { applyTextEl, rgbaCss } from "./textRender";
+import { buildShapePathD, type ResolvedShapeVertex } from "./shapePath";
 import { captureElementToCanvas } from "./rasterCapture";
 import { canvasToRasterBuffer, rasterBufferToCanvas } from "./pixelSort";
 import { processRasterChainAsync } from "./rasterProcessAsync";
@@ -26,10 +27,12 @@ import {
 import { normalizeFootageQuality } from "./footageQuality";
 import { ensureVideosPrimed, peekVideoPrimed, type VideoPrimeTarget } from "./videoWarmupCache";
 import {
+  applyAlphaGenlock,
   drawSplitAlphaComposite,
   ensureSplitAlphaCompanion,
   findSplitAlphaVideo,
   mirrorSplitAlphaVideoState,
+  resetAlphaGenlockRate,
   scheduleSplitAlphaRedrawWhenReady,
   setSplitAlphaPresentation,
   SPLIT_ALPHA_CANVAS_CLASS,
@@ -201,6 +204,8 @@ export class DomRenderer implements Renderer {
   private exportVideoStep = false;
   /** §11.4 映像先行ゲート: playback 中に video を pause（seek しない）。 */
   private playbackPauseForSync = false;
+  /** §11.7 bundle: true の間は playbackMode 中でも video を unmute しない（autoplay ポリシー回避）。 */
+  private muteVideoPlayback = false;
 
   setPreviewRenderOptions(opts: {
     holdLastRaster?: boolean;
@@ -208,11 +213,13 @@ export class DomRenderer implements Renderer {
     exportCompositeMode?: boolean;
     previewVideoPlayback?: boolean;
     exportVideoStep?: boolean;
+    muteVideoPlayback?: boolean;
   }): void {
     if (opts.holdLastRaster !== undefined) this.holdLastRaster = opts.holdLastRaster;
     if (opts.forceAdjustmentRaster !== undefined) this.forceAdjustmentRaster = opts.forceAdjustmentRaster;
     if (opts.exportCompositeMode !== undefined) this.exportCompositeMode = opts.exportCompositeMode;
     if (opts.exportVideoStep !== undefined) this.exportVideoStep = opts.exportVideoStep;
+    if (opts.muteVideoPlayback !== undefined) this.muteVideoPlayback = opts.muteVideoPlayback;
     if (opts.previewVideoPlayback !== undefined) {
       if (this.previewVideoPlayback && !opts.previewVideoPlayback) {
         this.playbackPauseForSync = false;
@@ -754,7 +761,7 @@ export class DomRenderer implements Renderer {
    */
   sampleMountedVideoClocks(): VideoClockSample[] {
     const samples: VideoClockSample[] = [];
-    const pushSample = (video: HTMLVideoElement): void => {
+    const pushSample = (video: HTMLVideoElement, role: "primary" | "companion"): void => {
       const rawT = video.dataset.mafterTargetSec;
       if (rawT === undefined) return;
       const targetSec = Number(rawT);
@@ -767,14 +774,17 @@ export class DomRenderer implements Renderer {
         ended: video.ended,
         error: video.error !== null,
         duration: Number.isFinite(duration) ? duration : Number.POSITIVE_INFINITY,
+        role,
       });
     };
     this.forEachVideoElement((video) => {
-      pushSample(video);
-      // §16.2 split alpha: color と alpha は独立デコード（ビットレート差が大きい）ので、
-      // alpha 側だけが遅れても hold/pause 判定に反映されるよう companion も併せてサンプルする。
+      pushSample(video, "primary");
+      // §16.2 split alpha: color と alpha は独立デコード（ビットレート差が大きい）ので個別に
+      // サンプルするが、companion（見えない mask ストリーム）は role: "companion" として区別する。
+      // comp 全体の holdTimeline/pauseVideo 判定（呼び出し側で primary のみに絞る）からは除外し、
+      // per-element の resync（syncVideoElementTime）にのみ委ねる。
       const alpha = findSplitAlphaVideo(video);
-      if (alpha) pushSample(alpha);
+      if (alpha) pushSample(alpha, "companion");
     });
     return samples;
   }
@@ -990,7 +1000,7 @@ export class DomRenderer implements Renderer {
       const el = entry.children[i];
       if (el) {
         const hostInPoint = (c.props["_hostInPoint"] as number | undefined) ?? 0;
-        updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, frame, hostInPoint, this.currentComp?.fps ?? 30, this.previewVideoPlayback, this.exportVideoStep, childrenRebuilt, this.playbackPauseForSync);
+        updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, frame, hostInPoint, this.currentComp?.fps ?? 30, this.previewVideoPlayback, this.exportVideoStep, childrenRebuilt, this.playbackPauseForSync, this.muteVideoPlayback);
       }
 
       // Plugin component: registry から ComponentDef.render を呼ぶ（組み込み型は未登録でスキップ）
@@ -1823,8 +1833,11 @@ export class DomRenderer implements Renderer {
           }
           const el = createComponentEl(c.type);
           const hostInPoint = (c.props["_hostInPoint"] as number | undefined) ?? 0;
-          updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, childFrame, hostInPoint, childComp.fps, this.previewVideoPlayback, this.exportVideoStep, false, this.playbackPauseForSync);
+          // §16.2 split alpha: ensureSplitAlphaCompanion は video.parentElement に依存するため、
+          // updateComponentEl より先に append する（順序を変えると nested comp 内の split alpha
+          // video が「parent なし」で例外を投げる）。
           div.appendChild(el);
+          updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, childFrame, hostInPoint, childComp.fps, this.previewVideoPlayback, this.exportVideoStep, false, this.playbackPauseForSync, this.muteVideoPlayback);
         }
       }
       container.appendChild(div);
@@ -1999,6 +2012,7 @@ function updateComponentEl(
   exportVideoStep = false,
   forceSeek = false,
   pauseForSync = false,
+  muteVideoPlayback = false,
 ): void {
   switch (type) {
     case "solid": {
@@ -2011,13 +2025,41 @@ function updateComponentEl(
     }
     case "shape": {
       const fill = props["fill"] as RGBA | undefined;
-      const size = props["size"] as { x: number; y: number } | undefined;
       const kind = props["kind"] as string | undefined;
-      const radius = props["radius"] as number | undefined;
+      if (kind === "path") {
+        // §5.5c: vertices ベースの自由パス。CSS box は使わず子 <svg><path> で描画する
+        // （既存 rect/ellipse の box style を残すと path 切替後も背景が透けて残るため明示的に解除）。
+        el.style.width = "0px";
+        el.style.height = "0px";
+        el.style.background = "transparent";
+        el.style.borderRadius = "0";
+        const vertices = props["vertices"] as ResolvedShapeVertex[] | undefined;
+        let svg = el.querySelector("svg[data-mafter-shape-path]") as SVGSVGElement | null;
+        if (!svg) {
+          svg = document.createElementNS(SVG_NS, "svg") as unknown as SVGSVGElement;
+          svg.dataset.mafterShapePath = "1";
+          svg.style.cssText = "position:absolute;top:0;left:0;overflow:visible;pointer-events:none";
+          const pathEl = document.createElementNS(SVG_NS, "path");
+          svg.appendChild(pathEl);
+          el.appendChild(svg);
+        }
+        const pathEl = svg.querySelector("path")!;
+        pathEl.setAttribute("d", vertices ? buildShapePathD(vertices) : "");
+        pathEl.setAttribute("fill", fill ? rgbaCss(fill) : "#888");
+        break;
+      }
+      // kind が path から戻された場合、残置 svg を掃除する。
+      const staleSvg = el.querySelector("svg[data-mafter-shape-path]");
+      if (staleSvg) el.removeChild(staleSvg);
+      const size = props["size"] as { x: number; y: number } | undefined;
+      const radiusTL = (props["radiusTL"] as number | undefined) ?? 0;
+      const radiusTR = (props["radiusTR"] as number | undefined) ?? 0;
+      const radiusBR = (props["radiusBR"] as number | undefined) ?? 0;
+      const radiusBL = (props["radiusBL"] as number | undefined) ?? 0;
       el.style.width = size ? `${size.x}px` : "100px";
       el.style.height = size ? `${size.y}px` : "100px";
       el.style.background = fill ? rgbaCss(fill) : "#888";
-      el.style.borderRadius = kind === "ellipse" ? "50%" : radius ? `${radius}px` : "0";
+      el.style.borderRadius = kind === "ellipse" ? "50%" : `${radiusTL}px ${radiusTR}px ${radiusBR}px ${radiusBL}px`;
       break;
     }
     case "text": {
@@ -2081,6 +2123,7 @@ function updateComponentEl(
         exportStep: exportVideoStep,
         forceSeek: cutSeek,
         pauseForSync: previewVideoPlayback && pauseForSync,
+        forceMuted: muteVideoPlayback,
       });
       if (exportVideoStep) {
         video.setAttribute(EXPORT_VIDEO_TARGET_ATTR, String(t));
@@ -2114,7 +2157,16 @@ function updateComponentEl(
           exportStep: exportVideoStep,
           forceSeek: cutSeek,
           pauseForSync: previewVideoPlayback && pauseForSync,
+          forceMuted: muteVideoPlayback,
         });
+        // §16.2 genlock: 定常再生中（scrub/export/カット境界/映像先行pauseのいずれでもない）
+        // だけ、color の実 currentTime に合わせて alpha の playbackRate を穏やかに補正する。
+        // それ以外（export の決定論 seek 等）は rate を必ず 1 に戻す（INV-2 非干渉）。
+        if (previewVideoPlayback && !cutSeek && !pauseForSync && !video.paused && !companion.alphaVideo.paused) {
+          applyAlphaGenlock(video, companion.alphaVideo);
+        } else {
+          resetAlphaGenlockRate(companion.alphaVideo);
+        }
         if (exportVideoStep) {
           companion.alphaVideo.setAttribute(EXPORT_VIDEO_TARGET_ATTR, String(t));
         } else {

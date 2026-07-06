@@ -19,3 +19,7 @@ export function newAssetId(): AssetId {
 export function newBinId(): string {
   return ulid();
 }
+
+export function newVertexId(): string {
+  return ulid();
+}

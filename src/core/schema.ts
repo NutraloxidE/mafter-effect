@@ -60,6 +60,17 @@ export interface Component {
   exportStrategy?: "live" | "bake"; // web bundle export 時の扱い（§11.7）。未指定なら type の既定
 }
 
+// §5.5c shape コンポーネント Phase 2（頂点/ベジェパス編集・additive-optional）。
+// Component.props.vertices?: ShapeVertex[] に乗る。存在しなければ従来通り kind=rect/ellipse の CSS box。
+// tangent は AE 同様「頂点位置からの相対オフセットベクトル」（絶対座標ではない）。
+// 頂点順 = パス順（id 昇順ソート対象外。serialize.ts は配列順を保持する）。
+export interface ShapeVertex {
+  id: string; // ULID (INV-6)
+  pos: AnimatedProp<Vec3>;
+  inTangent?: AnimatedProp<Vec3>;
+  outTangent?: AnimatedProp<Vec3>;
+}
+
 // §5.5b / §27 エフェクト（レイヤー描画結果への後処理）
 export interface EffectInstance {
   id: string; // ULID (INV-6)

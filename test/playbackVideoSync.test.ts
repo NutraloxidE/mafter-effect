@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   computePlaybackSyncState,
+  filterPrimaryVideoSamples,
   holdThresholdsForFps,
   initialPlaybackSyncState,
   isVideoReadyAtTarget,
@@ -17,6 +18,7 @@ function sample(partial: Partial<VideoClockSample> & Pick<VideoClockSample, "tar
     ended: false,
     error: false,
     duration: Number.POSITIVE_INFINITY,
+    role: "primary",
     ...partial,
   };
 }
@@ -178,6 +180,45 @@ describe("computePlaybackSyncState", () => {
     expect(forced.holdTimeline).toBe(false);
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
+  });
+});
+
+describe("filterPrimaryVideoSamples", () => {
+  it("keeps primary samples and drops companion samples", () => {
+    const samples = [
+      sample({ targetSec: 1, currentTimeSec: 1, role: "primary" }),
+      sample({ targetSec: 1, currentTimeSec: 0.4, role: "companion" }),
+    ];
+    const filtered = filterPrimaryVideoSamples(samples);
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0]!.role).toBe("primary");
+  });
+
+  it("regression guard: a lagging split-alpha companion no longer forces a global timeline hold", () => {
+    // doc/issue/subject-extract-split-alpha-webm-preview-instability.md 修正1 — companion
+    // （見えない alpha mask ストリーム）だけが大きく遅れても、primary（color/通常video）に絞れば
+    // holdTimeline は発火しない。companion 込みだと発火することも併せて固定する（対照実験）。
+    const th = holdThresholdsForFps(30);
+    const samplesWithLaggingCompanion: VideoClockSample[] = [
+      sample({ targetSec: 1, currentTimeSec: 1, role: "primary" }), // color: on time
+      sample({ targetSec: 1, currentTimeSec: 0.3, role: "companion" }), // alpha companion: 0.7s behind
+    ];
+
+    const withCompanion = computePlaybackSyncState(
+      initialPlaybackSyncState(),
+      samplesWithLaggingCompanion,
+      th,
+      1000,
+    );
+    expect(withCompanion.holdTimeline).toBe(true);
+
+    const primaryOnly = computePlaybackSyncState(
+      initialPlaybackSyncState(),
+      filterPrimaryVideoSamples(samplesWithLaggingCompanion),
+      th,
+      1000,
+    );
+    expect(primaryOnly.holdTimeline).toBe(false);
   });
 });
 

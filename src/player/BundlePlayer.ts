@@ -16,6 +16,14 @@ import { BundleAudioClock, hasAudioLayers } from "./BundleAudioClock";
 import { assetUrlForBundle, buildBundleFs } from "./BundleFs";
 import { applyFitTransform } from "./bundleFit";
 import { collectVideoClipsFromComp } from "../runtime/videoLookaheadWarmup";
+import { runPreviewPlaybackLoop } from "../runtime/previewPlaybackLoop";
+import {
+  computePlaybackSyncState,
+  filterPrimaryVideoSamples,
+  holdThresholdsForFps,
+  initialPlaybackSyncState,
+  type PlaybackSyncState,
+} from "../runtime/playbackVideoSync";
 
 /** §11.7 web bundle player — runtime + 音声クロックの薄いラッパ。 */
 export class BundlePlayer {
@@ -33,8 +41,9 @@ export class BundlePlayer {
   private comp: TimelineComposition | null = null;
   private currentFrame = 0;
   private playing = false;
-  private rafId: number | null = null;
-  private lastRafMs: number | null = null;
+  private stopLoop: (() => void) | null = null;
+  /** §11.4 双方向同期（no-audio 経路）— editor Preview パネルと同じ判定関数を使う。 */
+  private syncState: PlaybackSyncState = initialPlaybackSyncState();
   private viewportEl: HTMLDivElement | null = null;
   private stageEl: HTMLDivElement | null = null;
   private resizeObserver: ResizeObserver | null = null;
@@ -83,7 +92,10 @@ export class BundlePlayer {
     this.renderer.setFontCache(this.fontCache);
     this.renderer.setImageCache(this.imageCache);
     this.renderer.setTextQuality(this.manifest.textRenderMode);
-    this.renderer.setPreviewRenderOptions({});
+    // §11.7 autoplay ブロック回避: 初回ユーザー操作までは video を muted のまま再生を進める
+    // （unmute 付き play() は autoplay ポリシーで拒否され currentTime が凍結するため）。
+    // installAutoplayUnlock() が最初のジェスチャーで false に切り替える。
+    this.renderer.setPreviewRenderOptions({ muteVideoPlayback: true });
 
     const { viewport, stage } = this.setupViewport(this.config.stage, comp);
     this.viewportEl = viewport;
@@ -112,7 +124,6 @@ export class BundlePlayer {
     this.renderFrame(this.currentFrame);
 
     // §11.4: Play barrier — primed キャッシュを信用せず実要素を現フレームへ再同期してから再生。
-    // hold は autoplay ブロックで currentTime が進まず凍結するため bundle には配線しない。
     await this.renderer.syncMountedVideosForPlay(this.manifest.fps).catch(() => false);
 
     const hasAudio = hasAudioLayers(project, comp);
@@ -123,6 +134,11 @@ export class BundlePlayer {
         this.manifest.range[1],
         urlForPath,
         this.manifest.loop,
+        {
+          // §11.4 preview と同じ双方向同期（split-alpha companion は primary から除外済み）。
+          getVideoClockSamples: () => filterPrimaryVideoSamples(this.renderer.sampleMountedVideoClocks()),
+          onPlaybackSyncState: (s) => this.renderer.setPlaybackPauseForSync(s.pauseVideo),
+        },
       );
       await this.audioClock.prepare(project, comp);
       this.audioClock.setFrameCallback((f) => {
@@ -160,8 +176,9 @@ export class BundlePlayer {
         // 音声レイヤー: pause 中（autoplay 拒否）の要素を現在位置から再生（tick は二重化しない）。
         this.audioClock?.unlock();
         // video 内蔵音声: ユーザー操作のコールスタック内で再描画 → syncVideoElementTime が
-        // アンミュート play() を呼ぶ（この文脈なら play が許可される）。
-        this.renderer.setPreviewRenderOptions({ previewVideoPlayback: true });
+        // アンミュート play() を呼ぶ（この文脈なら play が許可される）。muteVideoPlayback を
+        // 解除して初めて実際に unmute される（それまでは muted のまま無音再生が進んでいた）。
+        this.renderer.setPreviewRenderOptions({ previewVideoPlayback: true, muteVideoPlayback: false });
         this.renderFrame(this.currentFrame);
       }
       this.removeAutoplayUnlock();
@@ -221,48 +238,50 @@ export class BundlePlayer {
     }
     this.playing = true;
     this.renderer.setPreviewRenderOptions({ previewVideoPlayback: true });
-    this.lastRafMs = null;
+    this.syncState = initialPlaybackSyncState();
+    this.stopLoop?.();
     const start = fromFrame ?? this.currentFrame;
     this.currentFrame = start;
-    const tick = (now: number) => {
-      if (!this.playing || !this.comp) return;
-      if (this.lastRafMs === null) {
-        this.lastRafMs = now;
-        this.rafId = requestAnimationFrame(tick);
-        return;
-      }
-      const msPerFrame = 1000 / this.manifest.fps;
-      const elapsed = now - this.lastRafMs;
-      const advance = Math.floor(elapsed / msPerFrame);
-      if (advance > 0) {
-        this.lastRafMs = now - (elapsed % msPerFrame);
-        const next = this.currentFrame + advance;
-        const [, rangeEnd] = this.manifest.range;
-        const lastFrame = rangeEnd - 1;
-        if (next >= rangeEnd) {
-          if (this.manifest.loop) {
-            this.currentFrame = this.manifest.range[0];
-          } else {
-            this.playing = false;
-            this.currentFrame = lastFrame;
-            this.renderFrame(this.currentFrame);
-            return;
-          }
-        } else {
-          this.currentFrame = next;
-        }
-        this.renderFrame(this.currentFrame);
-      }
-      this.rafId = requestAnimationFrame(tick);
-    };
-    this.rafId = requestAnimationFrame(tick);
+    const [, rangeEnd] = this.manifest.range;
+    this.stopLoop = runPreviewPlaybackLoop({
+      fps: this.manifest.fps,
+      loopStart: this.manifest.range[0],
+      loopEnd: rangeEnd,
+      loop: this.manifest.loop,
+      initialFrame: start,
+      renderFrame: (f) => this.renderFrame(f),
+      onFrameChange: (f) => {
+        this.currentFrame = f;
+      },
+      onPlaybackEnd: () => {
+        this.playing = false;
+      },
+      // §11.4 preview と同じ双方向同期: 映像遅れでタイムライン全体を hold / 先行で video を pause。
+      shouldHold: () => this.applyPlaybackSync(),
+    });
+  }
+
+  /**
+   * §11.4 双方向同期（no-audio 経路）: editor Preview パネルの applyPlaybackSync と同型。
+   * サンプルは split-alpha companion 除外済みの primary のみで判定する。
+   */
+  private applyPlaybackSync(): boolean {
+    this.syncState = computePlaybackSyncState(
+      this.syncState,
+      filterPrimaryVideoSamples(this.renderer.sampleMountedVideoClocks()),
+      holdThresholdsForFps(this.manifest.fps),
+      performance.now(),
+    );
+    this.renderer.setPlaybackPauseForSync(this.syncState.pauseVideo);
+    return this.syncState.holdTimeline;
   }
 
   pause(): void {
     this.playing = false;
     this.renderer.setPreviewRenderOptions({ previewVideoPlayback: false });
-    if (this.rafId !== null) cancelAnimationFrame(this.rafId);
-    this.rafId = null;
+    this.stopLoop?.();
+    this.stopLoop = null;
+    this.syncState = initialPlaybackSyncState();
     this.audioClock?.pause();
   }
 

@@ -26,6 +26,30 @@ const TEXT_COMPONENT_DEF: ComponentDef = {
   render() { /* DomRenderer */ },
 };
 
+/**
+ * §5.5 / §5.5c shape（rect/ellipse は CSS box、path は vertices から SVG <path>）。
+ * `radiusTL/TR/BR/BL` は kind==="rect" のときのみ描画に効く（DomRenderer 側で判定）。
+ * `size` は既存 solid と同じ生 prop（{x,y,z} の Vec3。z は未使用）。
+ * `vertices?: ShapeVertex[]`（kind==="path"）は params に載せない — 単一 AnimatedProp ではなく
+ * 「AnimatedProp を内包するオブジェクトの配列」のため、ParamDescriptor 駆動の汎用 UI/KF行の対象外
+ * （Inspector 専用フィールドで直接編集。§26.2 の契約から意図的に外れる）。
+ */
+const SHAPE_COMPONENT_DEF: ComponentDef = {
+  type: "shape",
+  label: "Shape",
+  previewBakeRequired: false,
+  params: [
+    { key: "kind", label: "Kind", kind: "enum", default: "rect", animatable: false, options: ["rect", "ellipse", "path"] },
+    { key: "fill", label: "Fill", kind: "color", default: { r: 0.5, g: 0.7, b: 0.9, a: 1 }, animatable: true },
+    { key: "radiusTL", label: "Radius TL", kind: "scalar", default: 0, animatable: true, min: 0 },
+    { key: "radiusTR", label: "Radius TR", kind: "scalar", default: 0, animatable: true, min: 0 },
+    { key: "radiusBR", label: "Radius BR", kind: "scalar", default: 0, animatable: true, min: 0 },
+    { key: "radiusBL", label: "Radius BL", kind: "scalar", default: 0, animatable: true, min: 0 },
+    { key: "size", label: "Size", kind: "vec2", default: { x: 200, y: 200 }, animatable: true },
+  ],
+  render() { /* DomRenderer */ },
+};
+
 const IMAGE_COMPONENT_DEF: ComponentDef = {
   type: "image",
   label: "Image",
@@ -89,9 +113,26 @@ const CAMERA_COMPONENT_DEF: ComponentDef = {
   render() { /* resolve() が scene.camera を供給。描画要素は持たない */ },
 };
 
+/**
+ * `solid`/`html`/`comp` は ComponentDef 未登録（DomRenderer 等でハードコード分岐）だが、
+ * bake 判定除外・plugin 一覧フィルタ双方で「builtin 全体」を指すため solid/html/comp も含めておく。
+ */
+export const BUILTIN_COMPONENT_TYPES = new Set([
+  "solid",
+  "shape",
+  "text",
+  "image",
+  "html",
+  "comp",
+  "audio",
+  "video",
+  "camera", // §6.5b 非描画（transform/メタのみ）。bundle で bake してはいけない
+]);
+
 /** registry.clear() 後も再登録できる（loadPlugins 経路）。 */
 export function registerBuiltinComponents(): void {
   globalPluginRegistry.registerComponent(TEXT_COMPONENT_DEF);
+  globalPluginRegistry.registerComponent(SHAPE_COMPONENT_DEF);
   globalPluginRegistry.registerComponent(IMAGE_COMPONENT_DEF);
   globalPluginRegistry.registerComponent(VIDEO_COMPONENT_DEF);
   globalPluginRegistry.registerComponent(AUDIO_COMPONENT_DEF);

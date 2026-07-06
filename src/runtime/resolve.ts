@@ -5,6 +5,7 @@ import type {
   Frame,
   ObjectId,
   SceneObject,
+  ShapeVertex,
   TimelineComposition,
   Transform,
   Vec3,
@@ -124,6 +125,17 @@ function resolverFor(comp: TimelineComposition, ctx: ResolveContext | undefined)
       props[key] = isAnimatedProp(raw)
         ? applyExpr(raw, sampled, frame, objectId)
         : sampled;
+    }
+    // §5.5c shape kind="path": vertices は「AnimatedProp を含むオブジェクトの配列」であり
+    // 上のループ（トップレベル AnimatedProp のみ判定）では中身が resolve されないため個別に処理する。
+    if (c.type === "shape" && Array.isArray(c.props["vertices"])) {
+      const vertices = c.props["vertices"] as ShapeVertex[];
+      props["vertices"] = vertices.map((v) => ({
+        id: v.id,
+        pos: vec3Prop(v.pos, frame, objectId),
+        ...(v.inTangent !== undefined ? { inTangent: vec3Prop(v.inTangent, frame, objectId) } : {}),
+        ...(v.outTangent !== undefined ? { outTangent: vec3Prop(v.outTangent, frame, objectId) } : {}),
+      }));
     }
     // comp type: DomRenderer が子フレームを計算できるよう層の inPoint と
     // 親コンプ fps を注入する（§23.2 秒ベース時間マッピング）。fps は解決中コンプの

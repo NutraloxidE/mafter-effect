@@ -13,6 +13,20 @@ export interface VideoClockSample {
   error: boolean;
   /** 不明時は NaN / Infinity。有限かつ targetSec >= duration なら除外。 */
   duration: number;
+  /**
+   * "primary" = 表示に直結する主ストリーム（通常 video / split alpha の color）。
+   * "companion" = 裏方ストリーム（split alpha の alpha mask 等・単独では画面に映らない）。
+   * companion のドリフトは per-element の resync（syncVideoElementTime）で個別に補正されるため、
+   * comp 全体を止めてまで待つ理由にはしない（holdTimeline/pauseVideo の判定対象から除外する）。
+   */
+  role: "primary" | "companion";
+}
+
+/** comp 全体の hold/pause 判定に使うサンプルだけを残す（companion を除外）。 */
+export function filterPrimaryVideoSamples(
+  samples: ReadonlyArray<VideoClockSample>,
+): VideoClockSample[] {
+  return samples.filter((s) => s.role === "primary");
 }
 
 export interface HoldThresholds {

@@ -2,6 +2,7 @@
 
 import type { Project, SceneObject, TimelineComposition } from "../core/schema";
 import { hasEnabledFullDisplacement, needsSvgDisplaceCapture } from "../runtime/effectRouting";
+import { isSplitAlphaVideoMeta } from "../runtime/imageAssetCache";
 import { globalPluginRegistry } from "../runtime/pluginRegistry";
 
 export type PipelineSegmentKind = "live" | "raster";
@@ -27,6 +28,14 @@ export interface PipelineCliff {
   message: string;
 }
 
+/** §19.5 — split alpha 透過レイヤーの毎フレーム二重描画警告（live/raster 段数とは独立の軸）。 */
+export interface PipelineAlphaWarning {
+  objectId: string;
+  objectName: string;
+  depth: number;
+  message: string;
+}
+
 export interface PipelineAnalysisResult {
   segments: PipelineSegment[];
   rasterPassCount: number;
@@ -35,6 +44,8 @@ export interface PipelineAnalysisResult {
   summaryLabel: string;
   summaryTone: "light" | "moderate" | "heavy" | "severe";
   cliffs: PipelineCliff[];
+  /** §19.5 split alpha 透過レイヤー警告（precomp nested を再帰集約・cliffs とは異なり伝播する）。 */
+  alphaWarnings: PipelineAlphaWarning[];
 }
 
 const MAX_PRECOMP_DEPTH = 4;
@@ -50,6 +61,49 @@ function compIdFromObject(obj: SceneObject): string | null {
     if (typeof id === "string") return id;
   }
   return null;
+}
+
+const SPLIT_ALPHA_MESSAGE =
+  "透過チャンネル（split alpha）— 毎フレーム CPU で2回描画（color+mask 合成）されるため、live 同期のドリフト要因になります";
+
+/** §19.5 — video component が参照する split alpha asset を検出する。 */
+function hasSplitAlphaVideo(obj: SceneObject, project: Project): boolean {
+  for (const c of obj.components) {
+    if (c.type !== "video") continue;
+    const assetId = typeof c.props["asset"] === "string" ? c.props["asset"] : null;
+    if (!assetId) continue;
+    const asset = project.assets.find((a) => a.id === assetId);
+    if (asset?.kind === "video" && isSplitAlphaVideoMeta(asset.meta)) return true;
+  }
+  return false;
+}
+
+/**
+ * §19.5 — split alpha 透過レイヤー警告を precomp nested まで再帰収集する。
+ * segments/cliffs の live/raster 判定（effects 依存）とは独立の走査のため、
+ * effect を持たない video レイヤーや precomp レイヤーも漏れなく対象にする。
+ */
+function collectAlphaWarnings(
+  comp: TimelineComposition,
+  project: Project,
+  depth: number,
+): PipelineAlphaWarning[] {
+  const warnings: PipelineAlphaWarning[] = [];
+  for (const obj of comp.objects) {
+    if (hasSplitAlphaVideo(obj, project)) {
+      warnings.push({ objectId: obj.id, objectName: obj.name, depth, message: SPLIT_ALPHA_MESSAGE });
+    }
+    if (depth >= MAX_PRECOMP_DEPTH) continue;
+    const nestedCompId = compIdFromObject(obj);
+    if (!nestedCompId) continue;
+    const nestedComp = project.compositions.find(
+      (c) => c.id === nestedCompId && c.kind === "timeline",
+    );
+    if (nestedComp && nestedComp.kind === "timeline") {
+      warnings.push(...collectAlphaWarnings(nestedComp, project, depth + 1));
+    }
+  }
+  return warnings;
 }
 
 function enabledEffects(obj: SceneObject) {
@@ -197,6 +251,8 @@ function analyzeComp(
     summaryLabel,
     summaryTone,
     cliffs: detectCliffs(segments),
+    // alphaWarnings は collectAlphaWarnings が独立に再帰集約するため、ここ（nested 中間結果含む）では未使用。
+    alphaWarnings: [],
   };
 }
 
@@ -205,5 +261,8 @@ export function pipelineAnalysis(
   comp: TimelineComposition,
   project: Project,
 ): PipelineAnalysisResult {
-  return analyzeComp(comp, project, 0);
+  return {
+    ...analyzeComp(comp, project, 0),
+    alphaWarnings: collectAlphaWarnings(comp, project, 0),
+  };
 }

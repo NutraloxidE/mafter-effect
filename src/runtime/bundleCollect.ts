@@ -13,9 +13,11 @@ import type {
   TimelineComposition,
 } from "../core/schema";
 import { globalPluginRegistry } from "./pluginRegistry";
+import { BUILTIN_COMPONENT_TYPES } from "./builtinComponents";
 import { collectExpressionPresetScriptPaths } from "./builtinExpressionPresetScripts";
 import { resolveFootageAudioPath, resolveFootageVideoPath } from "./footagePlayback";
 import { normalizeFootageQuality } from "./footageQuality";
+import { isSplitAlphaVideoMeta } from "./imageAssetCache";
 
 export interface BundleCollectResult {
   timelineCompIds: Set<string>;
@@ -24,18 +26,6 @@ export interface BundleCollectResult {
   binaryPaths: Set<string>;
   livePluginIds: Set<string>;
 }
-
-const BUILTIN_COMPONENT_TYPES = new Set([
-  "solid",
-  "shape",
-  "text",
-  "image",
-  "html",
-  "comp",
-  "audio",
-  "video",
-  "camera", // §6.5b 非描画（transform/メタのみ）。bundle で bake してはいけない
-]);
 
 function isTimelineComp(c: Composition | undefined): c is TimelineComposition {
   return c !== undefined && c.kind === "timeline";
@@ -84,6 +74,12 @@ function collectObjectAssets(obj: SceneObject, project: Project, binaries: Set<s
           binaries.add(resolveFootageVideoPath(asset, quality));
           const audioPath = resolveFootageAudioPath(asset);
           if (audioPath) binaries.add(audioPath);
+          // §16.2 split alpha: companion マスク WebM は quality tier に関わらず常に原本を使う
+          // （DomRenderer は imageCache.getAlphaVideoUrl を quality 非依存で参照する）。
+          // 同梱を忘れると bundle player 側で 404 → 合成失敗 → 透過が出ない/再生されない。
+          if (isSplitAlphaVideoMeta(asset.meta)) {
+            binaries.add(asset.meta!.alphaPath as string);
+          }
         }
       }
       continue;

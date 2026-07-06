@@ -302,6 +302,16 @@ function writeRetryQueue(queue: FeedbackPayload[]): void {
 
 async function postPayload(payload: FeedbackPayload): Promise<boolean> {
   if (!FEEDBACK_TOKEN) return false;
+  // Electron ラッパーは file:// / dev-server 由来で API とオリジンが異なるため、
+  // レンダラから直接 fetch すると Authorization ヘッダ付き CORS プリフライトで弾かれる。
+  // メインプロセス経由の IPC で送信することで回避する（electron/main.ts の feedback:post）。
+  if (typeof window !== "undefined" && window.mafterDesktop?.isElectron) {
+    try {
+      return await window.mafterDesktop.postFeedback(payload);
+    } catch {
+      return false;
+    }
+  }
   try {
     const res = await fetch("/api/feedback", {
       method: "POST",

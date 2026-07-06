@@ -109,6 +109,49 @@ describe("bundleCollect", () => {
     expect(deps.binaryPaths.has("assets/photo.png")).toBe(true);
   });
 
+  it("collects split-alpha companion webm path for video layers (§16.2)", () => {
+    const videoAsset = "01ASSETVID000000000000001";
+    const project: Project = {
+      ...minimalProject([
+        {
+          id: "01OBJ00000000000000000009",
+          name: "Person",
+          parent: null,
+          zOrder: 1,
+          enabled: true,
+          inPoint: 0,
+          outPoint: 90,
+          transform: {
+            anchor: { value: { x: 0, y: 0, z: 0 }, keyframes: [] },
+            position: { value: { x: 0, y: 0, z: 0 }, keyframes: [] },
+            rotation: { value: { x: 0, y: 0, z: 0 }, keyframes: [] },
+            scale: { value: { x: 1, y: 1, z: 1 }, keyframes: [] },
+          },
+          opacity: { value: 1, keyframes: [] },
+          components: [{ type: "video", props: { asset: videoAsset, fit: "contain" } }],
+        },
+      ]),
+      assets: [
+        {
+          id: videoAsset,
+          path: "assets/person.webm",
+          kind: "video",
+          meta: {
+            width: 1920,
+            height: 1080,
+            hasAlpha: true,
+            alphaMode: "split",
+            alphaPath: "assets/person.alpha.webm",
+          },
+        },
+      ],
+    };
+
+    const deps = collectBundleDependencies(project, "01COMPROOT0000000000000001");
+    expect(deps.binaryPaths.has("assets/person.webm")).toBe(true);
+    expect(deps.binaryPaths.has("assets/person.alpha.webm")).toBe(true);
+  });
+
   it("componentNeedsBake respects plugin default bake", () => {
     registerBuiltinComponents();
     globalPluginRegistry.registerComponent({
@@ -121,6 +164,9 @@ describe("bundleCollect", () => {
     } as ComponentDef);
 
     expect(componentNeedsBake({ type: "solid", props: {} })).toBe(false);
+    // §5.5c shape rect/ellipse/path のいずれも builtin なので既定 bake（誤 bake）にならない。
+    expect(componentNeedsBake({ type: "shape", props: { kind: "rect" } })).toBe(false);
+    expect(componentNeedsBake({ type: "shape", props: { kind: "path", vertices: [] } })).toBe(false);
     expect(componentNeedsBake({ type: "test-plugin-layer", props: {} })).toBe(true);
     expect(componentNeedsBake({ type: "test-plugin-layer", props: {}, exportStrategy: "live" })).toBe(false);
   });

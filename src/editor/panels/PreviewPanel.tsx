@@ -35,10 +35,11 @@ import {
 import { previewCacheService } from "../previewCacheService";
 import { precompRasterService } from "../precompRasterService";
 import { compNeedsAutoPreviewCache } from "../previewCompAnalysis";
-import { runPreviewFrameClock, runPreviewPlaybackLoop } from "../previewPlaybackLoop";
+import { runPreviewFrameClock, runPreviewPlaybackLoop } from "../../runtime/previewPlaybackLoop";
 import { PreviewAudioClock } from "../previewAudioClock";
 import {
   computePlaybackSyncState,
+  filterPrimaryVideoSamples,
   holdThresholdsForFps,
   initialPlaybackSyncState,
 } from "../../runtime/playbackVideoSync";
@@ -602,7 +603,7 @@ export function PreviewPanel() {
       if (!renderer) return false;
       syncState = computePlaybackSyncState(
         syncState,
-        renderer.sampleMountedVideoClocks(),
+        filterPrimaryVideoSamples(renderer.sampleMountedVideoClocks()),
         thresholds,
         performance.now(),
       );
@@ -656,7 +657,8 @@ export function PreviewPanel() {
         onPlaybackEnd: () => setPlaying(false),
         renderFrame,
         getComp: () => renderCompRef.current ?? comp,
-        getVideoClockSamples: () => rendererRef.current?.sampleMountedVideoClocks() ?? [],
+        getVideoClockSamples: () =>
+          filterPrimaryVideoSamples(rendererRef.current?.sampleMountedVideoClocks() ?? []),
         onPlaybackSyncState: (s) => {
           rendererRef.current?.setPlaybackPauseForSync(s.pauseVideo);
         },

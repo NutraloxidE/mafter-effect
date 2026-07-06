@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { createProject } from "../src/core/createProject";
 import { defaultTransform, staticProp } from "../src/core/props";
-import { applySubjectExtractToProject, subjectExtractLayerName } from "../src/editor/subjectExtract/applySubjectExtract";
+import {
+  applySubjectExtractToProject,
+  resolveSubjectExtractAssetSize,
+  subjectExtractLayerName,
+} from "../src/editor/subjectExtract/applySubjectExtract";
 import {
   ASSETS_BIN_NAME,
   SUBJECT_EXTRACT_BIN_NAME,
@@ -36,6 +40,36 @@ describe("ensureSubjectExtractBin", () => {
     const second = ensureSubjectExtractBin(first.project, "BINASSETS02", "BINEXTR02");
     expect(second.binId).toBe(first.binId);
     expect(second.project.bins!.length).toBe(first.project.bins!.length);
+  });
+});
+
+describe("resolveSubjectExtractAssetSize", () => {
+  const extracted = { width: 640, height: 360 };
+
+  it("prefers the source asset's native size when valid", () => {
+    expect(resolveSubjectExtractAssetSize({ width: 1920, height: 1080 }, extracted)).toEqual({
+      width: 1920,
+      height: 1080,
+    });
+  });
+
+  it("falls back to extracted size when source meta is undefined", () => {
+    expect(resolveSubjectExtractAssetSize(undefined, extracted)).toEqual(extracted);
+  });
+
+  it("falls back to extracted size when source meta is missing width/height", () => {
+    expect(resolveSubjectExtractAssetSize({}, extracted)).toEqual(extracted);
+  });
+
+  it("falls back to extracted size when source width/height is zero or negative", () => {
+    expect(resolveSubjectExtractAssetSize({ width: 0, height: 1080 }, extracted)).toEqual(extracted);
+    expect(resolveSubjectExtractAssetSize({ width: 1920, height: -1 }, extracted)).toEqual(extracted);
+  });
+
+  it("falls back to extracted size when source width/height is not a finite number", () => {
+    expect(resolveSubjectExtractAssetSize({ width: "1920", height: 1080 }, extracted)).toEqual(extracted);
+    expect(resolveSubjectExtractAssetSize({ width: NaN, height: 1080 }, extracted)).toEqual(extracted);
+    expect(resolveSubjectExtractAssetSize({ width: Infinity, height: 1080 }, extracted)).toEqual(extracted);
   });
 });
 

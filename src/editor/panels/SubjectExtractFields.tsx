@@ -12,6 +12,7 @@ import { ScrubNumber } from "../ScrubNumber";
 import { currentTimelineComp, useEditorStore } from "../store";
 import {
   applySubjectExtractToProject,
+  resolveSubjectExtractAssetSize,
   subjectExtractLayerName,
 } from "../subjectExtract/applySubjectExtract";
 import { runSubjectExtract } from "../subjectExtract/runSubjectExtract";
@@ -110,9 +111,15 @@ export function SubjectExtractFields({ videoLayer }: { videoLayer: SceneObject }
       const assetPath = `${DIR_ASSETS}/${newAssetId}.webm`;
       await getFs().write(assetPath, result.webmBytes);
 
-      const meta: Record<string, unknown> = {
+      const sourceAsset = project.assets.find((a) => a.id === assetId);
+      const size = resolveSubjectExtractAssetSize(sourceAsset?.meta, {
         width: result.width,
         height: result.height,
+      });
+
+      const meta: Record<string, unknown> = {
+        width: size.width,
+        height: size.height,
         duration: result.durationSec,
         mime: "video/webm",
         hasAlpha: true,
@@ -151,8 +158,8 @@ export function SubjectExtractFields({ videoLayer }: { videoLayer: SceneObject }
       selectObjects([newLayerId]);
       setStatus(
         result.mode === "split"
-          ? `完了 — ${result.frameCount}f · ${result.width}×${result.height} · split alpha WebM`
-          : `完了 — ${result.frameCount}f · ${result.width}×${result.height} · WebM alpha`,
+          ? `完了 — ${result.frameCount}f · ${result.width}×${result.height}（抽出解像度）· split alpha WebM`
+          : `完了 — ${result.frameCount}f · ${result.width}×${result.height}（抽出解像度）· WebM alpha`,
       );
     } catch (e) {
       if (e instanceof DOMException && e.name === "AbortError") {

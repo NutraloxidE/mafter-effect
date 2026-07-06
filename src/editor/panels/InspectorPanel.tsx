@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { sampleAny, sampleScalar, sampleVec3 } from "../../runtime/interpolate";
-import type { AnimatedProp, BlendMode, Component, Easing, EffectInstance, ExpressionPresetInstance, ParamDescriptor, RGBA, SceneObject, ThreeDMode, TrackMatteMode, Transform, Vec3 } from "../../core/schema";
+import type { AnimatedProp, BlendMode, Component, Easing, EffectInstance, ExpressionPresetInstance, ParamDescriptor, RGBA, SceneObject, ShapeVertex, ThreeDMode, TrackMatteMode, Transform, Vec3 } from "../../core/schema";
 import { BLEND_MODES, TRACK_MATTE_MODES } from "../../core/schema";
 import { formatMissingBlendModeLabel } from "../../core/blendMode";
 import { isTrackMatteIneligible, resolveTrackMattePairs } from "../../core/trackMatte";
@@ -10,7 +10,8 @@ import {
   useEditorStore,
 } from "../store";
 import { isLayerLocked } from "../layerLock";
-import { EXPRESSED_VALUE_COLOR, isPropExpressed, staticProp } from "../../core/props";
+import { EXPRESSED_VALUE_COLOR, isPropExpressed, staticProp, vec3 } from "../../core/props";
+import { newVertexId } from "../../core/ids";
 import { pulseCycleT, pulseModulation } from "../../runtime/pulseScaleWave";
 import { ColorSwatch, isRgba } from "../ColorSwatch";
 import { BUNDLED_FONTS, WEB_SAFE_FONTS, isKnownFont } from "../fontList";
@@ -724,6 +725,7 @@ export function InspectorPanel() {
           if (
             comp.type !== "text" &&
             comp.type !== "solid" &&
+            comp.type !== "shape" &&
             comp.type !== "audio" &&
             comp.type !== "video"
           ) return null;
@@ -751,6 +753,16 @@ export function InspectorPanel() {
                 />
               ) : comp.type === "solid" ? (
                 <SolidComponentFields
+                  obj={obj}
+                  compIdx={compIdx}
+                  frame={frame}
+                  updateObject={updateObject}
+                  previewPatch={previewPatch}
+                  onEditFocus={() => setPreviewQualityEditing(true)}
+                  onEditBlur={() => setPreviewQualityEditing(false)}
+                />
+              ) : comp.type === "shape" ? (
+                <ShapeComponentFields
                   obj={obj}
                   compIdx={compIdx}
                   frame={frame}
@@ -2089,6 +2101,315 @@ function SolidComponentFields({
           onBlur={onEditBlur}
         />
       </div>
+    </div>
+  );
+}
+
+const SHAPE_CORNER_RADIUS_KEYS = [
+  ["radiusTL", "Radius TL"],
+  ["radiusTR", "Radius TR"],
+  ["radiusBR", "Radius BR"],
+  ["radiusBL", "Radius BL"],
+] as const;
+
+/**
+ * §5.5 / §5.5c shape — kind(rect/ellipse/path) プルダウンを単一入口に、fill・4隅 radius・size・
+ * （path 時）頂点リストを Shape フォールドアウト内に集約する（doc/cloudplan/shape-editing-plan.md §3.3）。
+ */
+function ShapeComponentFields({
+  obj,
+  compIdx,
+  frame,
+  updateObject,
+  previewPatch,
+  onEditFocus,
+  onEditBlur,
+}: {
+  obj: SceneObject;
+  compIdx: number;
+  frame: number;
+  updateObject: (id: string, patch: Partial<SceneObject>, label?: string) => void;
+  previewPatch: (patch: Partial<SceneObject>) => void;
+  onEditFocus: () => void;
+  onEditBlur: () => void;
+}) {
+  const comp = obj.components[compIdx];
+  if (!comp || comp.type !== "shape") return null;
+  const props = comp.props;
+
+  const writeComponents = (nextProps: Component["props"], label: string) => {
+    const nextComponents = obj.components.map((c, i) =>
+      i === compIdx ? { ...c, props: nextProps } : c,
+    );
+    updateObject(obj.id, { components: nextComponents }, label);
+  };
+
+  const previewComponents = (nextProps: Component["props"]) => {
+    previewPatch({
+      components: obj.components.map((c, i) =>
+        i === compIdx ? { ...c, props: nextProps } : c,
+      ),
+    });
+  };
+
+  const writeAnim = <T,>(key: string, next: AnimatedProp<T>, label: string) => {
+    writeComponents({ ...props, [key]: next }, label);
+  };
+  const previewAnim = <T,>(key: string, next: AnimatedProp<T>) => {
+    previewComponents({ ...props, [key]: next });
+  };
+  const toggleKf = (key: string, prop: AnimatedProp<unknown>) => {
+    if (prop.keyframes.length > 0) writeAnim(key, { value: prop.value, keyframes: [] }, `Disable ${key} keyframes`);
+    else writeAnim(key, setKeyframe(prop, frame, prop.value, { type: "hold" }), `Enable ${key} keyframes`);
+  };
+
+  const kind = typeof props["kind"] === "string" ? (props["kind"] as string) : "rect";
+
+  const setKind = (nextKind: string) => {
+    const nextProps: Component["props"] = { ...props, kind: nextKind };
+    // path へ切替時、頂点が未設定なら既定の三角形を用意する（0頂点は何も描画されないため）。
+    if (nextKind === "path" && !Array.isArray(props["vertices"])) {
+      const sizeProp = props["size"];
+      const size = isAnimated(sizeProp) ? (sampleAny(sizeProp, frame) as Vec3) : vec3(200, 200, 0);
+      const w = size.x || 200;
+      const h = size.y || 200;
+      const nextVertices: ShapeVertex[] = [
+        { id: newVertexId(), pos: staticProp(vec3(w / 2, 0, 0)) },
+        { id: newVertexId(), pos: staticProp(vec3(w, h, 0)) },
+        { id: newVertexId(), pos: staticProp(vec3(0, h, 0)) },
+      ];
+      nextProps.vertices = nextVertices;
+    }
+    writeComponents(nextProps, "Edit Shape kind");
+  };
+
+  const fillProp = props["fill"];
+  const fillVal = isAnimated(fillProp) && isRgba(sampleAny(fillProp, frame))
+    ? (sampleAny(fillProp, frame) as RGBA) : { r: 0.5, g: 0.7, b: 0.9, a: 1 };
+
+  const sizeProp = props["size"];
+  const sizeVal = isAnimated(sizeProp) ? (sampleAny(sizeProp, frame) as Vec3) : vec3(200, 200, 0);
+  const setSizeAxis = (axis: "x" | "y", v: number) => {
+    if (!isAnimated(sizeProp)) return;
+    const next = { ...sizeVal, [axis]: v };
+    if (sizeProp.keyframes.length > 0) writeAnim("size", setKeyframe(sizeProp as AnimatedProp<Vec3>, frame, next), "Edit Shape size");
+    else writeAnim("size", { ...sizeProp, value: next }, "Edit Shape size");
+  };
+
+  const vertices = Array.isArray(props["vertices"]) ? (props["vertices"] as ShapeVertex[]) : undefined;
+  const writeVertices = (next: ShapeVertex[], label: string) => {
+    writeComponents({ ...props, vertices: next }, label);
+  };
+
+  return (
+    <div>
+      <Row label="Kind">
+        <select value={kind} onChange={(e) => setKind(e.target.value)} style={selectStyle}>
+          <option value="rect">Rectangle</option>
+          <option value="ellipse">Ellipse</option>
+          <option value="path">Path（頂点）</option>
+        </select>
+      </Row>
+
+      {isAnimated(fillProp) && (
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 4, marginBottom: 4 }}>
+          <Stopwatch active={fillProp.keyframes.length > 0} onClick={() => toggleKf("fill", fillProp)} />
+          <div style={{ flex: 1 }}>
+            <ColorSwatch
+              label="Fill"
+              value={fillVal}
+              expressed={isPropExpressed(fillProp)}
+              onCommit={(v) => {
+                if (fillProp.keyframes.length > 0) writeAnim("fill", setKeyframe(fillProp as AnimatedProp<RGBA>, frame, v), "Edit Shape fill");
+                else writeAnim("fill", { ...fillProp, value: v }, "Edit Shape fill");
+              }}
+              onLiveChange={(v) => {
+                if (fillProp.keyframes.length > 0) previewAnim("fill", setKeyframe(fillProp as AnimatedProp<RGBA>, frame, v));
+                else previewAnim("fill", { ...fillProp, value: v });
+              }}
+              onFocus={onEditFocus}
+              onBlur={onEditBlur}
+            />
+          </div>
+        </div>
+      )}
+
+      {kind === "rect" && SHAPE_CORNER_RADIUS_KEYS.map(([key, label]) => {
+        const prop = props[key];
+        if (!isAnimated(prop)) return null;
+        const val = sampleAny(prop, frame) as number;
+        return (
+          <AnimScalarRow
+            key={key}
+            label={label}
+            prop={prop as AnimatedProp<number>}
+            value={val}
+            frame={frame}
+            onToggle={() => toggleKf(key, prop)}
+            onCommit={(v) => {
+              onEditBlur();
+              if (prop.keyframes.length > 0) writeAnim(key, setKeyframe(prop as AnimatedProp<number>, frame, v), `Edit ${label}`);
+              else writeAnim(key, { ...prop, value: v }, `Edit ${label}`);
+            }}
+            onLiveChange={(v) => {
+              onEditFocus();
+              previewAnim(key, prop.keyframes.length > 0 ? setKeyframe(prop as AnimatedProp<number>, frame, v) : { ...prop, value: v });
+            }}
+            min={0}
+          />
+        );
+      })}
+
+      {kind !== "path" && isAnimated(sizeProp) && (
+        <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 4 }}>
+          <Stopwatch active={sizeProp.keyframes.length > 0} onClick={() => toggleKf("size", sizeProp)} />
+          <span style={{ color: "#666", width: 34 }}>Size</span>
+          <label style={{ display: "flex", alignItems: "center", gap: 2 }}>
+            <span style={{ color: "#555", fontSize: 10 }}>W</span>
+            <ScrubNumber value={sizeVal.x} onCommit={(v) => setSizeAxis("x", v)} style={numInputStyle} />
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 2 }}>
+            <span style={{ color: "#555", fontSize: 10 }}>H</span>
+            <ScrubNumber value={sizeVal.y} onCommit={(v) => setSizeAxis("y", v)} style={numInputStyle} />
+          </label>
+        </div>
+      )}
+
+      {kind === "path" && (
+        <div style={{ marginTop: 6 }}>
+          <div style={{ color: "#888", fontSize: 10, marginBottom: 4 }}>
+            Vertices（{vertices?.length ?? 0}）
+          </div>
+          {(vertices ?? []).map((v, idx) => (
+            <ShapeVertexRow
+              key={v.id}
+              vertex={v}
+              index={idx}
+              frame={frame}
+              canMoveUp={idx > 0}
+              canMoveDown={idx < (vertices?.length ?? 0) - 1}
+              onChange={(next) => writeVertices((vertices ?? []).map((vv, i) => (i === idx ? next : vv)), `Edit vertex ${idx + 1}`)}
+              onRemove={() => writeVertices((vertices ?? []).filter((_, i) => i !== idx), `Remove vertex ${idx + 1}`)}
+              onMoveUp={() => {
+                const next = [...(vertices ?? [])];
+                const tmp = next[idx - 1]!;
+                next[idx - 1] = next[idx]!;
+                next[idx] = tmp;
+                writeVertices(next, "Reorder vertices");
+              }}
+              onMoveDown={() => {
+                const next = [...(vertices ?? [])];
+                const tmp = next[idx + 1]!;
+                next[idx + 1] = next[idx]!;
+                next[idx] = tmp;
+                writeVertices(next, "Reorder vertices");
+              }}
+            />
+          ))}
+          <button
+            type="button"
+            onClick={() => {
+              const list = vertices ?? [];
+              const last = list[list.length - 1];
+              const base = last ? (sampleAny(last.pos, frame) as Vec3) : vec3(0, 0, 0);
+              writeVertices([...list, { id: newVertexId(), pos: staticProp(vec3(base.x + 40, base.y + 40, 0)) }], "Add vertex");
+            }}
+            style={{ ...btnStyle, width: "100%", fontSize: 10, marginTop: 4 }}
+          >
+            + 頂点を追加
+          </button>
+          {(vertices?.length ?? 0) < 2 && (
+            <div style={{ color: "#f88", fontSize: 10, marginTop: 4 }}>頂点が2つ未満だと描画されません</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** §5.5c shape kind="path" の頂点1件の Inspector 行 — x/y と in/out tangent（任意）を数値編集する。 */
+function ShapeVertexRow({
+  vertex,
+  index,
+  frame,
+  canMoveUp,
+  canMoveDown,
+  onChange,
+  onRemove,
+  onMoveUp,
+  onMoveDown,
+}: {
+  vertex: ShapeVertex;
+  index: number;
+  frame: number;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  onChange: (next: ShapeVertex) => void;
+  onRemove: () => void;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+}) {
+  const pos = sampleAny(vertex.pos, frame) as Vec3;
+  const setPos = (axis: "x" | "y", v: number) => {
+    const nextPos = { ...pos, [axis]: v };
+    onChange({
+      ...vertex,
+      pos: vertex.pos.keyframes.length > 0 ? setKeyframe(vertex.pos, frame, nextPos) : { ...vertex.pos, value: nextPos },
+    });
+  };
+
+  const tangentRow = (key: "inTangent" | "outTangent", label: string) => {
+    const t = vertex[key];
+    const val = t ? (sampleAny(t, frame) as Vec3) : null;
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 4, marginLeft: 22, marginTop: 2 }}>
+        <span style={{ color: "#666", fontSize: 9, width: 26 }}>{label}</span>
+        <input
+          type="checkbox"
+          checked={val !== null}
+          onChange={(e) => {
+            if (e.target.checked) onChange({ ...vertex, [key]: staticProp(vec3(0, 0, 0)) });
+            else onChange({ ...vertex, [key]: undefined });
+          }}
+        />
+        {val !== null && t !== undefined && (
+          <>
+            <ScrubNumber
+              value={val.x}
+              onCommit={(v) => {
+                const next = { ...val, x: v };
+                onChange({ ...vertex, [key]: t.keyframes.length > 0 ? setKeyframe(t, frame, next) : { ...t, value: next } });
+              }}
+              style={numInputStyle}
+            />
+            <ScrubNumber
+              value={val.y}
+              onCommit={(v) => {
+                const next = { ...val, y: v };
+                onChange({ ...vertex, [key]: t.keyframes.length > 0 ? setKeyframe(t, frame, next) : { ...t, value: next } });
+              }}
+              style={numInputStyle}
+            />
+          </>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div style={{ marginBottom: 6, padding: "4px 6px", background: "#232323", borderRadius: 4 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+        <span style={{ color: "#777", fontSize: 10, width: 18 }}>#{index + 1}</span>
+        <span style={{ color: "#555", fontSize: 9 }}>X</span>
+        <ScrubNumber value={pos.x} onCommit={(v) => setPos("x", v)} style={numInputStyle} />
+        <span style={{ color: "#555", fontSize: 9 }}>Y</span>
+        <ScrubNumber value={pos.y} onCommit={(v) => setPos("y", v)} style={numInputStyle} />
+        <button type="button" onClick={onMoveUp} disabled={!canMoveUp} style={{ ...btnStyle, fontSize: 9, padding: "1px 4px" }}>▲</button>
+        <button type="button" onClick={onMoveDown} disabled={!canMoveDown} style={{ ...btnStyle, fontSize: 9, padding: "1px 4px" }}>▼</button>
+        <button type="button" onClick={onRemove} style={{ ...btnStyle, fontSize: 9, padding: "1px 4px", color: "#f66" }}>×</button>
+      </div>
+      {tangentRow("inTangent", "In")}
+      {tangentRow("outTangent", "Out")}
     </div>
   );
 }

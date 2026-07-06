@@ -211,7 +211,12 @@ export interface EditorStore {
   selectObjects: (ids: string[]) => void;
 
   // §20.2 コンポジション管理
-  addTimelineComp: (name?: string) => string | null;
+  addTimelineComp: (
+    name?: string,
+    opts?: { width?: number; height?: number; fps?: number; duration?: number },
+  ) => string | null;
+  // §20.2c フッテージ（image/video）から寸法・尺を合わせた comp を作成し、レイヤーとして配置する
+  addCompositionFromAsset: (assetId: string) => string | null;
   removeComposition: (id: string) => void;
   renameComposition: (id: string, name: string) => void;
   // §20.5 Project Bin
@@ -244,6 +249,8 @@ export interface EditorStore {
 
   // ショートカット: オブジェクトを新規追加して ID を返す
   addSolid: (name?: string) => string | null;
+  // §5.5 / §5.5c shape レイヤー追加（既定 kind: rect）
+  addShape: (name?: string) => string | null;
   // fs アクセス（外部公開：ExportDialog など）
   getFs: () => IndexedDbFs;
   addText: (name?: string) => string | null;
@@ -579,7 +586,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
   // §20.2 コンポジション管理 ————————————————————————————————
 
-  addTimelineComp: (name) => {
+  addTimelineComp: (name, opts) => {
     const before = get().project;
     if (!before) return null;
     const id = newCompId();
@@ -589,10 +596,10 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       id,
       name: name ?? `Comp ${timelineCount + 1}`,
       kind: "timeline",
-      width: 1920,
-      height: 1080,
-      fps: 30,
-      duration: 150,
+      width: opts?.width ?? 1920,
+      height: opts?.height ?? 1080,
+      fps: opts?.fps ?? 30,
+      duration: opts?.duration ?? 150,
       // 背景は未設定 = 透明（§5.6）。色が要るなら setCompBackground で設定。
       objects: [],
     };
@@ -609,6 +616,33 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     // 作成した comp をアクティブにする（エディタ状態, undo 対象外）
     set({ currentCompId: id, currentFrame: 0, selectedObjectIds: [], previewCamera: null });
     return id;
+  },
+
+  addCompositionFromAsset: (assetId) => {
+    const project = get().project;
+    if (!project) return null;
+    const asset = project.assets.find((a) => a.id === assetId);
+    if (!asset || (asset.kind !== "image" && asset.kind !== "video")) return null;
+
+    const fps = 30;
+    const meta = asset.meta ?? {};
+    const metaWidth = meta["width"];
+    const metaHeight = meta["height"];
+    const width = typeof metaWidth === "number" && metaWidth > 0 ? Math.round(metaWidth) : 1920;
+    const height = typeof metaHeight === "number" && metaHeight > 0 ? Math.round(metaHeight) : 1080;
+    const metaDuration = meta["duration"];
+    const duration = asset.kind === "video" && typeof metaDuration === "number" && metaDuration > 0
+      ? Math.max(1, Math.round(metaDuration * fps))
+      : 150;
+    const baseName = asset.path.split("/").pop() ?? "";
+    const dot = baseName.lastIndexOf(".");
+    const name = (dot > 0 ? baseName.slice(0, dot) : baseName) || undefined;
+
+    const compId = get().addTimelineComp(name, { width, height, fps, duration });
+    if (!compId) return null;
+    const objId = asset.kind === "image" ? get().addImageLayer(assetId) : get().addVideoLayer(assetId);
+    if (objId) get().selectObjects([objId]);
+    return compId;
   },
 
   removeComposition: (id) => {
@@ -1029,6 +1063,40 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
           props: {
             color: { value: { r: 0.5, g: 0.5, b: 0.9, a: 1 }, keyframes: [] },
             size: staticProp(vec3(400, 300, 0)),
+          },
+        },
+      ],
+    };
+    cmdAddObject(get(), obj);
+    return id;
+  },
+
+  addShape: (name) => {
+    const id = newObjectId();
+    const p = get().project;
+    const comp = p?.compositions.find((c) => c.id === get().currentCompId) as TimelineComposition | undefined;
+    const duration = comp?.duration ?? 150;
+    const obj: SceneObject = {
+      id,
+      name: name ?? "Shape",
+      parent: null,
+      zOrder: nextZOrder(comp),
+      enabled: true,
+      inPoint: 0,
+      outPoint: duration,
+      transform: defaultTransform(),
+      opacity: staticProp(1),
+      components: [
+        {
+          type: "shape",
+          props: {
+            kind: "rect",
+            fill: { value: { r: 0.5, g: 0.7, b: 0.9, a: 1 }, keyframes: [] },
+            radiusTL: staticProp(0),
+            radiusTR: staticProp(0),
+            radiusBR: staticProp(0),
+            radiusBL: staticProp(0),
+            size: staticProp(vec3(200, 200, 0)),
           },
         },
       ],

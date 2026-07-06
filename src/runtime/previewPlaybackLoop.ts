@@ -1,4 +1,6 @@
-/** §28.3 / §27.12 — Draft 再生用 RAF ループ（React render effect バイパス）。 */
+/** §28.3 / §27.12 — Draft 再生用 RAF ループ（React render effect バイパス）。
+ * 外部依存ゼロの純粋な rAF ループなので editor Preview パネルと bundle player の両方が
+ * 同一実装を共有する（§11.4 双方向同期 shouldHold 込みで preview↔bundle 一致・単一の正）。 */
 
 export interface PreviewPlaybackLoopOptions {
   fps: number;
@@ -10,7 +12,7 @@ export interface PreviewPlaybackLoopOptions {
   onFrameChange: (frame: number) => void;
   onPlaybackEnd: () => void;
   /**
-   * true の間は frame を進めない（映像ピクセル待ち）。
+   * true の間は frame を進めない(映像ピクセル待ち)。
    * wall-clock の lastRafMs は通常どおり消費し、解除時のフレームジャンプを防ぐ。
    */
   shouldHold?: () => boolean;

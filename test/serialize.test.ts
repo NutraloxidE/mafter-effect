@@ -59,6 +59,35 @@ describe("serializeProject", () => {
     expect(serializeProject(p1)).toBe(serializeProject(p2));
   });
 
+  it("§5.5c shape vertices array order is preserved (path order, not id-sorted)", () => {
+    const base = createProject({ now: "2026-01-01T00:00:00.000Z" });
+    const p: Project = structuredClone(base);
+    const shapeObj = obj("01SHAPE0000000000000000001");
+    shapeObj.components = [
+      {
+        type: "shape",
+        props: {
+          kind: "path",
+          fill: staticProp({ r: 1, g: 0, b: 0, a: 1 }),
+          vertices: [
+            { id: "01VTX0000000000000000003", pos: staticProp({ x: 0, y: 0, z: 0 }) },
+            { id: "01VTX0000000000000000001", pos: staticProp({ x: 10, y: 0, z: 0 }) },
+            { id: "01VTX0000000000000000002", pos: staticProp({ x: 5, y: 10, z: 0 }) },
+          ],
+        },
+      },
+    ];
+    timeline(p).objects = [shapeObj];
+    const text = serializeProject(p);
+    // vertex id "003" が配列先頭のまま（id 昇順の "001" 先頭にはならない）＝配列順保持を確認。
+    const vertexIds = [...text.matchAll(/"id": "(01VTX\S+)"/g)].map((m) => m[1]);
+    expect(vertexIds).toEqual([
+      "01VTX0000000000000000003",
+      "01VTX0000000000000000001",
+      "01VTX0000000000000000002",
+    ]);
+  });
+
   it("produces a trailing newline", () => {
     const text = serializeProject(
       createProject({ now: "2026-01-01T00:00:00.000Z" }),

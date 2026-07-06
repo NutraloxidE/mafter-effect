@@ -4,7 +4,30 @@ import { defaultTransform, staticProp } from "../src/core/props";
 import { pipelineAnalysis, layerPipelineKind } from "../src/editor/pipelineAnalysis";
 import { registerBuiltinEffects } from "../src/runtime/builtinEffects";
 import { registerFastEffects } from "../src/runtime/fastEffects";
-import type { Project, SceneObject, TimelineComposition } from "../src/core/schema";
+import type { AssetEntry, Project, SceneObject, TimelineComposition } from "../src/core/schema";
+
+function videoLayer(id: string, assetId: string, overrides: Partial<SceneObject> = {}): SceneObject {
+  return {
+    id,
+    name: overrides.name ?? id,
+    parent: null,
+    zOrder: overrides.zOrder ?? 1,
+    enabled: true,
+    inPoint: 0,
+    outPoint: 90,
+    transform: defaultTransform(),
+    opacity: staticProp(1),
+    components: [{ type: "video", props: { asset: assetId, trimStart: 0 } }],
+    ...overrides,
+  };
+}
+
+function videoAsset(id: string, alphaMode: "split" | "unified" | undefined): AssetEntry {
+  const meta: Record<string, unknown> =
+    alphaMode === undefined ? {} : { hasAlpha: true, alphaMode };
+  if (alphaMode === "split") meta.alphaPath = `assets/${id}.alpha.webm`;
+  return { id, path: `assets/${id}.webm`, kind: "video", meta };
+}
 
 function timeline(p: Project): TimelineComposition {
   const comp = p.compositions[0];
@@ -144,5 +167,66 @@ describe("pipelineAnalysis", () => {
     expect(result.rasterPassCount).toBe(2);
     expect(result.summaryLabel).toContain("2段");
     expect(result.summaryTone).toBe("heavy");
+  });
+
+  it("split alpha 動画レイヤーは alphaWarnings に検出される（effect 無しでも）", () => {
+    const p = createProject({ now: "2026-01-01T00:00:00.000Z" });
+    p.assets.push(videoAsset("asset-split", "split"));
+    timeline(p).objects = [videoLayer("01V", "asset-split", { name: "Person" })];
+
+    const result = pipelineAnalysis(timeline(p), p);
+    expect(result.alphaWarnings).toHaveLength(1);
+    expect(result.alphaWarnings[0]?.objectId).toBe("01V");
+    expect(result.alphaWarnings[0]?.objectName).toBe("Person");
+    expect(result.alphaWarnings[0]?.depth).toBe(0);
+    expect(result.alphaWarnings[0]?.message).toContain("2回描画");
+  });
+
+  it("unified alpha / 通常動画は alphaWarnings を出さない", () => {
+    const p = createProject({ now: "2026-01-01T00:00:00.000Z" });
+    p.assets.push(videoAsset("asset-unified", "unified"), videoAsset("asset-plain", undefined));
+    timeline(p).objects = [
+      videoLayer("01U", "asset-unified", { zOrder: 1 }),
+      videoLayer("01P", "asset-plain", { zOrder: 2 }),
+    ];
+
+    const result = pipelineAnalysis(timeline(p), p);
+    expect(result.alphaWarnings).toHaveLength(0);
+  });
+
+  it("nested precomp 内の split alpha レイヤーも depth 付きで検出される", () => {
+    const p = createProject({ now: "2026-01-01T00:00:00.000Z" });
+    p.assets.push(videoAsset("asset-split", "split"));
+
+    const nestedComp: TimelineComposition = {
+      id: "nested-comp",
+      name: "Nested",
+      kind: "timeline",
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      duration: 90,
+      objects: [videoLayer("01NV", "asset-split", { name: "NestedPerson" })],
+    };
+    p.compositions.push(nestedComp);
+
+    const precompLayer: SceneObject = {
+      id: "01PRE",
+      name: "Precomp",
+      parent: null,
+      zOrder: 1,
+      enabled: true,
+      inPoint: 0,
+      outPoint: 90,
+      transform: defaultTransform(),
+      opacity: staticProp(1),
+      components: [{ type: "comp", props: { compId: "nested-comp", trimStart: 0 } }],
+    };
+    timeline(p).objects = [precompLayer];
+
+    const result = pipelineAnalysis(timeline(p), p);
+    expect(result.alphaWarnings).toHaveLength(1);
+    expect(result.alphaWarnings[0]?.objectId).toBe("01NV");
+    expect(result.alphaWarnings[0]?.depth).toBe(1);
   });
 });

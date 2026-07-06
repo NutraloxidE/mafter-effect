@@ -5,6 +5,7 @@ import type {
   Keyframe,
   Project,
   SceneObject,
+  ShapeVertex,
   TimelineComposition,
   Transform,
   Vec3,
@@ -283,6 +284,20 @@ function boundsForComponent(
   project: Project,
   boundsCtx?: LayerBoundsContext,
 ): LocalBounds | null {
+  // §5.5c shape kind="path": size prop を持たないため頂点の bounding box から算出する。
+  if (type === "shape" && props["kind"] === "path") {
+    const vertices = props["vertices"] as ShapeVertex[] | undefined;
+    if (!vertices || vertices.length === 0) return { minX: 0, minY: 0, maxX: 100, maxY: 100 };
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const v of vertices) {
+      const pos = sampleAny(v.pos, frame) as Vec3;
+      minX = Math.min(minX, pos.x);
+      maxX = Math.max(maxX, pos.x);
+      minY = Math.min(minY, pos.y);
+      maxY = Math.max(maxY, pos.y);
+    }
+    return { minX, minY, maxX, maxY };
+  }
   switch (type) {
     case "solid":
     case "shape": {

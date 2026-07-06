@@ -9,8 +9,7 @@ export interface RgbaFrame {
 
 export type SubjectWebmEncodeResult =
   | { mode: "unified"; webm: Uint8Array }
-  | { mode: "split"; colorWebm: Uint8Array; alphaWebm: Uint8Array }
-  | { mode: "packed"; webm: Uint8Array };
+  | { mode: "split"; colorWebm: Uint8Array; alphaWebm: Uint8Array };
 
 function evenDim(n: number): number {
   const v = Math.max(2, Math.round(n));
@@ -42,20 +41,6 @@ export function toGrayscaleAlpha(rgba: Uint8ClampedArray): Uint8ClampedArray {
     out[i + 3] = 255;
   }
   return out;
-}
-
-/**
- * §16.2 packed alpha — color（上半分）+ grayscale alpha（下半分）を1枚の (w, 2h) フレームに積む。
- * 独立した2本の webm（split）より、再生時の decode/seek 待ちが1本分で済む
- * （scrub 時、色用・alpha 用の2つの独立デコーダの ready 待ちが遅延の主因だった）。
- */
-export function toPackedFrame(f: RgbaFrame): RgbaFrame {
-  const color = toOpaqueRgbColor(f.rgba);
-  const alpha = toGrayscaleAlpha(f.rgba);
-  const packed = new Uint8ClampedArray(color.length + alpha.length);
-  packed.set(color, 0);
-  packed.set(alpha, color.length);
-  return { width: f.width, height: f.height * 2, rgba: packed };
 }
 
 async function configureVideoEncoder(

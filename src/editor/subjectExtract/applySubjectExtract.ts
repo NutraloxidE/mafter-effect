@@ -77,3 +77,28 @@ export function subjectExtractLayerName(sourceName: string, target: SubjectExtra
   const label = target === "person" ? "Person" : target;
   return `${sourceName} — ${label}`;
 }
+
+export interface SubjectExtractAssetSize {
+  width: number;
+  height: number;
+}
+
+/**
+ * 新規 asset.meta の width/height。ソース video asset の原寸を優先し、
+ * 欠落・非数値・0 以下なら抽出結果の解像度へフォールバック。
+ * 抽出レイヤーは常にソースと同じ大きさ・位置で表示される（§16.2）。
+ */
+export function resolveSubjectExtractAssetSize(
+  sourceAssetMeta: Record<string, unknown> | undefined,
+  extracted: SubjectExtractAssetSize,
+): SubjectExtractAssetSize {
+  const w = sourceAssetMeta?.["width"];
+  const h = sourceAssetMeta?.["height"];
+  if (
+    typeof w === "number" && Number.isFinite(w) && w > 0 &&
+    typeof h === "number" && Number.isFinite(h) && h > 0
+  ) {
+    return { width: w, height: h };
+  }
+  return { width: extracted.width, height: extracted.height };
+}

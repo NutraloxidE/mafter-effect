@@ -12,17 +12,15 @@ import {
   normalizeAlphaMaskForeground,
   scaleAlphaMaskNearest,
 } from "./maskComposite";
-
-const WASM_BASE = "/subject-extract/mediapipe/wasm";
-const MODEL_PATH = "/subject-extract/mediapipe/models/selfie_segmenter.tflite";
+import { publicAssetUrl } from "../../runtime/publicAssetUrl";
 
 let segmenterPromise: Promise<ImageSegmenter> | null = null;
 
 async function createSegmenter(delegate: "GPU" | "CPU"): Promise<ImageSegmenter> {
-  const vision = await FilesetResolver.forVisionTasks(WASM_BASE);
+  const vision = await FilesetResolver.forVisionTasks(publicAssetUrl("subject-extract/mediapipe/wasm"));
   return ImageSegmenter.createFromOptions(vision, {
     baseOptions: {
-      modelAssetPath: MODEL_PATH,
+      modelAssetPath: publicAssetUrl("subject-extract/mediapipe/models/selfie_segmenter.tflite"),
       delegate,
     },
     runningMode: "IMAGE",

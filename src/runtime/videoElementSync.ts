@@ -155,6 +155,14 @@ export interface VideoElementSyncOptions {
    * playbackMode 中のみ意味を持つ。旧 HW seek 連鎖を避けつつ双方向同期する。
    */
   pauseForSync?: boolean;
+  /**
+   * §11.7 bundle: true の間は playbackMode 中でも unmute しない（muted のまま再生を進める）。
+   * ページロード直後（ユーザー操作前）の unmute 付き play() はブラウザの autoplay ポリシーで
+   * 拒否され currentTime が進まなくなる（=映像だけフリーズ）。ジェスチャー前は muted のまま
+   * ネイティブ再生を進め、初回ジェスチャーのコールスタック内で unmute する側で解除する。
+   * editor preview は Play 自体がユーザー操作なので常に false のまま無関係。
+   */
+  forceMuted?: boolean;
 }
 
 /** 半フレーム未満の差は無視（scrub/export の過剰 seek 抑制）。 */
@@ -199,7 +207,7 @@ export function isSourceContinuousAcrossCut(
  * seek 後の present 復帰が遅く、また遅れて seek… と自己増殖の seek ループ＝映像 plane の
  * ガクつきになる。閾値を大きくして decode lag の追従は play() に委ね、seek 連鎖を断つ。
  */
-const PLAYBACK_RESYNC_THRESHOLD_SEC = 0.5; // ≈15 frames @30fps
+export const PLAYBACK_RESYNC_THRESHOLD_SEC = 0.5; // ≈15 frames @30fps
 
 /**
  * フレーム整列 target（k/fps）から **実際に seek すべき時刻** を返す。
@@ -254,8 +262,9 @@ export function syncVideoElementTime(
 
   if (options.playbackMode) {
     // §11.4 video 内蔵音声: 再生中のみアンミュートしてネイティブ A/V 同期に委ねる。
+    // §11.7 forceMuted 中は autoplay ポリシー回避のため unmute を保留する。
     try {
-      video.muted = false;
+      video.muted = options.forceMuted ? true : false;
     } catch {
       /* muted best-effort */
     }

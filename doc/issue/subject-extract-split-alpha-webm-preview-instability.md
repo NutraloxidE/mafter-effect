@@ -1,10 +1,11 @@
 # Subject Extract split-alpha WebM — preview 再生の不安定さ（調査）
 
 > **対象**: Subject Extract（§16.2）で生成される **split alpha WebM**（Chrome 等 `alpha:keep` 非対応環境で color `.webm` + グレースケールマスク `.alpha.webm` の2本に分離されたアセット）の **Preview パネル再生時**の挙動。
-> **状態**: 2026-07-06 調査のみ（未修正）。本 doc は原因の切り分けと修正案の提示が目的。
+> **状態**: 2026-07-06 **修正1・2 実装済み**（下記「実装状況」参照）。修正0/3/4 は未着手。実 Chrome での手動確認は次セッション待ち。
 > **2026-07-06 追記**: ユーザー報告により **「Subject Extract の webm と同時にテキストレイヤーもフリーズ／もたつく」** ことを確認。コードレビューの結果、これは副作用ではなく **設計どおりの直結した挙動**（`holdTimeline` が真になっている間、Draft rAF ループ・Best frame clock・AudioClock マスタークロックのいずれも **`onFrameChange` を一切呼ばない** → 対象コンポの **全レイヤーの DOM 更新が完全に止まる）だと判明。詳細は「テキストが一緒にフリーズする理由（確定）」を参照。
 > **2026-07-06 追記2**: 「Comp 32 の再生がスムーズなこともある」というユーザー報告を調査し、**Play を押す前の動画 warm-up（先読み）が間に合ったかどうかの非決定的なレースも preview 不安定さの一因**であることを確認。詳細は「[なぜ「毎回ではなく時々」なのか](#なぜ毎回ではなく時々なのか--再生開始前の-warm-up-が勝つか負けるかのレース2026-07-06-追記)」/ [不具合③](#問題の分解--実は独立した3つの不具合) を参照。
 > **2026-07-06 追記3（実機 Playwright 検証）**: 他セッションからのフィードバックを受け、`window.__mafterEditorStore` 直接操作 + CDP `Media` ドメインによる実機検証を実施（[verify-comp32-webm-instability.mjs](../../verify-comp32-webm-instability.mjs)）。**holdTimeline の実発火をサンプル時間の約93%という規模で確認**、**Person レイヤーの2ストリームが両方ソフトウェア VP9 デコードだったことを確認**した一方、**warm-up レース（追記2）単独では観測された stall 規模を説明できないと判明**（ready 100% のシナリオと 0% のシナリオで stall 合計時間がほぼ同じ）。詳細は「[実機 Playwright 検証](#実機-playwright-検証2026-07-06-追記他セッションからのフィードバック反映)」を参照。
+> **2026-07-06 追記4（修正1・2 実装）**: `filterPrimaryVideoSamples`（companion をグローバル hold/pause 判定から除外）と `computeAlphaGenlockRate`/`applyAlphaGenlock`（color/alpha の playbackRate 微調整 genlock）を実装。`npm test` 884 PASS（新規11件）・`typecheck` 緑・`build:player` 実行済み。**実機（Playwright/実Chrome）での再検証は未実施** — ユーザー希望により次回は実 Chrome での手動確認を予定（Playwright は headless 由来の decode 挙動差が大きく判定に使わない方針）。
 > **非対象**: unified モード（Firefox 等 `alpha:keep` 対応環境・1本の VP9 alpha WebM）。単一 `<video>` + ブラウザネイティブ透過なので本 issue の機構は当てはまらない。
 
 **関連 spec**: §16.2 / §11.4 / INV-2
@@ -292,7 +293,7 @@ timeline (rAF / AudioClock)
 
 ---
 
-### 修正1（必須・最小リスク）— companion サンプルをグローバル hold/pause 判定から切り離す
+### 修正1（必須・最小リスク）— companion サンプルをグローバル hold/pause 判定から切り離す ✅ 実装済み（2026-07-06）
 
 **対象**: 不具合①。
 
@@ -331,7 +332,7 @@ syncState = computePlaybackSyncState(syncState, primarySamples, thresholds, now)
 
 ---
 
-### 修正2（推奨・画質改善）— color と alpha のフレーム対応を保証する
+### 修正2（推奨・画質改善）— color と alpha のフレーム対応を保証する ✅ 実装済み（2026-07-06、B2 方式）
 
 **対象**: 不具合②（輪郭ズレ）。修正1と独立に効く。
 
@@ -467,8 +468,8 @@ maskCtx.drawImage(video, 0, h, w, h, 0, 0, w, h);        // alpha 領域（同�
 | フェーズ | 内容 | 理由 |
 |----------|------|------|
 | **Phase 0（最速で試せる実験）** | 修正0（warm-up debounce 短縮 / `PLAY_GATE_TIMEOUT_MS` 延長） | 数行の定数調整のみ。ただし実機 Playwright 検証で「warm-up の勝敗は stall 合計時間にほぼ影響しない」ことが分かったため、**期待効果は当初想定より小さい**（優先度は下げてよい） |
-| **Phase 1（即着手可・低リスク）** | 修正1（`holdTimeline` + `pauseVideo` 双方から companion 除外）+ 修正3（合成コスト削減・冗長描画スキップ） | spec/INV 非変更・既存挙動への副作用が小さい。「webm と一緒にテキストが止まる」を確実に解消 |
-| **Phase 2（中期）** | 修正2（B2 rate genlock） | Person レイヤー自体の輪郭ズレ・もたつきを大幅改善。実測ドリフト（平均33〜50ms、最大147ms）を踏まえ `RATE_CORRECTION_BAND_SEC` 下限を調整 |
+| **Phase 1（即着手可・低リスク）** | 修正1（`holdTimeline` + `pauseVideo` 双方から companion 除外）**✅実装済み** + 修正3（合成コスト削減・冗長描画スキップ、未着手） | spec/INV 非変更・既存挙動への副作用が小さい。「webm と一緒にテキストが止まる」を確実に解消 |
+| **Phase 2（中期）** | 修正2（B2 rate genlock）**✅実装済み** | Person レイヤー自体の輪郭ズレ・もたつきを大幅改善。実測ドリフト（平均33〜50ms、最大147ms）を踏まえ `RATE_CORRECTION_BAND_SEC` 下限を調整済み |
 | **Phase 3（要ユーザー確認・大掛かり、優先度を実測により引き上げ）** | 修正4（パックド1本化） | 実機検証で **Person レイヤーの2ストリームが両方ソフトウェア VP9 デコード（`VpxVideoDecoder`）であり、その状態でサンプル時間の約93%が stall** という規模の不安定さが確認された。2→1 ストリーム化で SW decode 負荷そのものを半減させる本策の価値は、実測前の想定より高いと判断すべき |
 
 Phase 1 → 2 は独立に効果測定できる（Phase 1 だけ入れても② は残るはずなので、Comp 32 で「webm はまだ少しガクつくが、他レイヤーの巻き込みは無い」ことを確認できれば設計どおり）。**Phase 0 は実測で効果が限定的と判明したため、Phase 1/4 を優先し Phase 0 は余力があれば試す位置づけに格下げする。**

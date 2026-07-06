@@ -111,6 +111,7 @@ export function TimelinePanel() {
   const renameObject = useEditorStore((s) => s.renameObject);
   const setLayerLabelIndex = useEditorStore((s) => s.setLayerLabelIndex);
   const addSolid = useEditorStore((s) => s.addSolid);
+  const addShape = useEditorStore((s) => s.addShape);
   const addText = useEditorStore((s) => s.addText);
   const addAdjustmentLayer = useEditorStore((s) => s.addAdjustmentLayer);
   const addNullLayer = useEditorStore((s) => s.addNullLayer);
@@ -1086,6 +1087,7 @@ export function TimelinePanel() {
         <span style={{ color: "#555", fontSize: 10 }}>({fps.toFixed(2)} fps)</span>
         <div style={{ width: 8 }} />
         <button onClick={() => { const id = addSolid(); if (id) selectObjects([id]); }} disabled={!comp} style={btnStyle}>+ Solid</button>
+        <button onClick={() => { const id = addShape(); if (id) selectObjects([id]); }} disabled={!comp} style={btnStyle}>+ Shape</button>
         <button onClick={() => { const id = addText(); if (id) selectObjects([id]); }} disabled={!comp} style={btnStyle}>+ Text</button>
         <button onClick={() => { const id = addAdjustmentLayer(); if (id) selectObjects([id]); }} disabled={!comp} style={{ ...btnStyle, color: "#c9a227" }} title="調整レイヤーを追加">+ Adj</button>
         <button onClick={() => { const id = addNullLayer(); if (id) selectObjects([id]); }} disabled={!comp} style={{ ...btnStyle, color: "#e07070" }} title="Null レイヤーを追加">+ Null</button>

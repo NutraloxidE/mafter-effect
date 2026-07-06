@@ -1,5 +1,7 @@
 /** §16.2 — split alpha 再生用 canvas 合成（color × alpha マスク WebM）。 */
 
+import { PLAYBACK_RESYNC_THRESHOLD_SEC } from "./videoElementSync";
+
 export const SPLIT_ALPHA_VIDEO_CLASS = "mafter-split-alpha";
 export const SPLIT_ALPHA_CANVAS_CLASS = "mafter-split-alpha-canvas";
 export const SPLIT_ALPHA_MASK_SCRATCH_CLASS = "mafter-split-alpha-mask-scratch";
@@ -212,6 +214,66 @@ export function setSplitAlphaPresentation(
     if (companion.alphaVideo.getAttribute("src")) {
       companion.alphaVideo.removeAttribute("src");
       companion.alphaVideo.load();
+    }
+  }
+}
+
+/**
+ * §16.2 — color/alpha フレーム対応の genlock（実測: 実機 Playwright 検証で companion ドリフトは
+ * 平均33〜50ms・最大147ms 程度と判明。0.5s のハードシーク閾値には遠く届かないため無補正のまま
+ * 蓄積していた）。誤差レベル未満は補正せず、大ドリフトは呼び出し側でハードシークに委ねる帯域だけ
+ * playbackRate を穏やかに調整する（seek を伴わないため decode 再開コストが発生しない）。
+ */
+const ALPHA_GENLOCK_MIN_DRIFT_SEC = 0.03;
+/** ハードシークにフォールバックする閾値。videoElementSync の再生中 resync 閾値と揃える。 */
+const ALPHA_GENLOCK_MAX_DRIFT_SEC = PLAYBACK_RESYNC_THRESHOLD_SEC;
+const ALPHA_GENLOCK_MAX_RATE_ADJUST = 0.08; // ±8%
+const ALPHA_GENLOCK_RATE_GAIN = 0.3;
+
+/**
+ * drift（color.currentTime − alpha.currentTime）から alpha に適用すべき playbackRate を返す。
+ * drift > 0（alpha が遅れている）→ rate > 1（速める）。誤差帯・大ドリフト帯は 1（補正なし）。
+ */
+export function computeAlphaGenlockRate(driftSec: number): number {
+  const abs = Math.abs(driftSec);
+  if (abs < ALPHA_GENLOCK_MIN_DRIFT_SEC || abs > ALPHA_GENLOCK_MAX_DRIFT_SEC) return 1;
+  const adjust = Math.max(
+    -ALPHA_GENLOCK_MAX_RATE_ADJUST,
+    Math.min(ALPHA_GENLOCK_MAX_RATE_ADJUST, driftSec * ALPHA_GENLOCK_RATE_GAIN),
+  );
+  return 1 + adjust;
+}
+
+/**
+ * 再生中の color/alpha フレーム対応を playbackRate の微調整で徐々に揃える（seek しない）。
+ * 大ドリフト（閾値超）のみハードシークにフォールバックする。呼び出し側は定常再生中
+ * （playbackMode かつ pause/cut/scrub/export のいずれでもない）のときだけ呼ぶこと。
+ */
+export function applyAlphaGenlock(colorVideo: HTMLVideoElement, alphaVideo: HTMLVideoElement): void {
+  const drift = colorVideo.currentTime - alphaVideo.currentTime;
+  if (Math.abs(drift) > ALPHA_GENLOCK_MAX_DRIFT_SEC) {
+    try {
+      alphaVideo.currentTime = colorVideo.currentTime;
+      alphaVideo.playbackRate = 1;
+    } catch {
+      /* seek best-effort */
+    }
+    return;
+  }
+  try {
+    alphaVideo.playbackRate = computeAlphaGenlockRate(drift);
+  } catch {
+    /* playbackRate best-effort */
+  }
+}
+
+/** genlock 対象外のとき呼ぶ（scrub/export/pause/cut境界）。playbackRate を既定に戻す。 */
+export function resetAlphaGenlockRate(alphaVideo: HTMLVideoElement): void {
+  if (alphaVideo.playbackRate !== 1) {
+    try {
+      alphaVideo.playbackRate = 1;
+    } catch {
+      /* best-effort */
     }
   }
 }

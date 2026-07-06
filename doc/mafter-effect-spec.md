@@ -310,6 +310,17 @@ interface ParamDescriptor {
   min?: number; max?: number; step?: number;
   options?: string[];                 // enum 用
 }
+
+// §5.5c shape Phase 2（頂点/ベジェパス編集）。Component.props.vertices?: ShapeVertex[]
+// に additive-optional で乗る（存在しなければ従来通り kind=rect/ellipse の CSS box）。
+// ParamDescriptor には載せない — 単一 AnimatedProp ではなく「AnimatedProp を内包する
+// オブジェクトの配列」のため ParamDescriptor 駆動の汎用 UI/KF行の対象外（Inspector 専用編集）。
+interface ShapeVertex {
+  id: string;                         // ULID (INV-6)。頂点順 = パス順（id 昇順ソート対象外）
+  pos: AnimatedProp<Vec3>;
+  inTangent?: AnimatedProp<Vec3>;      // 頂点位置からの相対オフセット（AE 風ハンドル）
+  outTangent?: AnimatedProp<Vec3>;
+}
 ```
 
 **MVP built-in component types:**
@@ -319,7 +330,7 @@ interface ParamDescriptor {
 | `solid`     | 単色塗り（AE Solid 相当）          | `color: RGBA`, `size: vec2`          |
 | `text`      | テキスト（DOM/SVG レンダリング, §26） | `text`, `font`, `size`, `color`, `align`, `tracking`, `leading`, `weight`, `italic`, `strokeColor`, `strokeWidth` |
 | `image`     | 画像アセット表示                   | `asset: AssetId`, `fit`              |
-| `shape`     | rect / ellipse（最小図形）          | `kind`, `fill: RGBA`, `radius`, `size: vec2` |
+| `shape`     | rect / ellipse / path（頂点編集, §5.5c） | `kind: "rect"\|"ellipse"\|"path"`, `fill: RGBA`, `radiusTL/TR/BR/BL`（rect のみ）, `size: vec2`（rect/ellipse のみ）, `vertices?: ShapeVertex[]`（path のみ） |
 | `html`      | HTML Composition（Model A, §7）     | `compId: CompId`, + comp が宣言した params |
 | `video`     | 動画アセット（best-effort, §11.4）   | `asset: AssetId`, `fit`, `trimStart: Frame`, `gain: AnimatedProp<number>`（0..1, 既定 1）, `autoFade: bool`（既定 true, §11.5.2） |
 | `audio`     | 音声アセット（最小, §11.5）          | `asset: AssetId`, `gain: AnimatedProp<number>`（0..1, 既定 1）, `trimStart: Frame`, `autoFade: bool`（既定 true, §11.5.2） |
@@ -1108,6 +1119,7 @@ type LayoutNode =
 - **依存**: 正確な判定は `executionPath` メタと Live/Raster 調整レイヤー（§27.4 / §27.13）の実装が前提。
 - **非目標**: パネルからの直接編集（並べ替え等）は将来（§19.4）。可視化のみ。
 - **INV-7**: UI 層（エディタ側）。`pipelineAnalysis` は runtime 純関数（DOM/乱数なし・INV-1 と整合）。
+- **透過チャンネル二重描画警告（確定 2026-07-06）**: live/raster の段数とは独立した軸として、comp 内の `video` component が参照する asset の `meta.alphaMode === "split"`（Subject Extract split alpha・§16.2）であるレイヤーを検出し、崖警告と同様の警告 UI で表示する。split alpha は color WebM + グレースケール mask WebM の2本 `<video>` を毎フレーム CPU で合成する（`getImageData`×2 → `putImageData`）ため、他の全レイヤーが前提とする「GPU compositing のみ」という preview パイプラインの前提を破り、live 再生の同期ドリフト要因になる（[doc/issue/subject-extract-split-alpha-webm-preview-instability.md](issue/subject-extract-split-alpha-webm-preview-instability.md)）。precomp ネストも再帰的に検出する。**対象外**: unified alpha（単一 VP9 alpha WebM・ブラウザネイティブ透過・二重描画なし）、track matte（`applyTrackMatte` も毎フレーム canvas 合成だが別機構・別軸）。
 
 ---
 
@@ -1152,6 +1164,28 @@ setCurrentComp(id): void                // 既存。アクティブ comp を切�
 - html comp 削除時は `compositions/<id>/` 配下の FS ファイルも削除する（best-effort）。
 - **ダングリング参照の方針（MVP）**: 削除した html comp を `compId` 参照している `html` コンポーネント（他 comp 上のインスタンス）は**カスケード削除しない**。参照先不在は DomRenderer / HtmlCompPlayer 側で「何も描かない」で安全に縮退する（§7 の throw→silent と同方針）。整合性の自動掃除は §16 将来。
 
+### §20.2c Footage からのコンポジション作成（右クリック・store 操作・確定 2026-07-06）
+
+Project パネルの image / video アセット行を右クリックすると、共有コンテキストメニュー基盤
+（`useContextMenuStore` / `ContextMenuHost`）経由で「このファイルでコンポジットを作成」を表示する。
+audio / font / other はメニュー対象外（ブラウザ既定メニューのまま、挙動変更なし）。
+
+```ts
+addCompositionFromAsset(assetId): CompId | null
+```
+
+- 対象は `AssetEntry.kind` が `"image" | "video"` のみ。それ以外・asset 不在は `null`。
+- `width` / `height`: `asset.meta.width/height`（正の number）があればそれを使用、無ければ `1920×1080`。
+- `fps`: 常に `30`（ソースの実フレームレートは probe していないため。既存 `addTimelineComp` の既定と同じ）。
+- `duration`（frame）: `kind === "video"` かつ `asset.meta.duration`（秒、正の number）があれば
+  `round(duration * fps)`、それ以外（image、または video で meta 欠損）は既定 `150`（5s@30fps）。
+- comp 名: アセットのファイル名から拡張子を除いたもの。
+- 内部実装: `addTimelineComp(name, { width, height, fps, duration })` で comp を作成（`currentCompId` が
+  切り替わる）→ 続けて `addImageLayer` / `addVideoLayer` でその asset を新 comp のレイヤーとして配置し選択する。
+  2 つの既存 command の連鎖のため **undo は 2 step**（Add Composition → Add image/video の順）。
+- 新規 comp は既存 `addTimelineComp` と同じくプロジェクトツリーの**ルート**に作成する
+  （ソース asset と同じ bin には入れない）。
+
 ### §20.2b Footage 削除（store 操作・確定 2026-06-24）
 
 ```ts
@@ -1184,7 +1218,7 @@ html comp はタブに出さない（編集対象の timeline ではないため
 - **選択肢（3 ボタン・AE 準拠）**:
   - **はい（保存）**: 現在のプロジェクトを zip 保存してから続行する。
     - **web 版**: zip ダウンロード（`exportZip` 経路。アプリ外への唯一の永続化）。
-    - **デスクトップ版（将来・未実装）**: OS のファイルダイアログで保存先を指定して書き出す（File System Access API / Electron 等）。現状はコード上に TODO コメントとして残し、web と同じ zip 経路にフォールバックする。
+    - **デスクトップ版（Electron シェル起動のみ実装済み・ネイティブ保存ダイアログは未実装）**: `electron/` に開発起動用の Electron ラッパー（`frame:false` の自前タイトルバー、フィードバック送信はメインプロセス経由 IPC）を追加済み。ただし OS のファイルダイアログで保存先を指定して書き出す機能はまだ無く、Electron 上でも web と同じ zip ダウンロード経路にフォールバックする（TODO コメントは `ProjectPanel.tsx` に残置）。
     - 続行: `New` → `newProject()`、`⬆ zip` → OS ファイル選択ダイアログを開き、選択後 `importZip` → `loadFromFs`。
   - **いいえ**: 保存せず続行する（`New` → `newProject()`、`⬆ zip` → ファイル選択ダイアログのみ）。
   - **キャンセル**: 何もせずモーダルを閉じる（新規作成・インポートともに行わない）。

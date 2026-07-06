@@ -37,6 +37,7 @@ import { resolveTrackMask } from "./trackRoi";
 import type { FileSystem } from "../../fs/FileSystem";
 import type { Project, SceneObject, TimelineComposition } from "../../core/schema";
 import type { ImageAssetCache } from "../../runtime/imageAssetCache";
+import { publicAssetUrl } from "../../runtime/publicAssetUrl";
 
 const WARMUP_FRAMES = 4;
 const MIN_CONFIDENCE = 1;
@@ -49,10 +50,7 @@ function isValidEstimate(frameIndex: number, confidence: number): boolean {
 }
 
 function wasmAbsoluteUrl(): string {
-  if (typeof window !== "undefined" && window.location?.origin) {
-    return new URL(QUAR_WASM_URL, window.location.origin).href;
-  }
-  return QUAR_WASM_URL;
+  return publicAssetUrl(QUAR_WASM_URL);
 }
 
 export class QuarMotionTracker {
@@ -301,10 +299,7 @@ function isValidRotationEstimate(
 }
 
 function opencvAbsoluteUrl(): string {
-  if (typeof window !== "undefined" && window.location?.origin) {
-    return new URL(OPENCV_JS_URL, window.location.origin).href;
-  }
-  return OPENCV_JS_URL;
+  return publicAssetUrl(OPENCV_JS_URL);
 }
 
 export class RotationMotionTracker {

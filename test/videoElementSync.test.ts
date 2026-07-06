@@ -64,6 +64,27 @@ describe("syncVideoElementTime", () => {
     expect(video.play).toHaveBeenCalled();
   });
 
+  it("forceMuted keeps the video muted while playbackMode starts playback (§11.7 autoplay policy)", () => {
+    const video = mockVideo(2, true, { muted: true });
+    syncVideoElementTime(video, 2, 30, { playbackMode: true, forceMuted: true });
+    expect(video.muted).toBe(true);
+    expect(video.play).toHaveBeenCalled();
+  });
+
+  it("forceMuted keeps the video muted while already playing", () => {
+    const video = mockVideo(1, false, { muted: true });
+    syncVideoElementTime(video, 1 + 1 / 30, 30, { playbackMode: true, forceMuted: true });
+    expect(video.muted).toBe(true);
+  });
+
+  it("forceMuted still pauses for sync without seeking (unrelated to mute)", () => {
+    const video = mockVideo(1.5, false, { muted: true });
+    syncVideoElementTime(video, 1.0, 30, { playbackMode: true, pauseForSync: true, forceMuted: true });
+    expect(video.pause).toHaveBeenCalled();
+    expect(video.currentTime).toBe(1.5);
+    expect(video.play).not.toHaveBeenCalled();
+  });
+
   it("keeps the video unmuted while already playing", () => {
     const video = mockVideo(1, false, { muted: true });
     syncVideoElementTime(video, 1 + 1 / 30, 30, { playbackMode: true });

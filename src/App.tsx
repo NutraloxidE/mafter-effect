@@ -119,11 +119,12 @@ export function App() {
 
   const canUndo = undoStack.past.length > 0;
   const canRedo = undoStack.future.length > 0;
+  const isDesktop = typeof window !== "undefined" && !!window.mafterDesktop?.isElectron;
 
   return (
     <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column", background: "#111", color: "#ccc", overflow: "hidden", fontFamily: "system-ui, sans-serif" }}>
-      {/* menu bar */}
-      <div style={{ flexShrink: 0, display: "flex", alignItems: "center", gap: 4, padding: "4px 12px", background: "#1a1a1a", borderBottom: "1px solid #333", fontSize: 12 }}>
+      {/* menu bar（Electron ではタイトルバー兼ドラッグ領域） */}
+      <div style={{ flexShrink: 0, display: "flex", alignItems: "center", gap: 4, padding: "4px 12px", background: "#1a1a1a", borderBottom: "1px solid #333", fontSize: 12, ...(isDesktop ? ({ WebkitAppRegion: "drag" } as React.CSSProperties) : {}) }}>
         <span style={{ fontWeight: "bold", color: "#7fb8f0", marginRight: 8 }}>Mafter Effect</span>
         <button onClick={undo} disabled={!canUndo} style={menuBtnStyle(canUndo)}>↩ Undo</button>
         <button onClick={redo} disabled={!canRedo} style={menuBtnStyle(canRedo)}>↪ Redo</button>
@@ -138,6 +139,7 @@ export function App() {
           </button>
         )}
         <span style={{ color: "#555", fontSize: 10 }}>M1 preview</span>
+        {isDesktop && <WindowControls />}
       </div>
 
       {/* workspace */}
@@ -165,7 +167,8 @@ const feedbackLinkStyle: React.CSSProperties = {
   fontSize: 11,
   textDecoration: "underline",
   marginRight: 8,
-};
+  WebkitAppRegion: "no-drag",
+} as React.CSSProperties;
 
 function menuBtnStyle(enabled: boolean): React.CSSProperties {
   return {
@@ -176,7 +179,51 @@ function menuBtnStyle(enabled: boolean): React.CSSProperties {
     padding: "2px 8px",
     fontSize: 12,
     borderRadius: 3,
-  };
+    WebkitAppRegion: "no-drag",
+  } as React.CSSProperties;
+}
+
+/** Electron 用の自前ウィンドウ操作ボタン（VS Code 風・右端）。全 OS で同一デザイン。 */
+function WindowControls() {
+  const [maximized, setMaximized] = useState(false);
+
+  useEffect(() => {
+    const desktop = window.mafterDesktop;
+    if (!desktop) return;
+    desktop.isMaximized().then(setMaximized).catch(() => {});
+    return desktop.onMaximizeChange(setMaximized);
+  }, []);
+
+  const btnStyle: React.CSSProperties = {
+    background: "transparent",
+    border: "none",
+    color: "#bbb",
+    cursor: "pointer",
+    padding: "2px 10px",
+    fontSize: 12,
+    marginLeft: 4,
+    WebkitAppRegion: "no-drag",
+  } as React.CSSProperties;
+
+  return (
+    <span style={{ display: "flex", alignItems: "center", marginLeft: 8 }}>
+      <button onClick={() => window.mafterDesktop?.minimize()} style={btnStyle} title="最小化">
+        ⎯
+      </button>
+      <button onClick={() => window.mafterDesktop?.toggleMaximize()} style={btnStyle} title={maximized ? "元に戻す" : "最大化"}>
+        {maximized ? "❐" : "▢"}
+      </button>
+      <button
+        onClick={() => window.mafterDesktop?.close()}
+        style={{ ...btnStyle, marginRight: -4 }}
+        onMouseEnter={(e) => (e.currentTarget.style.color = "#e33")}
+        onMouseLeave={(e) => (e.currentTarget.style.color = "#bbb")}
+        title="閉じる"
+      >
+        ✕
+      </button>
+    </span>
+  );
 }
 
 function updateLayoutSizes(node: LayoutNode, path: number[], sizes: number[]): LayoutNode {

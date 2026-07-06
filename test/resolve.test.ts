@@ -131,6 +131,43 @@ describe("resolve — component prop resolution", () => {
     expect(rc.props.color).toEqual({ r: 1, g: 0, b: 0, a: 1 }); // raw passthrough
     expect(rc.props.size).toEqual(vec3(50, 50, 0)); // interpolated
   });
+
+  it("§5.5c samples shape vertices (nested AnimatedProp pos/tangents) at the frame", () => {
+    const obj = makeObject({
+      id: "shape1",
+      components: [
+        {
+          type: "shape",
+          props: {
+            kind: "path",
+            fill: staticProp({ r: 1, g: 1, b: 1, a: 1 }),
+            vertices: [
+              {
+                id: "v1",
+                pos: {
+                  value: vec3(0, 0, 0),
+                  keyframes: [
+                    { frame: 0, value: vec3(0, 0, 0), easing: { type: "linear" } },
+                    { frame: 10, value: vec3(100, 0, 0), easing: { type: "linear" } },
+                  ],
+                },
+                outTangent: staticProp(vec3(5, 5, 0)),
+              },
+              { id: "v2", pos: staticProp(vec3(50, 100, 0)) },
+            ],
+          },
+        },
+      ],
+    });
+    const scene = resolve(comp([obj]), 5);
+    const rc = scene.objects[0]!.components[0]!;
+    const vertices = rc.props.vertices as { id: string; pos: Vec3; outTangent?: Vec3; inTangent?: Vec3 }[];
+    expect(vertices).toHaveLength(2);
+    expect(vertices[0]!.pos).toEqual(vec3(50, 0, 0)); // interpolated at frame 5
+    expect(vertices[0]!.outTangent).toEqual(vec3(5, 5, 0));
+    expect(vertices[0]!.inTangent).toBeUndefined();
+    expect(vertices[1]!.pos).toEqual(vec3(50, 100, 0)); // static
+  });
 });
 
 describe("resolve — INV-1 determinism", () => {

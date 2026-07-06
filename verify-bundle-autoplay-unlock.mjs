@@ -95,8 +95,13 @@ const vState = () => bp.evaluate(() => {
 const before = await vState();
 console.log("before gesture:", JSON.stringify(before));
 if (!before.found) fail("video element present", "no <video>");
-else if (before.paused) ok("autoplay blocked: video paused before user gesture (expected)");
-else console.log("  (note: this browser autoplayed without gesture — MEI/policy allowed it)");
+else if (!before.paused && before.muted) {
+  ok("muted autoplay proceeds silently before any gesture (no freeze) — forceMuted fix");
+} else if (before.paused) {
+  fail("video frozen before gesture", "paused=true — unmuted autoplay was blocked and nothing kept it progressing muted");
+} else {
+  fail("video playing but not muted before gesture", `muted=${before.muted} — autoplay policy should have blocked this`);
+}
 
 // スペースバーではなく単純なクリック（任意操作）で unlock されることを確認。
 await bp.mouse.click(700, 450);

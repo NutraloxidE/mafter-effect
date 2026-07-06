@@ -37,6 +37,7 @@ export function defaultLabelIndexForObject(obj: SceneObject): LabelIndex {
   for (const c of obj.components) {
     switch (c.type) {
       case "solid": return 0;
+      case "shape": return 0;
       case "text": return 1;
       case "image":
       case "audio":

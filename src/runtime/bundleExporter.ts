@@ -16,6 +16,7 @@ import {
 } from "./builtinFonts";
 import { PLAYER_FRESHNESS_MARKER, type BundleBuiltinFont, type BundleManifest } from "./bundleTypes";
 import type { ProgressCallback } from "./exporter";
+import { publicAssetUrl } from "./publicAssetUrl";
 
 export interface BundleExportResult {
   blob: Blob;
@@ -45,7 +46,7 @@ function escapeHtml(s: string): string {
 async function loadPlayerScript(): Promise<string> {
   let text: string | undefined;
   try {
-    const resp = await fetch("/player.js");
+    const resp = await fetch(publicAssetUrl("player.js"));
     if (resp.ok) text = await resp.text();
   } catch {
     /* fall through */
@@ -178,7 +179,7 @@ function collectBuiltinFontUsage(project: Project): BundleBuiltinFont[] {
 
 async function fetchBuiltinFontBytes(path: string): Promise<Uint8Array | null> {
   try {
-    const resp = await fetch(`/${path}`);
+    const resp = await fetch(publicAssetUrl(path));
     if (!resp.ok) return null;
     return new Uint8Array(await resp.arrayBuffer());
   } catch {
