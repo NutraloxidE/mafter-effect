@@ -12,6 +12,7 @@
 - **「軽量」の核心はこれを仕上げること** — 矩形/楕円 shape の完成には **§5 スキーマ変更ゼロ・INV変更ゼロ**で済む。既存の `Component.props` 契約（`kind`/`fill`/`radius`/`size`）をそのまま使い、`.claude/skills/add-layer-component-type/SKILL.md` の配線チェックリストを埋めるだけの作業。
 - **頂点／ベジェパスの編集**（AE のペンツール相当）は別軸の重い機能で、新規データ型・新規 SVG レンダリング・新規オンキャンバス gizmo が要る。spec 自身が `doc/mafter-effect-spec.md:1714` で「マスク・シェイプのオンキャンバス編集」を **将来（§16）** と明記しており、§5.4f のトラックマット節（L291）でも「レイヤーパスマスク（ペン/ベジェ）は含まない（将来）」と非目標に挙げている。
 - 本プランは **Phase 1（軽量・非破壊、今回のスコープ）= 矩形/楕円 shape の完成配線** を主提案とし、**Phase 2（頂点編集・将来拡張）** をロードマップとして分離する。
+- **UI 方針（確定）**: シェイプ編集画面はすべて Inspector パネルの「Shape」フォールドアウト・**`kind` プルダウンを単一入口**に集約する（§3.3）。ツールバーに kind 別ボタンを増やす、別パネルを新設する、といった分散は行わない。Phase 2 で kind に `polygon`/`path` を足す場合も、この同じフォールドアウト内に専用サブセクションとして生やす。
 
 ---
 
@@ -149,9 +150,18 @@ addShape: (name) => {
 },
 ```
 
-### 3.3 Inspector（`ShapeComponentFields` 新設）
+### 3.3 Inspector（`ShapeComponentFields` 新設・UI 集約方針）
 
-`SolidComponentFields`（`InspectorPanel.tsx:2016-2035`／`SolidColorChip` L2437-2467）とほぼ同型。追加で `kind` の enum セレクタ（rect/ellipse トグル）と `radius` のアニメータブル数値行（rect のときのみ有効化、ellipse では非表示 or disabled）を持たせる。
+**方針（ユーザー指示）**: シェイプ編集に関わる画面はすべて Inspector パネルの「Shape」フォールドアウト内、**`kind` プルダウン（enum セレクタ）を単一入口**にして集約する。ツールバー側に kind 別ボタンを増やしたり、別パネル/別モーダルを新設したりはしない。
+
+- `SolidComponentFields`（`InspectorPanel.tsx:2016-2035`／`SolidColorChip` L2437-2467）とほぼ同型の `ShapeComponentFields` を新設し、`InspectorPanel.tsx:724-729` の許可リスト経由で `comp.type === "shape"` の1フォールドアウトとして表示する。
+- フォールドアウト内の構成（上から）:
+  1. **`kind` プルダウン**（`rect` / `ellipse`）— これが「今どの図形として振る舞うか」を決める唯一のスイッチ。
+  2. `fill`（カラーチップ、アニメータブル）
+  3. `radius`（アニメータブル数値行）— `kind === "rect"` のときのみ表示、`ellipse` では非表示（disabled ではなく非表示にして「効かない項目が残る」混乱を避ける）。
+  4. `size`（vec2、アニメータブル）— 両 kind 共通。
+- **Phase 2 との接続点もここに集約する**: 将来 `kind` に `"polygon"`/`"path"` を追加する場合も、新しい編集導線（頂点リスト・頂点追加/削除ボタン・オンキャンバス gizmo の起動トリガ）は**この同じ Shape フォールドアウト内**、`kind` プルダウンで選んだときにだけ現れる専用サブセクションとして生やす。ツールバーの `+ Shape` ボタンは「shape オブジェクトを作る」ことだけを担い、生成後の見た目・種類の切り替えは常に Inspector 側に一本化する。
+- Timeline 側の `+ Shape` ボタン（3.4）は生成専用であり、kind ごとに `+ Rect` / `+ Ellipse` のようにボタンを分けない（既定 kind で1つ作り、その後は Inspector の kind プルダウンで切り替える）。
 
 ### 3.4 Timeline ボタン・ラベル色
 
