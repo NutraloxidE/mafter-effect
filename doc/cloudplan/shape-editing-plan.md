@@ -99,6 +99,34 @@ SVG 自体は使われているが、**ユーザーが編集する「コンテ�
 
 Phase 2 は本プランではロードマップの記載に留め、着手する場合は改めて §5/INV 変更の承認を得てから設計を確定する。
 
+### Phase 3（将来ロードマップ・Phase 2 前提）— Boolean（Pathfinder）合成
+
+**ユーザー要望**: 「差分・合成」等のシェイプ bool 処理（AE の Pathfinder / Merge Paths 相当: Unite / Subtract / Intersect / Exclude）を Inspector の Shape フォールドアウト内に**入れ子のフォールドアウト**として用意しておきたい。
+
+**スコープ上の位置づけ**: bool 処理は「1レイヤーが複数のサブパスを持ち、それらを合成規則で1枚の塗り面へ畳み込む」処理であり、原理的に CSS box（矩形/楕円の `border-radius`）では表現できず、**Phase 2 の SVG `<path>` 基盤が前提**になる。したがって本プランでは Phase 3 として Phase 2 の直後に位置づけ、**Phase 1（軽量・今回スコープ）には含めない**。
+
+想定データモデル（⚠️ 要承認・§5 スキーマ変更、Phase 2 の `ShapeVertex` 型に追加で必要）:
+
+```ts
+type BooleanOp = "unite" | "subtract" | "intersect" | "exclude"; // AE Merge Paths 相当
+
+interface ShapeSubPath {
+  id: string; // ULID (INV-6)
+  vertices: ShapeVertex[]; // Phase 2 で定義する頂点配列（rect/ellipse プリセットからの生成も可）
+  op: BooleanOp; // このサブパスを「直前までの合成結果」に対してどう合成するか（AE の重ね順依存と同じ規約）
+}
+```
+
+`Component.props` に `subPaths?: ShapeSubPath[]` を additive-optional で追加し、`subPaths` が存在する場合は最上位の `kind`/`fill`/`radius`/`size` 単体プロパティより優先して合成結果を描画する（存在しなければ Phase 1/2 の単一図形のまま、後方互換）。
+
+**UI（§3.3 の集約方針に従う）**: Inspector の Shape フォールドアウト内、`kind` プルダウンの下に **「Path Operations」という入れ子のフォールドアウト**を追加する。中身は AE の Pathfinder 的な「サブパスの縦リスト + 各行に Boolean op プルダウン（Unite/Subtract/Intersect/Exclude）+ 追加/削除/並べ替え」。**Phase 1 の間はこのフォールドアウトを表示しない（または常時無効化 disabled）**— サブパス配列が存在しない単一図形オブジェクトには意味がないため。Phase 2（頂点編集基盤）が入って初めて有効化する。
+
+**レンダリング**: 合成後のパス文字列は resolve 済み `subPaths` から純関数で計算（INV-1）。ブラウザ側の bool 演算は自前実装 or 既存 path-boolean アルゴリズムの導入要否を Phase 2/3 着手時に検討（外部ライブラリ導入は依存追加として別途相談）。
+
+**export 正常化（§E）**: 合成後の1枚のパスとして描画するため、経路自体は Phase 2 の SVG `<path>` export 対応がそのまま使える見込みだが、サブパス数が多い場合のラスタキャプチャ精度は Phase 2/3 着手時に実機検証が必要。
+
+Phase 3 も本プランではロードマップ記載のみ。着手する場合は Phase 2 と合わせて §5/INV 変更の承認を得てから設計を確定する。
+
 ---
 
 ## 3. Phase 1 詳細設計
@@ -161,6 +189,7 @@ addShape: (name) => {
   3. `radius`（アニメータブル数値行）— `kind === "rect"` のときのみ表示、`ellipse` では非表示（disabled ではなく非表示にして「効かない項目が残る」混乱を避ける）。
   4. `size`（vec2、アニメータブル）— 両 kind 共通。
 - **Phase 2 との接続点もここに集約する**: 将来 `kind` に `"polygon"`/`"path"` を追加する場合も、新しい編集導線（頂点リスト・頂点追加/削除ボタン・オンキャンバス gizmo の起動トリガ）は**この同じ Shape フォールドアウト内**、`kind` プルダウンで選んだときにだけ現れる専用サブセクションとして生やす。ツールバーの `+ Shape` ボタンは「shape オブジェクトを作る」ことだけを担い、生成後の見た目・種類の切り替えは常に Inspector 側に一本化する。
+- **Phase 3（Boolean/Pathfinder 合成）も入れ子フォールドアウトとしてここに収める**: `kind` プルダウンの下に **「Path Operations」フォールドアウト**（サブパス一覧 + 各行の Unite/Subtract/Intersect/Exclude プルダウン + 追加/削除/並べ替え、AE Pathfinder 相当）を追加する。Phase 1 の間は `subPaths` が存在しないため**このフォールドアウトを表示しない**（Phase 2 導入後に条件表示へ切り替える）。詳細は §2 Phase 3 参照。
 - Timeline 側の `+ Shape` ボタン（3.4）は生成専用であり、kind ごとに `+ Rect` / `+ Ellipse` のようにボタンを分けない（既定 kind で1つ作り、その後は Inspector の kind プルダウンで切り替える）。
 
 ### 3.4 Timeline ボタン・ラベル色
@@ -180,14 +209,14 @@ addShape: (name) => {
 
 ## 4. §5 / INV への影響サマリ（承認要否）
 
-| 項目 | Phase 1（矩形/楕円） | Phase 2（頂点/パス） |
-|---|---|---|
-| §5 `SceneObject` 型変更 | **なし** | ⚠️ 要承認（頂点構造の新設） |
-| §5 `Component`/`ParamKind` 型変更 | **なし**（既存 `vec2`/`color`/`scalar`/`enum` で足りる） | ⚠️ 要承認（`ParamKind` 新種別の要否） |
-| INV-1〜6 | 影響なし（既存 `AnimatedProp` パターンのみ使用） | INV-3（レンダラ非依存データ）・INV-6（頂点の stable ID）の適用範囲を要確認 |
-| `project.json` 直列化形式 | 変更なし | 新規フィールド追加（additive-optional なら形式変更ではなく拡張だが、念のため確認） |
+| 項目 | Phase 1（矩形/楕円） | Phase 2（頂点/パス） | Phase 3（Boolean/Pathfinder） |
+|---|---|---|---|
+| §5 `SceneObject` 型変更 | **なし** | ⚠️ 要承認（頂点構造の新設） | ⚠️ 要承認（`subPaths`/`BooleanOp` の新設。Phase 2 型に依存） |
+| §5 `Component`/`ParamKind` 型変更 | **なし**（既存 `vec2`/`color`/`scalar`/`enum` で足りる） | ⚠️ 要承認（`ParamKind` 新種別の要否） | ⚠️ 要承認（`subPaths` 用の新 `ParamKind` or 専用 UI の要否） |
+| INV-1〜6 | 影響なし（既存 `AnimatedProp` パターンのみ使用） | INV-3（レンダラ非依存データ）・INV-6（頂点の stable ID）の適用範囲を要確認 | INV-1（bool 演算も純関数であること）・INV-6（サブパス自体の stable ID）を要確認 |
+| `project.json` 直列化形式 | 変更なし | 新規フィールド追加（additive-optional なら形式変更ではなく拡張だが、念のため確認） | 同左（`subPaths` 追加） |
 
-**結論**: Phase 1 は CLAUDE.md の「勝手に進めず確認が必要」な3項目（INV変更・§5型変更・project.json直列化形式変更）のいずれにも該当しない、純粋な配線作業。Phase 2 に進む場合は着手前に改めてユーザー確認が必要。
+**結論**: Phase 1 は CLAUDE.md の「勝手に進めず確認が必要」な3項目（INV変更・§5型変更・project.json直列化形式変更）のいずれにも該当しない、純粋な配線作業。Phase 2・Phase 3 に進む場合はそれぞれ着手前に改めてユーザー確認が必要（Phase 3 は Phase 2 の型を前提にするため単独では着手不可）。
 
 ---
 
@@ -208,6 +237,7 @@ addShape: (name) => {
 - **Q2**: `radius` の意味は AE 同様「四隅共通の角丸半径」でよいか（四隅個別角丸は Phase 2 以降）。
 - **Q3**: ellipse は現状 `size.x`/`size.y` で楕円の外接矩形を決める実装（`border-radius:50%`）だが、真円強制オプション（shift 拘束等)は Phase 1 に含めるか。
 - **Q4**: Phase 2（頂点編集）に進む場合、トラックマットのペン/ベジェマスク（spec L291 の非目標）とどちらを先に設計するか、あるいは同一データ型の共用を狙うか。
+- **Q5**: Phase 3 の Boolean/Pathfinder（Unite/Subtract/Intersect/Exclude）は「Phase 2 の頂点/パス shape 同士」の合成のみを想定してよいか、それとも AE のシェイプグループのように **矩形/楕円プリミティブのままサブパスとして複数持ち bool 合成する**（Phase 2 の自由パス無しでも成立する中間形態）ケースも要求に含めるか。後者なら Phase 1→Phase 3 を Phase 2 なしで先に着手できる可能性がある。
 
 ---
 
