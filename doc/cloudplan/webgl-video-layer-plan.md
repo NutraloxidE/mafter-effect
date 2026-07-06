@@ -117,6 +117,23 @@ spec §5.4b の `raster3d` は「**任意のレイヤー（text/shape/HTML 含�
 - 動画は `THREE.VideoTexture`（通常）＋ mask 用 `VideoTexture` をシェーダでアルファ結合（split-alpha を GPU 化）。genlock は不要になる可能性が高い（両テクスチャを同一 render tick でサンプルするため）— ただし **decode タイミングのズレは残る**ので §6 で要検証。
 - export（INV-2）: GL → `readPixels` でブラウザ内取り込み（spec §5.4b の既定方針どおり）。
 
+### 2.4 拡張性 — 将来の `scene3d`（3D モデル/glTF）ロードへの備え
+
+> **一言メモ**: 本プランの「1 グループ = 1 `THREE.Scene` + 共有カメラ」という骨組みは、動画専用に閉じずに設計しておけば、将来 `scene3d` メッシュ（glTF 等の実 3D モデル）をそのまま**同じグループに投入するだけ**で済む。progress.md の旧 3D Phase 2 計画（「`raster3d` 層と `scene3d` メッシュが同一 GL シーンで per-pixel 交差」）とも整合する延長線であり、後付けの改築ではなく**最初からその形で作る**。
+
+**実装時に備えておく具体的な "seam"（当面は動画しか使わないが、型・命名はメッシュを想定しておく）**:
+
+| 箇所 | 動画専用にしない書き方 | 理由 |
+|---|---|---|
+| グループの中身の型 | `WebglGroupContent = VideoPlaneContent \| /* future: Scene3dMeshContent */` の**判別可能 union**にし、`kind: "videoPlane"` を持たせる。今は videoPlane しか実装しないが、union の形だけ先に用意しておくと将来の追加が switch 一本 | 追加時に既存コードの前提を壊さない |
+| 各コンテンツの Object3D 生成 | 「videoPlane 用の `THREE.PlaneGeometry` + `VideoTexture`」を作る関数を、グループ管理（シーン生成・カメラ設定・render loop）から**分離した関数**にする（例: `createVideoPlaneObject3D(obj): THREE.Object3D`）。グループ側は `Object3D` を受け取るだけで中身を知らない | 将来 `createSceneMeshObject3D(obj): THREE.Object3D`（GLTFLoader 経由）を同じ形で足せる |
+| Transform 適用 | `resolve()` の `worldTransform`（`Mat4`）→ `THREE.Matrix4` へ変換する処理を**共有ヘルパ**にする（videoPlane・将来 mesh 共通で使う） | 動画もメッシュも同じ Transform/keyframe パイプラインに乗る前提（§既存 AnimatedProp<Vec3>）と一致させる |
+| アセット参照 | 動画アセットの参照解決（FS パス → Blob/URL）を「アセット種別に依存しない**アセット解決口**」として書く（今は video だけ扱うが、関数シグネチャに `assetKind` を持たせておく） | 将来 `model3d` アセット種別（`.glb`）を同じ FS 経由の参照・stable ID（INV-6）で追加できる |
+| `ResolvedObject` のグループ情報 | §5.3 の注意どおり、group/batch 境界情報は「GL 固有語を含まない中立な形」で持つ（既定方針のまま・変更なし） | scene3d オブジェクトも同じフィールドを共有でき、INV-3 を保ったまま拡張できる |
+| ライティング拡張点 | v1 の videoPlane は unlit（シェーダに light 入力なし）だが、グループの `THREE.Scene` 自体には将来 `light` コンポーネント型のオブジェクトを追加できる余地を残す（v1 では何も追加しない・シーンに light が無ければ unlit のまま動作） | `light`（将来）コンポーネント追加時に GL シーン側の配線を新設せずに済む |
+
+- **v1 でやらないこと（明確化）**: glTFLoader 統合・`scene3d` コンポーネント型の追加・ライトコンポーネント・アセット種別 `model3d` の追加は**すべて本プランのスコープ外**。上記は「後で足すときに書き直しにならないための命名・分離」だけを今回のコードに入れる、という話であり、実装量が増える大改造ではない。
+
 ---
 
 ## 3. 既存コンポジットでの動作（回帰マトリクス）
