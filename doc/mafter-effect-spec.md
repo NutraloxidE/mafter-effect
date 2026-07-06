@@ -321,7 +321,45 @@ interface ShapeVertex {
   inTangent?: AnimatedProp<Vec3>;      // 頂点位置からの相対オフセット（AE 風ハンドル）
   outTangent?: AnimatedProp<Vec3>;
 }
+
+// §5.5d shape kind="merge"（Boolean/Pathfinder 合成・他レイヤー参照・確定・2026-07）。
+// AE の Merge Paths（同一レイヤー内の shape グループ合成）ではなく Illustrator の Pathfinder
+// （選択した複数の別オブジェクトを合成）に相当する。この engine の objects はフラットで
+// レイヤー内ネスト（AE の shape グループ）を持たないため、こちらが自然なモデル。
+// kind==="merge" のとき Component.props.mergeInputs?: BooleanMergeInput[] を使う（rect/ellipse/path
+// の kind 別 props とは排他）。objectId は同一 comp 内の他 SceneObject への安定 ID 参照（INV-6）。
+// 参照先は kind が rect/ellipse/path の shape のみ（merge 同士の参照は循環防止のため不可＝resolve
+// 時に無視）。mergeInputs[0].op は無視される（直前の合成結果が無いベース図形のため）。
+// **参照されたレイヤーは自身の通常描画から自動的に除外される**（合成結果としてのみ見える。
+// trackMatte のマット源レイヤーが除外されるのと同じ考え方 — §5.4f 参照）。
+type BooleanOp = "unite" | "subtract" | "intersect" | "exclude";
+
+interface BooleanMergeInput {
+  id: string;                         // ULID (INV-6)
+  objectId: ObjectId;                 // 参照先 SceneObject（同一 comp 内、shape kind=rect/ellipse/path）
+  op: BooleanOp;                      // 直前までの合成結果に対する自分の合成規則
+}
 ```
+
+**Boolean 合成の実装（確定）**: `polygon-clipping`（npm, MIT）で `unite→union` / `subtract→difference` / `intersect→intersection` / `exclude→xor` にマップする。rect/ellipse/path いずれの入力もポリゴン輪（Ring）へ変換してから合成する — rect は4隅（**角丸は v1 では無視し鋭角として扱う既知の制約**）、ellipse は48角形近似、path は bezier tangent を直線分割（flatten、既定24分割/辺）。そのため**合成結果の輪郭は多角形近似**になる（合成しない単体 shape は通常の CSS box / `buildShapePathD` の厳密な形状のまま描画される — この近似は merge 使用時のみ）。結果の SVG path は `fill-rule="evenodd"` で描画し、穴（`subtract` で切り抜かれた内側リング）を正しく表示する。`src/runtime/shapePathBoolean.ts` に純関数として実装（INV-1）。
+
+**cross-object 座標変換（確定）**: 参照先レイヤーは同一 comp 内の別 SceneObject であり、自身の Transform（position/rotation/scale/anchor、親チェーン込み）を独立に持つ。resolve.ts は参照先の world 行列 → merge shape 自身の world 行列の逆、で「merge shape 自身のローカル空間」へ頂点を変換してから合成する（`resolveComponent` 内に `worldOf`/`byId` を統合し、cross-object 参照から参照先の world を引けるようにした）。そのため参照先・merge shape のどちらの Transform がアニメートしても、合成結果は毎フレーム正しく追従する。
+
+#### §5.5e shape kind="path" 複数リング（Bake 出力・確定・2026-07）
+
+```ts
+// Component.props.rings?: ShapeVertex[][] に additive-optional で乗る。存在すれば単一の
+// vertices より優先して描画される（fill-rule="evenodd" — 内側リングは穴として表現）。
+// 手動生成の単一図形は従来通り vertices のまま。rings は Bake（下記）の出力専用。
+type ShapeRings = ShapeVertex[][];
+```
+
+**Bake（kind="merge" → kind="path"、Illustrator Expand 相当・確定）**: Inspector の Shape フォールドアウトに「Bake」ボタンがあり、`mergeInputs`（他レイヤー参照）を外し、Boolean 合成結果を独立した `rings` データへ変換する（`src/editor/shapeBake.ts`）。
+
+- **AE の「Convert Expression to Keyframes」と同じ制約**: 1つのパスプロパティは全キーフレームで頂点数・リング数（トポロジー）を揃える必要がある（AE のマスクパスも同様）。オブジェクトの `inPoint..outPoint` 区間で毎フレーム合成し、トポロジー（穴の有無・リング数・リングごとの頂点数）が区間全体で一定なら、区間全体を各頂点 `pos` のキーフレーム列としてベイクする（`easing: "hold"` — フレーム間の補間ではなく決定論的な per-frame サンプルのため）。
+- **トポロジーが区間内で変化する場合（確定・フォールバック）**: 区間全体を1本の連続アニメーションとして表現できないため、**現在フレームの静止形状のみ**を `staticProp` としてベイクし、その理由を Inspector にメッセージ表示する。
+- Bake 後は `mergeInputs` が無くなるため、参照されていた他レイヤーは自動的に再表示される（§5.5d の自動非表示は `mergeInputs` の存在に基づく構造的判定のため、自然に解除される）。
+- rings も Inspector で編集可能（既存 `ShapeVertexRow` をリングごとに再利用。リング単位の削除、または「Rings を破棄して単一パスに戻す」で `vertices: []` の単一図形へ戻せる）。
 
 **MVP built-in component types:**
 
@@ -330,7 +368,7 @@ interface ShapeVertex {
 | `solid`     | 単色塗り（AE Solid 相当）          | `color: RGBA`, `size: vec2`          |
 | `text`      | テキスト（DOM/SVG レンダリング, §26） | `text`, `font`, `size`, `color`, `align`, `tracking`, `leading`, `weight`, `italic`, `strokeColor`, `strokeWidth` |
 | `image`     | 画像アセット表示                   | `asset: AssetId`, `fit`              |
-| `shape`     | rect / ellipse / path（頂点編集, §5.5c） | `kind: "rect"\|"ellipse"\|"path"`, `fill: RGBA`, `radiusTL/TR/BR/BL`（rect のみ）, `size: vec2`（rect/ellipse のみ）, `vertices?: ShapeVertex[]`（path のみ） |
+| `shape`     | rect / ellipse / path（頂点編集, §5.5c）/ merge（他レイヤー Boolean 合成, §5.5d） | `kind: "rect"\|"ellipse"\|"path"\|"merge"`, `fill: RGBA`, `radiusTL/TR/BR/BL`（rect のみ）, `size: vec2`（rect/ellipse のみ）, `vertices?: ShapeVertex[]`（path のみ）, `rings?: ShapeRings`（path のみ、Bake 出力・存在すれば最優先, §5.5e）, `mergeInputs?: BooleanMergeInput[]`（merge のみ） |
 | `html`      | HTML Composition（Model A, §7）     | `compId: CompId`, + comp が宣言した params |
 | `video`     | 動画アセット（best-effort, §11.4）   | `asset: AssetId`, `fit`, `trimStart: Frame`, `gain: AnimatedProp<number>`（0..1, 既定 1）, `autoFade: bool`（既定 true, §11.5.2） |
 | `audio`     | 音声アセット（最小, §11.5）          | `asset: AssetId`, `gain: AnimatedProp<number>`（0..1, 既定 1）, `trimStart: Frame`, `autoFade: bool`（既定 true, §11.5.2） |

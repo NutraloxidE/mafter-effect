@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { sampleAny, sampleScalar, sampleVec3 } from "../../runtime/interpolate";
-import type { AnimatedProp, BlendMode, Component, Easing, EffectInstance, ExpressionPresetInstance, ParamDescriptor, RGBA, SceneObject, ShapeVertex, ThreeDMode, TrackMatteMode, Transform, Vec3 } from "../../core/schema";
+import type { AnimatedProp, BlendMode, BooleanMergeInput, BooleanOp, Component, Easing, EffectInstance, ExpressionPresetInstance, ParamDescriptor, RGBA, SceneObject, ShapeVertex, ThreeDMode, TrackMatteMode, Transform, Vec3 } from "../../core/schema";
 import { BLEND_MODES, TRACK_MATTE_MODES } from "../../core/schema";
 import { formatMissingBlendModeLabel } from "../../core/blendMode";
 import { isTrackMatteIneligible, resolveTrackMattePairs } from "../../core/trackMatte";
@@ -2133,6 +2133,11 @@ function ShapeComponentFields({
   onEditFocus: () => void;
   onEditBlur: () => void;
 }) {
+  // §26.3.3 と同じ規約 — hooks は早期 return より前に呼ぶ。
+  const project = useEditorStore((s) => s.project);
+  const currentCompId = useEditorStore((s) => s.currentCompId);
+  const bakeShapeMerge = useEditorStore((s) => s.bakeShapeMerge);
+  const [bakeMessage, setBakeMessage] = useState<string | null>(null);
   const comp = obj.components[compIdx];
   if (!comp || comp.type !== "shape") return null;
   const props = comp.props;
@@ -2180,8 +2185,22 @@ function ShapeComponentFields({
       ];
       nextProps.vertices = nextVertices;
     }
+    if (nextKind === "merge" && !Array.isArray(props["mergeInputs"])) {
+      nextProps.mergeInputs = [];
+    }
     writeComponents(nextProps, "Edit Shape kind");
   };
+
+  // §5.5d shape kind="merge": Illustrator Pathfinder 相当。入力は同一 comp 内の他レイヤー参照
+  // （objectId）— 自分自身・他の merge shape（循環防止）は候補から除外する。
+  const timelineComp = currentCompId ? currentTimelineComp(project, currentCompId) : null;
+  const mergeInputs = Array.isArray(props["mergeInputs"]) ? (props["mergeInputs"] as BooleanMergeInput[]) : undefined;
+  const writeMergeInputs = (next: BooleanMergeInput[], label: string) => {
+    writeComponents({ ...props, mergeInputs: next }, label);
+  };
+  const mergeCandidateObjects = (timelineComp?.objects ?? []).filter(
+    (o) => o.id !== obj.id && o.components.some((c) => c.type === "shape" && c.props["kind"] !== "merge"),
+  );
 
   const fillProp = props["fill"];
   const fillVal = isAnimated(fillProp) && isRgba(sampleAny(fillProp, frame))
@@ -2201,6 +2220,14 @@ function ShapeComponentFields({
     writeComponents({ ...props, vertices: next }, label);
   };
 
+  // §5.5e shape kind="path" 複数リング（merge Bake 由来。穴・分離図形）。存在すれば単一 vertices より優先。
+  const rings = Array.isArray(props["rings"]) && (props["rings"] as ShapeVertex[][]).length > 0
+    ? (props["rings"] as ShapeVertex[][])
+    : undefined;
+  const writeRings = (next: ShapeVertex[][], label: string) => {
+    writeComponents({ ...props, rings: next }, label);
+  };
+
   return (
     <div>
       <Row label="Kind">
@@ -2208,6 +2235,7 @@ function ShapeComponentFields({
           <option value="rect">Rectangle</option>
           <option value="ellipse">Ellipse</option>
           <option value="path">Path（頂点）</option>
+          <option value="merge">Merge（他レイヤーの Boolean 合成）</option>
         </select>
       </Row>
 
@@ -2260,7 +2288,7 @@ function ShapeComponentFields({
         );
       })}
 
-      {kind !== "path" && isAnimated(sizeProp) && (
+      {kind !== "path" && kind !== "merge" && isAnimated(sizeProp) && (
         <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 4 }}>
           <Stopwatch active={sizeProp.keyframes.length > 0} onClick={() => toggleKf("size", sizeProp)} />
           <span style={{ color: "#666", width: 34 }}>Size</span>
@@ -2275,7 +2303,65 @@ function ShapeComponentFields({
         </div>
       )}
 
-      {kind === "path" && (
+      {kind === "path" && rings && (
+        <div style={{ marginTop: 6 }}>
+          <div style={{ color: "#888", fontSize: 10, marginBottom: 4, lineHeight: 1.4 }}>
+            Rings（{rings.length}、Bake 由来の複数リング。穴・分離図形を含む場合があります）
+          </div>
+          {rings.map((ring, ringIdx) => (
+            <div key={ringIdx} style={{ marginBottom: 8, padding: 6, background: "#202020", border: "1px solid #333", borderRadius: 4 }}>
+              <div style={{ color: "#aaa", fontSize: 10, marginBottom: 4 }}>Ring #{ringIdx + 1}（{ring.length} 頂点）</div>
+              {ring.map((v, vIdx) => (
+                <ShapeVertexRow
+                  key={v.id}
+                  vertex={v}
+                  index={vIdx}
+                  frame={frame}
+                  canMoveUp={vIdx > 0}
+                  canMoveDown={vIdx < ring.length - 1}
+                  onChange={(next) => writeRings(rings.map((r, i) => (i === ringIdx ? r.map((vv, j) => (j === vIdx ? next : vv)) : r)), `Edit ring ${ringIdx + 1} vertex ${vIdx + 1}`)}
+                  onRemove={() => writeRings(rings.map((r, i) => (i === ringIdx ? r.filter((_, j) => j !== vIdx) : r)).filter((r) => r.length > 0), `Remove ring ${ringIdx + 1} vertex ${vIdx + 1}`)}
+                  onMoveUp={() => {
+                    const next = rings.map((r) => [...r]);
+                    const ringArr = next[ringIdx]!;
+                    const tmp = ringArr[vIdx - 1]!;
+                    ringArr[vIdx - 1] = ringArr[vIdx]!;
+                    ringArr[vIdx] = tmp;
+                    writeRings(next, "Reorder ring vertices");
+                  }}
+                  onMoveDown={() => {
+                    const next = rings.map((r) => [...r]);
+                    const ringArr = next[ringIdx]!;
+                    const tmp = ringArr[vIdx + 1]!;
+                    ringArr[vIdx + 1] = ringArr[vIdx]!;
+                    ringArr[vIdx] = tmp;
+                    writeRings(next, "Reorder ring vertices");
+                  }}
+                />
+              ))}
+              <button
+                type="button"
+                onClick={() => writeRings(rings.filter((_, i) => i !== ringIdx), `Remove ring ${ringIdx + 1}`)}
+                style={{ ...btnStyle, width: "100%", fontSize: 9, marginTop: 2, color: "#f66" }}
+              >
+                × この Ring を削除
+              </button>
+            </div>
+          ))}
+          <button
+            type="button"
+            onClick={() => {
+              const { rings: _r, ...rest } = props;
+              writeComponents({ ...rest, vertices: [] }, "Discard rings (edit as single path)");
+            }}
+            style={{ ...btnStyle, width: "100%", fontSize: 10 }}
+          >
+            Rings を破棄して単一パスに戻す
+          </button>
+        </div>
+      )}
+
+      {kind === "path" && !rings && (
         <div style={{ marginTop: 6 }}>
           <div style={{ color: "#888", fontSize: 10, marginBottom: 4 }}>
             Vertices（{vertices?.length ?? 0}）
@@ -2323,6 +2409,141 @@ function ShapeComponentFields({
           )}
         </div>
       )}
+
+      {kind === "merge" && (
+        <div style={{ marginTop: 6 }}>
+          <div style={{ color: "#888", fontSize: 10, marginBottom: 4, lineHeight: 1.4 }}>
+            他レイヤーの Boolean 合成（Unite/Subtract/Intersect/Exclude、Illustrator の Pathfinder 相当）。
+            参照したレイヤーは自身の通常描画から自動的に隠れます（合成結果としてのみ表示）。
+          </div>
+          {(mergeInputs ?? []).map((mi, idx) => (
+            <ShapeMergeInputRow
+              key={mi.id}
+              input={mi}
+              index={idx}
+              isBase={idx === 0}
+              canMoveUp={idx > 0}
+              canMoveDown={idx < (mergeInputs?.length ?? 0) - 1}
+              candidates={mergeCandidateObjects}
+              onChangeObjectId={(objectId) => writeMergeInputs((mergeInputs ?? []).map((m, i) => (i === idx ? { ...m, objectId } : m)), `Edit merge input ${idx + 1}`)}
+              onChangeOp={(op) => writeMergeInputs((mergeInputs ?? []).map((m, i) => (i === idx ? { ...m, op } : m)), `Edit merge input ${idx + 1} op`)}
+              onRemove={() => writeMergeInputs((mergeInputs ?? []).filter((_, i) => i !== idx), `Remove merge input ${idx + 1}`)}
+              onMoveUp={() => {
+                const next = [...(mergeInputs ?? [])];
+                const tmp = next[idx - 1]!;
+                next[idx - 1] = next[idx]!;
+                next[idx] = tmp;
+                writeMergeInputs(next, "Reorder merge inputs");
+              }}
+              onMoveDown={() => {
+                const next = [...(mergeInputs ?? [])];
+                const tmp = next[idx + 1]!;
+                next[idx + 1] = next[idx]!;
+                next[idx] = tmp;
+                writeMergeInputs(next, "Reorder merge inputs");
+              }}
+            />
+          ))}
+          <button
+            type="button"
+            disabled={mergeCandidateObjects.length === 0}
+            onClick={() => {
+              const used = new Set((mergeInputs ?? []).map((m) => m.objectId));
+              const next = mergeCandidateObjects.find((o) => !used.has(o.id)) ?? mergeCandidateObjects[0];
+              if (!next) return;
+              writeMergeInputs([...(mergeInputs ?? []), { id: newVertexId(), objectId: next.id, op: "subtract" }], "Add merge input");
+            }}
+            style={{ ...btnStyle, width: "100%", fontSize: 10, marginTop: 4 }}
+          >
+            + レイヤーを追加
+          </button>
+          {mergeCandidateObjects.length === 0 && (
+            <div style={{ color: "#f88", fontSize: 10, marginTop: 4 }}>
+              参照できる shape レイヤー（rect/ellipse/path、merge 以外）が他にありません。
+            </div>
+          )}
+          {(mergeInputs?.length ?? 0) < 2 && (mergeInputs?.length ?? 0) > 0 && (
+            <div style={{ color: "#f88", fontSize: 10, marginTop: 4 }}>入力が1件だけだとその形状がそのまま表示されます</div>
+          )}
+          <button
+            type="button"
+            disabled={(mergeInputs?.length ?? 0) === 0}
+            onClick={() => {
+              const result = bakeShapeMerge(obj.id);
+              setBakeMessage(result?.fallbackReason ?? null);
+            }}
+            style={{ ...btnStyle, width: "100%", fontSize: 10, marginTop: 8, borderColor: "#5a8fd0", color: "#8cf" }}
+            title="現在の合成結果をその場で固定し、他レイヤー参照を外した独立パスに変換する（Illustrator の Expand 相当）"
+          >
+            Bake（合成結果を独立パスに固定）
+          </button>
+          {bakeMessage && (
+            <div style={{ color: "#f0c060", fontSize: 10, marginTop: 4, lineHeight: 1.4 }}>{bakeMessage}</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * §5.5d shape kind="merge" — 入力1件の Inspector 行。他レイヤー参照（objectId）のプルダウン・
+ * op プルダウン（ベース入力は非表示）・並べ替え・削除を持つ（頂点はレイヤー側 Inspector で編集する）。
+ */
+function ShapeMergeInputRow({
+  input,
+  index,
+  isBase,
+  canMoveUp,
+  canMoveDown,
+  candidates,
+  onChangeObjectId,
+  onChangeOp,
+  onRemove,
+  onMoveUp,
+  onMoveDown,
+}: {
+  input: BooleanMergeInput;
+  index: number;
+  isBase: boolean;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  candidates: SceneObject[];
+  onChangeObjectId: (objectId: string) => void;
+  onChangeOp: (op: BooleanOp) => void;
+  onRemove: () => void;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+}) {
+  const resolvedTarget = candidates.some((c) => c.id === input.objectId);
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 4, padding: 6, background: "#202020", border: "1px solid #333", borderRadius: 4 }}>
+      <span style={{ color: "#777", fontSize: 10, width: 18 }}>#{index + 1}</span>
+      <select
+        value={input.objectId}
+        onChange={(e) => onChangeObjectId(e.target.value)}
+        style={{ ...selectStyle, fontSize: 10, padding: "1px 3px" }}
+      >
+        {!resolvedTarget && <option value={input.objectId}>（見つかりません）</option>}
+        {candidates.map((c) => (
+          <option key={c.id} value={c.id}>{c.name}</option>
+        ))}
+      </select>
+      {!isBase && (
+        <select
+          value={input.op}
+          onChange={(e) => onChangeOp(e.target.value as BooleanOp)}
+          style={{ ...selectStyle, flex: "unset", fontSize: 10, padding: "1px 3px" }}
+        >
+          <option value="unite">Unite</option>
+          <option value="subtract">Subtract</option>
+          <option value="intersect">Intersect</option>
+          <option value="exclude">Exclude</option>
+        </select>
+      )}
+      <button type="button" onClick={onMoveUp} disabled={!canMoveUp} style={{ ...btnStyle, fontSize: 9, padding: "1px 4px" }}>▲</button>
+      <button type="button" onClick={onMoveDown} disabled={!canMoveDown} style={{ ...btnStyle, fontSize: 9, padding: "1px 4px" }}>▼</button>
+      <button type="button" onClick={onRemove} style={{ ...btnStyle, fontSize: 9, padding: "1px 4px", color: "#f66" }}>×</button>
     </div>
   );
 }

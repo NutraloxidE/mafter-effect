@@ -70,6 +70,7 @@ import {
   type UndoRedoStack,
 } from "./commands";
 import { buildGlyphDecomposeObjects, createCanvasMeasureContext, type GlyphDecomposeMode } from "./glyphDecompose";
+import { bakeMergeShapeToPath } from "./shapeBake";
 import { loadWorkArea, saveWorkArea } from "./workAreaStorage";
 import { WAVEFORM_MODES, type WaveformMode } from "../audio/waveform";
 import { probeAudioMeta, evictAudioBuffer } from "./audioBufferCache";
@@ -172,6 +173,9 @@ export interface EditorStore {
   waveformMode: WaveformMode;
   setWaveformMode: (mode: WaveformMode) => void;
   decomposeGlyphs: (objectId: string, mode?: GlyphDecomposeMode) => void;
+  // §5.5d/§5.5e shape kind="merge" の Bake（Illustrator Expand 相当）。戻り値は Inspector が
+  // フォールバック時のメッセージを表示するためだけに使う（永続 state には積まない）。
+  bakeShapeMerge: (objectId: string) => { fallbackReason?: string } | null;
 
   // Undo/Redo スタック（セッション内のみ, §17）
   undoStack: UndoRedoStack;
@@ -582,6 +586,31 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       ? "Decompose Glyphs (child)"
       : "Decompose Glyphs (null)";
     get().applyCommand({ label, before, after });
+  },
+
+  bakeShapeMerge: (objectId) => {
+    const before = get().project;
+    if (!before) return null;
+    const comp = currentTimelineComp(before, get().currentCompId);
+    if (!comp) return null;
+    const obj = comp.objects.find((o) => o.id === objectId);
+    const shapeComp = obj?.components.find((c) => c.type === "shape");
+    if (!obj || !shapeComp || shapeComp.props["kind"] !== "merge") return null;
+
+    const frame = get().currentFrame;
+    const result = bakeMergeShapeToPath(comp, objectId, obj.inPoint, obj.outPoint, frame);
+    const { mergeInputs: _mi, vertices: _v, ...restProps } = shapeComp.props;
+    const nextProps = { ...restProps, kind: "path", rings: result.rings };
+    const nextComponents = obj.components.map((c) => (c.type === "shape" ? { ...c, props: nextProps } : c));
+    const after: Project = {
+      ...before,
+      compositions: before.compositions.map((c) =>
+        c.id === comp.id && c.kind === "timeline" ? { ...c, objects: c.objects.map((o) => (o.id === objectId ? { ...o, components: nextComponents } : o)) } : c,
+      ),
+    };
+    const label = result.bakedFrameRange ? "Bake Merge Shape (keyframed)" : "Bake Merge Shape (static)";
+    get().applyCommand({ label, before, after });
+    return result.fallbackReason ? { fallbackReason: result.fallbackReason } : {};
   },
 
   // §20.2 コンポジション管理 ————————————————————————————————

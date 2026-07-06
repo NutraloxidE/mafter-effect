@@ -13,7 +13,10 @@ import { compChildFrame, isCompNestDepthAllowed } from "./compLayer";
 import type { NestedCompRasterizer } from "./compFrameCapture";
 import { resolve, type ExpressionEvaluator } from "./resolve";
 import { applyTextEl, rgbaCss } from "./textRender";
-import { buildShapePathD, type ResolvedShapeVertex } from "./shapePath";
+import { buildMultiRingPathD, buildShapePathD, type ResolvedShapeVertex } from "./shapePath";
+import { composeRings, multiPolygonToPathD } from "./shapePathBoolean";
+import type { Ring } from "polygon-clipping";
+import type { BooleanOp } from "../core/schema";
 import { captureElementToCanvas } from "./rasterCapture";
 import { canvasToRasterBuffer, rasterBufferToCanvas } from "./pixelSort";
 import { processRasterChainAsync } from "./rasterProcessAsync";
@@ -2026,14 +2029,16 @@ function updateComponentEl(
     case "shape": {
       const fill = props["fill"] as RGBA | undefined;
       const kind = props["kind"] as string | undefined;
-      if (kind === "path") {
-        // §5.5c: vertices ベースの自由パス。CSS box は使わず子 <svg><path> で描画する
-        // （既存 rect/ellipse の box style を残すと path 切替後も背景が透けて残るため明示的に解除）。
+      // §5.5d: kind="merge" は他レイヤー参照の Boolean 合成結果（Illustrator Pathfinder 相当）を描画する。
+      const usesSvgPath = kind === "path" || kind === "merge";
+      if (usesSvgPath) {
+        // §5.5c/§5.5d: vertices（または merge 合成）ベースの自由パス。CSS box は使わず
+        // 子 <svg><path> で描画する（既存 rect/ellipse の box style を残すと path 切替後も
+        // 背景が透けて残るため明示的に解除）。
         el.style.width = "0px";
         el.style.height = "0px";
         el.style.background = "transparent";
         el.style.borderRadius = "0";
-        const vertices = props["vertices"] as ResolvedShapeVertex[] | undefined;
         let svg = el.querySelector("svg[data-mafter-shape-path]") as SVGSVGElement | null;
         if (!svg) {
           svg = document.createElementNS(SVG_NS, "svg") as unknown as SVGSVGElement;
@@ -2044,11 +2049,25 @@ function updateComponentEl(
           el.appendChild(svg);
         }
         const pathEl = svg.querySelector("path")!;
-        pathEl.setAttribute("d", vertices ? buildShapePathD(vertices) : "");
+        const rings = props["rings"] as ResolvedShapeVertex[][] | undefined;
+        if (kind === "merge") {
+          const resolvedMergeRings = props["resolvedMergeRings"] as { op: BooleanOp; ring: Ring }[] | undefined;
+          pathEl.setAttribute("d", resolvedMergeRings ? multiPolygonToPathD(composeRings(resolvedMergeRings)) : "");
+          pathEl.setAttribute("fill-rule", "evenodd");
+        } else if (rings && rings.length > 0) {
+          // §5.5e: merge の Bake（Illustrator Expand 相当）で生まれた複数リング（穴・分離図形）。
+          // vertices より優先。
+          pathEl.setAttribute("d", buildMultiRingPathD(rings));
+          pathEl.setAttribute("fill-rule", "evenodd");
+        } else {
+          const vertices = props["vertices"] as ResolvedShapeVertex[] | undefined;
+          pathEl.setAttribute("d", vertices ? buildShapePathD(vertices) : "");
+          pathEl.removeAttribute("fill-rule");
+        }
         pathEl.setAttribute("fill", fill ? rgbaCss(fill) : "#888");
         break;
       }
-      // kind が path から戻された場合、残置 svg を掃除する。
+      // path/merge から戻された場合、残置 svg を掃除する。
       const staleSvg = el.querySelector("svg[data-mafter-shape-path]");
       if (staleSvg) el.removeChild(staleSvg);
       const size = props["size"] as { x: number; y: number } | undefined;

@@ -1,5 +1,6 @@
 import type {
   AnimatedProp,
+  BooleanMergeInput,
   Easing,
   Frame,
   Keyframe,
@@ -246,7 +247,7 @@ export function getLayerLocalBounds(
   let found = false;
 
   for (const c of obj.components) {
-    const b = boundsForComponent(c.type, c.props, frame, project, boundsCtx);
+    const b = boundsForComponent(c.type, c.props, frame, project, boundsCtx, obj.id);
     if (!b) continue;
     if (!found) {
       minX = b.minX;
@@ -277,25 +278,100 @@ function resolveTextPropsAtFrame(
   return out;
 }
 
+function findTimelineCompContaining(project: Project, objectId: string): TimelineComposition | null {
+  for (const comp of project.compositions) {
+    if (comp.kind === "timeline" && comp.objects.some((o) => o.id === objectId)) return comp;
+  }
+  return null;
+}
+
+/** §5.5d merge の bounds 専用の軽量 world 行列（parent チェーンを畳む）。resolve.ts の worldOf と同じ式。 */
+function localWorldOf(comp: TimelineComposition, frame: Frame, id: string): Mat4 {
+  const byIdLocal = new Map(comp.objects.map((o) => [o.id, o] as const));
+  const cache = new Map<string, Mat4>();
+  const compute = (objId: string): Mat4 => {
+    const cached = cache.get(objId);
+    if (cached) return cached;
+    const obj = byIdLocal.get(objId);
+    if (!obj) return identity();
+    const local = localMatrix(
+      sampleVec3(obj.transform.anchor, frame),
+      sampleVec3(obj.transform.position, frame),
+      sampleVec3(obj.transform.rotation, frame),
+      sampleVec3(obj.transform.scale, frame),
+    );
+    const world = obj.parent && byIdLocal.has(obj.parent) ? multiply(compute(obj.parent), local) : local;
+    cache.set(objId, world);
+    return world;
+  };
+  return compute(id);
+}
+
 function boundsForComponent(
   type: string,
   props: Record<string, unknown>,
   frame: Frame,
   project: Project,
   boundsCtx?: LayerBoundsContext,
+  hostObjectId?: string,
 ): LocalBounds | null {
-  // §5.5c shape kind="path": size prop を持たないため頂点の bounding box から算出する。
+  // §5.5c/§5.5e shape kind="path": size prop を持たないため頂点の bounding box から算出する
+  // （rings が存在すれば merge Bake 由来の複数リング全体、なければ単一 vertices）。
   if (type === "shape" && props["kind"] === "path") {
-    const vertices = props["vertices"] as ShapeVertex[] | undefined;
-    if (!vertices || vertices.length === 0) return { minX: 0, minY: 0, maxX: 100, maxY: 100 };
+    const rings = props["rings"] as ShapeVertex[][] | undefined;
+    const vertexSources: ShapeVertex[][] = rings && rings.length > 0 ? rings : [(props["vertices"] as ShapeVertex[] | undefined) ?? []];
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const v of vertices) {
-      const pos = sampleAny(v.pos, frame) as Vec3;
-      minX = Math.min(minX, pos.x);
-      maxX = Math.max(maxX, pos.x);
-      minY = Math.min(minY, pos.y);
-      maxY = Math.max(maxY, pos.y);
+    let found = false;
+    for (const ring of vertexSources) {
+      for (const v of ring) {
+        const pos = sampleAny(v.pos, frame) as Vec3;
+        found = true;
+        minX = Math.min(minX, pos.x);
+        maxX = Math.max(maxX, pos.x);
+        minY = Math.min(minY, pos.y);
+        maxY = Math.max(maxY, pos.y);
+      }
     }
+    if (!found) return { minX: 0, minY: 0, maxX: 100, maxY: 100 };
+    return { minX, minY, maxX, maxY };
+  }
+  // §5.5d shape kind="merge": 他レイヤー参照。各入力レイヤーの形状を host（このオブジェクト）の
+  // ローカル空間へ変換した上での外接矩形（Boolean 合成の実結果の bbox ではなく粗い近似 — 合成結果は
+  // 必ず入力形状の和集合の内側に収まるため選択ハンドル用途としては十分）。
+  if (type === "shape" && props["kind"] === "merge" && hostObjectId) {
+    const mergeInputs = props["mergeInputs"] as BooleanMergeInput[] | undefined;
+    const comp = mergeInputs && mergeInputs.length > 0 ? findTimelineCompContaining(project, hostObjectId) : null;
+    if (!mergeInputs || mergeInputs.length === 0 || !comp) return { minX: 0, minY: 0, maxX: 100, maxY: 100 };
+    const byIdLocal = new Map(comp.objects.map((o) => [o.id, o] as const));
+    const hostInv = invert(localWorldOf(comp, frame, hostObjectId));
+    if (!hostInv) return { minX: 0, minY: 0, maxX: 100, maxY: 100 };
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    let found = false;
+    const addPoint = (p: Vec3) => {
+      found = true;
+      minX = Math.min(minX, p.x);
+      maxX = Math.max(maxX, p.x);
+      minY = Math.min(minY, p.y);
+      maxY = Math.max(maxY, p.y);
+    };
+    for (const mi of mergeInputs) {
+      const inputObj = byIdLocal.get(mi.objectId);
+      const shapeComp = inputObj?.components.find((c) => c.type === "shape");
+      if (!inputObj || !shapeComp) continue;
+      const relative = multiply(hostInv, localWorldOf(comp, frame, mi.objectId));
+      if (shapeComp.props["kind"] === "path") {
+        for (const v of (shapeComp.props["vertices"] as ShapeVertex[] | undefined) ?? []) {
+          addPoint(transformPoint(relative, sampleAny(v.pos, frame) as Vec3));
+        }
+      } else {
+        const size = sampleAny(shapeComp.props["size"], frame) as Vec3 | undefined;
+        if (!size) continue;
+        for (const corner of [{ x: 0, y: 0, z: 0 }, { x: size.x, y: 0, z: 0 }, { x: size.x, y: size.y, z: 0 }, { x: 0, y: size.y, z: 0 }]) {
+          addPoint(transformPoint(relative, corner));
+        }
+      }
+    }
+    if (!found) return { minX: 0, minY: 0, maxX: 100, maxY: 100 };
     return { minX, minY, maxX, maxY };
   }
   switch (type) {

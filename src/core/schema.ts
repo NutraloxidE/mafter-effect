@@ -71,6 +71,32 @@ export interface ShapeVertex {
   outTangent?: AnimatedProp<Vec3>;
 }
 
+// §5.5e shape kind="path" 複数リング（穴・分離図形・additive-optional・確定 2026-07）。
+// kind="merge" の Bake（Illustrator Expand 相当。§5.5d 参照）の出力形式。
+// Component.props.rings?: ShapeVertex[][] に乗り、存在すれば単一の vertices より優先して
+// 描画される（fill-rule="evenodd" — 穴は内側リングとして表現。輪の入れ子/穴か分離図形かの
+// 区別は evenodd 塗りつぶし自体が吸収するため区別しない）。手動生成の単一図形は従来通り
+// vertices のまま（rings は bake 由来のみ・後方互換）。
+export type ShapeRings = ShapeVertex[][];
+
+// §5.5d shape Phase 3（Boolean/Pathfinder 合成・他レイヤー参照・additive-optional・確定 2026-07）。
+// kind==="merge" のとき Component.props.mergeInputs?: BooleanMergeInput[] を使う
+// （AE の Merge Paths ではなく Illustrator の Pathfinder に相当 — 合成対象は「同一 comp 内の
+// 他 SceneObject」であり、同一レイヤー内のサブパスではない。この engine の objects はフラットで
+// レイヤー内ネストを持たないため、こちらが自然なモデル）。
+// objectId は安定 ID 参照（INV-6）。参照先は kind が rect/ellipse/path の shape のみ
+// （merge の入れ子・循環を避けるため、merge 同士は参照不可）。
+// mergeInputs[0].op は無意味（直前の合成結果が無いベース図形のため無視される）。
+// mergeInputs[1] 以降は「直前までの合成結果」に対する自分の合成規則。
+// 参照された側のレイヤーは自身の通常描画から自動的に除外される（合成結果としてのみ見える）。
+export type BooleanOp = "unite" | "subtract" | "intersect" | "exclude";
+
+export interface BooleanMergeInput {
+  id: string; // ULID (INV-6)
+  objectId: ObjectId; // 参照先 SceneObject（同一 comp 内、shape kind=rect/ellipse/path）
+  op: BooleanOp;
+}
+
 // §5.5b / §27 エフェクト（レイヤー描画結果への後処理）
 export interface EffectInstance {
   id: string; // ULID (INV-6)

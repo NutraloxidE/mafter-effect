@@ -6,6 +6,43 @@
 
 ---
 
+> **2026-07-07 救出コミット注記**: 下の2エントリ（shape Bake / Phase 3）の実装は WebGL 動画レイヤー試行と同じ作業ツリーで行われ、`webgl-implement-failed` ブランチ退避 → main リセット時に未コミットのまま取り残されていた。本日 WebGL 分だけを除去して救出コミットした（`three` 依存も除去・`polygon-clipping` は shape 用に残置）。**このとき main 単体は `src/runtime/shapePath.ts` 欠落で typecheck 不能だった**（Phase 1+2 のコミットに新規ファイルが含まれていなかった）ことも本コミットで修復済み。
+
+### 2026-07-06（Claude Code）— shape kind="merge" の Bake（Illustrator Expand 相当）実装 ✅
+
+- **経緯**: Phase 3（他レイヤー参照 merge）完了後、ユーザーから「マージをベイクできるようにできる？」と依頼。意図を確認したところ「現フレームの合成結果をその場で固定し、他レイヤー参照を外して独立パスにする」＝ Illustrator の Expand 相当と確認。さらに「AE だとキーフレームはどうなる？」という問いから、AE の Convert Expression to Keyframes（式を全フレームでサンプルしキーフレーム化）相当まで踏み込んで実装することで合意。
+- **AE との整合性（設計の核）**: AE のマスクパスは「1つのパスプロパティは全キーフレームで頂点数を揃える」という制約を持つ（頂点を増減すると全キーフレームに遡って反映される）。Boolean 合成は Subtract で穴が消えたり複数図形が分離したりして**トポロジー（穴の有無・リング数・頂点数）が区間内で変化しうる**ため、この制約を region 全体に適用できないケースがある。**トポロジーが安定していれば区間全体をキーフレーム化、変化する場合は現在フレームの静止ベイクへフォールバック**という方針をユーザー承認済み（AE でも同じ制約があることを説明した上で合意）。
+- **§5 スキーマ追加（承認済み）**: [schema.ts](src/core/schema.ts) に `ShapeRings = ShapeVertex[][]`（`Component.props.rings?`）を追加。存在すれば単一 `vertices` より優先（`fill-rule="evenodd"` で穴・分離図形を正しく描画）。手動生成の単一図形は従来通り `vertices`。
+- **[shapeBake.ts](src/editor/shapeBake.ts)（新規・純関数寄り）**: `bakeMergeShapeToPath(comp, objectId, inPoint, outPoint, currentFrame)`:
+  - オブジェクトの `inPoint..outPoint` の全フレームで `resolve()` を呼び `resolvedMergeRings` → `composeRings()` の結果（MultiPolygon）を取得。
+  - 全フレームでリング数・頂点数（トポロジー）が一致すれば、各頂点の `pos` に全フレーム分のキーフレーム（`easing:"hold"` — 決定論的な per-frame サンプルのため）を持つ `rings: ShapeVertex[][]` を構築。
+  - 一致しなければ `currentFrame` のみを `staticProp` でベイクし、フォールバック理由の文字列を返す。
+  - unit test 4件（安定トポロジー→キーフレーム化、穴あり2リング、トポロジー変化→フォールバック、純関数性）。
+- **[shapePath.ts](src/runtime/shapePath.ts)**: `buildMultiRingPathD()` 追加（各リングを既存 `buildShapePathD` で厳密ベジェのまま構築し結合 — 合成前の polygon-clipping 近似とは別に、baked 後の描画は可能な限り正確に保つ）。
+- **resolve.ts**: `rings` も `vertices`/`mergeInputs` と同じ「AnimatedProp を内包する配列」個別 resolve パターンで対応。
+- **DomRenderer**: `kind==="path"` で `rings` が非空なら `vertices` より優先し `fill-rule="evenodd"` で描画。
+- **store.ts**: `bakeShapeMerge(objectId)` アクション（`decomposeGlyphs` と同型の before/after スナップショット + `applyCommand`）。`mergeInputs`/`vertices` を削除し `kind:"path"` + `rings` へ差し替え。**Bake 後は mergeInputs が無くなるため、参照されていた他レイヤーは自動的に再表示される**（§5.5d の自動非表示は mergeInputs の存在に基づく構造的判定のため、副作用なく解除される）。
+- **Inspector UI**: Shape フォールドアウトの merge セクションに「Bake（合成結果を独立パスに固定）」ボタンを追加。フォールバック時はメッセージを表示。kind="path" で `rings` がある場合は単一 vertices リストの代わりにリングごとのカード（既存 `ShapeVertexRow` を再利用）+「Rings を破棄して単一パスに戻す」を表示。
+- **検証**: `npm run typecheck` 緑・`npm test` 927件中926 PASS（`projectBins.test.ts` 1件は既存 pre-existing flake、単独実行では PASS）・`npm run build` 緑。Playwright 実機: (1) 安定トポロジー（2つの重なる矩形の unite、5フレーム区間）→ Bake で `kind:"path"`・`mergeInputs` 削除・rings 1本・各頂点5キーフレーム・入力レイヤー自動再表示・描画結果（evenodd）を確認。(2) 不安定トポロジー（B が途中で離れて unite の結果が1リング→2リングに変化）→ Bake で現在フレーム（静止・keyframe 0件）へのフォールバックとエラーメッセージを確認。console error 0。
+- **Next steps**: rings の穴・分離図形をオンキャンバスで直接編集する gizmo は無し（Inspector 数値編集のみ、Phase 2 の頂点編集と同じ制約）。rect の角丸を無視する merge 入力時の簡略化（Phase 3 で既知の制約として記録済み）は今回も未解消。
+
+---
+
+### 2026-07-06（Claude Code）— シェイプ Phase 3（Boolean/Pathfinder 合成・他レイヤー参照モデル）実装 ✅
+
+- **経緯・設計の訂正**: 最初に「同一レイヤー内に手動でサブパスを足す」（AE Merge Paths のような shape グループ内合成）モデルで実装・検証まで完了させたが、ユーザーから**意図は Illustrator の Pathfinder（自分以外の既存レイヤーを対象に Boolean 演算）だった**とフィードバックを受け、その場で設計を破棄して cross-object 参照モデルへ全面的に作り直した。この engine は objects がフラット（AE の shape グループのようなレイヤー内ネストが無い）ため、他レイヤー参照モデルの方が自然な設計だった。**この作り直しは§5 スキーマの再承認込みで実施**（旧 `ShapeSubPath` を破棄し `BooleanMergeInput` で置換。AskUserQuestion で「置き換え」「入力レイヤー自動非表示」を確認）。
+- **確定モデル**: shape に4つ目の kind `"merge"` を追加。`Component.props.mergeInputs?: BooleanMergeInput[]`（`id`/`objectId`（同一 comp 内の他 SceneObject 参照, INV-6）/`op`）。参照先は kind が rect/ellipse/path の shape のみ（merge 同士の参照は循環防止のため resolve 時に無視）。**参照されたレイヤーは自身の通常描画から自動的に除外される**（trackMatte のマット源除外と同じ考え方）。
+- **cross-object 座標変換（今回の技術的な核心）**: 参照先は別 SceneObject で独立した Transform を持つため、resolve.ts の `resolverFor` を再構成し `byId`/`worldOf`（parent チェーンを畳む world 行列、メモ化）を `resolveComponent` と同じクロージャに統合。merge shape の resolve 時、各入力について「参照先の world 行列 → merge shape 自身の world 行列の逆」で相対変換行列を作り、参照先のローカルジオメトリ（rect/ellipse/path いずれも `shapePathBoolean.ts` の rectToRing/ellipseToRing/flattenVerticesToRing で輪へ変換）を merge shape 自身のローカル空間へ変換してから合成する。これにより**参照先・merge shape どちらの Transform がアニメートしても毎フレーム正しく追従**（Playwright で入力レイヤーの移動が merge 結果へ即座に反映されることを確認）。
+- **auto-hide の実装**: trackMattePairs と同じパターンで、merge の `mergeInputs` が参照する objectId 集合を frame 非依存に構造的スキャンし（`mergeInputSourceIds`）、resolve() の主ループで `isVisible` チェックに追加してその ObjectId を丸ごと除外。DomRenderer 側の変更は不要（そもそも resolved scene に出てこない）。
+- **Boolean 演算**: `polygon-clipping`（npm, MIT）。`unite→union`/`subtract→difference`/`intersect→intersection`/`exclude→xor`。[shapePathBoolean.ts](src/runtime/shapePathBoolean.ts) を「頂点/rect/ellipse → ポリゴン輪」と「輪の合成（`composeRings`）」に分離した純関数群へ再構成（unit test 15件）。rect の角丸は v1 では無視（鋭角として近似・既知の制約）。
+- **⚠️ 重大なサイレント破損を発見・修正（この過程で判明）**: `polygon-clipping` の同梱 `.d.ts` は named export を宣言しているが実際の ESM ビルドは `export { index as default }` のみ。named import は vitest では動くが `vite.player.config.ts` の Rollup ビルドでは `undefined` に落ち、**HTML bundle export で Boolean shape だけ実行時クラッシュする**ところだった。[src/types/polygon-clipping.d.ts](src/types/polygon-clipping.d.ts) のアンビエント宣言 + default import への変更で解消（player ビルドで警告ゼロを確認）。
+- **Inspector UI**: Shape フォールドアウトの Kind に `Merge` を追加。選択すると入力レイヤーの一覧（他の同一 comp 内 shape レイヤーを選ぶ `<select>` + op プルダウン Unite/Subtract/Intersect/Exclude（先頭のみ非表示）+ 並べ替え・削除）+「+ レイヤーを追加」+ 自動非表示の注記。
+- **検証**: `npm run typecheck` 緑・`npm test` 919 PASS・`npm run build` 緑・`playerBuildFreshness.test.ts` 緑。Playwright 実機: RectA(unite)+RectB(subtract) の2レイヤー参照 merge が正しい L 字（穴なしの単純合成）を描画・A/B レイヤー自体は DOM に出現しない（auto-hide 確認）・Inspector の op セレクトを実際に操作して intersect へ切替→再計算を確認・入力レイヤー A の position を移動→merge 結果がライブ追従することを確認。console error 0。
+- **副次的な作業事故と対処**: `npm install polygon-clipping` 実行時、`package.json` 未記載（`--no-save` 導入済み）だった Playwright が node_modules から prune され、検証スクリプトが失敗。`npm i playwright@1.61.0 --no-save` で再導入して復旧。**今後 npm install 系コマンドの前後は毎回 `node -e "require.resolve('playwright')"` で存在確認すること**。
+- **Next steps**: オンキャンバス頂点ドラッグ gizmo（ペンツール相当・Phase 2 からの持ち越し）は未着手。merge 入力の追加/削除は Inspector のみ（オンキャンバスでの「他レイヤーをクリックして追加」のような直接操作は無し）。rect の角丸を無視する簡略化は、丸角込みの正確な boolean が要る場合は要拡張。
+
+---
+
 ### 2026-07-06（Claude Code）— 非破壊シェイプ編集 Phase 1（rect/ellipse 完成配線）+ Phase 2（頂点/パス, Inspector数値編集）実装 ✅
 
 - **経緯**: [doc/cloudplan/shape-editing-plan.md](doc/cloudplan/shape-editing-plan.md)（ドラフト設計プラン、未承認）をユーザー指示でレビュー → コード根拠を検証（全項目が実コードと一致）→ ユーザーに要件確認（AskUserQuestion）した結果、当初プランの Phase 1 のみでなく **Phase 2（頂点/ベジェパス編集）も今回スコープに含める**ことで合意。§5 スキーマ変更（`ShapeVertex` 型新設）はユーザー承認済み。オンキャンバス頂点ドラッグ gizmo（ペンツール相当）は今回スコープ外・Inspector 数値編集のみで合意。

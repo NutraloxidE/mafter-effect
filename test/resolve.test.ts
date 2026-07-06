@@ -168,6 +168,105 @@ describe("resolve — component prop resolution", () => {
     expect(vertices[0]!.inTangent).toBeUndefined();
     expect(vertices[1]!.pos).toEqual(vec3(50, 100, 0)); // static
   });
+
+  it("§5.5e samples shape rings (multi-ring, e.g. merge Bake output) at the frame", () => {
+    const obj = makeObject({
+      id: "shapeRings",
+      components: [
+        {
+          type: "shape",
+          props: {
+            kind: "path",
+            fill: staticProp({ r: 1, g: 1, b: 1, a: 1 }),
+            rings: [
+              [
+                {
+                  id: "r1v1",
+                  pos: {
+                    value: vec3(0, 0, 0),
+                    keyframes: [
+                      { frame: 0, value: vec3(0, 0, 0), easing: { type: "linear" } },
+                      { frame: 10, value: vec3(20, 0, 0), easing: { type: "linear" } },
+                    ],
+                  },
+                },
+                { id: "r1v2", pos: staticProp(vec3(20, 20, 0)) },
+              ],
+              [{ id: "r2v1", pos: staticProp(vec3(5, 5, 0)) }, { id: "r2v2", pos: staticProp(vec3(10, 10, 0)) }],
+            ],
+          },
+        },
+      ],
+    });
+    const scene = resolve(comp([obj]), 5);
+    const rc = scene.objects[0]!.components[0]!;
+    const rings = rc.props.rings as { id: string; pos: Vec3 }[][];
+    expect(rings).toHaveLength(2);
+    expect(rings[0]![0]!.pos).toEqual(vec3(10, 0, 0)); // interpolated at frame 5
+    expect(rings[0]![1]!.pos).toEqual(vec3(20, 20, 0)); // static
+    expect(rings[1]![0]!.pos).toEqual(vec3(5, 5, 0));
+  });
+});
+
+describe("resolve — shape kind=merge (§5.5d Boolean/Pathfinder, cross-object reference)", () => {
+  it("transforms a referenced rect's local geometry into the merge shape's local space via world matrices", () => {
+    const rectObj = atPos("rectA", vec3(100, 50, 0), {
+      components: [
+        {
+          type: "shape",
+          props: { kind: "rect", fill: staticProp({ r: 1, g: 1, b: 1, a: 1 }), size: staticProp(vec3(20, 20, 0)) },
+        },
+      ],
+    });
+    const mergeObj = makeObject({
+      id: "mergeObj",
+      components: [
+        {
+          type: "shape",
+          props: {
+            kind: "merge",
+            fill: staticProp({ r: 1, g: 1, b: 1, a: 1 }),
+            mergeInputs: [{ id: "mi1", objectId: "rectA", op: "unite" }],
+          },
+        },
+      ],
+    });
+    const scene = resolve(comp([rectObj, mergeObj]), 0);
+    const mergeResolved = scene.objects.find((o) => o.id === "mergeObj")!;
+    const rings = mergeResolved.components[0]!.props.resolvedMergeRings as { op: string; ring: [number, number][] }[];
+    expect(rings).toHaveLength(1);
+    // mergeObj sits at world origin (identity), rectA sits at (100,50) -> relative = translate(100,50).
+    // rectToRing({x:20,y:20}) local corners: (0,0),(20,0),(20,20),(0,20).
+    expect(rings[0]!.ring).toEqual([[100, 50], [120, 50], [120, 70], [100, 70]]);
+    expect(rings[0]!.op).toBe("unite");
+  });
+
+  it("auto-hides objects referenced as merge inputs from the resolved scene", () => {
+    const rectObj = atPos("rectA", vec3(0, 0, 0), {
+      components: [{ type: "shape", props: { kind: "rect", fill: staticProp({ r: 1, g: 1, b: 1, a: 1 }), size: staticProp(vec3(20, 20, 0)) } }],
+    });
+    const mergeObj = makeObject({
+      id: "mergeObj",
+      components: [{ type: "shape", props: { kind: "merge", fill: staticProp({ r: 1, g: 1, b: 1, a: 1 }), mergeInputs: [{ id: "mi1", objectId: "rectA", op: "unite" }] } }],
+    });
+    const scene = resolve(comp([rectObj, mergeObj]), 0);
+    expect(scene.objects.map((o) => o.id)).toEqual(["mergeObj"]); // rectA excluded (consumed as merge input)
+  });
+
+  it("skips a merge input that itself has kind=merge (prevents merge-of-merge cycles)", () => {
+    const mergeA = makeObject({
+      id: "mergeA",
+      components: [{ type: "shape", props: { kind: "merge", fill: staticProp({ r: 1, g: 1, b: 1, a: 1 }), mergeInputs: [] } }],
+    });
+    const mergeB = makeObject({
+      id: "mergeB",
+      components: [{ type: "shape", props: { kind: "merge", fill: staticProp({ r: 1, g: 1, b: 1, a: 1 }), mergeInputs: [{ id: "mi1", objectId: "mergeA", op: "unite" }] } }],
+    });
+    const scene = resolve(comp([mergeA, mergeB]), 0);
+    const mergeBResolved = scene.objects.find((o) => o.id === "mergeB")!;
+    const rings = mergeBResolved.components[0]!.props.resolvedMergeRings as unknown[];
+    expect(rings).toHaveLength(0);
+  });
 });
 
 describe("resolve — INV-1 determinism", () => {

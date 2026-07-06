@@ -1,5 +1,6 @@
 import type {
   AnimatedProp,
+  BooleanMergeInput,
   Component,
   EffectInstance,
   Frame,
@@ -13,9 +14,12 @@ import type {
 import { normalizeBlendMode } from "../core/blendMode";
 import { resolveTrackMattePairs } from "../core/trackMatte";
 import { sampleAny, sampleScalar, sampleVec3 } from "./interpolate";
-import { identity, invert, localMatrix, lookAt, multiply, type Mat4 } from "./mat4";
+import { identity, invert, localMatrix, lookAt, multiply, transformPoint, type Mat4 } from "./mat4";
 import type { ResolvedComponent, ResolvedEffect, ResolvedObject, ResolvedScene } from "./resolved";
 import { autoFadeMultiplierAtFrame, collectFadeClips, computeFadeSuppression, isAutoFadeEnabled } from "./footageAutoFade";
+import { ellipseToRing, flattenVerticesToRing, rectToRing } from "./shapePathBoolean";
+import type { Ring } from "polygon-clipping";
+import type { ResolvedShapeVertex } from "./shapePath";
 
 // §6.3 / §8 resolve(comp, frame): 純関数 (INV-1)。
 // parent チェーンを畳んで各オブジェクトに world 行列を焼き込み、フラットな ResolvedScene を返す。
@@ -81,6 +85,34 @@ function resolverFor(comp: TimelineComposition, ctx: ResolveContext | undefined)
   const fps = comp.fps;
   const evaluator = ctx?.expressions;
 
+  const byId = new Map<ObjectId, SceneObject>();
+  for (const obj of comp.objects) byId.set(obj.id, obj);
+
+  // world 行列を全オブジェクトについて計算（parent の可視性に依らず transform は継承される）。
+  // §5.5d merge の cross-object 参照からも参照先の world を引けるよう resolveComponent と同じ
+  // クロージャに置く（旧: resolve() 側で個別構築していたが、resolveComponent がここへ移った際に統合）。
+  const worldCache = new Map<ObjectId, Mat4>();
+  const visiting = new Set<ObjectId>();
+
+  const worldOf = (id: ObjectId, frame: Frame): Mat4 => {
+    const cached = worldCache.get(id);
+    if (cached) return cached;
+    const obj = byId.get(id);
+    if (!obj) return identity();
+    if (visiting.has(id)) return identity(); // 異常系: 循環。root 扱いで打ち切り。
+    visiting.add(id);
+
+    const local = localOf(obj.transform, frame, id);
+    const world =
+      obj.parent && byId.has(obj.parent)
+        ? multiply(worldOf(obj.parent, frame), local) // W_child = W_parent · L_child
+        : local;
+
+    visiting.delete(id);
+    worldCache.set(id, world);
+    return world;
+  };
+
   /** expression があれば適用、throw/未提供なら sampled にフォールバック（§9）。 */
   function applyExpr<T>(
     prop: AnimatedProp<T>,
@@ -116,6 +148,53 @@ function resolverFor(comp: TimelineComposition, ctx: ResolveContext | undefined)
     );
   }
 
+  function resolveShapeVertices(vertices: ShapeVertex[], frame: Frame, objectId: ObjectId) {
+    return vertices.map((v) => ({
+      id: v.id,
+      pos: vec3Prop(v.pos, frame, objectId),
+      ...(v.inTangent !== undefined ? { inTangent: vec3Prop(v.inTangent, frame, objectId) } : {}),
+      ...(v.outTangent !== undefined ? { outTangent: vec3Prop(v.outTangent, frame, objectId) } : {}),
+    }));
+  }
+
+  /** resolve 済み shape props（kind + vertices/size）から局所空間のポリゴン輪を得る（merge 入力用）。 */
+  function shapeGeometryToRing(kind: unknown, props: Record<string, unknown>): Ring {
+    if (kind === "path") {
+      const vertices = props["vertices"];
+      return Array.isArray(vertices) ? flattenVerticesToRing(vertices as ResolvedShapeVertex[]) : [];
+    }
+    const size = props["size"] as { x: number; y: number } | undefined;
+    if (!size) return [];
+    return kind === "ellipse" ? ellipseToRing(size) : rectToRing(size);
+  }
+
+  /**
+   * §5.5d merge 入力1件を「host（merge shape 自身）のローカル空間」のポリゴン輪へ解決する。
+   * 参照先が存在しない・shape でない・kind="merge"（循環防止）なら null。
+   */
+  function resolveMergeInputRing(
+    mi: BooleanMergeInput,
+    frame: Frame,
+    hostObjectId: ObjectId,
+  ): { op: BooleanMergeInput["op"]; ring: Ring } | null {
+    const inputObj = byId.get(mi.objectId);
+    if (!inputObj) return null;
+    const shapeComp = inputObj.components.find((c) => c.type === "shape");
+    if (!shapeComp || shapeComp.props["kind"] === "merge") return null;
+    const resolvedInput = resolveComponent(shapeComp, frame, mi.objectId);
+    const localRing = shapeGeometryToRing(resolvedInput.props["kind"], resolvedInput.props);
+    if (localRing.length < 3) return null;
+
+    const hostInv = invert(worldOf(hostObjectId, frame));
+    if (!hostInv) return null;
+    const relative = multiply(hostInv, worldOf(mi.objectId, frame));
+    const ring: Ring = localRing.map(([x, y]) => {
+      const p = transformPoint(relative, { x, y, z: 0 });
+      return [p.x, p.y];
+    });
+    return { op: mi.op, ring };
+  }
+
   function resolveComponent(c: Component, frame: Frame, objectId: ObjectId, objInPoint: Frame = 0): ResolvedComponent {
     const props: Record<string, unknown> = {};
     for (const key of Object.keys(c.props)) {
@@ -129,13 +208,20 @@ function resolverFor(comp: TimelineComposition, ctx: ResolveContext | undefined)
     // §5.5c shape kind="path": vertices は「AnimatedProp を含むオブジェクトの配列」であり
     // 上のループ（トップレベル AnimatedProp のみ判定）では中身が resolve されないため個別に処理する。
     if (c.type === "shape" && Array.isArray(c.props["vertices"])) {
-      const vertices = c.props["vertices"] as ShapeVertex[];
-      props["vertices"] = vertices.map((v) => ({
-        id: v.id,
-        pos: vec3Prop(v.pos, frame, objectId),
-        ...(v.inTangent !== undefined ? { inTangent: vec3Prop(v.inTangent, frame, objectId) } : {}),
-        ...(v.outTangent !== undefined ? { outTangent: vec3Prop(v.outTangent, frame, objectId) } : {}),
-      }));
+      props["vertices"] = resolveShapeVertices(c.props["vertices"] as ShapeVertex[], frame, objectId);
+    }
+    // §5.5e shape kind="path" 複数リング（merge の Bake 出力）: vertices と同様、配列の配列。
+    if (c.type === "shape" && Array.isArray(c.props["rings"])) {
+      props["rings"] = (c.props["rings"] as ShapeVertex[][]).map((ring) => resolveShapeVertices(ring, frame, objectId));
+    }
+    // §5.5d shape kind="merge": mergeInputs は他 SceneObject への参照（Illustrator Pathfinder 相当）。
+    // 各参照先の shape ジオメトリを resolveComponent で再帰的に解決し、参照先の world 行列 →
+    // このオブジェクト自身の world 行列の逆、で「このオブジェクトのローカル空間」へ座標変換する。
+    if (c.type === "shape" && c.props["kind"] === "merge" && Array.isArray(c.props["mergeInputs"])) {
+      const mergeInputs = c.props["mergeInputs"] as BooleanMergeInput[];
+      props["resolvedMergeRings"] = mergeInputs
+        .map((mi) => resolveMergeInputRing(mi, frame, objectId))
+        .filter((r): r is { op: BooleanMergeInput["op"]; ring: Ring } => r !== null);
     }
     // comp type: DomRenderer が子フレームを計算できるよう層の inPoint と
     // 親コンプ fps を注入する（§23.2 秒ベース時間マッピング）。fps は解決中コンプの
@@ -162,7 +248,7 @@ function resolverFor(comp: TimelineComposition, ctx: ResolveContext | undefined)
     return { type: e.type, enabled: e.enabled, props };
   }
 
-  return { scalarProp, localOf, resolveComponent, resolveEffect };
+  return { scalarProp, localOf, resolveComponent, resolveEffect, worldOf, byId };
 }
 
 function isAnimatedProp(v: unknown): v is AnimatedProp<unknown> {
@@ -216,50 +302,37 @@ export function resolve(
   frame: Frame,
   ctx?: ResolveContext,
 ): ResolvedScene {
-  const { scalarProp, localOf, resolveComponent, resolveEffect } = resolverFor(comp, ctx);
-
-  const byId = new Map<ObjectId, SceneObject>();
-  for (const obj of comp.objects) byId.set(obj.id, obj);
-
-  // world 行列を全オブジェクトについて計算（parent の可視性に依らず transform は継承される）。
-  // load 時検証で循環は排除済み（§5.4-note）だが、安全のため訪問中マークでガードする。
-  const worldCache = new Map<ObjectId, Mat4>();
-  const visiting = new Set<ObjectId>();
-
-  const worldOf = (id: ObjectId): Mat4 => {
-    const cached = worldCache.get(id);
-    if (cached) return cached;
-    const obj = byId.get(id);
-    if (!obj) return identity();
-    if (visiting.has(id)) return identity(); // 異常系: 循環。root 扱いで打ち切り。
-    visiting.add(id);
-
-    const local = localOf(obj.transform, frame, id);
-    const world =
-      obj.parent && byId.has(obj.parent)
-        ? multiply(worldOf(obj.parent), local) // W_child = W_parent · L_child
-        : local;
-
-    visiting.delete(id);
-    worldCache.set(id, world);
-    return world;
-  };
+  const { scalarProp, resolveComponent, resolveEffect, worldOf, byId } = resolverFor(comp, ctx);
 
   const renderer3d = comp.renderer3d ?? "classic";
   // §5.4f: enabled スタックで直上ペアをフレーム非依存に決定。
   const trackMattePairs = resolveTrackMattePairs(comp.objects);
   const trackMatteByFill = new Map(trackMattePairs.map((p) => [p.fillId, p]));
   const trackMatteSourceIds = new Set(trackMattePairs.map((p) => p.matteId));
+  // §5.5d merge の入力として参照されたオブジェクトは自身の通常描画から除外する（AE/Illustrator の
+  // Pathfinder 同様、合成結果としてのみ見える）。参照集合は frame に依らない構造的なものなので
+  // frame ループの外で一度だけ求める（trackMattePairs と同じ扱い）。
+  const mergeInputSourceIds = new Set<ObjectId>();
+  for (const obj of comp.objects) {
+    for (const c of obj.components) {
+      if (c.type !== "shape" || c.props["kind"] !== "merge") continue;
+      const mergeInputs = c.props["mergeInputs"];
+      if (!Array.isArray(mergeInputs)) continue;
+      for (const mi of mergeInputs as BooleanMergeInput[]) {
+        if (mi.objectId) mergeInputSourceIds.add(mi.objectId);
+      }
+    }
+  }
   // §11.5.2 declick: video 内蔵音声の gain に焼き込むカット端フェードの抑制判定（§11.4 シームレス境界は抑制）。
   // audio comp は clocks/exporter 側、export video 音声は buildAudioMix 側で同一純関数を使う（INV-2）。
   const fadeSuppression = computeFadeSuppression(collectFadeClips(comp));
   const objects: ResolvedObject[] = [];
   for (const obj of comp.objects) {
-    if (!isVisible(obj, frame)) continue;
+    if (!isVisible(obj, frame) || mergeInputSourceIds.has(obj.id)) continue;
     const pair = trackMatteByFill.get(obj.id);
     const resolved: ResolvedObject = {
       id: obj.id,
-      worldTransform: worldOf(obj.id),
+      worldTransform: worldOf(obj.id, frame),
       zOrder: obj.zOrder,
       opacity: scalarProp(obj.opacity, frame, obj.id),
       blendMode: normalizeBlendMode(obj.blendMode),
@@ -322,7 +395,7 @@ export function resolve(
         : activeCameraAt(comp, frame);
   // override 指定カメラも「camera component を持ち可視」でなければデフォルト視点に倒す。
   if (camObj && isVisible(camObj, frame) && camObj.components.some((c) => c.type === "camera")) {
-    const camWorld = worldOf(camObj.id);
+    const camWorld = worldOf(camObj.id, frame);
     const cameraComp = camObj.components.find((c) => c.type === "camera");
     const camType = cameraComp ? sampleAny(cameraComp.props.cameraType, frame) : undefined;
     let view: Mat4 | null;
