@@ -6,6 +6,17 @@
 
 ---
 
+### 2026-07-07（Sonnet 5）— 透過動画軽量化プラン v2: Phase 0（実測診断）+ Phase 1（GL合成）実装 ✅
+
+- **経緯**: [doc/cloudplan/webgl-video-layer-plan.md](doc/cloudplan/webgl-video-layer-plan.md)（v2 プラン、前セッションで全面改稿済み）の実装をユーザーから指示された。§7 の残る確認事項4点（meta命名・コーデック方針・Phase0ゲート・変換UI入口）をAskUserQuestionで確認 → 全て推奨案で確定、プラン文書に反映。
+- **Phase 0（実測診断）**: `verify-comp32-webm-instability.mjs` を headed 実 Chrome（このマシンには実ディスプレイがあり動作した）で再実行。**重要な発見**: issue doc の headless 実測（SW decode×2・stall93%）と異なり、実機では3本とも HW decode（D3D11VideoDecoder）だった。それでも stall は残る（11〜25%）が、原因は「SW decode」ではなく「primary側（背景+Person color）の同時3本decode競合」と判明（コード確認: 修正1のcompanion除外はhold/pauseVideo双方で正しく効いており漏れなし）。Opus 4.8 レビューで「packed化(3→2本)の価値はむしろ上がった」と確認。プラン §0/§7/§8 に反映。
+- **Phase 1（GL合成）**: 新規 [videoAlphaGl.ts](src/runtime/videoAlphaGl.ts)（素のWebGL1、THREE不使用、split/packed両対応シェーダ）+ [videoSplitAlpha.ts](src/runtime/videoSplitAlpha.ts) に canvas キー付き WeakMap による GL compositor 遅延生成・予算（8）・キルスイッチ（`localStorage.mafterDisableGlAlpha`）・context lost時のcanvas差し替え。既存呼び出し3箇所（`DomRenderer.ts` の `updateComponentEl`/`flushVideoFrames`/`scheduleSplitAlphaRedrawWhenReady`既定draw）は同一シグネチャの `compositeSplitAlpha()` に統一置換（プラン記載の `SplitAlphaCompanion.gl` フィールド案から実装を簡潔化・呼び出し規約は完全維持）。
+- **実装中に発見した3つの罠**（§1.2に準ずる新教訓としてプランに記録済み）: (1) UV上下反転（v1と同型の罠、quad修正で解消）。(2) premultiplied出力だとCPU実装（ストレートアルファ）と往復量子化でズレる→ストレートアルファに変更。(3) **ブラウザの`texImage2D(video)`は`drawImage(video)`と独立したYUV→RGB変換をしており、マスク無しの平文color videoだけでも実測maxDiff=22/255のズレが出る**（Opus 4.8による確証実験込みレビューで、premultiply/colorspace pixelStorei/texture filterのいずれを変えても数値不変と確認=シェーダ側では回避不可能なブラウザ既知特性）。§5検証のGL/CPUピクセル一致基準を、alpha(±1厳格)とcolor RGB(premultiplied差±25、browser baseline実測を較正根拠に明記)の二段ゲートに是正。
+- **検証**: `npm run typecheck`緑・`npm test` 934/935 PASS（`projectBins.test.ts`1件は既存ULID順序flakeで無関係）・`npm run build:player`実行し`git diff`で実更新を確認（`playerBuildFreshness.test.ts`の緑を鵜呑みにしない、との教訓通り）。新規unit test `test/videoAlphaGl.test.ts`（予算/キルスイッチ/broken遷移の純ロジック8件）。実ブラウザverify: `verify-gl-alpha-parity.mjs`（Comp32実データ、同一decode済みフレームでGL/CPU比較、PASS）・`verify-export-split-alpha.mjs`（PNG連番export、flushVideoFrames経路、console error 0・正立確認）。headed実ChromeでのPhase0再測定: Scenario A（待ってからPlay）はstall 0回に改善、Scenario Bは自然分散内。
+- **Next steps**: Phase 2（packed形式・新規Subject Extract出力）→ Phase 2.5（既存split→packed変換、上位モデルレビュー必須とユーザー指示済み）→ Phase 3（export全経路無回帰）→ Phase 4（実地受け入れ）。GLコンテキスト予算はfirst-come-first-served簡易版（プラン記載のzOrder昇順入れ替えは未実装、実用上8本超の同時split/packedレイヤーは稀なため許容と判断・要望が出れば拡張）。
+
+---
+
 ### 2026-07-07（Claude Fable 5）— 透過動画軽量化プラン v2（v1 失敗検証 + 全面改稿）+ shape 救出コミット ✅
 
 - **経緯**: WebGL 動画レイヤー v1（`webgl-implement-failed` ブランチ）はユーザー実利用で失敗判定 → main リセット済みだった。ユーザー依頼「実装前に、WebGL 化が本当に透過動画を軽量化するのか検証し、Sonnet 5 でも実装できる明確さまでプランを充実させる」。AskUserQuestion で失敗症状・スコープ・worktree 整理方針を確認。

@@ -31,10 +31,11 @@ import { normalizeFootageQuality } from "./footageQuality";
 import { ensureVideosPrimed, peekVideoPrimed, type VideoPrimeTarget } from "./videoWarmupCache";
 import {
   applyAlphaGenlock,
-  drawSplitAlphaComposite,
+  compositeSplitAlpha,
   ensureSplitAlphaCompanion,
   findSplitAlphaVideo,
   mirrorSplitAlphaVideoState,
+  releaseSplitAlphaGlCompositor,
   resetAlphaGenlockRate,
   scheduleSplitAlphaRedrawWhenReady,
   setSplitAlphaPresentation,
@@ -350,6 +351,11 @@ export class DomRenderer implements Renderer {
         this.restoreAdjustmentSuppression(id);
         // §11.4 配下の <video> は破棄せずプールへ退避（同一アセットのカット境界で再利用する）。
         this.stashVideosToPool(entry);
+        // 離脱オブジェクトごと div を破棄する前に split alpha の GL compositor を明示解放する
+        // （予算カウンタ・実 GL context のリーク防止。node.remove() だけでは解放されない）。
+        for (const canvas of entry.div.querySelectorAll(`canvas.${SPLIT_ALPHA_CANVAS_CLASS}`)) {
+          if (canvas instanceof HTMLCanvasElement) releaseSplitAlphaGlCompositor(canvas);
+        }
         entry.div.remove();
         this.entries.delete(id);
         this.htmlPlayer?.unmountObject(id);
@@ -662,16 +668,11 @@ export class DomRenderer implements Renderer {
     }));
     for (const v of videos) {
       if (v.classList.contains(SPLIT_ALPHA_VIDEO_CLASS)) continue;
-      const parent = v.parentElement;
-      if (!parent) continue;
-      const alpha = parent.querySelector(`video.${SPLIT_ALPHA_VIDEO_CLASS}`) as HTMLVideoElement | null;
-      const canvas = parent.querySelector(`canvas.${SPLIT_ALPHA_CANVAS_CLASS}`) as HTMLCanvasElement | null;
-      if (alpha && canvas) {
-        const scratch = parent.querySelector(
-          `canvas.${SPLIT_ALPHA_MASK_SCRATCH_CLASS}`,
-        ) as HTMLCanvasElement | null;
-        if (scratch) drawSplitAlphaComposite(v, alpha, canvas, scratch);
-      }
+      if (!findSplitAlphaVideo(v)) continue;
+      // ensureSplitAlphaCompanion は既存要素があれば作成せず引き当てるだけ（冪等）。
+      // GL compositor のキャッシュ・broken 判定込みで companion を再取得する。
+      const companion = ensureSplitAlphaCompanion(v);
+      compositeSplitAlpha(v, companion.alphaVideo, companion.canvas, companion.maskScratch);
     }
   }
 
@@ -864,6 +865,9 @@ export class DomRenderer implements Renderer {
       this.teardownVideoElement(el);
     }
     if (this.root) {
+      for (const canvas of this.root.querySelectorAll(`canvas.${SPLIT_ALPHA_CANVAS_CLASS}`)) {
+        if (canvas instanceof HTMLCanvasElement) releaseSplitAlphaGlCompositor(canvas);
+      }
       this.root.remove();
       this.root = null;
     }
@@ -2198,7 +2202,7 @@ function updateComponentEl(
           size?.width ?? 100,
           size?.height ?? 100,
         );
-        const drew = drawSplitAlphaComposite(
+        const drew = compositeSplitAlpha(
           video,
           companion.alphaVideo,
           companion.canvas,
@@ -2220,6 +2224,9 @@ function updateComponentEl(
           for (const node of parent.querySelectorAll(
             `video.${SPLIT_ALPHA_VIDEO_CLASS}, canvas.${SPLIT_ALPHA_CANVAS_CLASS}, canvas.${SPLIT_ALPHA_MASK_SCRATCH_CLASS}`,
           )) {
+            if (node instanceof HTMLCanvasElement && node.classList.contains(SPLIT_ALPHA_CANVAS_CLASS)) {
+              releaseSplitAlphaGlCompositor(node);
+            }
             node.remove();
           }
         }

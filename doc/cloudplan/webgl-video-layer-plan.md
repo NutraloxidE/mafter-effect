@@ -171,10 +171,19 @@ export function createGlAlphaCompositor(canvas: HTMLCanvasElement): GlAlphaCompo
 > 各フェーズ完了時: `npm run typecheck`・`npm test`・**ランタイム変更時は `npm run build:player` を明示実行**（§1.2）。着手前に [implementation-loop](../../.claude/skills/implementation-loop/SKILL.md) を読むこと。
 > **リリース戦略（確定・ユーザー承認 2026-07-07）**: **Phase 1 を先行リリース**する。GL 合成（副因）だけで既存 split が即・部分的に軽くなり、体感を確認してから packed（主因）へ進む。Phase 1 は独立コミット・独立 revert 可能。
 
-- **Phase 0（診断・軽量・推奨・実装前ゲート）**: ユーザー実プロジェクト（Comp 30/32 相当）を実 Chrome で再生し、CDP Media ドメインで (a) decoder 種別（software/hardware）、(b) holdTimeline 発火率、(c) メインスレッド frame time を記録 → **改善判定のベースライン**にする。既存 `verify-comp32-webm-instability.mjs` を headed + 実プロジェクト zip で流用可。
-- **Phase 1（GL 合成・split 対応）← ここまでで先行リリース**: `videoAlphaGl.ts` 新規（§2.1 API）+ `SplitAlphaCompanion.gl` + 呼び出し 3 箇所のラッパ置換 + context loss/予算/キルスイッチ。既存 split アセットの副因（CPU 合成）が消える。**主因（decode×2/holdTimeline）は残る**ので体感は部分改善（ここでユーザーが実 Chrome で確認）。
-  - テスト: シェーダ合成式の期待値は CPU 実装（`applyGrayscaleMaskToAlphaChannel`）が正なので、**実ブラウザ verify でピクセル一致**（合成済み canvas の `getImageData` を GL/CPU 両経路で比較、±2/255）。unit test は「フォールバック分岐・予算・broken 遷移」の純ロジック。
-  - **視覚 verify 必須**: 人物正立スクリーンショット比較（§1.2 反転教訓）。
+- **Phase 0（診断・軽量・推奨・実装前ゲート）✅ 実施済み（2026-07-07・headed 実 Chrome）**: `verify-comp32-webm-instability.mjs` を headed（`channel:"chrome"`）+ Comp 32 相当ミニプロジェクト zip で実行。
+  - **結果（ベースライン・3試行平均）**: decoder 種別＝**3本とも `D3D11VideoDecoder`（`kIsPlatformVideoDecoder:true` = ハードウェアデコード）**。issue doc の headless 実測（VpxVideoDecoder = ソフトウェア、stall 93%）とは逆の結果。stall はシナリオA（待ってからPlay）平均 342.6ms/3000ms（**11.4%**）、シナリオB（scrub直後即Play）平均 747.3ms/3000ms（**24.9%**）。drift 平均 32〜65ms・最大 79〜113ms（resync 閾値 500ms には遠い）。
+  - **§0 主因の再解釈（環境依存の分岐）**: HW decode 環境では「ソフトウェアデコード×2」という主因は成立せず、**残る stall は primary ストリーム（背景mp4 + Person color）側の遅延**が原因（修正1 でグローバル hold/pauseVideo 判定から companion は正しく除外済みであることをコード確認済み・漏れなし）。Comp 32 は同一クリップを3本同時デコード（背景+ Person color + Person alpha）する構成のため、HW decode でも同時セッション競合で primary が詰まっていると考えられる。**packed 化（Person を2本→1本）は総同時デコード数を 3→2 に減らすため、decoder 種別に関係なく効く構造的改善** — 今回の実測により Phase 2/2.5 の価値はむしろ上がったと判断（Opus 4.8 レビュー 2026-07-07 で確認）。
+  - **Phase 1 への影響**: GL合成は毎フレーム CPU 合成コストにしか効かず、上記 primary 側遅延由来の stall には直接効かない可能性が高い。**Phase 1 単体では体感改善が乏しい場合がある**とユーザーに明示した上で、予定通り Phase 1→2→2.5 の順で実装する（ユーザー承認 2026-07-07）。
+  - 生ログ: `verify-comp32-webm-instability-result.json`（リポジトリ・一時物、コミット対象外）。
+- **Phase 1（GL 合成・split 対応）← ここまでで先行リリース ✅ 実装済み（2026-07-07）**: `videoAlphaGl.ts` 新規（§2.1 API、split/packed 両対応の compositor）+ `videoSplitAlpha.ts` に canvas キー付き WeakMap（`SplitAlphaCompanion.gl` フィールドではなく、呼び出し 3 箇所の**引数・戻り値シグネチャを完全維持**する `compositeSplitAlpha()` 経由に統一。設計意図は同一・実装は companion オブジェクトを引き回さない簡潔な形に変更）+ context loss/予算（`MAX_GL_ALPHA_CONTEXTS=8`・first-come-first-served の簡易版、zOrder 昇順の厳密な入れ替えは未実装）/キルスイッチ（`localStorage.mafterDisableGlAlpha`）。
+  - **実装上の発見（重要・§1.2 に準ずる新教訓）**: (1) UV 上下反転 → 修正（quad の v 成分を反転）。(2) premultiplied 出力にすると CPU 実装（ストレートアルファ）と往復量子化でズレる → ストレートアルファ出力（`vec4(color.rgb, mask.r)`）+ `premultipliedAlpha:false` に変更。(3) **ブラウザの `texImage2D(video)` アップロード経路は `drawImage(video)` と独立した YUV→RGB 変換をしており、マスク無しの平文 color video だけでも実測 maxDiff=22/255（avg 0.40）のズレが出る**（Opus 4.8 レビューで確証実験込みで検証済み・premultiply/colorspace pixelStorei/texture filter のいずれを変えても数値不変=シェーダ側では回避不可）。mask はグレースケール（色差信号なし）のため alpha は bit 一致するが、color の RGB は browser 既知特性の floor を踏まえた許容差で判定する必要がある（§5 テスト参照）。
+  - テスト: unit test は `videoAlphaGl.test.ts`（`shouldCreateGlAlphaCompositor`/`dispatchSplitAlphaComposite` の純ロジック：予算・キルスイッチ・broken 遷移の分岐）。実ブラウザ verify（`verify-gl-alpha-parity.mjs`、Comp 32 実データ）は「alpha は ±1 厳格」「color RGB は premultiplied 差（diff×alpha/255）で ±25」の二段ゲートで PASS 確認済み（±25 は上記 browser baseline 実測 max22 を踏まえた較正値）。
+  - **視覚 verify 済み**: 人物正立をライブ canvas screenshot + PNG 連番 export の両方で確認（`probe-gl-alpha-gl.png` / `probe-export-split-alpha-frame0.png`）。
+  - **実機再生 verify 済み（headed 実 Chrome、Phase 0 と同一手法で再計測）**: decoder は Phase 0 と同じく HW（D3D11VideoDecoder）。Scenario A（待ってからPlay）は stall 0回/0ms に改善（Phase 0 実測: 平均5.33回/342.6ms）。Scenario B（scrub直後即Play）は平均1031ms と Phase 0 実測（747.3ms）から悪化して見えるが試行数3の自然な分散範囲内（両シナリオとも Opus 4.8 レビュー通り「Phase 1 単体では primary 側遅延由来の stall は解消しない」という予測と整合）。GL関連の console error は無し（既存の無害な `AbortError: play() interrupted by pause()` のみ）。
+  - **export 無回帰 verify 済み**: `verify-export-split-alpha.mjs`（PNG連番、`flushVideoFrames`＝compositeSplitAlpha 呼び出し3箇所の一つを通る経路）で console error 0・非ブランク・正立を確認。
+  - **Opus 4.8 コードレビュー（2026-07-07）で発見・修正した実装バグ**: split alpha レイヤーが非表示化/削除される経路（`updateComponentEl` の alphaUrl null 分岐・離脱オブジェクトの div 除去・`dispose()`）で GL compositor が dispose されず予算カウンタも減らない実装漏れがあり、表示/非表示を8回繰り返すだけで以降の新規レイヤーが恒久的に CPU 固定になる不具合があった。`releaseSplitAlphaGlCompositor()` を新設し3箇所に配線して修正。あわせて毎フレーム `getAttribLocation`/`getUniformLocation` していたホットパスをプログラムリンク時キャッシュに変更（性能上の軽微な指摘、修正済み）。
+  - **既知の残課題（記録のみ・未実装）**: GL コンテキスト予算はレイヤーの重要度（zOrder）を見ない first-come-first-served。予算超過時にどのレイヤーが CPU に落ちるかは非決定的。また、export 中に稀に（context lost 等で）GL/CPU 経路が同一 export 内で切り替わると、視覚的に許容範囲内（§5 二段ゲート）とはいえ 8〜22/255 程度の色差が同一動画の別フレーム間で生じうる。8コンテキスト予算は通常利用（同時 split/packed レイヤー数が少数）では実害が出にくいため、実運用で問題が出たら zOrder 優先度・export 経路固定化を追加検討する。
 - **Phase 2（packed 形式・新規出力）**: encode（`mode:"packed"` + avc/mp4 交渉 + gutter + **音声トラック同梱**）→ アセット meta/判定ヘルパ → 再生配線（単一 video・companion 不発・`compositePacked`/CPU 版）→ `bundleCollect`（単一ファイル）→ Pipeline 警告除外。新規 Subject Extract 出力が主因まで解消。
   - テスト: packed フレーム合成の純関数（gutter 込み UV/rect 計算）unit test。encode→import→再生の e2e verify（実ブラウザ）。
 - **Phase 2.5（既存 split → packed 変換・§2.4）**: Phase 2 のエンコーダ + export の seek 機構を再利用し、既存 split アセットをオフラインで packed 化する 1クリックアクション（非破壊・アセット差し替え）。**既存プロジェクト（Comp 30/32）の主因がここで初めて消える**。増分 ~1日規模。
@@ -214,11 +223,11 @@ export function createGlAlphaCompositor(canvas: HTMLCanvasElement): GlAlphaCompo
 - ✅ **既存 split → packed 変換を 1クリック・非破壊でスコープに含める**（§2.4）。既存プロジェクトを軽くする本命。
 - ✅ **packed に元 footage の音声トラックを同梱**（§2.2）。
 
-**残る確認事項（実装時に確定）**:
-1. **§16.2 への packed 追記**（meta フィールド名 `alphaMode:"packed"` / `packedLayout` / `contentHeight` / `gutterPx`）— アセット meta は自由形だが、直列化される値なので命名はここで確定する。
-2. **コーデック方針**: H.264(mp4) 優先 + VP9(webm) フォールバックで良いか。
-3. **Phase 0 診断を実装前ゲートにするか**（推奨: する。実測ベースラインが Phase 4 の合否基準になる）。
-4. **変換 UI の入口**: 既存 split → packed の「packed 化」アクションを Project パネルのアセット右クリックに置くか、Inspector のレイヤー単位に置くか（両方でも可）。
+**確定済み（ユーザー承認 2026-07-07・実装着手前レビュー）**:
+1. ✅ **§16.2 packed meta フィールド名はプラン案どおり確定**: `alphaMode:"packed"` / `packedLayout:"topBottom"` / `contentHeight` / `gutterPx`（既存 `alphaMode:"split"` と同じ命名規則）。
+2. ✅ **コーデック方針**: H.264(mp4) 優先 + VP9(webm) フォールバック（`isConfigSupported` 交渉、既存 `configureVideoEncoder` と同型）。
+3. ✅ **Phase 0 診断を実装前ゲートにする**（実測ベースラインを Phase 4 の合否基準にする）。
+4. ✅ **変換 UI の入口は両方**: Project パネルのアセット右クリック（アセット単位）と Inspector のレイヤー単位、両方に「packed 化」アクションを用意する（同一 store アクションを共有）。
 
 ## 8. 残リスク
 

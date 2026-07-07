@@ -1,6 +1,12 @@
 /** §16.2 — split alpha 再生用 canvas 合成（color × alpha マスク WebM）。 */
 
 import { PLAYBACK_RESYNC_THRESHOLD_SEC } from "./videoElementSync";
+import {
+  createGlAlphaCompositor,
+  dispatchSplitAlphaComposite,
+  shouldCreateGlAlphaCompositor,
+  type GlAlphaCompositor,
+} from "./videoAlphaGl";
 
 export const SPLIT_ALPHA_VIDEO_CLASS = "mafter-split-alpha";
 export const SPLIT_ALPHA_CANVAS_CLASS = "mafter-split-alpha-canvas";
@@ -22,6 +28,94 @@ export function findSplitAlphaVideo(colorVideo: HTMLVideoElement): HTMLVideoElem
 /** split alpha 合成 canvas が存在するか（export inline 判定用）。 */
 export function hasSplitAlphaCanvas(host: ParentNode): boolean {
   return host.querySelector(`canvas.${SPLIT_ALPHA_CANVAS_CLASS}`) !== null;
+}
+
+// §2.1 プランv2 — per-layer GL 合成のコンテキスト予算・キルスイッチ。
+// 「canvas のピクセルを作る手段」の実装詳細であり、DOM構造・呼び出し規約には影響しない。
+const MAX_GL_ALPHA_CONTEXTS = 8;
+const GL_ALPHA_KILL_SWITCH_KEY = "mafterDisableGlAlpha";
+const glCompositorsByCanvas = new WeakMap<HTMLCanvasElement, GlAlphaCompositor>();
+let activeGlContextCount = 0;
+
+function glAlphaKillSwitchActive(): boolean {
+  try {
+    return typeof localStorage !== "undefined" && localStorage.getItem(GL_ALPHA_KILL_SWITCH_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * canvas に GL compositor を遅延生成・キャッシュする。context lost で `broken` になった canvas は
+ * 「GL 取得済み canvas は 2D コンテキストを取れない」制約のため、CPU フォールバック用に
+ * 新規 canvas 要素へ差し替える（§2.1）。差し替え後は GL を再試行せず CPU 経路のまま維持する。
+ */
+function ensureUsableSplitAlphaCanvas(
+  canvas: HTMLCanvasElement,
+  parent: ParentNode,
+): HTMLCanvasElement {
+  const existing = glCompositorsByCanvas.get(canvas);
+  if (existing?.broken) {
+    existing.dispose();
+    glCompositorsByCanvas.delete(canvas);
+    activeGlContextCount = Math.max(0, activeGlContextCount - 1);
+    const fresh = document.createElement("canvas");
+    fresh.className = SPLIT_ALPHA_CANVAS_CLASS;
+    fresh.style.cssText = canvas.style.cssText;
+    fresh.width = canvas.width;
+    fresh.height = canvas.height;
+    parent.replaceChild(fresh, canvas);
+    return fresh;
+  }
+  if (
+    shouldCreateGlAlphaCompositor({
+      alreadyHasCompositor: existing !== undefined,
+      activeCount: activeGlContextCount,
+      maxContexts: MAX_GL_ALPHA_CONTEXTS,
+      killSwitchActive: glAlphaKillSwitchActive(),
+    })
+  ) {
+    const compositor = createGlAlphaCompositor(canvas);
+    if (compositor) {
+      glCompositorsByCanvas.set(canvas, compositor);
+      activeGlContextCount += 1;
+    }
+  }
+  return canvas;
+}
+
+/**
+ * split alpha を使わなくなったレイヤー（`alphaUrl` が null になった等）の canvas を DOM から
+ * 取り除く前に呼ぶ。GL compositor を明示 dispose し予算カウンタを解放しないと、表示/非表示を
+ * 繰り返すレイヤーだけで `MAX_GL_ALPHA_CONTEXTS` に恒久的に張り付き、以降の新規レイヤーが
+ * 二度と GL 経路に乗れなくなる（CPU 固定のまま戻らない）。
+ */
+export function releaseSplitAlphaGlCompositor(canvas: HTMLCanvasElement): void {
+  const existing = glCompositorsByCanvas.get(canvas);
+  if (!existing) return;
+  existing.dispose();
+  glCompositorsByCanvas.delete(canvas);
+  activeGlContextCount = Math.max(0, activeGlContextCount - 1);
+}
+
+/**
+ * drawSplitAlphaComposite と同一契約（引数・bool 戻り値）の薄いラッパ。GL compositor が
+ * canvas に生きていればシェーダ合成、そうでなければ既存 CPU 合成にフォールバックする。
+ * 既存呼び出し 3 箇所（updateComponentEl / flushVideoFrames / scheduleSplitAlphaRedrawWhenReady
+ * の既定 draw）はこの関数へ差し替えるだけで GL 化の恩恵を受ける。
+ */
+export function compositeSplitAlpha(
+  colorVideo: HTMLVideoElement,
+  alphaVideo: HTMLVideoElement,
+  canvas: HTMLCanvasElement,
+  maskScratch: HTMLCanvasElement,
+): boolean {
+  const gl = glCompositorsByCanvas.get(canvas);
+  return dispatchSplitAlphaComposite(
+    gl,
+    () => gl!.compositeSplit(colorVideo, alphaVideo),
+    () => drawSplitAlphaComposite(colorVideo, alphaVideo, canvas, maskScratch),
+  );
 }
 
 /** color `<video>` の兄弟として alpha video + composite canvas を確保。 */
@@ -52,6 +146,7 @@ export function ensureSplitAlphaCompanion(colorVideo: HTMLVideoElement): SplitAl
     canvas.style.cssText = "position:absolute;top:0;left:0;pointer-events:none";
     parent.appendChild(canvas);
   }
+  canvas = ensureUsableSplitAlphaCanvas(canvas, parent);
 
   let maskScratch = parent.querySelector(
     `canvas.${SPLIT_ALPHA_MASK_SCRATCH_CLASS}`,
@@ -175,7 +270,7 @@ export function scheduleSplitAlphaRedrawWhenReady(
   pendingRedraws.add(canvas);
   const now = options?.now ?? (() => performance.now());
   const raf = options?.raf ?? ((cb: () => void) => { requestAnimationFrame(cb); });
-  const draw = options?.draw ?? drawSplitAlphaComposite;
+  const draw = options?.draw ?? compositeSplitAlpha;
   const deadline = now() + (options?.deadlineMs ?? 2000);
   const tick = (): void => {
     if (!canvas.isConnected) {
