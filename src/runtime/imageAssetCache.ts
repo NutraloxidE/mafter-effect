@@ -89,6 +89,20 @@ export function evictPreviewMediaAsset(assetId: string): void {
   previewCacheRef?.evictAsset(assetId);
 }
 
+/**
+ * §16.2b — PreviewPanel の imageCacheRef 以外（Inspector 等）から、evict 直後に明示リロードする
+ * ための薄いラッパ。`byPath` キャッシュは既存 asset をヒットすると `loadProxiesFromFs` を
+ * 再実行しないため、`ensureProxyTier` 完了「後」に `evictPreviewMediaAsset` → この関数、の順で
+ * 呼ばないと新しい proxy が preview に反映されない（実機検証で確認済みのレース対策と同型）。
+ */
+export async function reloadPreviewMediaFromProject(
+  project: Project,
+  fs: FileSystem,
+  options?: ImageLoadOptions,
+): Promise<void> {
+  await previewCacheRef?.loadFromProject(project, fs, options);
+}
+
 /** §16.2 split alpha — color + 別 WebM マスク（Chrome 等 VP9 alpha 非対応時）。 */
 export function isSplitAlphaVideoMeta(meta: Record<string, unknown> | undefined): boolean {
   return (
@@ -127,10 +141,16 @@ export class ImageAssetCache {
   private readonly blobUrls = new Set<string>();
   /** §16.2 split alpha 用 companion マスク video URL（assetId → url）。 */
   private readonly alphaUrlById = new Map<string, string>();
-  /** §2.2 packed alpha レイアウト（assetId → layout）。 */
+  /** §2.2 packed alpha レイアウト（assetId → layout・原本）。 */
   private readonly packedLayoutById = new Map<string, { contentHeight: number; gutterPx: number }>();
   // §11.4b assetId → proxy tier → entry。映像のみ（音声は常に原本）。
   private readonly proxyById = new Map<string, Map<string, ImageEntry>>();
+  /**
+   * §16.2b packed proxy — assetId → tier → 縮小後 layout。原本 packed proxy は content サイズが
+   * 原本と異なる（縮小されている）ため、URL と同じ quality で必ず同時に引かないと合成 rect が破綻する
+   * （getUrlForQuality と対で getPackedAlphaLayoutForQuality を使うこと）。
+   */
+  private readonly packedProxyLayoutById = new Map<string, Map<string, { contentHeight: number; gutterPx: number }>>();
 
   getUrl(assetId: string): string | null {
     return this.byId.get(assetId)?.url ?? null;
@@ -157,9 +177,26 @@ export class ImageAssetCache {
     return this.alphaUrlById.get(assetId) ?? null;
   }
 
-  /** §2.2 packed alpha レイアウト（無ければ null＝packed 資産ではない）。 */
+  /** §2.2 packed alpha レイアウト（原本・無ければ null＝packed 資産ではない）。 */
   getPackedAlphaLayout(assetId: string): { contentHeight: number; gutterPx: number } | null {
     return this.packedLayoutById.get(assetId) ?? null;
+  }
+
+  /**
+   * §16.2b — quality に対応する packed alpha レイアウトを返す。proxy tier かつ proxy layout が
+   * 登録済みならその縮小 layout、それ以外（`original` / proxy 未生成）は原本 layout にフォールバック。
+   * `getUrlForQuality(assetId, quality)` と必ず同じ quality で対にして呼ぶこと（URL と layout が
+   * 別 quality だと合成 rect が videoWidth/Height を超えて破綻する）。
+   */
+  getPackedAlphaLayoutForQuality(
+    assetId: string,
+    quality: FootageQuality,
+  ): { contentHeight: number; gutterPx: number } | null {
+    if (isProxyTier(quality)) {
+      const proxyLayout = this.packedProxyLayoutById.get(assetId)?.get(quality);
+      if (proxyLayout) return proxyLayout;
+    }
+    return this.getPackedAlphaLayout(assetId);
   }
 
   /** import 時に確定した meta から size を返す（cache 未ロード時の bounds 用）。 */
@@ -306,7 +343,24 @@ export class ImageAssetCache {
         }
       }
       this.registerProxyEntry(assetId, tier, entry);
+      this.registerPackedProxyLayoutIfPresent(assetId, tier, raw);
     }
+  }
+
+  /**
+   * §16.2b — meta.proxies[tier] に併記された packed proxy 自身の縮小 layout
+   * （`{contentHeight, gutterPx}`）があれば packedProxyLayoutById に登録する（他は無視）。
+   */
+  private registerPackedProxyLayoutIfPresent(assetId: string, tier: string, raw: unknown): void {
+    const p = (raw ?? {}) as { contentHeight?: unknown; gutterPx?: unknown };
+    if (typeof p.contentHeight !== "number" || p.contentHeight <= 0) return;
+    if (typeof p.gutterPx !== "number" || p.gutterPx < 0) return;
+    let m = this.packedProxyLayoutById.get(assetId);
+    if (!m) {
+      m = new Map();
+      this.packedProxyLayoutById.set(assetId, m);
+    }
+    m.set(tier, { contentHeight: p.contentHeight, gutterPx: p.gutterPx });
   }
 
   private registerProxyEntry(assetId: string, tier: string, entry: ImageEntry): void {
@@ -383,6 +437,7 @@ export class ImageAssetCache {
     }
     this.alphaUrlById.delete(assetId);
     this.packedLayoutById.delete(assetId);
+    this.packedProxyLayoutById.delete(assetId);
   }
 
   /** §11.7 bundle player: 相対 URL で image / video を参照する。 */
@@ -400,22 +455,23 @@ export class ImageAssetCache {
       }
       if (asset.kind === "video") this.registerPackedLayoutIfPresent(asset.id, asset.meta);
       // §11.4b バンドルに含まれる proxy も quality URL として登録（getUrlForQuality 用）。
-      this.forEachProxyMeta(asset, (tier, path) => {
+      this.forEachProxyMeta(asset, (tier, path, raw) => {
         this.registerProxyEntry(asset.id, tier, { url: urlForPath(path), size });
+        this.registerPackedProxyLayoutIfPresent(asset.id, tier, raw);
       });
     }
   }
 
-  /** §11.4b meta.proxies を (tier, path) で走査する共通ヘルパ。 */
+  /** §11.4b meta.proxies を (tier, path, rawEntry) で走査する共通ヘルパ。 */
   private forEachProxyMeta(
     asset: { meta?: Record<string, unknown> },
-    cb: (tier: string, path: string) => void,
+    cb: (tier: string, path: string, raw: unknown) => void,
   ): void {
     const proxies = asset.meta?.proxies;
     if (!proxies || typeof proxies !== "object") return;
     for (const [tier, raw] of Object.entries(proxies as Record<string, unknown>)) {
       const path = (raw as { path?: unknown })?.path;
-      if (typeof path === "string") cb(tier, path);
+      if (typeof path === "string") cb(tier, path, raw);
     }
   }
 

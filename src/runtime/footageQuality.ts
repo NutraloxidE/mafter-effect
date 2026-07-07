@@ -82,3 +82,61 @@ export function normalizeFootageQuality(raw: unknown): FootageQuality {
   }
   return DEFAULT_FOOTAGE_QUALITY;
 }
+
+/**
+ * §16.2b — packed alpha 専用の既定 proxy tier。原本 packed は content の2倍近い縦解像度
+ * （color+mask 上下パック）を持ち、webm(VP9 ソフトウェアデコード)に落ちた場合に実時間再生
+ * できず holdTimeline が慢性発火する（実機計測: 8秒の壁時計でタイムライン進行が約半分）。
+ * VP9 ソフトデコードでも確実に実時間へ収まるよう、通常 footage の既定（medium）より
+ * 保守的に低い tier を既定にする。
+ */
+const PACKED_DEFAULT_PROXY_TIER: ProxyTier = "low";
+
+export interface PackedQualityMode {
+  /** true = 決定論 export（mp4/webm/PNG、および bundle bake の compFrameCapture）ステップ中。 */
+  exportStep?: boolean;
+  /**
+   * `exportStep` 時に使う quality（packed レイヤー専用「Export Quality」プロパティ由来）。
+   * 未指定 / `"original"` なら原本のまま（既定・INV-2 非干渉 — デコード速度に依存させない）。
+   * 決定論性そのものは崩さない: どの tier でもフレームごとの決定論 seek で選ぶため INV-2 は保たれる。
+   * preview 側で `previewSelection` が `PACKED_SAME_AS_EXPORT` のときもこの値がそのまま使われる。
+   */
+  exportQuality?: FootageQuality;
+}
+
+/** packed レイヤー専用「Preview Quality」の特殊選択肢: Export Quality の値にそのまま追従する。 */
+export const PACKED_SAME_AS_EXPORT = "same_as_export" as const;
+
+/** packed レイヤーの Preview Quality プロパティが取りうる値（通常 tier + リンク特殊値）。 */
+export type PackedPreviewSelection = FootageQuality | typeof PACKED_SAME_AS_EXPORT;
+
+export function isPackedSameAsExport(v: unknown): v is typeof PACKED_SAME_AS_EXPORT {
+  return v === PACKED_SAME_AS_EXPORT;
+}
+
+/** 任意の raw 値（packed レイヤーの footageQuality prop）を PackedPreviewSelection へ正規化。 */
+export function normalizePackedPreviewSelection(raw: unknown): PackedPreviewSelection {
+  return isPackedSameAsExport(raw) ? PACKED_SAME_AS_EXPORT : normalizeFootageQuality(raw);
+}
+
+/**
+ * packed alpha レイヤーに実際に使う quality を決める純関数。
+ * - 決定論 export（`exportStep`）は `mode.exportQuality`（packed 専用 Export Quality プロパティ、
+ *   既定 `"original"`）をそのまま使う。preview quality（`previewSelection`）とは独立。
+ * - preview / bundle live（exportStep 無し）:
+ *   - `previewSelection === PACKED_SAME_AS_EXPORT` なら `mode.exportQuality` にそのまま追従する
+ *     （既定 proxy tier への自動差し替えは行わない — Export Quality が `"original"` なら
+ *     プレビューも文字通り原本を使う。ユーザーが明示的にリンクした結果は尊重する）。
+ *   - user が proxy tier を明示していればそれを尊重する。
+ *   - user が既定の `"original"` のままなら、decode-bound 回避のため既定 proxy tier に差し替える。
+ * packed 以外の通常 video はこの関数を通さない（呼び出し側で isPackedAlphaVideoMeta 等で分岐）。
+ */
+export function effectivePackedQuality(
+  previewSelection: PackedPreviewSelection,
+  mode: PackedQualityMode,
+): FootageQuality {
+  if (mode.exportStep) return mode.exportQuality ?? "original";
+  if (previewSelection === PACKED_SAME_AS_EXPORT) return mode.exportQuality ?? "original";
+  if (isProxyTier(previewSelection)) return previewSelection;
+  return PACKED_DEFAULT_PROXY_TIER;
+}

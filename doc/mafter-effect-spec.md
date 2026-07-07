@@ -1086,6 +1086,16 @@ video レイヤーのフッテージから **MediaPipe Selfie Segmentation**（A
 - **既存 split → packed 変換**: 1レイヤー/1アセット単位でオフライン変換する UI をスコープに含む（詳細は cloudplan doc）。
 - **元レイヤー**: 変更なし。
 
+**packed preview proxy（2026-07 追加・decode-bound 対策）**: packed 原本が webm（VP9 ソフトウェアデコード）に落ちるケース（H.264 非対応環境）で、`contentHeight` が大きい（実測 1080×2284px 級）と実時間デコードが追いつかず、preview 再生が chronic に `holdTimeline`（§11.4 双方向同期）でゲートされ、タイムライン全体が実時間の半分程度まで速度低下する（実機計測で確認・drop rate ≈40%）。この劣化を preview 専用の忠実度トレードオフで回避する:
+
+- **editor preview ＋ §11.7 HTML bundle player（live 再生）** は、レイアウト保持のまま縮小した **packed preview proxy**（既存 §11.4b footage proxy 基盤 `meta.proxies[tier]` を packed 対応拡張）を使う。proxy は webm（低解像度なので VP9 ソフトデコードでも実時間再生可）。Inspector の **Preview Quality** ドロップダウン（packed レイヤー専用・通常 video の `footageQuality` ドロップダウンと排他）でユーザーが tier を選べる。既定（未指定＝`original`）は decode-bound 回避のため既定 proxy tier（`low`）に自動で差し替わる。
+- **Preview Quality には「Same as Export Quality」という特殊選択肢**（`PACKED_SAME_AS_EXPORT` sentinel、`footageQuality` prop に文字列として保存）がある。選ぶと Export Quality の値に**そのまま**追従する（既定 proxy tier への自動差し替えは行わない — Export Quality が `original` ならプレビューも文字通り原本を使い、decode-bound の低速化を承知の上で export と完全一致のプレビューを見たい、という明示的な要求として扱う）。Export Quality を変えると、リンク中の Preview Quality も自動で追従する（`PackedExportQualitySelect` が Preview 側のリンク状態を見て evict+reload する）。
+- **決定論 export（mp4/webm/PNG、および HTML bundle の bake 焼き込みレイヤー）** は、Preview Quality とは**独立**した専用の **Export Quality**（packed レイヤーの `packedExportQuality` プロパティ・既定 `"original"`）を使う。既定のままなら原本 packed（INV-2 非干渉）。ユーザーが明示的に proxy tier を選んだ場合のみ低画質で書き出す（例: ドラフト書き出しの高速化）。
+- proxy は自身の縮小 `contentHeight`/`gutterPx` を `meta.proxies[tier]` に併記する（合成 rect はレイアウトごとに再計算されるため、原本のレイアウト値を縮小 proxy にそのまま流用してはならない）。
+- proxy 生成トリガ・既定 tier・quality 解決の実装詳細は `src/runtime/packedVideoProxy.ts` / `src/editor/store.ts`（`ensureProxyTier`）/ `src/runtime/imageAssetCache.ts` / `src/runtime/footageQuality.ts`（`effectivePackedQuality` — `exportStep` 時は `exportQuality`、それ以外は `previewSelection`（通常 tier または `PACKED_SAME_AS_EXPORT`）を独立に解決する）参照。
+- **WebCodecs 不可環境**: proxy 生成（Preview Quality / Export Quality いずれも）は `VideoEncoder`（WebCodecs）に依存する。非対応ブラウザでは Inspector に警告バナーを常時表示し（`webcodecsUnavailableReason()`）、preview 側の自動事前生成（idle トリガ）も試行自体を止める（失敗を前提に無駄なリトライ・キャッシュ破棄をしない）。生成が完了するまで／生成に失敗した場合は必ず原本 packed 資産にフォールバックする — **生成中・失敗時に一時的にでもレイヤーが不可視（透明）になってはならない**（該当キャッシュを生成完了「前」に破棄しないことで保証する。§実装ガイドライン参照）。
+- **HTML bundle export の zip 同梱**: `collectBundleDependencies`（`bundleCollect.ts`）は packed レイヤーの同梱ファイルを、生の `footageQuality` prop ではなく `effectivePackedQuality`（Preview Quality 側の解決規則・`PACKED_SAME_AS_EXPORT` 込み）で決める。bundle player（`registerProjectUrls`）は `meta.proxies` を無条件に URL 登録するため、ここがズレると「player は proxy URL を要求するのに zip にそのファイルが無く 404」という壊れ方をする（既定 tier への自動差し替え・Same as Export Quality いずれの場合も同一関数で解決することで一致を保証する）。
+
 **UI**: Inspector Video 内の Subject Extract 折りたたみ。対象種別プルダウン（v1: Person）+ sample interval + Extract。プルダウン選択はセッション UI のみ（`project.json` 非永続）。
 
 **制約**: WebM alpha 再生は Chrome/FF 中心（§16 alpha 動画制約と同型）。Safari は弱い。長尺は sample interval で間引き可。

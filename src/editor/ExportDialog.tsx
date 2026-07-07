@@ -103,7 +103,14 @@ export function ExportDialog({ project, compId, mode = "download", onClose }: Pr
 
     try {
       const ensureProxyTier = useEditorStore.getState().ensureProxyTier;
-      const proxyJobs = collectExportProxyJobs(project);
+      // §16.2b: HTML bundle は live 再生で packed preview proxy を使う。決定論 export
+      // （mp4/webm/PNG/prerender、および HTML bundle の bake 焼き込み）は packed レイヤーの
+      // Export Quality（既定 original）を使うため常に対象に含める（既定のままなら isProxyTier
+      // が false でジョブは増えない）。
+      const proxyJobs = collectExportProxyJobs(project, {
+        includePackedAlphaPreview: cfg.format === "html-bundle",
+        includePackedAlphaExport: true,
+      });
       for (const job of proxyJobs) {
         if (ctrl.signal.aborted) return;
         setProgress({ phase: "render", frame: 0, totalFrames: 1, message: `Preparing ${job.quality} proxy…` });

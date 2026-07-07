@@ -27,7 +27,7 @@ import {
   isVideoReadyAtTarget,
   type VideoClockSample,
 } from "./playbackVideoSync";
-import { normalizeFootageQuality } from "./footageQuality";
+import { normalizeFootageQuality, normalizePackedPreviewSelection, effectivePackedQuality } from "./footageQuality";
 import { ensureVideosPrimed, peekVideoPrimed, type VideoPrimeTarget } from "./videoWarmupCache";
 import {
   applyAlphaGenlock,
@@ -572,7 +572,19 @@ export class DomRenderer implements Renderer {
 
       const clip = clips.find((c) => c.objectId === t.objectId);
       const quality = normalizeFootageQuality(clip?.footageQuality);
-      const src = this.imageCache.getUrlForQuality(t.assetId, quality) ?? "";
+      // §16.2b: 本経路は exportVideoStep===false のときのみ実行される（L547）ので、packed 資産は
+      // 常に effectivePackedQuality(previewSelection, { exportStep: false, exportQuality }) と
+      // 同じ tier を先読みする（メイン描画側 updateComponentEl と quality が食い違うと、
+      // prime した URL が使われずカット到達時に無駄になる。Same as Export Quality 選択時は
+      // clip.packedExportQuality と対で解決する）。
+      const isPackedAsset = this.imageCache.getPackedAlphaLayout(t.assetId) != null;
+      const effQuality = isPackedAsset
+        ? effectivePackedQuality(normalizePackedPreviewSelection(clip?.footageQuality), {
+            exportStep: false,
+            exportQuality: normalizeFootageQuality(clip?.packedExportQuality),
+          })
+        : quality;
+      const src = this.imageCache.getUrlForQuality(t.assetId, effQuality) ?? "";
       if (!src) continue;
 
       const video = document.createElement("video");
@@ -2166,7 +2178,19 @@ function updateComponentEl(
       const assetId = props["asset"] as string | undefined;
       // §11.4b 画質ティアに応じた映像ファイルを選択（プロキシ無→原本フォールバック）。音声は別経路で常に原本。
       const quality = normalizeFootageQuality(props["footageQuality"]);
-      const src = assetId ? (imageCache?.getUrlForQuality(assetId, quality) ?? "") : "";
+      // §16.2b packed alpha は decode-bound 回避のため preview/bundle live で既定 proxy tier に
+      // 差し替える。決定論 export（exportStep）は packed 専用の Export Quality プロパティ
+      // （既定 original）を使う — preview quality（quality/footageQuality）とは独立に選べる。
+      // preview quality が PACKED_SAME_AS_EXPORT（Same as Export Quality）のときは Export Quality
+      // にそのまま追従する。URL とレイアウト（下の packedLayout）は必ず同じ effQuality で対にして引く。
+      const isPackedAsset = assetId ? imageCache?.getPackedAlphaLayout(assetId) != null : false;
+      const effQuality = isPackedAsset
+        ? effectivePackedQuality(normalizePackedPreviewSelection(props["footageQuality"]), {
+            exportStep: exportVideoStep,
+            exportQuality: normalizeFootageQuality(props["packedExportQuality"]),
+          })
+        : quality;
+      const src = assetId ? (imageCache?.getUrlForQuality(assetId, effQuality) ?? "") : "";
       if (video.getAttribute("src") !== src) {
         video.src = src;
         // §11.4 mute は syncVideoElementTime がモード別に制御（再生中のみアンミュート）。
@@ -2219,7 +2243,9 @@ function updateComponentEl(
         video.style.height = `${size.height}px`;
       }
       const alphaUrl = assetId ? imageCache?.getAlphaVideoUrl(assetId) : null;
-      const packedLayout = !alphaUrl && assetId ? imageCache?.getPackedAlphaLayout(assetId) ?? null : null;
+      const packedLayout = !alphaUrl && assetId
+        ? imageCache?.getPackedAlphaLayoutForQuality(assetId, effQuality) ?? null
+        : null;
       if (alphaUrl) {
         if (video.parentElement) clearAlphaRemnants(video.parentElement, "split");
         const companion = ensureSplitAlphaCompanion(video);

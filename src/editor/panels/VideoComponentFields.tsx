@@ -1,8 +1,13 @@
 import type { ComponentType } from "react";
 import type { ParamDescriptor, SceneObject } from "../../core/schema";
 import { globalPluginRegistry } from "../../runtime/pluginRegistry";
+import { isPackedAlphaVideoMeta } from "../../runtime/imageAssetCache";
+import { webcodecsUnavailableReason } from "../../runtime/webcodecsVideoEncode";
+import { useEditorStore } from "../store";
 import { MotionTrackFields } from "./MotionTrackFields";
 import { PackedAlphaConvertFields } from "./PackedAlphaConvertFields";
+import { PackedExportQualitySelect } from "./PackedExportQualitySelect";
+import { PackedPreviewQualitySelect } from "./PackedPreviewQualitySelect";
 import { SubjectExtractFields } from "./SubjectExtractFields";
 
 // InspectorPanel の ComponentFields を再利用するための props 型。
@@ -41,7 +46,21 @@ export function VideoComponentFields({
   componentFields: ComponentType<ComponentFieldsProps>;
 }) {
   const def = globalPluginRegistry.getComponentDef("video");
-  const params = def?.params ?? [];
+  const project = useEditorStore((s) => s.project);
+
+  const assetId = typeof obj.components[compIdx]?.props["asset"] === "string"
+    ? (obj.components[compIdx]!.props["asset"] as string)
+    : "";
+  const asset = project?.assets.find((a) => a.id === assetId);
+  const isPacked = asset?.kind === "video" && isPackedAlphaVideoMeta(asset.meta);
+
+  // §16.2b: packed レイヤーは通常の footageQuality（Quality）ドロップダウンを出さず、
+  // 決定論 export には影響しない専用の PackedPreviewQualitySelect に差し替える
+  // （同じ prop を2つの UI で編集できてしまう混乱を避ける）。
+  const params = isPacked
+    ? (def?.params ?? []).filter((p) => p.key !== "footageQuality")
+    : (def?.params ?? []);
+  const webcodecsWarning = isPacked ? webcodecsUnavailableReason() : null;
 
   return (
     <>
@@ -55,6 +74,27 @@ export function VideoComponentFields({
         onEditFocus={onEditFocus}
         onEditBlur={onEditBlur}
       />
+      {webcodecsWarning && (
+        <div
+          style={{
+            fontSize: 10,
+            color: "#fc8",
+            background: "#2a2415",
+            padding: "4px 6px",
+            borderRadius: 3,
+            marginBottom: 6,
+            lineHeight: 1.4,
+          }}
+        >
+          ⚠ {webcodecsWarning} プレビュー/書き出し用の縮小プロキシを生成できないため、常に原本画質で再生・書き出しされます。
+        </div>
+      )}
+      {isPacked && (
+        <>
+          <PackedPreviewQualitySelect videoLayer={obj} compIdx={compIdx} updateObject={updateObject} />
+          <PackedExportQualitySelect videoLayer={obj} compIdx={compIdx} updateObject={updateObject} />
+        </>
+      )}
       <div style={{ marginTop: 8 }}>
         <PackedAlphaConvertFields videoLayer={obj} />
         <SubjectExtractFields videoLayer={obj} />

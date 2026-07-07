@@ -11,8 +11,10 @@ export interface VideoClipLookaheadInput {
   outPoint: Frame;
   trimStart: Frame;
   enabled: boolean;
-  /** §11.4b 画質ティア（省略 = original）。 */
+  /** §11.4b 画質ティア（省略 = original）。packed レイヤーは PACKED_SAME_AS_EXPORT も取りうる。 */
   footageQuality?: string;
+  /** §16.2b packed レイヤー専用の Export Quality（省略 = original）。 */
+  packedExportQuality?: string;
 }
 
 /** 先読み warm-up すべきクリップ（in 点のソース trim 時刻付き）。 */
@@ -85,6 +87,7 @@ export function collectVideoClipsFromComp(comp: TimelineComposition): VideoClipL
       trimStart: (videoComp.props["trimStart"] as number | undefined) ?? 0,
       enabled: obj.enabled,
       footageQuality: videoComp.props["footageQuality"] as string | undefined,
+      packedExportQuality: videoComp.props["packedExportQuality"] as string | undefined,
     });
   }
   return clips;

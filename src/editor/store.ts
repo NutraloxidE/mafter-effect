@@ -42,7 +42,13 @@ import { sampleScalar } from "../runtime/interpolate";
 import { ModuleLoader } from "../runtime/moduleLoader";
 import type { PluginContext, PluginManifest, EffectDef } from "../runtime/plugin";
 import { globalPluginRegistry } from "../runtime/pluginRegistry";
-import { probeImageFile, evictPreviewMediaAsset } from "../runtime/imageAssetCache";
+import {
+  probeImageFile,
+  evictPreviewMediaAsset,
+  isPackedAlphaVideoMeta,
+  packedAlphaLayoutFromMeta,
+} from "../runtime/imageAssetCache";
+import { buildPackedVideoProxy } from "../runtime/packedVideoProxy";
 import {
   convertSplitAssetToPacked,
   isConvertError,
@@ -1440,8 +1446,20 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     let proxyMime = "video/webm";
     let pw = 0;
     let ph = 0;
+    // §16.2b packed alpha proxy — レイアウト（contentHeight/gutterPx）を保った縮小版。
+    // 通常 native proxy（buildNativeVideoProxy）に通すと packed の上下パック構造が単純にリサイズ
+    // されるだけで color/mask 帯の比率が崩れ、合成時に mask 帯からズレたピクセルを拾ってしまう
+    // ため、packed 資産は必ずこちらの専用分岐を通す（isPackedAlphaVideoMeta を kind 判定より先に見る
+    // — footageKindOf は alphaMode を見ないため packed も "native" と分類される）。
+    let packedProxyLayout: { contentHeight: number; gutterPx: number } | undefined;
     try {
-      if (kind === "animated-raster") {
+      if (isPackedAlphaVideoMeta(asset0.meta)) {
+        const srcLayout = packedAlphaLayoutFromMeta(asset0.meta);
+        if (!srcLayout) { feedbackCollector.onProxyFailed(); return false; }
+        const proxy = await buildPackedVideoProxy(file, tier as ProxyTier, srcLayout);
+        proxyBytes = proxy.bytes; proxyMime = proxy.mime; pw = proxy.width; ph = proxy.height;
+        packedProxyLayout = { contentHeight: proxy.contentHeight, gutterPx: proxy.gutterPx };
+      } else if (kind === "animated-raster") {
         const info = await detectAnimatedRaster(file);
         if (!info) { feedbackCollector.onProxyFailed(); return false; }
         const proxy = await buildAnimatedRasterProxy(file, info, tier as ProxyTier);
@@ -1477,7 +1495,19 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
           ...a,
           meta: {
             ...(a.meta ?? {}),
-            proxies: { ...existing, [tier]: { path: proxyPath, mime: proxyMime, width: pw, height: ph } },
+            proxies: {
+              ...existing,
+              [tier]: {
+                path: proxyPath,
+                mime: proxyMime,
+                width: pw,
+                height: ph,
+                // §16.2b — packed proxy のみ縮小後 layout を併記（getPackedAlphaLayoutForQuality が読む）。
+                ...(packedProxyLayout
+                  ? { contentHeight: packedProxyLayout.contentHeight, gutterPx: packedProxyLayout.gutterPx }
+                  : {}),
+              },
+            },
           },
         };
       }),

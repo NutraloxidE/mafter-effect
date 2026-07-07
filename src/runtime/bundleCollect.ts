@@ -16,8 +16,8 @@ import { globalPluginRegistry } from "./pluginRegistry";
 import { BUILTIN_COMPONENT_TYPES } from "./builtinComponents";
 import { collectExpressionPresetScriptPaths } from "./builtinExpressionPresetScripts";
 import { resolveFootageAudioPath, resolveFootageVideoPath } from "./footagePlayback";
-import { normalizeFootageQuality } from "./footageQuality";
-import { isSplitAlphaVideoMeta } from "./imageAssetCache";
+import { effectivePackedQuality, normalizeFootageQuality, normalizePackedPreviewSelection } from "./footageQuality";
+import { isPackedAlphaVideoMeta, isSplitAlphaVideoMeta } from "./imageAssetCache";
 
 export interface BundleCollectResult {
   timelineCompIds: Set<string>;
@@ -70,7 +70,16 @@ function collectObjectAssets(obj: SceneObject, project: Project, binaries: Set<s
       if (typeof assetId === "string") {
         const asset = project.assets.find((a) => a.id === assetId);
         if (asset) {
-          const quality = normalizeFootageQuality(cmp.props["footageQuality"]);
+          // §16.2b packed alpha は live 再生で effectivePackedQuality（既定 proxy tier への
+          // 差し替え・Same as Export Quality 追従）を経由した quality を使う。生の footageQuality
+          // をそのまま渡すと、player が実際に要求する proxy tier のファイルが zip に同梱されず
+          // 404 になる（bundle player は meta.proxies を無条件に URL 登録するため気づきにくい）。
+          const quality = isPackedAlphaVideoMeta(asset.meta)
+            ? effectivePackedQuality(normalizePackedPreviewSelection(cmp.props["footageQuality"]), {
+                exportStep: false,
+                exportQuality: normalizeFootageQuality(cmp.props["packedExportQuality"]),
+              })
+            : normalizeFootageQuality(cmp.props["footageQuality"]);
           binaries.add(resolveFootageVideoPath(asset, quality));
           const audioPath = resolveFootageAudioPath(asset);
           if (audioPath) binaries.add(audioPath);

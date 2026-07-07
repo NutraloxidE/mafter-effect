@@ -3,7 +3,13 @@
 // すべて asset.meta（freeform・§5 非変更）から読む。
 
 import type { FootageQuality } from "./footageQuality";
-import { isProxyTier, normalizeFootageQuality } from "./footageQuality";
+import {
+  effectivePackedQuality,
+  isProxyTier,
+  normalizeFootageQuality,
+  normalizePackedPreviewSelection,
+} from "./footageQuality";
+import { isPackedAlphaVideoMeta } from "./imageAssetCache";
 import type { Project } from "../core/schema";
 
 /** path 解決に必要な asset の最小形（AssetEntry 互換。テスト用に narrow）。 */
@@ -68,11 +74,29 @@ export interface ProxyJob {
   quality: FootageQuality;
 }
 
+export interface CollectExportProxyJobsOptions {
+  /**
+   * §16.2b: packed alpha レイヤーの preview 用縮小 proxy（HTML bundle live 再生専用）も
+   * ジョブに含める。既定 false（html-bundle 以外での無駄な proxy 生成を避ける —
+   * 呼び出し側で format 判定して渡すこと）。
+   */
+  includePackedAlphaPreview?: boolean;
+  /**
+   * §16.2b: packed alpha レイヤーの Export Quality（決定論 export/bake 専用、既定 original）
+   * 由来の proxy もジョブに含める。既定 original なら isProxyTier が false なのでジョブは
+   * 増えない — mp4/webm/PNG/prerender は毎回 true で渡してよい。
+   */
+  includePackedAlphaExport?: boolean;
+}
+
 /**
  * §11.4b export 前に生成保証すべき (assetId, proxy tier) の集合（純関数）。
  * 全 timeline comp の enabled video レイヤーから proxy tier 指定を集める（重複排除）。
  */
-export function collectExportProxyJobs(project: Project): ProxyJob[] {
+export function collectExportProxyJobs(
+  project: Project,
+  options?: CollectExportProxyJobsOptions,
+): ProxyJob[] {
   const seen = new Set<string>();
   const jobs: ProxyJob[] = [];
   for (const comp of project.compositions) {
@@ -82,12 +106,30 @@ export function collectExportProxyJobs(project: Project): ProxyJob[] {
         if (cmp.type !== "video") continue;
         const assetId = cmp.props["asset"];
         if (typeof assetId !== "string" || assetId === "") continue;
-        const quality = normalizeFootageQuality(cmp.props["footageQuality"]);
-        if (!isProxyTier(quality)) continue;
-        const key = `${assetId}|${quality}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        jobs.push({ assetId, quality });
+        const userQuality = normalizeFootageQuality(cmp.props["footageQuality"]);
+        const qualities: FootageQuality[] = [];
+        const needsPackedCheck = options?.includePackedAlphaPreview || options?.includePackedAlphaExport;
+        const asset = needsPackedCheck ? project.assets.find((a) => a.id === assetId) : undefined;
+        const isPacked = !!asset && isPackedAlphaVideoMeta(asset.meta);
+        if (isPacked) {
+          const exportQuality = normalizeFootageQuality(cmp.props["packedExportQuality"]);
+          if (options?.includePackedAlphaPreview) {
+            const previewSelection = normalizePackedPreviewSelection(cmp.props["footageQuality"]);
+            qualities.push(effectivePackedQuality(previewSelection, { exportStep: false, exportQuality }));
+          }
+          if (options?.includePackedAlphaExport) {
+            qualities.push(effectivePackedQuality(exportQuality, { exportStep: true, exportQuality }));
+          }
+        } else {
+          qualities.push(userQuality);
+        }
+        for (const quality of qualities) {
+          if (!isProxyTier(quality)) continue;
+          const key = `${assetId}|${quality}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          jobs.push({ assetId, quality });
+        }
       }
     }
   }

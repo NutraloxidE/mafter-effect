@@ -145,4 +145,56 @@ describe("ImageAssetCache", () => {
       expect(cache.getSize(id)).toEqual({ width: 320 + i, height: 240 });
     }
   });
+
+  it("§16.2b getPackedAlphaLayoutForQuality: proxy tier uses proxy layout, others fall back to original", () => {
+    const project = createProject({ name: "Test" });
+    project.assets = [
+      {
+        id: "01ASSETPACKED00000000001",
+        path: "assets/packed.webm",
+        kind: "video",
+        meta: {
+          hasAlpha: true,
+          alphaMode: "packed",
+          packedLayout: "topBottom",
+          contentHeight: 1000,
+          gutterPx: 8,
+          width: 800,
+          height: 1000,
+          proxies: {
+            low: {
+              path: "assets/packed.low.webm",
+              mime: "video/webm",
+              width: 400,
+              height: 900,
+              contentHeight: 440,
+              gutterPx: 4,
+            },
+          },
+        },
+      },
+    ];
+
+    const cache = new ImageAssetCache();
+    // registerProjectUrls is synchronous (no video decode) — exercises the same
+    // registerPackedProxyLayoutIfPresent wiring bundle export uses, without browser APIs.
+    cache.registerProjectUrls(project, (p) => `/rel/${p}`);
+
+    expect(cache.getPackedAlphaLayout("01ASSETPACKED00000000001")).toEqual({ contentHeight: 1000, gutterPx: 8 });
+    expect(cache.getPackedAlphaLayoutForQuality("01ASSETPACKED00000000001", "low")).toEqual({
+      contentHeight: 440,
+      gutterPx: 4,
+    });
+    // original quality → always original layout.
+    expect(cache.getPackedAlphaLayoutForQuality("01ASSETPACKED00000000001", "original")).toEqual({
+      contentHeight: 1000,
+      gutterPx: 8,
+    });
+    // proxy tier with no registered proxy layout (not generated yet) → falls back to original,
+    // matching getUrlForQuality's own fallback (URL and layout stay paired).
+    expect(cache.getPackedAlphaLayoutForQuality("01ASSETPACKED00000000001", "medium")).toEqual({
+      contentHeight: 1000,
+      gutterPx: 8,
+    });
+  });
 });

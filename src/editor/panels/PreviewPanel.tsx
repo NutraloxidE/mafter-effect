@@ -4,7 +4,21 @@ import { DomRenderer } from "../../runtime/DomRenderer";
 import { collectVideoClipsFromComp } from "../../runtime/videoLookaheadWarmup";
 import { collectReferencedAssetIds } from "../../runtime/collectReferencedAssetIds";
 import { FontOutlineCache } from "../../runtime/fontOutlineCache";
-import { ImageAssetCache, registerPreviewImageCache } from "../../runtime/imageAssetCache";
+import {
+  ImageAssetCache,
+  registerPreviewImageCache,
+  evictPreviewMediaAsset,
+  isPackedAlphaVideoMeta,
+} from "../../runtime/imageAssetCache";
+import {
+  normalizeFootageQuality,
+  normalizePackedPreviewSelection,
+  effectivePackedQuality,
+  isProxyTier,
+  type FootageQuality,
+} from "../../runtime/footageQuality";
+import { getProxyEntry } from "../../runtime/footagePlayback";
+import { webcodecsUnavailableReason } from "../../runtime/webcodecsVideoEncode";
 import { HtmlCompPlayer } from "../../runtime/htmlComp";
 import { ModuleLoader } from "../../runtime/moduleLoader";
 import { IndexedDbFs } from "../../fs/IndexedDbFs";
@@ -106,6 +120,7 @@ export function PreviewPanel() {
   const isPlaying = useEditorStore((s) => s.isPlaying);
   const setPlaying = useEditorStore((s) => s.setPlaying);
   const togglePlay = useEditorStore((s) => s.togglePlay);
+  const ensureProxyTier = useEditorStore((s) => s.ensureProxyTier);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const stageHostRef = useRef<HTMLDivElement>(null);
@@ -484,7 +499,9 @@ export function PreviewPanel() {
     void Promise.all([
       fontCacheRef.current.loadFromProject(project, _previewFs),
       imageCacheRef.current.loadFromProject(project, _previewFs, { proxyMaxDim, priorityAssetIds }),
-    ]).then(() => setRenderTick((t) => t + 1));
+    ]).then(() => {
+      setRenderTick((t) => t + 1);
+    });
   }, [project, comp?.width, comp?.height]); // eslint-disable-line react-hooks/exhaustive-deps
 
   textQualityRef.current = effectiveTextQuality;
@@ -757,6 +774,69 @@ export function PreviewPanel() {
     const handle = window.setTimeout(run, 200);
     return () => window.clearTimeout(handle);
   }, [project, comp?.id, comp?.objects, renderTick, frame, isPlaying]);
+
+  // §16.2b: 編集中 comp に packed alpha 動画レイヤーがあれば、idle 中に preview 用縮小 proxy を
+  // 事前生成しておく（decode-bound 回避・上の動画 warm-up と対）。既に meta.proxies[tier] があれば
+  // 対象から外す（evict のたびに再読込が走るのを防ぐ）。export 経路は非対象（exportStep=true は
+  // 常に original を使うため effectivePackedQuality がここと同じ tier を選ぶことはない）。
+  useEffect(() => {
+    if (!project || !comp || isPlaying) return;
+    // WebCodecs 非対応環境では proxy 生成が必ず失敗する。試行自体を止める（下の
+    // VideoComponentFields 側の警告バナーが原本画質のままである旨をユーザーに伝える）。
+    if (webcodecsUnavailableReason()) return;
+    const packedTargets: { assetId: string; tier: FootageQuality }[] = [];
+    for (const obj of comp.objects) {
+      if (!obj.enabled) continue;
+      const videoComp = obj.components.find((c) => c.type === "video");
+      const assetId = videoComp?.props["asset"];
+      if (typeof assetId !== "string" || assetId === "") continue;
+      const asset = project.assets.find((a) => a.id === assetId);
+      if (!asset || !isPackedAlphaVideoMeta(asset.meta)) continue;
+      const previewSelection = normalizePackedPreviewSelection(videoComp?.props["footageQuality"]);
+      const exportQuality = normalizeFootageQuality(videoComp?.props["packedExportQuality"]);
+      const tier = effectivePackedQuality(previewSelection, { exportStep: false, exportQuality });
+      if (!isProxyTier(tier)) continue;
+      if (getProxyEntry(asset, tier)) continue; // 生成済み
+      packedTargets.push({ assetId, tier });
+    }
+    if (packedTargets.length === 0) return;
+    const run = (): void => {
+      for (const { assetId, tier } of packedTargets) {
+        // §16.2b: 生成「前」に evict しない — 生成は数十秒かかることがあり、先に evict すると
+        // その間（さらに生成失敗時は永久に）このレイヤーが再生できる URL を一切持たなくなり、
+        // 透明表示のまま固まる（WebCodecs 非対応環境で顕在化・実機で確認済みのバグ）。
+        // 原本は既にロード済みのままにしておき、生成成功後だけ evict + 明示リロードで
+        // meta.proxies を拾わせる（PackedPreviewQualitySelect と同じ安全な手順）。
+        void ensureProxyTier(assetId, tier).then((ok) => {
+          if (!ok) return;
+          // §16.2b: ImageAssetCache の byPath キャッシュは既存 asset をヒットすると
+          // loadProxiesFromFs を再実行しない（Phase3 バッチロード最適化）ため、生成完了後に
+          // evict + 明示リロードしないと新しい proxy が preview に一切反映されない。
+          evictPreviewMediaAsset(assetId);
+          const latestProject = useEditorStore.getState().project;
+          if (!latestProject) return;
+          const latestComp = currentTimelineComp(latestProject, useEditorStore.getState().currentCompId);
+          const proxyMaxDim = latestComp ? Math.max(latestComp.width, latestComp.height) : undefined;
+          const priorityAssetIds = latestComp
+            ? collectReferencedAssetIds(latestProject, latestComp.id)
+            : undefined;
+          void imageCacheRef.current
+            .loadFromProject(latestProject, _previewFs, { proxyMaxDim, priorityAssetIds })
+            .then(() => setRenderTick((t) => t + 1));
+        });
+      }
+    };
+    const ric = (window as Window & { requestIdleCallback?: (cb: () => void) => number })
+      .requestIdleCallback;
+    if (ric) {
+      const handle = ric(run);
+      const cancel = (window as Window & { cancelIdleCallback?: (h: number) => void })
+        .cancelIdleCallback;
+      return () => cancel?.(handle);
+    }
+    const handle = window.setTimeout(run, 200);
+    return () => window.clearTimeout(handle);
+  }, [project, comp?.id, comp?.objects, isPlaying, ensureProxyTier]);
 
   // §25.2 解像度プロキシ: DomRenderer のラスタ解像度のみ変更（INV-2 scene 値不変）
   useEffect(() => {

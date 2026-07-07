@@ -1468,3 +1468,108 @@ canvas 化結果は以降から見て通常の背面ピクセルと等価（zOrd
   - **誇張せず、実測値と限界を都度 progress.md に記録した**（このセッションの一貫した方針）。技術的な実装自体（実際に HTTP/2 が使われる・Worker 経由で動画が正しく再生される・readBatch が正しく動く等）はすべて実機で検証・確認済み。より多くの小アセット・より高レイテンシな実環境（元課題の報告環境）でこそ Phase 1/3 の効果が顕在化する可能性が高い。
 - **Phase 5（Electron NodeFs 切り替え）は着手していない**。CLAUDE.md・PLAN の指示通り、設計確認が必要な別マイルストーンとして次回に持ち越す。
 - **Next steps**: (1) Phase 5 着手前にユーザーと設計確認（NodeFs 実装範囲・`store.getFs()` の自動判別・`readBatch` の `FileSystem` インターフェース正式追加要否）。(2) `test/projectBins.test.ts` の ULID 起因と思われる flaky を余力があれば別途調査。(3) より大規模な実プロジェクト（元課題の 200+ モジュール・多数アセット環境）での再計測を推奨。
+
+---
+
+## §16.2b packed alpha 再生ドリフト修正（packed 専用 preview proxy）— 2026-07-08 実装完了
+
+**発端**: ユーザーから「Comp32 の人物抽出（packed 変換済み）動画が、途中（4秒目前後）から徐々にタイムラインとズレていく／固まる・カクつく」と報告。当初 split alpha の `applyAlphaGenlock` warm-up 化を提案したが、対象アセットが **packed**（1本動画・companion/genlock 不発）と判明し提案は無効化。ユーザー指示で Sonnet 5 に切り替え、実装フェーズを開始（Opus 4.8 subagent に難所レビューを都度依頼、実ブラウザ Playwright で検証、spec §16.2b と都度照合）。
+
+### 根本原因（実機計測で確定）
+
+`mafter-project (22).zip`（Downloads 最新）の Comp32 Person レイヤーの packed アセットは **webm（VP9 ソフトウェアデコード）・実デコード解像度 640×2284px**（`asset.meta.width=1080` は表示サイズであり実デコード幅とは別物 — `convertSplitToPacked.ts` の既存コメント通りの罠）。この巨大フレームを VP9 ソフトデコードで実時間再生できず、`holdTimeline`（双方向同期）が慢性的に発火 → **修正前は 8 秒の壁時計でタイムラインが約 3.9〜4.97 秒分しか進まない（実時間の半分程度）・dropped frame 率 約38〜93%**（計測条件により変動、最悪ケースでサンプル時間の9割が stall）。これは preview 実時間再生（editor preview + §11.7 HTML bundle live）専用の問題で、決定論 export（mp4/webm/PNG、フレームごと決定論 seek）は無関係（INV-2 非干渉）。計測スクリプト: `probe-packed-drift.mjs`（修正前計測）/ `probe-packed-drift-after.mjs`（修正後計測、リポジトリ直下・未コミット、他 probe-*.mjs と同じ慣例）。
+
+### 実装（packed 専用 preview proxy）
+
+1. **spec 更新**: `doc/mafter-effect-spec.md` §16.2b に packed preview proxy 方針を追記（§5/INV 不変・散文追記のみ）。issue doc `doc/issue/subject-extract-split-alpha-webm-preview-instability.md` に追記5（1本化＝修正4実装後も decode-bound 自体は別要因として残存、という新知見）。
+2. **`src/runtime/packedVideoProxy.ts`（新設）**: `buildPackedVideoProxy` / `fitPackedProxyDimensions`。原本 packed をレイアウト保持のまま縮小再パックして webm エンコード。Opus レビューで `contentHeight<=0` ガード・layout 整合 assert を追加。
+3. **`src/runtime/footageQuality.ts`**: `effectivePackedQuality(userQuality, {exportStep})` — exportStep なら常に `"original"`（INV-2）、それ以外は既定 `PACKED_DEFAULT_PROXY_TIER="low"`（VP9 ソフトデコードでも実時間再生できる保守的な下限。H.264 proxy 化は見送り＝ nice-to-have、必要になれば追う）。
+4. **`src/runtime/imageAssetCache.ts`**: `packedProxyLayoutById`（tier別）+ `getPackedAlphaLayoutForQuality` を追加。URL（`getUrlForQuality`）と layout を必ず同じ quality で対にして引く不変を全 3 呼び出し経路（DomRenderer 本経路・lookahead warmup・export 専用 `flushVideoFrames`）で維持（`flushVideoFrames` は exportStep 常時 true につき無変更で正しい、と Opus レビューで確認済み）。
+5. **`src/editor/store.ts`**: `ensureProxyTier` に packed 分岐（`isPackedAlphaVideoMeta` を `footageKindOf` より先に判定）。`meta.proxies[tier]` に `contentHeight`/`gutterPx` を併記。
+6. **`src/runtime/DomRenderer.ts`**: video ケースで `isPackedAsset`/`effQuality` を計算し `getUrlForQuality`/`getPackedAlphaLayoutForQuality` を同一 quality で呼ぶ。
+7. **`src/editor/panels/PreviewPanel.tsx`**: 編集中 comp の packed レイヤーを idle 中に自動で proxy 生成する effect を追加（`ensureProxyTier` 呼び出し前後で `evictPreviewMediaAsset` 必須）。
+8. **`src/runtime/footagePlayback.ts` / `src/editor/ExportDialog.tsx`**: `collectExportProxyJobs` に `includePackedAlpha` オプション追加、HTML bundle export のみ packed proxy を事前生成（決定論 export は対象外）。
+9. **`npm run build:player`** 実行済み（`public/player.js` 更新・`playerBuildFreshness` 緑）。
+
+### 実装中に発見・修正した重大なレースコンディション（実機検証がなければ気づけなかった）
+
+Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` がいつまでも原本のまま切り替わらない」という症状を発見。デバッグログを一時的に仕込んで追跡した結果:
+
+- **原因**: `PreviewPanel` の idle-trigger（comp を開いた直後、200ms〜idle callback で発火）が `evictPreviewMediaAsset` → `ensureProxyTier`（proxy 生成に約40〜50秒かかる）を呼ぶが、**この evict が、comp 初回マウント時に走る「全 asset 一括ロード」effect（`[project, comp?.width, comp?.height]` 依存）とレースする**。一括ロードがまだこの asset の処理に到達していないタイミングで evict が割り込むと、一括ロード側が「proxy 未生成（meta.proxies undefined）のまま」で `byPath` キャッシュを再生成してしまい、`ImageAssetCache.loadAssetBatch` の cache-hit 最適化（`byPath.has(ck)` なら `loadProxiesFromFs` を re-run しない）により、**proxy 生成完了後も二度と拾われない**という恒久的なキャッシュ汚染が起きる。
+- **修正**: `ensureProxyTier` 成功後に**もう一度** `evictPreviewMediaAsset` を呼び、`imageCacheRef.current.loadFromProject` を直接（他 effect のタイミングに依存せず）呼び直して確実に反映させる（[PreviewPanel.tsx](src/editor/panels/PreviewPanel.tsx) の packed idle-trigger 内）。
+- **教訓**: この種の「起動直後の一括初期化」と「個別 asset の遅延再生成」が同じキャッシュを触る設計では、evict のタイミングレースに注意が必要。単体テスト・typecheck では検出不可能（実ブラウザの非同期タイミング依存）— 実機 Playwright 検証が必須だった好例。
+
+### 実機検証結果（修正前後比較・Comp32・`probe-packed-drift{,-after}.mjs`）
+
+| 指標 | 修正前 | 修正後（packed proxy 適用） |
+|---|---|---|
+| dropped frame 率 | 約38〜93%（計測条件により変動） | 約12% |
+| 5秒コンテンツの完走時間（壁時計） | 実時間の半分以下（8秒経過で content 2.7〜3.9秒分） | 約6.3秒（ほぼ実時間） |
+| lag 振れ幅 | 最大 -1000ms超（chronic） | -60ms〜+93ms 程度 |
+| mounted `<video>` 解像度 | 640×2284（原本） | 360×1284（proxy、正しく差し替わることを確認） |
+
+**回帰確認**: `npm test`（977/977 PASS、新規12件追加）・`npm run typecheck` 緑・`npm run build:player` 実行済み＆`playerBuildFreshness`緑。決定論 export（mp4/webm/PNG）は `effectivePackedQuality` が `exportStep` で常に `"original"` を返すため無回帰（Opus レビューでのコードトレース + 単体テストで確認。フルの mp4 export 実機実行は decode-bound な原本を使うため数分かかり、限界効用が低いため今回は省略）。split alpha（genlock）・通常 video レイヤーは `effectivePackedQuality`/`isPackedAsset` 判定を通らず無影響。
+
+**Next steps**: (1) 実 Chrome（非 headless、GPU 有効）での追試（headless は GPU decode 無効という既知の制約があるため、実環境ではさらに改善する可能性）。(2) H.264 proxy 化（VP9 より確実な HW decode）は見送ったため、余力があれば検討。(3) `probe-packed-drift{,-after}.mjs` はリポジトリ直下に残置（他 probe-*.mjs と同じ慣例）、ローカル scratchpad パス依存のため他セッションでの再実行にはパス調整が必要。
+
+### 追記: packed 専用「Preview Quality」ドロップダウン UI（同セッション）
+
+ユーザー要望「プレビュー時のプロキシのクオリティをプルダウンで調整できるように・このプルダウンは書き出しに影響しない旨を明記」を受けて UI を追加。ヒアリングの結果、**決定論 export（mp4/webm/PNG）のみ影響しない**（HTML bundle export の live 再生には反映される — 既存の `effectivePackedQuality`/`collectExportProxyJobs({includePackedAlpha})` の設計と整合）方針とし、**packed レイヤー専用の新規ドロップダウンを追加**（既存の汎用 `footageQuality`/Quality UI とは別コンポーネント）。
+
+- **`src/editor/panels/PackedPreviewQualitySelect.tsx`（新設）**: packed レイヤーの Inspector に表示。選択すると `footageQuality` prop を書き込み、proxy tier なら `ensureProxyTier` → 成功後 `evictPreviewMediaAsset` + `reloadPreviewMediaFromProject`（新規 export）+ `projectRevision` 手動 bump、という**上記レースコンディション対策と同型の安全な reload パターン**を踏襲。busy/failed 表示・注意書き（「プレビューと HTML バンドル書き出しの再生にのみ影響します。mp4 / webm / PNG 書き出しは常に原本の画質を使用します。」）を表示。
+- **`src/editor/panels/VideoComponentFields.tsx`**: packed レイヤーのときだけ `def.params` から `footageQuality` を除外して汎用 `ComponentFields` の重複描画を防ぎ、代わりに `PackedPreviewQualitySelect` を描画（`useEditorStore` から `project` を自前取得・InspectorPanel 側の呼び出しシグネチャは無変更）。
+- **`src/runtime/imageAssetCache.ts`**: `reloadPreviewMediaFromProject(project, fs, options?)` を新規 export（`previewCacheRef.loadFromProject` の薄いラッパ。PreviewPanel 外＝Inspector から安全に reload できるようにするため）。
+- **副次的な発見（今回は対象外・別課題として記録）**: 調査中、`InspectorPanel.tsx` の `ExpressionPresetFields` 内に **`footageQuality` を特別扱いする `QualitySelect` コンポーネントが存在するが、実際には到達不能なデッドコード**と判明（`footageQuality` はどの expression preset の param にも存在しないため）。実際の video レイヤーの `footageQuality` は `ComponentFields`（汎用 enum select、友好ラベルなし・`ensureProxyTier` 自動生成なし）が描画しており、progress.md の過去記載（「UI（Phase 3）: QualitySelect...」）と実装が乖離している。**通常 video レイヤーの Quality 変更時に自動でプロキシが生成されない**という pre-existing の潜在バグの可能性があるが、今回のスコープ外（packed 専用の新規コントロールのみ対応）として着手していない。
+- **実機検証**（`probe-packed-quality-ui.mjs`、リポジトリ直下・未コミット）: packed レイヤー選択時に Inspector に「Preview Quality」ラベル・注意書き・単一の select（汎用 Quality は非表示）が表示されることを確認。select を "medium" に変更 → busy indicator 表示・`footageQuality` prop が正しく `"medium"` に書き込まれることを確認（実際の proxy 生成完了までは待たず、UI 配線のみ確認・生成ロジック自体は前段の drift 検証で確認済み）。
+- **回帰確認**: `npm test`（977/977 PASS）・`npm run typecheck` 緑・`npm run build:player` 実行不要（このセッションの追加ファイルは editor 専用で `player.js` 非同梱・`playerBuildFreshness` 緑のまま）。
+
+### 追記2: packed 専用「Export Quality」ドロップダウン + WebCodecs 非対応時の透明化バグ修正 — 2026-07-08
+
+ユーザー要望「プレビュークオリティとは別で書き出し時のクオリティもいじれるようにしてほしい。また webcodecs が使えない環境だと生成ができないっぽくて透明になってしまうっぽいので、何らかの警告を出してほしい」を受けて対応。後者は調査の結果、**単なる警告不足ではなく実際のバグ**（下記）と判明した。
+
+**Export Quality（決定論 export 専用の独立した画質指定）**:
+
+- **`src/runtime/footageQuality.ts`**: `effectivePackedQuality(userQuality, mode)` を拡張。`PackedQualityMode` に `exportQuality?: FootageQuality` を追加し、`mode.exportStep` のときは `mode.exportQuality ?? "original"` を返すよう変更（従来は `exportStep` なら無条件 `"original"` 固定だった）。既定 `exportQuality` 未指定時は今までどおり `"original"` のため既存プロジェクト・呼び出し元は無変更で動く（後方互換）。
+- **`src/runtime/DomRenderer.ts`**: video ケースで packed 資産の `effQuality` 算出時、`exportQuality: normalizeFootageQuality(props["packedExportQuality"])` を渡すよう変更（決定論 export ステップでこの prop を参照する）。
+- **`src/runtime/footagePlayback.ts`**: `collectExportProxyJobs` のオプションを `includePackedAlpha`（単一・preview 専用）から `includePackedAlphaPreview` / `includePackedAlphaExport` の2本に分離。`includePackedAlphaExport` は `packedExportQuality` prop から export 用 proxy tier を収集する（既定 `"original"` のままなら isProxyTier が false でジョブは増えない＝無コスト）。
+- **`src/editor/ExportDialog.tsx`**: `collectExportProxyJobs(project, { includePackedAlphaPreview: format==="html-bundle", includePackedAlphaExport: true })` — 決定論 export（mp4/webm/PNG/prerender）は毎回 export-tier を、HTML bundle はそれに加えて preview-tier（live 再生用）も事前生成保証する。生成失敗時は既存の `setError(...)` 経路でユーザーに表示される（この経路は元々サイレント失敗ではなかった）。
+- **`src/editor/panels/PackedExportQualitySelect.tsx`（新設）**: [[PackedPreviewQualitySelect]] と対になる新規コンポーネント。`packedExportQuality` prop（既定 `original`）を編集。プレビュー用の evict/reload は行わない（export 専用 prop であり preview URL 解決に使われないため不要）。選択時に `ensureProxyTier` を事前実行し busy/failed を表示（本番 export 時に無駄な待ちが出ないようにする早期チェック）。注意書き「mp4 / webm / PNG 書き出し（および HTML バンドルの焼き込みレイヤー）の画質を調整します。プレビューの表示には影響しません。」
+- **`src/editor/panels/VideoComponentFields.tsx`**: packed レイヤーで `PackedPreviewQualitySelect` と `PackedExportQualitySelect` を両方描画。
+- **doc/mafter-effect-spec.md §16.2b**: Export Quality の独立性・既定値を追記（散文のみ、§5/INV 不変）。
+
+**バグ修正 — WebCodecs 非対応環境で packed レイヤーが透明のまま固まる（根本原因は「警告不足」ではなくキャッシュ破棄の順序バグ）**:
+
+- **根本原因**: [PreviewPanel.tsx](src/editor/panels/PreviewPanel.tsx) の packed proxy 自動生成 idle-trigger が、**`ensureProxyTier`（生成に数十秒〜、失敗もありうる）を呼ぶ「前」に `evictPreviewMediaAsset(assetId)` を呼んでいた**。`evictAsset` は該当 asset の **原本**の blob URL も `URL.revokeObjectURL` して `byId`/`byPath` から削除するため、evict した瞬間から `DomRenderer` の `getUrlForQuality`/`getUrl` が `null` を返すようになり、`<video src>` が空になる＝レイヤーが透明表示になる。生成が成功すれば後続の evict+reload で正しい proxy URL に差し替わり気づきにくいが、**生成が失敗する（WebCodecs 非対応・ディスク書き込み失敗等）と `if (!ok) return;` で即座に抜けるため、二度とキャッシュが復元されず永久に透明のまま固まる**。実機再現に成功（`window.VideoEncoder` を `addInitScript` で削除 → 修正前コードで再現想定、修正後コードで非透明を確認）。
+  - 対になる `src/editor/panels/PackedPreviewQualitySelect.tsx`（ユーザーが明示的に選択したときの経路）は元々 evict を**成功時のみ**呼んでおり、この不具合は無かった。idle-trigger 側だけが「生成前 evict」という古い（レース修正以前の）手順を残していた。
+- **修正**: idle-trigger から生成「前」の evict を削除。生成中は原本の URL がそのまま有効なため、成功するまで（または失敗しても）レイヤーは常に何かしら再生可能な状態を保つ。生成成功後の evict + `imageCacheRef.current.loadFromProject` 明示リロードはそのまま維持（[[packed alpha 再生ドリフト修正]]で確立した安全な reload パターン）。
+- **予防**: `webcodecsUnavailableReason()`（既存 `src/runtime/webcodecsVideoEncode.ts`）が非 null のとき、idle-trigger は試行自体をスキップ（`useEffect` 冒頭で早期 return）— 失敗が確実な生成を毎回リトライしない。
+- **警告 UI**: `src/editor/panels/VideoComponentFields.tsx` に、packed レイヤーかつ `webcodecsUnavailableReason()` が非 null のとき常時表示の警告バナーを追加（「⚠ このブラウザは WebCodecs (VideoEncoder) に未対応です。... プレビュー/書き出し用の縮小プロキシを生成できないため、常に原本画質で再生・書き出しされます。」）。個別の生成失敗時（"proxy failed"）も原因が WebCodecs 非対応と判別できる場合は "proxy failed (no WebCodecs)" に文言を変える（[[PackedPreviewQualitySelect]] / [[PackedExportQualitySelect]] 両方）。
+- **既存の他経路の確認**: `PackedAlphaConvertFields.tsx`（split→packed 変換）・subject extract（`encodeRgbaFramesToSubjectWebm` 等）は元々 `VideoEncoder === undefined` を検出して例外を投げ、呼び出し側が `status` テキストに「失敗 — ...」として表示済み（サイレント失敗ではない）。`ExportDialog.tsx` の export-time proxy 生成失敗も既存の `setError(...)` で表示済み。**サイレント失敗＝透明化バグがあったのは PreviewPanel の idle-trigger 1箇所のみ**。
+
+**実機検証**（Playwright、`window.VideoEncoder`/`VideoFrame` を `addInitScript` で削除して WebCodecs 非対応環境を再現）:
+
+- `probe-packed-nowebcodecs.mjs`（scratchpad + リポジトリ直下）: WebCodecs 不在確認 → Comp32 ロード・3秒待機（idle-trigger 発火猶予）後、packed `<video>` 要素が `readyState:4`（HAVE_ENOUGH_DATA）・`videoWidth/Height: 640×2284`（原本のまま）・`src` 非空であることを確認（＝透明になっていない）。スクリーンショットで人物抽出レイヤーが正しく合成表示されていることを目視確認。Inspector には WebCodecs 警告バナー・Preview Quality・Export Quality 両ラベル・書き出し無影響の注意書きが表示されることを確認。
+- `probe-packed-export-quality-independent.mjs`: WebCodecs 通常環境で Export Quality を "medium" に変更 → プレビュー中の `<video src>`（blob URL）が変化しないこと・`footageQuality`（preview prop）が変化しないこと・`packedExportQuality` prop のみ `"medium"` に更新されることを確認（Preview/Export 独立の直接検証）。
+
+**回帰確認**: `npm run typecheck` 緑。`npm test -- --run`（981/982、`test/projectBins.test.ts` 1件は base コミットでも単独実行でも green＝フルスイート実行時のみ稀に落ちる pre-existing な順序依存 flake と確認、本セッションの変更とは無関係）。`test/footageQuality.test.ts` に `effectivePackedQuality` の exportQuality 独立性テスト・`collectExportProxyJobs` の新オプション（`includePackedAlphaPreview`/`includePackedAlphaExport`）テストを追加。`npm run build:player` 実行済み（`footageQuality.ts`/`DomRenderer.ts`/`footagePlayback.ts` を変更したため必須）・`playerBuildFreshness` 緑。
+
+**Next steps**: なし（今回の2件の要望は両方実装・実機検証済み）。参考: 前回追記で記録した「通常 video レイヤーの Quality 変更で自動プロキシ生成されない」pre-existing バグ（`QualitySelect` デッドコード）は今回も未着手（引き続きスコープ外・別課題）。
+
+### 追記3: Preview Quality に「Same as Export Quality」リンク選択肢を追加 — 2026-07-08
+
+ユーザー要望「preview quality プルダウンに same as export quality みたいなの追加したい」を受けて実装。
+
+- **`src/runtime/footageQuality.ts`**: `PACKED_SAME_AS_EXPORT = "same_as_export"`（sentinel 定数）・`PackedPreviewSelection = FootageQuality | typeof PACKED_SAME_AS_EXPORT`（型）・`isPackedSameAsExport` / `normalizePackedPreviewSelection` を追加。`effectivePackedQuality` の第一引数型を `PackedPreviewSelection` に拡張し、`previewSelection === PACKED_SAME_AS_EXPORT` のとき（`exportStep` 無し）は `mode.exportQuality` を**そのまま**返す新分岐を追加 — 既存の「`"original"` は既定 proxy tier に差し替える」ロジックを**意図的にバイパス**する（Export Quality が Original なら、プレビューも文字通り原本を使う。ユーザーが明示的にリンクした結果は decode-bound 低速化込みで尊重する、という設計判断）。
+- **`src/editor/panels/PackedPreviewQualitySelect.tsx`**: ドロップダウンの先頭に "Link" optgroup で "Same as Export Quality" オプションを追加。選択中は解決後の実効 tier を小さく表示（例: `→ Medium`）。`value`/`commit`/`onChange` を `PackedPreviewSelection` 型に拡張し、`onChange` は選択値をそのまま `effectivePackedQuality` で解決してから `isProxyTier` 判定・`ensureProxyTier` を呼ぶ（sentinel のまま `isProxyTier` に渡すと型エラーになるため必ず解決後の値で判定）。
+- **`src/editor/panels/PackedExportQualitySelect.tsx`**: Export Quality 変更時、Preview Quality が現在 `PACKED_SAME_AS_EXPORT` にリンクされているかを自分の prop 読み取りだけで判定し（親コンポーネント経由の状態共有は不要）、リンク中なら生成成功後に `evictPreviewMediaAsset` + `reloadPreviewMediaFromProject` でプレビューを追従させる。既定（Original への変更、proxy 不要）でもリンク中なら reload だけは行う（DomRenderer は毎フレーム props から再解決するため実際には元々ズレないが、安全側で統一）。
+- **`src/runtime/DomRenderer.ts`**: メイン video 描画ブランチ・`scheduleVideoLookaheadWarmup`（先読み prime）の両方で `normalizePackedPreviewSelection(props["footageQuality"])` を経由するよう変更（先読みでメイン描画と食い違う quality を prime すると無駄になるため、両経路を必ず同じ解決規則にする）。
+- **`src/runtime/videoLookaheadWarmup.ts`**: `VideoClipLookaheadInput` に `packedExportQuality?: string` を追加、`collectVideoClipsFromComp` で読み取り（先読み判定にも Export Quality が必要なため）。
+- **`src/editor/panels/PreviewPanel.tsx`**: idle-trigger の packed proxy 自動生成判定を `normalizePackedPreviewSelection` + `exportQuality` 経由に変更。
+- **`src/runtime/footagePlayback.ts`**: `collectExportProxyJobs` の preview 分岐（`includePackedAlphaPreview`）を `normalizePackedPreviewSelection` 経由に変更 — `footageQuality: "same_as_export"` のレイヤーも正しく `packedExportQuality` 由来の tier をジョブ化する。
+- **副次的に発見・同時修正した既存バグ（`bundleCollect.ts`）**: HTML bundle export の zip 同梱ファイル選定（`collectObjectAssets`）が、packed レイヤーについて生の `footageQuality` prop（多くの場合未設定＝`"original"`）をそのまま `resolveFootageVideoPath` に渡しており、**`effectivePackedQuality` が実際に選ぶ tier（既定で `low` proxy）と食い違っていた**。bundle player 側の `registerProjectUrls` は `meta.proxies` を無条件に URL 登録するため、この食い違いは「player は `xxx.low.webm` を要求するのに zip にそのファイルが無く 404 → packed レイヤーが HTML bundle で再生されない」という**見えにくい既存バグ**だった（今回の Same as Export Quality 追加でさらに顕在化しやすくなるため、同じ修正で一括対応）。`bundleCollect.ts` の video 収集ロジックを、packed asset のときだけ `effectivePackedQuality(normalizePackedPreviewSelection(...), {exportStep:false, exportQuality})` 経由に変更して修正。
+- **doc/mafter-effect-spec.md §16.2b**: Same as Export Quality の挙動・bundle 同梱の一致要件を追記（散文のみ、§5/INV 不変）。
+- **テスト追加**: `test/footageQuality.test.ts` に `PACKED_SAME_AS_EXPORT` 系 8 件（sentinel 正規化・型ガード・`exportStep` 有無での解決・`collectExportProxyJobs` 連携）。`test/bundleExport.test.ts` に packed alpha の zip 同梱 regression テスト 2 件（既定 proxy tier が同梱されること・`same_as_export` 時に `packedExportQuality` 由来の proxy が同梱されること。内蔵音声は quality 非依存で常に原本も同梱されるため原本も同時に含まれる点をテスト内コメントで明記）。
+- **実機検証**（`probe-packed-same-as-export.mjs`、リポジトリ直下・未コミット）: Preview Quality ドロップダウンに "Same as Export Quality" が表示されること、選択すると `footageQuality: "same_as_export"` が書き込まれること、解決後 tier ヒント（`→ Original`）が表示されること、Export Quality を "medium" に変更すると `packedExportQuality` prop が更新されリンク検知により生成がトリガされる（busy 表示）ことを確認。**注**: headless Chromium は WebCodecs VP9 encode を完走できない既知の制約（memory: `headless-webcodecs-encode-blocks`）のため、生成完了後の実際のプレビュー切り替わりまでは headless では確認できず、リンク解決ロジック自体は unit test（`footageQuality.test.ts`）でカバーした。
+- **回帰確認**: `npm run typecheck` 緑。`npm test -- --run`（990/990 PASS、新規10件）。`npm run build:player` 実行済み・`playerBuildFreshness` 緑。
+
+**Next steps**: なし。余力があれば実 Chrome（非 headless）で Same as Export Quality の生成完了後の自動切り替わりを最終確認するとより確実（現状は unit test + headless での busy-state 確認まで）。

@@ -152,6 +152,115 @@ describe("bundleCollect", () => {
     expect(deps.binaryPaths.has("assets/person.alpha.webm")).toBe(true);
   });
 
+  it("packed alpha: bundles the resolved preview-quality proxy file, not the raw footageQuality/original (§16.2b regression)", () => {
+    // §16.2b: bundle player registers ALL meta.proxies URLs unconditionally (registerProjectUrls),
+    // so whichever proxy tier effectivePackedQuality resolves to for live playback MUST be the
+    // file that actually gets bundled — otherwise the player 404s trying to fetch a proxy that
+    // was never copied into the zip. Default (unset) footageQuality resolves to the packed
+    // default proxy tier ("low"), not "original", so the "low" proxy file must be the one bundled.
+    const videoAsset = "01ASSETPACKED00000000001";
+    const project: Project = {
+      ...minimalProject([
+        {
+          id: "01OBJ0000000000000000000A",
+          name: "PackedPerson",
+          parent: null,
+          zOrder: 1,
+          enabled: true,
+          inPoint: 0,
+          outPoint: 90,
+          transform: {
+            anchor: { value: { x: 0, y: 0, z: 0 }, keyframes: [] },
+            position: { value: { x: 0, y: 0, z: 0 }, keyframes: [] },
+            rotation: { value: { x: 0, y: 0, z: 0 }, keyframes: [] },
+            scale: { value: { x: 1, y: 1, z: 1 }, keyframes: [] },
+          },
+          opacity: { value: 1, keyframes: [] },
+          // footageQuality left unset → effectivePackedQuality substitutes the default proxy tier.
+          components: [{ type: "video", props: { asset: videoAsset, fit: "contain" } }],
+        },
+      ]),
+      assets: [
+        {
+          id: videoAsset,
+          path: "assets/packed.webm",
+          kind: "video",
+          meta: {
+            width: 1080,
+            height: 1920,
+            hasAlpha: true,
+            alphaMode: "packed",
+            packedLayout: "topBottom",
+            contentHeight: 1138,
+            gutterPx: 8,
+            proxies: { low: { path: "assets/packed.low.webm", mime: "video/webm" } },
+          },
+        },
+      ],
+    };
+
+    const deps = collectBundleDependencies(project, "01COMPROOT0000000000000001");
+    expect(deps.binaryPaths.has("assets/packed.low.webm")).toBe(true);
+    // 原本もバンドルされる — packed proxy は映像のみ（音声を含まない）ため、内蔵音声は
+    // 常に原本から再生する（resolveFootageAudioPath は quality 非依存で常に原本を返す）。
+    // ここでの regression 対象はあくまで「video 側が正しい proxy tier を使うこと」。
+    expect(deps.binaryPaths.has("assets/packed.webm")).toBe(true);
+  });
+
+  it("packed alpha: footageQuality='same_as_export' bundles the packedExportQuality proxy (§16.2b)", () => {
+    const videoAsset = "01ASSETPACKED00000000002";
+    const project: Project = {
+      ...minimalProject([
+        {
+          id: "01OBJ0000000000000000000B",
+          name: "PackedLinked",
+          parent: null,
+          zOrder: 1,
+          enabled: true,
+          inPoint: 0,
+          outPoint: 90,
+          transform: {
+            anchor: { value: { x: 0, y: 0, z: 0 }, keyframes: [] },
+            position: { value: { x: 0, y: 0, z: 0 }, keyframes: [] },
+            rotation: { value: { x: 0, y: 0, z: 0 }, keyframes: [] },
+            scale: { value: { x: 1, y: 1, z: 1 }, keyframes: [] },
+          },
+          opacity: { value: 1, keyframes: [] },
+          components: [{
+            type: "video",
+            props: { asset: videoAsset, fit: "contain", footageQuality: "same_as_export", packedExportQuality: "medium" },
+          }],
+        },
+      ]),
+      assets: [
+        {
+          id: videoAsset,
+          path: "assets/packed2.webm",
+          kind: "video",
+          meta: {
+            width: 1080,
+            height: 1920,
+            hasAlpha: true,
+            alphaMode: "packed",
+            packedLayout: "topBottom",
+            contentHeight: 1138,
+            gutterPx: 8,
+            proxies: {
+              low: { path: "assets/packed2.low.webm", mime: "video/webm" },
+              medium: { path: "assets/packed2.medium.webm", mime: "video/webm" },
+            },
+          },
+        },
+      ],
+    };
+
+    const deps = collectBundleDependencies(project, "01COMPROOT0000000000000001");
+    expect(deps.binaryPaths.has("assets/packed2.medium.webm")).toBe(true);
+    expect(deps.binaryPaths.has("assets/packed2.low.webm")).toBe(false);
+    // 原本もバンドルされる（内蔵音声は quality 非依存で常に原本、上のテストと同じ理由）。
+    expect(deps.binaryPaths.has("assets/packed2.webm")).toBe(true);
+  });
+
   it("componentNeedsBake respects plugin default bake", () => {
     registerBuiltinComponents();
     globalPluginRegistry.registerComponent({
