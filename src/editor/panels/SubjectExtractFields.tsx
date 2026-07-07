@@ -108,7 +108,8 @@ export function SubjectExtractFields({ videoLayer }: { videoLayer: SceneObject }
 
       const newAssetId = newObjectId();
       const newLayerId = newObjectId();
-      const assetPath = `${DIR_ASSETS}/${newAssetId}.webm`;
+      const packedExt = result.mode === "packed" && result.packedContainer === "mp4" ? "mp4" : "webm";
+      const assetPath = `${DIR_ASSETS}/${newAssetId}.${result.mode === "packed" ? packedExt : "webm"}`;
       await getFs().write(assetPath, result.webmBytes);
 
       const sourceAsset = project.assets.find((a) => a.id === assetId);
@@ -121,7 +122,7 @@ export function SubjectExtractFields({ videoLayer }: { videoLayer: SceneObject }
         width: size.width,
         height: size.height,
         duration: result.durationSec,
-        mime: "video/webm",
+        mime: result.mode === "packed" && packedExt === "mp4" ? "video/mp4" : "video/webm",
         hasAlpha: true,
         extractedFrom: assetId,
         footageKind: "native",
@@ -131,6 +132,12 @@ export function SubjectExtractFields({ videoLayer }: { videoLayer: SceneObject }
         await getFs().write(alphaPath, result.alphaWebmBytes);
         meta.alphaMode = "split";
         meta.alphaPath = alphaPath;
+      } else if (result.mode === "packed" && result.packedLayout) {
+        // §2.2 — meta フィールド名はプラン §7 でユーザー承認済み（2026-07-07）。
+        meta.alphaMode = "packed";
+        meta.packedLayout = "topBottom";
+        meta.contentHeight = result.packedLayout.contentHeight;
+        meta.gutterPx = result.packedLayout.gutterPx;
       } else {
         meta.alphaMode = "unified";
       }
@@ -156,11 +163,13 @@ export function SubjectExtractFields({ videoLayer }: { videoLayer: SceneObject }
 
       applyCommand({ label: "Subject Extract", before, after });
       selectObjects([newLayerId]);
-      setStatus(
+      const modeLabel =
         result.mode === "split"
-          ? `完了 — ${result.frameCount}f · ${result.width}×${result.height}（抽出解像度）· split alpha WebM`
-          : `完了 — ${result.frameCount}f · ${result.width}×${result.height}（抽出解像度）· WebM alpha`,
-      );
+          ? "split alpha WebM"
+          : result.mode === "packed"
+            ? `packed alpha ${result.packedContainer === "mp4" ? "mp4(H.264)" : "webm(VP9)"}`
+            : "WebM alpha";
+      setStatus(`完了 — ${result.frameCount}f · ${result.width}×${result.height}（抽出解像度）· ${modeLabel}`);
     } catch (e) {
       if (e instanceof DOMException && e.name === "AbortError") {
         setStatus("キャンセルしました");

@@ -444,7 +444,7 @@ async function encodeVideoFrames(
 
 // ─── Audio mix + encode ───────────────────────────────────────────────────────
 
-interface AudioMixResult {
+export interface AudioMixResult {
   buffer: AudioBuffer;
   sampleRate: number;
   numberOfChannels: number;
@@ -544,7 +544,7 @@ async function buildAudioMix(
 }
 
 /** AudioBuffer → AudioEncoder → muxer の addAudioChunk に渡す。 */
-async function encodeAudioToMuxer(
+export async function encodeAudioToMuxer(
   mix: AudioMixResult,
   addChunk: (chunk: EncodedAudioChunk, meta: EncodedAudioChunkMetadata | undefined) => void,
   codec: string,
@@ -619,7 +619,7 @@ function rgbaToHex(c: { r: number; g: number; b: number; a: number }): string {
  * Constrained Baseline (42e0xx)。level は MaxMBPS / MaxFS（H.264 Table A-1）から決める。
  * 固定 level だと高解像度で "coded area exceeds maximum" エラーになるため動的に選ぶ。
  */
-function avcCodecString(w: number, h: number, fps: number): string {
+export function avcCodecString(w: number, h: number, fps: number): string {
   const mbW = Math.ceil(w / 16);
   const mbH = Math.ceil(h / 16);
   const frameMbs = mbW * mbH;
@@ -648,7 +648,7 @@ function avcCodecString(w: number, h: number, fps: number): string {
  * 閉じる（"encode on a closed codec"）。isConfigSupported で hardware → no-preference →
  * software の順に試し、最初に supported な設定で configure する。
  */
-async function configureVideoEncoder(
+export async function configureVideoEncoder(
   encoder: VideoEncoder,
   base: VideoEncoderConfig,
 ): Promise<void> {

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  dispatchSplitAlphaComposite,
+  dispatchAlphaComposite,
   shouldCreateGlAlphaCompositor,
   type GlAlphaCompositor,
 } from "../src/runtime/videoAlphaGl";
@@ -60,12 +60,12 @@ function fakeCompositor(broken: boolean): GlAlphaCompositor {
   };
 }
 
-describe("dispatchSplitAlphaComposite", () => {
+describe("dispatchAlphaComposite", () => {
   it("uses the GL thunk when a live (non-broken) compositor is present", () => {
     const gl = fakeCompositor(false);
     const glThunk = vi.fn(() => true);
     const cpuThunk = vi.fn(() => true);
-    const result = dispatchSplitAlphaComposite(gl, glThunk, cpuThunk);
+    const result = dispatchAlphaComposite(gl, glThunk, cpuThunk);
     expect(result).toBe(true);
     expect(glThunk).toHaveBeenCalledTimes(1);
     expect(cpuThunk).not.toHaveBeenCalled();
@@ -75,7 +75,7 @@ describe("dispatchSplitAlphaComposite", () => {
     const gl = fakeCompositor(true);
     const glThunk = vi.fn(() => true);
     const cpuThunk = vi.fn(() => true);
-    const result = dispatchSplitAlphaComposite(gl, glThunk, cpuThunk);
+    const result = dispatchAlphaComposite(gl, glThunk, cpuThunk);
     expect(result).toBe(true);
     expect(glThunk).not.toHaveBeenCalled();
     expect(cpuThunk).toHaveBeenCalledTimes(1);
@@ -84,7 +84,7 @@ describe("dispatchSplitAlphaComposite", () => {
   it("falls back to CPU when no compositor was ever created (getContext failed / killswitch / over budget)", () => {
     const glThunk = vi.fn(() => true);
     const cpuThunk = vi.fn(() => true);
-    const result = dispatchSplitAlphaComposite(null, glThunk, cpuThunk);
+    const result = dispatchAlphaComposite(null, glThunk, cpuThunk);
     expect(result).toBe(true);
     expect(glThunk).not.toHaveBeenCalled();
     expect(cpuThunk).toHaveBeenCalledTimes(1);
@@ -96,7 +96,7 @@ describe("dispatchSplitAlphaComposite", () => {
     const gl = fakeCompositor(false);
     const glThunk = vi.fn(() => false);
     const cpuThunk = vi.fn(() => true);
-    const result = dispatchSplitAlphaComposite(gl, glThunk, cpuThunk);
+    const result = dispatchAlphaComposite(gl, glThunk, cpuThunk);
     expect(result).toBe(false);
     expect(glThunk).toHaveBeenCalledTimes(1);
     expect(cpuThunk).not.toHaveBeenCalled();

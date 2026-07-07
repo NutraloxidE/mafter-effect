@@ -47,7 +47,11 @@ void main() {
 }
 `;
 
-// §2.2 上下パック: 上段=color, 下段=mask（gutter を挟む）。vUv.y は宛先（content 高さ）内の 0..1。
+// §2.2 上下パック: 上段=color, 下段=mask（gutter を挟む）。
+// §1.2 反転教訓（split と同型）: 頂点の vUv は「canvas 下端=0・上端=1」（UNPACK_FLIP_Y_WEBGL 込みで
+// 正立表示になるよう既に反転済み）。したがって vUv.y=0（宛先下端）はテクスチャ内の raster 末尾
+// （= mask 帯の底）に、vUv.y=1（宛先上端）は raster 先頭（= color 帯の頭）に対応する。
+// 「vUv.y=0→color 先頭」という素朴な対応は上下逆になるため、color/mask の UV 式は入れ替えて書く。
 const PACKED_FRAGMENT_SRC = `
 precision mediump float;
 varying vec2 vUv;
@@ -55,8 +59,8 @@ uniform sampler2D uPacked;
 uniform float uContentHeightNorm;
 uniform float uGutterNorm;
 void main() {
-  vec2 colorUv = vec2(vUv.x, vUv.y * uContentHeightNorm);
-  vec2 maskUv = vec2(vUv.x, uContentHeightNorm + uGutterNorm + vUv.y * uContentHeightNorm);
+  vec2 colorUv = vec2(vUv.x, uContentHeightNorm + uGutterNorm + vUv.y * uContentHeightNorm);
+  vec2 maskUv = vec2(vUv.x, vUv.y * uContentHeightNorm);
   vec4 color = texture2D(uPacked, colorUv);
   vec4 mask = texture2D(uPacked, maskUv);
   // split 版と同じ理由でストレートアルファ。
@@ -120,15 +124,84 @@ export function shouldCreateGlAlphaCompositor(params: {
 
 /**
  * GL 経路を使うか CPU フォールバックか、の分岐だけを切り出した純ロジック。
- * `gl` が非 null かつ `broken` でないときだけ GL 側 thunk を呼ぶ。
+ * `gl` が非 null かつ `broken` でないときだけ GL 側 thunk を呼ぶ。split/packed 共通。
  */
-export function dispatchSplitAlphaComposite(
+export function dispatchAlphaComposite(
   gl: GlAlphaCompositor | null | undefined,
   compositeGl: () => boolean,
   compositeCpu: () => boolean,
 ): boolean {
   if (gl && !gl.broken) return compositeGl();
   return compositeCpu();
+}
+
+// §2.1/§2.2 — split・packed で共有する canvas キー付き GL compositor レジストリ（予算・
+// キルスイッチ・context lost 時の canvas 差し替え）。両モードで同じ予算プール（8）を消費する。
+const MAX_GL_ALPHA_CONTEXTS = 8;
+const GL_ALPHA_KILL_SWITCH_KEY = "mafterDisableGlAlpha";
+const compositorsByCanvas = new WeakMap<HTMLCanvasElement, GlAlphaCompositor>();
+let activeGlContextCount = 0;
+
+function glAlphaKillSwitchActive(): boolean {
+  try {
+    return typeof localStorage !== "undefined" && localStorage.getItem(GL_ALPHA_KILL_SWITCH_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+/** canvas に紐づく GL compositor（無ければ undefined）。 */
+export function getGlAlphaCompositor(canvas: HTMLCanvasElement): GlAlphaCompositor | undefined {
+  return compositorsByCanvas.get(canvas);
+}
+
+/** 明示解放（レイヤー非表示化/削除時に必ず呼ぶ。呼ばないと予算カウンタが恒久的にドリフトする）。 */
+export function releaseGlAlphaCompositor(canvas: HTMLCanvasElement): void {
+  const existing = compositorsByCanvas.get(canvas);
+  if (!existing) return;
+  existing.dispose();
+  compositorsByCanvas.delete(canvas);
+  activeGlContextCount = Math.max(0, activeGlContextCount - 1);
+}
+
+/**
+ * canvas に GL compositor を遅延生成・キャッシュする。context lost で `broken` になった canvas は
+ * 「GL 取得済み canvas は 2D コンテキストを取れない」制約のため、CPU フォールバック用に
+ * 新規 canvas 要素（同じ className）へ差し替える。差し替え後は GL を再試行せず CPU 経路のまま維持する。
+ */
+export function ensureUsableAlphaCanvas(
+  canvas: HTMLCanvasElement,
+  parent: ParentNode,
+  canvasClassName: string,
+): HTMLCanvasElement {
+  const existing = compositorsByCanvas.get(canvas);
+  if (existing?.broken) {
+    existing.dispose();
+    compositorsByCanvas.delete(canvas);
+    activeGlContextCount = Math.max(0, activeGlContextCount - 1);
+    const fresh = document.createElement("canvas");
+    fresh.className = canvasClassName;
+    fresh.style.cssText = canvas.style.cssText;
+    fresh.width = canvas.width;
+    fresh.height = canvas.height;
+    parent.replaceChild(fresh, canvas);
+    return fresh;
+  }
+  if (
+    shouldCreateGlAlphaCompositor({
+      alreadyHasCompositor: existing !== undefined,
+      activeCount: activeGlContextCount,
+      maxContexts: MAX_GL_ALPHA_CONTEXTS,
+      killSwitchActive: glAlphaKillSwitchActive(),
+    })
+  ) {
+    const compositor = createGlAlphaCompositor(canvas);
+    if (compositor) {
+      compositorsByCanvas.set(canvas, compositor);
+      activeGlContextCount += 1;
+    }
+  }
+  return canvas;
 }
 
 export function createGlAlphaCompositor(canvas: HTMLCanvasElement): GlAlphaCompositor | null {

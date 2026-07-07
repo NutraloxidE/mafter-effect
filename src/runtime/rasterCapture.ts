@@ -3,6 +3,7 @@ import {
   SPLIT_ALPHA_MASK_SCRATCH_CLASS,
   SPLIT_ALPHA_VIDEO_CLASS,
 } from "./videoSplitAlpha";
+import { hasPackedAlphaCanvas } from "./videoPackedAlpha";
 
 // DOM → canvas ラスタ化（exporter §11.4 と共有・foreignObject 経路）
 
@@ -99,7 +100,7 @@ export function inlineVideoFrames(cloned: HTMLElement, source: HTMLElement): voi
       continue;
     }
     const parent = srcVideo.parentElement;
-    if (parent && hasSplitAlphaCanvas(parent)) {
+    if (parent && (hasSplitAlphaCanvas(parent) || hasPackedAlphaCanvas(parent))) {
       node.remove();
       continue;
     }

@@ -1069,7 +1069,20 @@ video レイヤーのフッテージから **MediaPipe Selfie Segmentation**（A
 **出力**:
 
 - **新 video レイヤー**: ソース video レイヤーの **直上**（`zOrder = source.zOrder + 0.5`）。`inPoint` / `outPoint` / `transform` / `parent` / `opacity` / `fit` はソースからコピー。
-- **新 asset**: FS `assets/<ulid>.webm`（透過 VP9）。Chrome 等で VP9 `alpha:keep` 非対応の場合は **split alpha** — 同色 WebM + `assets/<ulid>.alpha.webm`（グレースケールマスク）の 2 本と `meta.alphaMode: "split"` / `meta.alphaPath`。再生は `DomRenderer` が canvas 合成。Project Bin **`Assets` → `VideoSubjectExtract`**（無ければ作成）。`asset.meta.extractedFrom` に元 asset id を記録可。
+- **新 asset**: FS `assets/<ulid>.webm`（透過 VP9）。Chrome 等で VP9 `alpha:keep` 非対応の場合、サイズが収まれば **packed alpha**（§16.2b・2026-07 プレビュー軽量化プラン v2 で追加・優先）、収まらなければ従来の **split alpha** — 同色 WebM + `assets/<ulid>.alpha.webm`（グレースケールマスク）の 2 本と `meta.alphaMode: "split"` / `meta.alphaPath`。再生は `DomRenderer` が canvas 合成（split は CPU/GL 両対応、§16.2b 参照）。Project Bin **`Assets` → `VideoSubjectExtract`**（無ければ作成）。`asset.meta.extractedFrom` に元 asset id を記録可。
+
+#### §16.2b packed alpha（color+mask 1本パック・2026-07 追加）
+
+**目的**: split alpha は color/mask が独立デコードの2ストリームになり、2クロック同期・毎フレーム CPU 合成という構造的な重さを持つ（`doc/issue/subject-extract-split-alpha-webm-preview-instability.md`）。packed alpha は color の直下に grayscale mask を上下パックした **1本の動画**にすることでこの構造自体を解消する。
+
+- **フォーマット**: `y=0..contentHeight` に color、`gutterPx`（既定 8px・黒・4:2:0 クロマにじみ防止）を挟んで `y=contentHeight+gutterPx..` に mask（grayscale）。総高さ ≈ `2*contentHeight + gutterPx`。
+- **コーデック**: H.264/mp4（`avc1.42e0xx`、`VideoEncoder.isConfigSupported` で交渉）優先。非対応環境は VP9/webm にフォールバック（1ストリーム化の利益は両方で残るが、webm フォールバックは音声非同梱）。
+- **音声**: mp4 の場合、元 footage の音声トラックを同じ実時間範囲だけ切り出して別トラックとして同梱（AAC）。無音素材はトラック省略。
+- **サイズ上限**: packed 高さ（`2*contentHeight+gutterPx`）が 4096px を超える場合（4K 級ソース）は packed 化せず split のまま。
+- **asset.meta**（`AssetEntry.meta` は自由形 record・§5 型は不変）: `{ alphaMode: "packed", packedLayout: "topBottom", contentHeight: number, gutterPx: number }`。`asset.meta.width/height` は **content サイズ**（packed 動画自体の全高ではない）。
+- **再生**: `<video>` は 1 本のみ（companion なし・genlock 不発）。合成は `src/runtime/videoPackedAlpha.ts`（WebGL1 シェーダ優先・`src/runtime/videoAlphaGl.ts` 経由、CPU フォールバックあり）。表示は split と同じく「video を非表示にし合成 canvas を表示」。
+- **export/bundle**: 単一ファイルのため split 特有の companion 同梱処理は不要（通常の video asset と同じ扱い）。
+- **既存 split → packed 変換**: 1レイヤー/1アセット単位でオフライン変換する UI をスコープに含む（詳細は cloudplan doc）。
 - **元レイヤー**: 変更なし。
 
 **UI**: Inspector Video 内の Subject Extract 折りたたみ。対象種別プルダウン（v1: Person）+ sample interval + Extract。プルダウン選択はセッション UI のみ（`project.json` 非永続）。

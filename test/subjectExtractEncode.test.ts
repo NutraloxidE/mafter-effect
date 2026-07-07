@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { toGrayscaleAlpha, toOpaqueRgbColor } from "../src/editor/subjectExtract/encodeAlphaWebm";
-import { isSplitAlphaVideoMeta } from "../src/runtime/imageAssetCache";
+import { isPackedAlphaVideoMeta, isSplitAlphaVideoMeta } from "../src/runtime/imageAssetCache";
 import { applyGrayscaleMaskToAlphaChannel } from "../src/runtime/videoSplitAlpha";
 
 describe("subjectExtract encode helpers", () => {
@@ -51,5 +51,28 @@ describe("isSplitAlphaVideoMeta", () => {
       }),
     ).toBe(true);
     expect(isSplitAlphaVideoMeta({ hasAlpha: true, alphaMode: "unified" })).toBe(false);
+  });
+});
+
+describe("isPackedAlphaVideoMeta", () => {
+  it("detects packed alpha meta (§2.2)", () => {
+    expect(
+      isPackedAlphaVideoMeta({
+        hasAlpha: true,
+        alphaMode: "packed",
+        packedLayout: "topBottom",
+        contentHeight: 1080,
+        gutterPx: 8,
+      }),
+    ).toBe(true);
+  });
+
+  it("rejects split/unified meta and incomplete packed meta", () => {
+    expect(isSplitAlphaVideoMeta === isPackedAlphaVideoMeta).toBe(false);
+    expect(isPackedAlphaVideoMeta({ hasAlpha: true, alphaMode: "split", alphaPath: "x" })).toBe(false);
+    expect(isPackedAlphaVideoMeta({ hasAlpha: true, alphaMode: "unified" })).toBe(false);
+    expect(
+      isPackedAlphaVideoMeta({ hasAlpha: true, alphaMode: "packed", packedLayout: "topBottom" }),
+    ).toBe(false); // contentHeight/gutterPx 欠落
   });
 });

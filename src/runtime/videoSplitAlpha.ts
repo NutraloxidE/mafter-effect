@@ -2,10 +2,10 @@
 
 import { PLAYBACK_RESYNC_THRESHOLD_SEC } from "./videoElementSync";
 import {
-  createGlAlphaCompositor,
-  dispatchSplitAlphaComposite,
-  shouldCreateGlAlphaCompositor,
-  type GlAlphaCompositor,
+  dispatchAlphaComposite,
+  ensureUsableAlphaCanvas,
+  getGlAlphaCompositor,
+  releaseGlAlphaCompositor,
 } from "./videoAlphaGl";
 
 export const SPLIT_ALPHA_VIDEO_CLASS = "mafter-split-alpha";
@@ -30,72 +30,25 @@ export function hasSplitAlphaCanvas(host: ParentNode): boolean {
   return host.querySelector(`canvas.${SPLIT_ALPHA_CANVAS_CLASS}`) !== null;
 }
 
-// §2.1 プランv2 — per-layer GL 合成のコンテキスト予算・キルスイッチ。
-// 「canvas のピクセルを作る手段」の実装詳細であり、DOM構造・呼び出し規約には影響しない。
-const MAX_GL_ALPHA_CONTEXTS = 8;
-const GL_ALPHA_KILL_SWITCH_KEY = "mafterDisableGlAlpha";
-const glCompositorsByCanvas = new WeakMap<HTMLCanvasElement, GlAlphaCompositor>();
-let activeGlContextCount = 0;
-
-function glAlphaKillSwitchActive(): boolean {
-  try {
-    return typeof localStorage !== "undefined" && localStorage.getItem(GL_ALPHA_KILL_SWITCH_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
-
 /**
- * canvas に GL compositor を遅延生成・キャッシュする。context lost で `broken` になった canvas は
- * 「GL 取得済み canvas は 2D コンテキストを取れない」制約のため、CPU フォールバック用に
- * 新規 canvas 要素へ差し替える（§2.1）。差し替え後は GL を再試行せず CPU 経路のまま維持する。
+ * canvas に GL compositor を遅延生成・キャッシュする（予算・キルスイッチ・context lost 差し替えは
+ * split/packed 共有で videoAlphaGl.ts に集約済み。ここでは split 用 className を渡すだけ）。
  */
 function ensureUsableSplitAlphaCanvas(
   canvas: HTMLCanvasElement,
   parent: ParentNode,
 ): HTMLCanvasElement {
-  const existing = glCompositorsByCanvas.get(canvas);
-  if (existing?.broken) {
-    existing.dispose();
-    glCompositorsByCanvas.delete(canvas);
-    activeGlContextCount = Math.max(0, activeGlContextCount - 1);
-    const fresh = document.createElement("canvas");
-    fresh.className = SPLIT_ALPHA_CANVAS_CLASS;
-    fresh.style.cssText = canvas.style.cssText;
-    fresh.width = canvas.width;
-    fresh.height = canvas.height;
-    parent.replaceChild(fresh, canvas);
-    return fresh;
-  }
-  if (
-    shouldCreateGlAlphaCompositor({
-      alreadyHasCompositor: existing !== undefined,
-      activeCount: activeGlContextCount,
-      maxContexts: MAX_GL_ALPHA_CONTEXTS,
-      killSwitchActive: glAlphaKillSwitchActive(),
-    })
-  ) {
-    const compositor = createGlAlphaCompositor(canvas);
-    if (compositor) {
-      glCompositorsByCanvas.set(canvas, compositor);
-      activeGlContextCount += 1;
-    }
-  }
-  return canvas;
+  return ensureUsableAlphaCanvas(canvas, parent, SPLIT_ALPHA_CANVAS_CLASS);
 }
 
 /**
  * split alpha を使わなくなったレイヤー（`alphaUrl` が null になった等）の canvas を DOM から
- * 取り除く前に呼ぶ。GL compositor を明示 dispose し予算カウンタを解放しないと、表示/非表示を
- * 繰り返すレイヤーだけで `MAX_GL_ALPHA_CONTEXTS` に恒久的に張り付き、以降の新規レイヤーが
- * 二度と GL 経路に乗れなくなる（CPU 固定のまま戻らない）。
+ * 取り除く前に呼ぶ。GL compositor を明示 dispose し予算カウンタも解放しないと、表示/非表示を
+ * 繰り返すレイヤーだけで予算に恒久的に張り付き、以降の新規レイヤーが二度と GL 経路に乗れなくなる
+ * （CPU 固定のまま戻らない）。
  */
 export function releaseSplitAlphaGlCompositor(canvas: HTMLCanvasElement): void {
-  const existing = glCompositorsByCanvas.get(canvas);
-  if (!existing) return;
-  existing.dispose();
-  glCompositorsByCanvas.delete(canvas);
-  activeGlContextCount = Math.max(0, activeGlContextCount - 1);
+  releaseGlAlphaCompositor(canvas);
 }
 
 /**
@@ -110,8 +63,8 @@ export function compositeSplitAlpha(
   canvas: HTMLCanvasElement,
   maskScratch: HTMLCanvasElement,
 ): boolean {
-  const gl = glCompositorsByCanvas.get(canvas);
-  return dispatchSplitAlphaComposite(
+  const gl = getGlAlphaCompositor(canvas);
+  return dispatchAlphaComposite(
     gl,
     () => gl!.compositeSplit(colorVideo, alphaVideo),
     () => drawSplitAlphaComposite(colorVideo, alphaVideo, canvas, maskScratch),

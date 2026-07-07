@@ -43,6 +43,15 @@ import {
   SPLIT_ALPHA_MASK_SCRATCH_CLASS,
   SPLIT_ALPHA_VIDEO_CLASS,
 } from "./videoSplitAlpha";
+import {
+  compositePackedAlpha,
+  ensurePackedAlphaCompanion,
+  PACKED_ALPHA_CANVAS_CLASS,
+  PACKED_ALPHA_MASK_SCRATCH_CLASS,
+  releasePackedAlphaGlCompositor,
+  schedulePackedAlphaRedrawWhenReady,
+  setPackedAlphaPresentation,
+} from "./videoPackedAlpha";
 import { KeyedElementPool } from "./videoElementPool";
 import {
   computeVideoLookaheadWarmupTargets,
@@ -351,11 +360,9 @@ export class DomRenderer implements Renderer {
         this.restoreAdjustmentSuppression(id);
         // §11.4 配下の <video> は破棄せずプールへ退避（同一アセットのカット境界で再利用する）。
         this.stashVideosToPool(entry);
-        // 離脱オブジェクトごと div を破棄する前に split alpha の GL compositor を明示解放する
-        // （予算カウンタ・実 GL context のリーク防止。node.remove() だけでは解放されない）。
-        for (const canvas of entry.div.querySelectorAll(`canvas.${SPLIT_ALPHA_CANVAS_CLASS}`)) {
-          if (canvas instanceof HTMLCanvasElement) releaseSplitAlphaGlCompositor(canvas);
-        }
+        // 離脱オブジェクトごと div を破棄する前に split/packed alpha の GL compositor を明示解放
+        // する（予算カウンタ・実 GL context のリーク防止。node.remove() だけでは解放されない）。
+        this.releaseAlphaGlCompositorsUnder(entry.div);
         entry.div.remove();
         this.entries.delete(id);
         this.htmlPlayer?.unmountObject(id);
@@ -432,6 +439,19 @@ export class DomRenderer implements Renderer {
 
     // §11.4 異なるアセット間カット境界 — 再生中のみ in 点が近い clip を offscreen で先読み prime しプールへ投入。
     this.scheduleVideoLookaheadWarmup(frame);
+  }
+
+  /**
+   * §2.1/§2.2 — root 配下の split/packed alpha 合成 canvas の GL compositor を明示解放する
+   * （予算カウンタ・実 GL context のリーク防止。呼び出し側で node.remove()/root.remove() する前に呼ぶ）。
+   */
+  private releaseAlphaGlCompositorsUnder(root: ParentNode): void {
+    for (const canvas of root.querySelectorAll(`canvas.${SPLIT_ALPHA_CANVAS_CLASS}`)) {
+      if (canvas instanceof HTMLCanvasElement) releaseSplitAlphaGlCompositor(canvas);
+    }
+    for (const canvas of root.querySelectorAll(`canvas.${PACKED_ALPHA_CANVAS_CLASS}`)) {
+      if (canvas instanceof HTMLCanvasElement) releasePackedAlphaGlCompositor(canvas);
+    }
   }
 
   /**
@@ -668,11 +688,19 @@ export class DomRenderer implements Renderer {
     }));
     for (const v of videos) {
       if (v.classList.contains(SPLIT_ALPHA_VIDEO_CLASS)) continue;
-      if (!findSplitAlphaVideo(v)) continue;
-      // ensureSplitAlphaCompanion は既存要素があれば作成せず引き当てるだけ（冪等）。
-      // GL compositor のキャッシュ・broken 判定込みで companion を再取得する。
-      const companion = ensureSplitAlphaCompanion(v);
-      compositeSplitAlpha(v, companion.alphaVideo, companion.canvas, companion.maskScratch);
+      if (findSplitAlphaVideo(v)) {
+        // ensureSplitAlphaCompanion は既存要素があれば作成せず引き当てるだけ（冪等）。
+        // GL compositor のキャッシュ・broken 判定込みで companion を再取得する。
+        const companion = ensureSplitAlphaCompanion(v);
+        compositeSplitAlpha(v, companion.alphaVideo, companion.canvas, companion.maskScratch);
+        continue;
+      }
+      const assetId = v.dataset.mafterVideoAsset;
+      const packedLayout = assetId ? this.imageCache?.getPackedAlphaLayout(assetId) ?? null : null;
+      if (packedLayout) {
+        const companion = ensurePackedAlphaCompanion(v);
+        compositePackedAlpha(v, companion.canvas, companion.maskScratch, packedLayout);
+      }
     }
   }
 
@@ -865,9 +893,7 @@ export class DomRenderer implements Renderer {
       this.teardownVideoElement(el);
     }
     if (this.root) {
-      for (const canvas of this.root.querySelectorAll(`canvas.${SPLIT_ALPHA_CANVAS_CLASS}`)) {
-        if (canvas instanceof HTMLCanvasElement) releaseSplitAlphaGlCompositor(canvas);
-      }
+      this.releaseAlphaGlCompositorsUnder(this.root);
       this.root.remove();
       this.root = null;
     }
@@ -2005,6 +2031,34 @@ export class DomRenderer implements Renderer {
   }
 }
 
+/**
+ * split⇄packed（あるいは両方→none）のモード切替時、直前のモードの companion 要素・GL compositor が
+ * 残らないよう「keep 以外」の残骸を消す。asset 差し替えで alphaMode が split→packed や packed→split
+ * に変わっても、旧 companion のデコード継続・二重表示・GL 予算リークが起きないようにする。
+ */
+function clearAlphaRemnants(parent: ParentNode, keep: "split" | "packed" | "none"): void {
+  if (keep !== "split") {
+    for (const node of parent.querySelectorAll(
+      `video.${SPLIT_ALPHA_VIDEO_CLASS}, canvas.${SPLIT_ALPHA_CANVAS_CLASS}, canvas.${SPLIT_ALPHA_MASK_SCRATCH_CLASS}`,
+    )) {
+      if (node instanceof HTMLCanvasElement && node.classList.contains(SPLIT_ALPHA_CANVAS_CLASS)) {
+        releaseSplitAlphaGlCompositor(node);
+      }
+      node.remove();
+    }
+  }
+  if (keep !== "packed") {
+    for (const node of parent.querySelectorAll(
+      `canvas.${PACKED_ALPHA_CANVAS_CLASS}, canvas.${PACKED_ALPHA_MASK_SCRATCH_CLASS}`,
+    )) {
+      if (node instanceof HTMLCanvasElement && node.classList.contains(PACKED_ALPHA_CANVAS_CLASS)) {
+        releasePackedAlphaGlCompositor(node);
+      }
+      node.remove();
+    }
+  }
+}
+
 function updateComponentEl(
   el: HTMLElement,
   type: string,
@@ -2165,7 +2219,9 @@ function updateComponentEl(
         video.style.height = `${size.height}px`;
       }
       const alphaUrl = assetId ? imageCache?.getAlphaVideoUrl(assetId) : null;
+      const packedLayout = !alphaUrl && assetId ? imageCache?.getPackedAlphaLayout(assetId) ?? null : null;
       if (alphaUrl) {
+        if (video.parentElement) clearAlphaRemnants(video.parentElement, "split");
         const companion = ensureSplitAlphaCompanion(video);
         if (companion.alphaVideo.getAttribute("src") !== alphaUrl) {
           companion.alphaVideo.src = alphaUrl;
@@ -2218,18 +2274,23 @@ function updateComponentEl(
             companion.maskScratch,
           );
         }
-      } else {
-        const parent = video.parentElement;
-        if (parent) {
-          for (const node of parent.querySelectorAll(
-            `video.${SPLIT_ALPHA_VIDEO_CLASS}, canvas.${SPLIT_ALPHA_CANVAS_CLASS}, canvas.${SPLIT_ALPHA_MASK_SCRATCH_CLASS}`,
-          )) {
-            if (node instanceof HTMLCanvasElement && node.classList.contains(SPLIT_ALPHA_CANVAS_CLASS)) {
-              releaseSplitAlphaGlCompositor(node);
-            }
-            node.remove();
-          }
+      } else if (packedLayout) {
+        // §2.2 packed alpha: <video> は 1 本だけ。companion/genlock は不発（1クロックのため不要）。
+        if (video.parentElement) clearAlphaRemnants(video.parentElement, "packed");
+        const companion = ensurePackedAlphaCompanion(video);
+        setPackedAlphaPresentation(
+          video,
+          companion,
+          true,
+          size?.width ?? 100,
+          size?.height ?? packedLayout.contentHeight,
+        );
+        const drew = compositePackedAlpha(video, companion.canvas, companion.maskScratch, packedLayout);
+        if (!drew) {
+          schedulePackedAlphaRedrawWhenReady(video, companion.canvas, companion.maskScratch, packedLayout);
         }
+      } else {
+        if (video.parentElement) clearAlphaRemnants(video.parentElement, "none");
         video.style.opacity = "";
       }
       break;

@@ -54,6 +54,27 @@ export function isSplitAlphaVideoMeta(meta: Record<string, unknown> | undefined)
   );
 }
 
+/** §2.2 packed alpha — color 直下に grayscale mask を上下パックした 1 本の動画。 */
+export function isPackedAlphaVideoMeta(meta: Record<string, unknown> | undefined): boolean {
+  return (
+    meta?.hasAlpha === true &&
+    meta?.alphaMode === "packed" &&
+    meta?.packedLayout === "topBottom" &&
+    typeof meta?.contentHeight === "number" &&
+    meta.contentHeight > 0 &&
+    typeof meta?.gutterPx === "number" &&
+    meta.gutterPx >= 0
+  );
+}
+
+/** packed asset meta から §2.2 の PackedAlphaLayout を取り出す（isPackedAlphaVideoMeta 済み前提）。 */
+export function packedAlphaLayoutFromMeta(
+  meta: Record<string, unknown> | undefined,
+): { contentHeight: number; gutterPx: number } | null {
+  if (!isPackedAlphaVideoMeta(meta)) return null;
+  return { contentHeight: meta!.contentHeight as number, gutterPx: meta!.gutterPx as number };
+}
+
 /** asset 画像の data: URL / 動画の blob: URL と natural size キャッシュ。 */
 export class ImageAssetCache {
   private readonly byId = new Map<string, ImageEntry>();
@@ -61,6 +82,8 @@ export class ImageAssetCache {
   private readonly blobUrls = new Set<string>();
   /** §16.2 split alpha 用 companion マスク video URL（assetId → url）。 */
   private readonly alphaUrlById = new Map<string, string>();
+  /** §2.2 packed alpha レイアウト（assetId → layout）。 */
+  private readonly packedLayoutById = new Map<string, { contentHeight: number; gutterPx: number }>();
   // §11.4b assetId → proxy tier → entry。映像のみ（音声は常に原本）。
   private readonly proxyById = new Map<string, Map<string, ImageEntry>>();
 
@@ -89,6 +112,11 @@ export class ImageAssetCache {
     return this.alphaUrlById.get(assetId) ?? null;
   }
 
+  /** §2.2 packed alpha レイアウト（無ければ null＝packed 資産ではない）。 */
+  getPackedAlphaLayout(assetId: string): { contentHeight: number; gutterPx: number } | null {
+    return this.packedLayoutById.get(assetId) ?? null;
+  }
+
   /** import 時に確定した meta から size を返す（cache 未ロード時の bounds 用）。 */
   static sizeFromMeta(meta: Record<string, unknown> | undefined): ImageSize | null {
     if (!meta) return null;
@@ -107,6 +135,7 @@ export class ImageAssetCache {
     const cacheKey = (path: string, kind: string) => `${kind}|${proxyMaxDim ?? "full"}|${path}`;
     for (const asset of project.assets) {
       if (asset.kind !== "image" && asset.kind !== "video") continue;
+      if (asset.kind === "video") this.registerPackedLayoutIfPresent(asset.id, asset.meta);
       const ck = cacheKey(asset.path, asset.kind);
       if (this.byPath.has(ck)) {
         const entry = this.byPath.get(ck)!;
@@ -178,6 +207,12 @@ export class ImageAssetCache {
     m.set(tier, entry);
   }
 
+  /** §2.2 packed alpha 資産なら packedLayoutById に登録する（他は無視）。 */
+  private registerPackedLayoutIfPresent(assetId: string, meta: Record<string, unknown> | undefined): void {
+    const layout = packedAlphaLayoutFromMeta(meta);
+    if (layout) this.packedLayoutById.set(assetId, layout);
+  }
+
   /** §16.2 split alpha companion を FS から blob URL 化。 */
   private async loadSplitAlphaFromFs(
     assetId: string,
@@ -236,6 +271,7 @@ export class ImageAssetCache {
       }
     }
     this.alphaUrlById.delete(assetId);
+    this.packedLayoutById.delete(assetId);
   }
 
   /** §11.7 bundle player: 相対 URL で image / video を参照する。 */
@@ -251,6 +287,7 @@ export class ImageAssetCache {
         const alphaPath = asset.meta!.alphaPath as string;
         this.alphaUrlById.set(asset.id, urlForPath(alphaPath));
       }
+      if (asset.kind === "video") this.registerPackedLayoutIfPresent(asset.id, asset.meta);
       // §11.4b バンドルに含まれる proxy も quality URL として登録（getUrlForQuality 用）。
       this.forEachProxyMeta(asset, (tier, path) => {
         this.registerProxyEntry(asset.id, tier, { url: urlForPath(path), size });

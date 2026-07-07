@@ -6,6 +6,17 @@
 
 ---
 
+### 2026-07-07（Sonnet 5）— 透過動画軽量化プラン v2: Phase 2（packed形式・新規出力）実装 ✅
+
+- **内容**: [doc/cloudplan/webgl-video-layer-plan.md](doc/cloudplan/webgl-video-layer-plan.md) §2.2/§4 Phase2 に従い、Subject Extract の新規出力を「color+mask 上下パック1本の動画（packed alpha）」にできるよう実装。優先順位は unified→packed（サイズ上限内）→split（既存フォールバック）。H.264/mp4 優先＋VP9/webm フォールバック、音声トラック同梱、単一 `<video>` 再生（companion/genlock 不発）、GL/CPU 両対応の合成。
+- **新規/変更ファイル**: 新規 [videoPackedAlpha.ts](src/runtime/videoPackedAlpha.ts)。[videoAlphaGl.ts](src/runtime/videoAlphaGl.ts) に split/packed 共有の GL コンテキスト予算レジストリを集約（Phase1 実装からの移設・リファクタ）。[encodeAlphaWebm.ts](src/editor/subjectExtract/encodeAlphaWebm.ts) に packed 用 H.264/mp4 エンコーダ新設（[exporter.ts](src/runtime/exporter.ts) の `avcCodecString`/`configureVideoEncoder`/`encodeAudioToMuxer` を export 化して再利用）。[runSubjectExtract.ts](src/editor/subjectExtract/runSubjectExtract.ts)/[types.ts](src/editor/subjectExtract/types.ts)/[SubjectExtractFields.tsx](src/editor/panels/SubjectExtractFields.tsx) を packed 対応に更新。[imageAssetCache.ts](src/runtime/imageAssetCache.ts) に `isPackedAlphaVideoMeta`/`getPackedAlphaLayout` 追加。[DomRenderer.ts](src/runtime/DomRenderer.ts) に packed 再生分岐 + `clearAlphaRemnants`（モード切替時の残骸解放）追加。[rasterCapture.ts](src/runtime/rasterCapture.ts) の export inlining に packed canvas 判定を追加。`bundleCollect.ts`/`pipelineAnalysis.ts` は既存の判定条件（`isSplitAlphaVideoMeta` 限定）のおかげで無変更のまま packed 非回帰・警告除外を確認。
+- **実装中に発見・修正した重大バグ**: (1) 合成テスト動画による e2e 検証で発覚した GL packed シェーダの UV 反転ミス（color/mask 領域入れ替わり、Phase1 の split UV 反転教訓と同型の罠）。(2) Opus 4.8 コードレビューで発見: split↔packed モード切替時の GL compositor/companion 残骸リーク（`clearAlphaRemnants` で修正）。(3) 同じくレビューで発見: `sampleInterval>1` 時の音声-映像ズレ（`sampleInterval===1` のときのみ音声同梱に制限して回避、タイムストレッチは範囲外の既知制約）。
+- **検証**: `npm run typecheck` 緑・`npm test` 944 PASS・`npm run build:player` 実行し `playerBuildFreshness.test.ts` で実更新確認。新規 unit test 8件（`videoPackedAlpha.test.ts` 7件 + `isPackedAlphaVideoMeta` 1件）。実ブラウザ e2e verify（`verify-packed-alpha-e2e.mjs`、headed Chrome 必須＝headless は WebCodecs encode がハングする既知制約）で encode→import→再生→GL/CPU一致→PNG連番export まで PASS。Phase 1（split alpha）の非回帰も再確認済み。
+- **既知の制約（記録のみ）**: VP9/webm フォールバック時は音声非同梱。`sampleInterval>1` は音声非同梱。GL コンテキスト予算は split/packed 共有で first-come-first-served（zOrder優先度制御は未実装、Phase1から持ち越し）。
+- **Next steps**: Phase 2.5（既存 split→packed 変換、実装前後で上位モデルレビュー必須とユーザー指示済み）→ Phase 3（export 全経路無回帰の総仕上げ）→ Phase 4（実地受け入れ）。
+
+---
+
 ### 2026-07-07（Sonnet 5）— 透過動画軽量化プラン v2: Phase 0（実測診断）+ Phase 1（GL合成）実装 ✅
 
 - **経緯**: [doc/cloudplan/webgl-video-layer-plan.md](doc/cloudplan/webgl-video-layer-plan.md)（v2 プラン、前セッションで全面改稿済み）の実装をユーザーから指示された。§7 の残る確認事項4点（meta命名・コーデック方針・Phase0ゲート・変換UI入口）をAskUserQuestionで確認 → 全て推奨案で確定、プラン文書に反映。

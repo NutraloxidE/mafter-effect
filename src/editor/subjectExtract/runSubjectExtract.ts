@@ -1,6 +1,8 @@
 import type { Project, SceneObject, TimelineComposition } from "../../core/schema";
 import type { FileSystem } from "../../fs/FileSystem";
+import { loadAudioBuffer } from "../audioBufferCache";
 import { ImageAssetCache } from "../../runtime/imageAssetCache";
+import type { AudioMixResult } from "../../runtime/exporter";
 import {
   computeMotionTrackCompFrames,
   extractFramesForMotionTrack,
@@ -10,6 +12,28 @@ import { resolveVideoAssetUrl } from "../motionTrack/frameExtractor";
 import { encodeRgbaFramesToSubjectWebm } from "./encodeAlphaWebm";
 import { initPersonSegmenter, segmentPersonFrame } from "./personSegmenter";
 import type { SubjectExtractOptions, SubjectExtractProgress, SubjectExtractResult } from "./types";
+
+/**
+ * 元 footage 音声を [startSec, startSec+durationSec) で切り出す。§2.2 packed に同梱する
+ * 音声トラックは、映像と同じ範囲・同じ実時間長で対応させる（sampleInterval で間引かれた
+ * フレーム列とは無関係に、encoder は frameCount/fps を均等割りしたタイムスタンプで書き出すため）。
+ */
+function sliceAudioBufferForRange(
+  source: AudioBuffer,
+  startSec: number,
+  durationSec: number,
+): AudioBuffer | null {
+  const sampleRate = source.sampleRate;
+  const startSample = Math.max(0, Math.floor(startSec * sampleRate));
+  if (startSample >= source.length) return null;
+  const frameCount = Math.max(1, Math.min(source.length - startSample, Math.round(durationSec * sampleRate)));
+  const out = new AudioBuffer({ length: frameCount, numberOfChannels: source.numberOfChannels, sampleRate });
+  for (let ch = 0; ch < source.numberOfChannels; ch++) {
+    const data = source.getChannelData(ch).slice(startSample, startSample + frameCount);
+    out.copyToChannel(data, ch, 0);
+  }
+  return out;
+}
 
 export interface RunSubjectExtractInput {
   project: Project;
@@ -100,21 +124,58 @@ export async function runSubjectExtract(input: RunSubjectExtractInput): Promise<
     }
   }
 
+  const duration = compFrames.length / comp.fps;
+
+  // §2.2 packed 用の音声（元 footage から実時間範囲だけ切り出す）。無音素材・decode 失敗時は
+  // audioMix=null のまま進み、packed エンコーダは映像のみの mp4/webm を返す（best-effort）。
+  // sampleInterval > 1 のときは compFrames が間引かれ、映像は実質的に時間圧縮（N倍速相当）される。
+  // 音声を単純に「同じ duration だけ等速で切り出す」と間引かれていない実時間の一部を等速再生する
+  // ことになり映像とズレる（正しく合わせるには音声側もタイムストレッチが要るが範囲外）。
+  // このズレを防ぐため sampleInterval===1（既定・映像も間引かれない）のときだけ音声を同梱する。
+  let audioMix: AudioMixResult | null = null;
+  if (options.sampleInterval === 1) {
+    try {
+      const decoded = await loadAudioBuffer(assetId, () => fs.read(asset!.path));
+      if (decoded) {
+        const sliced = sliceAudioBufferForRange(decoded, trimStart, duration);
+        if (sliced) {
+          audioMix = { buffer: sliced, sampleRate: sliced.sampleRate, numberOfChannels: sliced.numberOfChannels };
+        }
+      }
+    } catch {
+      audioMix = null;
+    }
+  }
+
   const encoded = await encodeRgbaFramesToSubjectWebm(
     maskedFrames,
     comp.fps,
+    audioMix,
     (current, total) => onProgress?.({ phase: "encoding", current, total }),
     signal,
   );
 
   const w = maskedFrames[0]!.width;
   const h = maskedFrames[0]!.height;
-  const duration = compFrames.length / comp.fps;
 
   if (encoded.mode === "unified") {
     return {
       mode: "unified",
       webmBytes: encoded.webm,
+      width: w,
+      height: h,
+      durationSec: duration,
+      frameCount: maskedFrames.length,
+      fps: comp.fps,
+    };
+  }
+
+  if (encoded.mode === "packed") {
+    return {
+      mode: "packed",
+      webmBytes: encoded.bytes,
+      packedContainer: encoded.container,
+      packedLayout: encoded.layout,
       width: w,
       height: h,
       durationSec: duration,
