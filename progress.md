@@ -6,6 +6,27 @@
 
 ---
 
+### 2026-07-07（Sonnet 5）— 透過動画軽量化プラン v2: Phase 4（実地受け入れ・自動計測）実施 🟡 ユーザー体感確認待ち
+
+- **内容**: [doc/cloudplan/webgl-video-layer-plan.md](doc/cloudplan/webgl-video-layer-plan.md) §4 Phase4 に従い、Phase 0 と同一の Comp32 相当ミニプロジェクト・同一シナリオA/B・同一手法（headed実Chrome・3trials）で packed 化後を再計測。新規 [verify-comp32-packed-instability.mjs](verify-comp32-packed-instability.mjs) を作成（Person レイヤーの split→packed 変換を Inspector と同じコミットロジックで実行してから計測）。
+- **結果サマリ**（詳細はプラン文書 Phase4 エントリ）: decoder は packed（VP9/webm フォールバック）でも HW（D3D11VideoDecoder）維持・退行なし。本機では実データ解像度で H.264 encoder configが unsupported となり VP9へフォールバックする環境事象を確認（Phase3で見つけた事象と同根、§8既知リスクの実例）。drift（companion間ズレ）は packed では構造的に消滅（split は今回も最大95-99ms実測）。stall%は環境ノイズが大きく（Phase0の記録値と本日のsplit再計測だけでも大きく変動）、3trialのみでは精密な前後比較の決め手にならない。「同時デコードセッション数（3→2)」をCDP Media domainのplayerId累積数で追試したが本harnessでは綺麗に測れず（trialごとに新規セッションが生える挙動を観測、原因未特定・regressionと断定はできない）、この指標は撤回。
+- **判断**: post-mortem（v1の教訓＝マイクロベンチ/自動計測だけで結論しない）に従い、自動計測は「悪化なし・drift失敗モードの構造的消滅」を裏付けたのみとし、**ユーザーが実プロジェクト（Comp30/32等）でPersonレイヤーをInspectorの「Packed化」ボタンで変換し、実際の体感を確認するまでcloseしない**。
+- **Next steps**: ユーザーの体感確認待ち。OKなら Phase 0〜4 一連の内容と Phase 2.5（store.ts等、未コミット）をコミットする。NGなら体感の中身（どのシナリオで重いか）をヒアリングして追加調査。
+
+---
+
+### 2026-07-07（Sonnet 5）— 透過動画軽量化プラン v2: Phase 3（export全経路の無回帰）実施 ✅
+
+- **内容**: [doc/cloudplan/webgl-video-layer-plan.md](doc/cloudplan/webgl-video-layer-plan.md) §4 Phase3/§5 に従い、Phase1/2/2.5 の export 無回帰を実機 verify で確認。詳細はプラン文書の Phase3 エントリに集約（本エントリはサマリ）。
+- **前提の発見（本プランとは無関係の環境問題）**: v1 reset の副作用で複数の未コミット `verify-*.mjs` と `for-debug-data/` 内の一部動画フィクスチャ（video_test.mp4 等）が0バイトに壊れていた。汎用的で本プランに関連するもの（nested-split-alpha-crash/bundle-split-alpha-playback/video-export/video-export-monotonic/export-adjustment/fast-export-parity）は `webgl-implement-failed` ブランチから復元し、壊れたフィクスチャは実データ（Comp_20.mp4・comp32 mini project 内の実 Person split webm）に置換して実行可能にした。v1 の3Dシーン共有専用スクリプト（verify-webgl-*）は復元対象外。
+- **結果**: §5 verify 一式（gl-alpha-parity/packed-alpha-e2e/convert-split-to-packed-e2e/nested-split-alpha-crash）+ 既存無回帰（export-split-alpha/bundle-split-alpha-playback/bundle-export/blend-mode/export-adjustment/fast-export-parity/video-export/video-export-monotonic）すべて PASS。§5 で唯一未作成だった `verify-packed-export.mjs`（packed レイヤーの mp4/PNG連番/HTML bundle export 非回帰）を新規作成し8 assertions PASS（HTML bundle: asset 1本のみ・video 1要素・非ブランク・正立。mp4: 実 encode→decode round-trip で非ブランク・期待色確認）。`npm run typecheck` 緑・`npm test` 954 PASS・`npm run build:player` 実行（今回 src/runtime/src/player 変更なしのため player.js 無変更を確認、再ビルド不要判断が正しいことを確認）。
+- **Opus 4.8 レビュー**: 「壊れたフィクスチャが原因で regression ではない」との判断、および `verify-fast-drift-spike.mjs`（削除済みヘルパー参照のスパイクスクリプト）をスキップした判断の両方を妥当と確認。新規 `verify-packed-export.mjs` の初版が HTML bundle のみで §5 明記の mp4 経路未カバーだった点を指摘され、mp4 export 検証を追加して解消。
+- **既知の環境事象（記録のみ）**: 既定 1920x1080 comp で mp4 export すると本機環境で H.264 encoder configure が全候補 unsupported となり png-seq へフォールバックすることがある（§8 既知リスクの実例、packed/GL合成の実装とは無関係）。`verify-packed-export.mjs` は専用の小さい comp を使い回避。
+- **未コミット**: Phase 2.5（store.ts/ProjectPanel.tsx/VideoComponentFields.tsx/ProjectTreeView.tsx/convertSplitToPacked.ts/PackedAlphaConvertFields.tsx/test）と Phase 3 で追加・修正した verify-*.mjs 一式・doc/progress 更新はすべてこのセッション終了時点で未コミット（ユーザー指示によりコミットは明示依頼時のみ実施のため待機）。
+- **Next steps**: Phase 4（実地受け入れ、Phase 0 と同条件で再計測しユーザー確認）。ユーザーが良ければ Phase 2.5〜3 の一連をコミットする。
+
+---
+
 ### 2026-07-07（Sonnet 5）— 透過動画軽量化プラン v2: Phase 2.5（既存split→packed変換）実装 ✅
 
 - **内容**: [doc/cloudplan/webgl-video-layer-plan.md](doc/cloudplan/webgl-video-layer-plan.md) §2.4/§4 Phase2.5 に従い、既存の split alpha アセット（Comp 30/32 等）を1クリック・非破壊で packed 化する変換を実装。ユーザー指示により実装前・実装後ともに Opus 4.8 によるレビューを実施（設計レビューはコード着手前、コードレビューは実装完了後）。
