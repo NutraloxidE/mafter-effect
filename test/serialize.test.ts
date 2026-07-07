@@ -4,6 +4,7 @@ import { defaultTransform, staticProp } from "../src/core/props";
 import {
   canonicalStringify,
   canonicalizeProject,
+  deserializeProject,
   serializeProject,
 } from "../src/core/serialize";
 import type { Project, SceneObject, TimelineComposition } from "../src/core/schema";
@@ -184,5 +185,31 @@ describe("serializeProject", () => {
       expect(tcomp.objects[0]?.blendMode).toBeUndefined();
     }
     expect(serializeProject(canon)).not.toContain("blendMode");
+  });
+});
+
+describe("deserializeProject (§Phase4: Uint8Array | string input)", () => {
+  it("parses a Uint8Array the same as the equivalent string", () => {
+    const project = createProject({ now: "2026-01-01T00:00:00.000Z" });
+    const text = serializeProject(project);
+    const bytes = new TextEncoder().encode(text);
+
+    const fromString = deserializeProject(text);
+    const fromBytes = deserializeProject(bytes);
+
+    expect(fromBytes).toEqual(fromString);
+    expect(serializeProject(fromBytes)).toBe(text);
+  });
+
+  it("round-trips non-ASCII (NFC) text through the Uint8Array path", () => {
+    const base = createProject({ now: "2026-01-01T00:00:00.000Z" });
+    const project: Project = structuredClone(base);
+    project.meta.name = "日本語プロジェクト";
+    const text = serializeProject(project);
+    const bytes = new TextEncoder().encode(text);
+
+    const reloaded = deserializeProject(bytes);
+    expect(reloaded.meta.name).toBe("日本語プロジェクト");
+    expect(serializeProject(reloaded)).toBe(text);
   });
 });

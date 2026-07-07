@@ -1447,3 +1447,24 @@ canvas 化結果は以降から見て通常の背面ピクセルと等価（zOrd
 - **検証**: `npm run typecheck` / `npm test` 963/963 緑。新規テスト: [test/indexedDbFsReadBatch.test.ts](test/indexedDbFsReadBatch.test.ts)（存在/欠損キー混在・空配列・既存 `read()` との byte 一致）、[test/collectReferencedAssetIds.test.ts](test/collectReferencedAssetIds.test.ts)（直下参照・ネスト comp 再帰・循環ガード・未知 comp id）、[test/imageAssetCache.test.ts](test/imageAssetCache.test.ts) に `priorityAssetIds` の順序非依存性・`LOAD_BATCH_SIZE` を跨ぐ 5 件ロードの統合テストを追加。`npm run build:player` 実行済み（`playerBuildFreshness` 緑）。既存 export 系 verify 無回帰: `verify-video-export-monotonic.mjs`・`verify-packed-alpha-e2e.mjs`・`verify-export-split-alpha.mjs` PASS。
 - **計測（Phase 0 ハーネス、同一 HTTP/1.1 dev server での matched A/B, 5 run 中央値）**: `maxLongTaskMs` 90ms（Phase 3 前）→95ms（Phase 3 後）で **明確な改善は確認できなかった**（ノイズの範囲内）。要因分析: この固定テストプロジェクトは動画 asset が 6 件のみで `LOAD_BATCH_SIZE=3` のバッチが 2 回にしかならず、かつ Phase 2b で動画デコード自体は既に Worker オフロード済みのため、IndexedDB tx 分割・yield の効果を検出できるほど main thread 側の残作業（27 comps 分の expression/font 準備等）に対して支配的でなかったと考えられる。Phase 1/2a と同様、**この検証環境・この固定 fixture のスケールでは効果を実測で示せなかった**ことを正直に記録する（機能的な正しさ・回帰無しは unit test・verify で担保済み）。より多くの小アセット・より高レイテンシな環境（元課題の報告環境）で効果が顕在化する可能性が高い。
 - **Next steps**: Phase 4（deserializeProject の Uint8Array 直接デコード）へ進む。
+
+### 2026-07-07（Claude）— Preview Rendering Pipeline Optimization Phase 4（deserializeProject の Uint8Array 直接デコード）✅ — Phase 0〜4 完了
+
+- **実装**: [serialize.ts](src/core/serialize.ts) `deserializeProject` を `Uint8Array | string` 受理に拡張（モジュールスコープの `TextDecoder` を再利用、`string` 入力は従来通り）。[projectFs.ts](src/core/projectFs.ts) `loadProject` を `readText`（`bytesToText` 経由の中間 string）→ `read` + `deserializeProject(bytes)` に変更。**`serializeProject`（直列化出力）は一切変更していない**（ユーザー厳守指示）。
+- **検証**: `npm run typecheck` / `npm test` 965/965 緑。新規テスト（[test/serialize.test.ts](test/serialize.test.ts)）: `Uint8Array` 入力が同内容の `string` 入力と同一結果になること・非 ASCII（日本語）名の round-trip。既存の `test/roundtrip.test.ts`・`test/canonical-edge.test.ts`（`loadProject` 経由、INV-4 byte 等価）が新しい bytes 経路を透過的にカバーしていることを確認（緑）。`npm run build:player` 実行済み（`playerBuildFreshness` 緑）。実機 Playwright: `verify-packed-alpha-e2e.mjs`・`verify-export-split-alpha.mjs`・Phase 0 ハーネス（zip 展開 → `loadFromFs()` → 起動）が新しい bytes 経路で無回帰 PASS。
+- **既知の無関係な flaky（Phase 0〜4 を通じて複数回再確認・対応不要）**: `test/projectBins.test.ts`「preserves treeOrder entry order」がまれに単体実行でも落ちる（恐らく `newBinId()`/`newAssetId()` の ULID が同一ミリ秒内でランダム部の大小関係が保証されないことに起因、`moveTreeEntries`/`canonicalizeTreeOrder` 自体は今回のどの Phase でも変更していない）。5 連続再実行では全て緑。本 PLAN のどの変更とも無関係であることを diff で確認済み（対応は別タスクとして次回申し送り）。
+
+---
+
+## Preview Rendering Pipeline Optimization Phase 0〜4 完了・総括
+
+`doc/issue/preview-rendering-pipeline-optimization-plan.md` の Phase 0→1→2a→2b→3→4 をすべて実装・検証・コミット済み（各 1 コミット）。
+
+- **機能的な正しさ**: 全 Phase で `npm test`（965/965）・`npm run typecheck` 緑、既存 export 系 verify（video/packed/split-alpha）無回帰、新規 unit test 追加、実機 Playwright で `<video>` の worker blob-URL 実デコードを確認。INV-2（scene 解決値不変）・INV-4（FS パス構成不変）・`project.json` 直列化形式（`serializeProject`）はいずれも無変更で死守。
+- **正直な計測結果（重要）**: Phase 0 で確立した `probe-preview-startup.mjs` ハーネスと固定テストプロジェクト（`for-debug-data/_pj17`, 動画6件・27 comps）では、Phase 1（HTTP/2 dev）・Phase 3（readBatch+優先度+yield）とも **明確な体感/計測改善を実証できなかった**（Phase 2a のみ `loadFromProjectMs` で matched A/B 約9%改善を確認）。理由と考えられる点:
+  1. localhost はレイテンシがほぼ 0 のため、HTTP/1.1 の 6 接続上限によるモジュール直列ロードのペナルティが元課題の報告環境ほど顕在化しない。
+  2. 固定テストプロジェクトの動画資産が 6 件のみで、`LOAD_BATCH_SIZE=3` のバッチが 2 回にしかならず、IndexedDB トランザクション分割・yield の効果が測定ノイズに埋もれる。
+  3. Phase 2b で動画デコード自体を Worker オフロード済みのため、Phase 3 の対象だった「メインスレッドでの一括流し込み」はすでに大幅に軽減されている。
+  - **誇張せず、実測値と限界を都度 progress.md に記録した**（このセッションの一貫した方針）。技術的な実装自体（実際に HTTP/2 が使われる・Worker 経由で動画が正しく再生される・readBatch が正しく動く等）はすべて実機で検証・確認済み。より多くの小アセット・より高レイテンシな実環境（元課題の報告環境）でこそ Phase 1/3 の効果が顕在化する可能性が高い。
+- **Phase 5（Electron NodeFs 切り替え）は着手していない**。CLAUDE.md・PLAN の指示通り、設計確認が必要な別マイルストーンとして次回に持ち越す。
+- **Next steps**: (1) Phase 5 着手前にユーザーと設計確認（NodeFs 実装範囲・`store.getFs()` の自動判別・`readBatch` の `FileSystem` インターフェース正式追加要否）。(2) `test/projectBins.test.ts` の ULID 起因と思われる flaky を余力があれば別途調査。(3) より大規模な実プロジェクト（元課題の 200+ モジュール・多数アセット環境）での再計測を推奨。

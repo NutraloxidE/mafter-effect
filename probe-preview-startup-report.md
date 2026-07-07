@@ -13,3 +13,4 @@ Phase 0 計測ハーネス（scripts/probe-preview-startup.mjs）の実測値。
 | 2026-07-07T13:55:40.080Z | phase3-batch-priority | 326 | 236 | 83 | 165 | 2 | 310 |
 | 2026-07-07T13:56:07.100Z | ab-pre-phase3 | 332 | 224 | 90 | 168 | 2 | 259 |
 | 2026-07-07T13:56:34.193Z | ab-post-phase3 | 358 | 252 | 95 | 171 | 2 | 277 |
+| 2026-07-07T14:03:57.088Z | phase4-deserialize-bytes | 331 | 224 | 90 | 168 | 2 | 299 |

@@ -24,7 +24,8 @@ export async function loadProject(fs: FileSystem): Promise<ValidationResult> {
   if (!(await fs.exists(PROJECT_JSON))) {
     throw new Error(`projectFs: ${PROJECT_JSON} not found`);
   }
-  const text = await fs.readText(PROJECT_JSON);
-  const raw = deserializeProject(text);
+  // Phase 4: readText（bytesToText 経由の中間 string）を挟まず、bytes を直接 deserializeProject へ。
+  const bytes = await fs.read(PROJECT_JSON);
+  const raw = deserializeProject(bytes);
   return validateProject(raw);
 }

@@ -208,7 +208,16 @@ export function serializeProject(project: Project): string {
   return canonicalStringify(canonicalizeProject(project));
 }
 
-/** project.json テキストをパースする。検証は validateProject（別途）で行う。 */
-export function deserializeProject(text: string): Project {
+const projectJsonDecoder = new TextDecoder();
+
+/**
+ * project.json をパースする（検証は validateProject（別途）で行う）。
+ * Phase 4（preview-rendering-pipeline-optimization-plan）: `Uint8Array` を直接受け付け、
+ * `readText`（`bytesToText` 経由）を挟まず `TextDecoder` で直接デコードする（中間 string 変数・
+ * 関数境界を 1 段削減）。`JSON.parse` は string しか受け付けないため、文字列生成自体は不可避
+ * （効果は限定的）。`serializeProject` の出力形式は一切変更しない。
+ */
+export function deserializeProject(input: Uint8Array | string): Project {
+  const text = typeof input === "string" ? input : projectJsonDecoder.decode(input);
   return JSON.parse(text) as Project;
 }
