@@ -3,6 +3,7 @@ import type { FileSystem } from "../fs/FileSystem";
 import { videoMimeFromPath } from "./videoAssetProbe";
 import type { FootageQuality } from "./footageQuality";
 import { isProxyTier } from "./footageQuality";
+import { decodeVideoBlobUrl } from "./videoBlobDecode";
 
 export interface ImageSize {
   width: number;
@@ -189,7 +190,7 @@ export class ImageAssetCache {
           (typeof asset.meta?.mime === "string" ? asset.meta.mime : null) ??
           (asset.kind === "video" ? videoMimeFromPath(asset.path) : mimeFromPath(asset.path));
         const entry = asset.kind === "video"
-          ? decodeVideoEntry(buf, mime, asset.meta)
+          ? await decodeVideoEntry(buf, mime, asset.meta)
           : await decodeImageEntry(buf, mime, asset.meta, proxyMaxDim);
         this.byPath.set(ck, entry);
         this.byId.set(asset.id, entry);
@@ -225,7 +226,7 @@ export class ImageAssetCache {
         try {
           const buf = await fs.read(path);
           const mime = typeof p.mime === "string" ? p.mime : videoMimeFromPath(path);
-          entry = decodeVideoEntry(buf, mime, meta);
+          entry = await decodeVideoEntry(buf, mime, meta);
           this.byPath.set(ck, entry);
           if (entry.url.startsWith("blob:")) this.blobUrls.add(entry.url);
         } catch {
@@ -264,7 +265,7 @@ export class ImageAssetCache {
       try {
         const buf = await fs.read(alphaPath);
         const mime = videoMimeFromPath(alphaPath);
-        const entry = decodeVideoEntry(buf, mime, meta);
+        const entry = await decodeVideoEntry(buf, mime, meta);
         this.byPath.set(ck, entry);
         url = entry.url;
         if (url.startsWith("blob:")) this.blobUrls.add(url);
@@ -368,7 +369,7 @@ export class ImageAssetCache {
           const mime =
             (typeof asset.meta?.mime === "string" ? asset.meta.mime : null) ??
             videoMimeFromPath(path);
-          const entry = decodeVideoEntry(buf, mime, asset.meta);
+          const entry = await decodeVideoEntry(buf, mime, asset.meta);
           register(entry);
           this.blobUrls.add(entry.url);
         } catch {
@@ -484,15 +485,15 @@ export async function probeImageFile(file: File): Promise<{ width: number; heigh
   return { width: 100, height: 100, mime };
 }
 
-function decodeVideoEntry(
+async function decodeVideoEntry(
   buf: Uint8Array,
   mime: string,
   meta: Record<string, unknown> | undefined,
-): ImageEntry {
-  // slice 不要: Blob は Uint8Array ビューを直接コピーする（241ms 級の手動 slice コピーを削減。
-  // Phase 2a: preview-rendering-pipeline-optimization-plan）。fs.read() は常に ArrayBuffer
-  // 裏付けの Uint8Array を返す（SharedArrayBuffer にはならない）。
-  const url = URL.createObjectURL(new Blob([buf as Uint8Array<ArrayBuffer>], { type: mime }));
+): Promise<ImageEntry> {
+  // Phase 2b（preview-rendering-pipeline-optimization-plan）: Blob 構築（slice 相当のコピー）を
+  // Web Worker にオフロードし、URL.createObjectURL のみメインスレッドで行う
+  // （videoBlobDecode.ts のコメント参照: Worker 発行の blob: URL は <video> から参照不可）。
+  const url = await decodeVideoBlobUrl(buf, mime);
   const size = ImageAssetCache.sizeFromMeta(meta) ?? { width: 100, height: 100 };
   return { url, size };
 }

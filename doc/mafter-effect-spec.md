@@ -731,6 +731,7 @@ interface FileSystem {
 - `NodeFs`（アプリ版）: 実 FS。
 - **INV-4**: 両者は同一フォルダ構成を生成。`exportZip()` は FS を走査し同一パスで zip 化（JSZip）。`importZip()` は逆。
 - アセット blob は IDB に格納。**容量制限/eviction は実害になり得る**ため注記。大規模アセットは OPFS への移行を §16 で検討。
+- **preview 起動最適化（2026-07, preview-rendering-pipeline-optimization-plan）**: `ImageAssetCache` の動画デコード（`decodeVideoEntry`）は非同期で、Blob 構築を Web Worker（`videoBlobDecode.ts` / `videoBlob.worker.ts`）へオフロードする。`URL.createObjectURL` は worker 発行の `blob:` URL が `<video>` から参照できないため必ずメインスレッドで呼ぶ。`url`/`size` の中身・戻り値の意味は不変（INV-2）。
 
 ### §11.3 FS → module loader（確定）
 
