@@ -90,10 +90,14 @@ curl -X POST https://<デプロイ先のURL>/api/feedback \
 
 ```bash
 python scripts/mafter_http_server.py --port 5174 --static dist --feedback-dir feedback/inbox-dev --token dev-token
+MAFTER_DEV_HTTP1=1 npm run dev
 ```
 
 `vite.config.ts` に `/api/feedback` → `http://127.0.0.1:5174` のプロキシを設定済み（未起動でも他の
-リクエストには影響しない）。
+リクエストには影響しない）。**このプロキシは `npm run dev` の既定（HTTP/2 化・preview-rendering-pipeline
+-optimization-plan Phase 1）では無効**（Vite は https 有効時に server.proxy があると HTTP/2 を使わず
+HTTP/1.1 にフォールバックするため、proxy 自体を外して HTTP/2 を維持している）。フィードバック送信を
+実際に検証したいときだけ `MAFTER_DEV_HTTP1=1` を付けて起動し、proxy を有効な HTTP/1.1 dev サーバに戻す。
 
 ---
 
