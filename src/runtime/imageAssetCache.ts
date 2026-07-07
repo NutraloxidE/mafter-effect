@@ -415,7 +415,6 @@ async function decodeImageEntry(
   meta: Record<string, unknown> | undefined,
   proxyMaxDim?: number,
 ): Promise<ImageEntry> {
-  const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
   const canBitmap = typeof createImageBitmap === "function";
   // SVG はベクタなのでラスタ縮小しない（元々小さく、縮小は品質劣化のみ）。
   const isVector = mime === "image/svg+xml";
@@ -424,7 +423,10 @@ async function decodeImageEntry(
   let bitmap: ImageBitmap | null = null;
   if (canBitmap && (!size || (proxyMaxDim != null && !isVector))) {
     try {
-      bitmap = await createImageBitmap(new Blob([ab], { type: mime }));
+      // Blob は Uint8Array ビューを直接コピーする（byteOffset/byteLength を尊重）ため
+      // 手動 slice は不要（Phase 2a: preview-rendering-pipeline-optimization-plan）。
+      // fs.read() は常に ArrayBuffer 裏付けの Uint8Array を返す（SharedArrayBuffer にはならない）。
+      bitmap = await createImageBitmap(new Blob([buf as Uint8Array<ArrayBuffer>], { type: mime }));
     } catch {
       bitmap = null;
     }
@@ -487,8 +489,10 @@ function decodeVideoEntry(
   mime: string,
   meta: Record<string, unknown> | undefined,
 ): ImageEntry {
-  const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
-  const url = URL.createObjectURL(new Blob([ab], { type: mime }));
+  // slice 不要: Blob は Uint8Array ビューを直接コピーする（241ms 級の手動 slice コピーを削減。
+  // Phase 2a: preview-rendering-pipeline-optimization-plan）。fs.read() は常に ArrayBuffer
+  // 裏付けの Uint8Array を返す（SharedArrayBuffer にはならない）。
+  const url = URL.createObjectURL(new Blob([buf as Uint8Array<ArrayBuffer>], { type: mime }));
   const size = ImageAssetCache.sizeFromMeta(meta) ?? { width: 100, height: 100 };
   return { url, size };
 }
