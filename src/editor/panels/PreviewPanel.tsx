@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { resolve, type ExpressionEvaluator } from "../../runtime/resolve";
 import { DomRenderer } from "../../runtime/DomRenderer";
 import { collectVideoClipsFromComp } from "../../runtime/videoLookaheadWarmup";
+import { collectReferencedAssetIds } from "../../runtime/collectReferencedAssetIds";
 import { FontOutlineCache } from "../../runtime/fontOutlineCache";
 import { ImageAssetCache, registerPreviewImageCache } from "../../runtime/imageAssetCache";
 import { HtmlCompPlayer } from "../../runtime/htmlComp";
@@ -478,9 +479,11 @@ export function PreviewPanel() {
     if (!project) return;
     // プレビュー専用: 画像を comp 解像度（長辺）まで縮小して読み込む（重い base64/再デコードを回避）。
     const proxyMaxDim = comp ? Math.max(comp.width, comp.height) : undefined;
+    // §Phase3: 現在表示中の comp が参照する asset を優先ロード（起動時の初期表示前倒し）。
+    const priorityAssetIds = comp ? collectReferencedAssetIds(project, comp.id) : undefined;
     void Promise.all([
       fontCacheRef.current.loadFromProject(project, _previewFs),
-      imageCacheRef.current.loadFromProject(project, _previewFs, { proxyMaxDim }),
+      imageCacheRef.current.loadFromProject(project, _previewFs, { proxyMaxDim, priorityAssetIds }),
     ]).then(() => setRenderTick((t) => t + 1));
   }, [project, comp?.width, comp?.height]); // eslint-disable-line react-hooks/exhaustive-deps
 

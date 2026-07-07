@@ -57,6 +57,26 @@ export class IndexedDbFs implements FileSystem {
     return result as Uint8Array;
   }
 
+  /**
+   * §Phase3（preview-rendering-pipeline-optimization-plan）: 複数パスを単一 readonly
+   * トランザクションで一括取得する（見つからないキーは Map に含めない）。
+   * IndexedDbFs 固有メソッド — `FileSystem` インターフェースは拡張しない（他 FS は逐次 read
+   * にフォールバック、呼び出し側で optional method 判定する）。
+   */
+  async readBatch(paths: string[]): Promise<Map<string, Uint8Array>> {
+    const store = await this.tx("readonly");
+    const out = new Map<string, Uint8Array>();
+    // 同一 microtask 内で全 get を発行 → 1 トランザクションにまとまる（間に await を挟まない）。
+    const jobs = paths.map((p) => {
+      const key = normalizePath(p);
+      return promisifyRequest<unknown>(store.get(key)).then((r) => {
+        if (r !== undefined) out.set(key, r as Uint8Array);
+      });
+    });
+    await Promise.all(jobs);
+    return out;
+  }
+
   async readText(path: string): Promise<string> {
     return bytesToText(await this.read(path));
   }

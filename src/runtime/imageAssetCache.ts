@@ -1,5 +1,5 @@
 import type { Project } from "../core/schema";
-import type { FileSystem } from "../fs/FileSystem";
+import { normalizePath, type FileSystem } from "../fs/FileSystem";
 import { videoMimeFromPath } from "./videoAssetProbe";
 import type { FootageQuality } from "./footageQuality";
 import { isProxyTier } from "./footageQuality";
@@ -22,7 +22,31 @@ export interface ImageLoadOptions {
    * CSS レイアウト・選択バウンディングボックス・export 一致（INV-2）は不変。
    */
   proxyMaxDim?: number;
+  /**
+   * §Phase3: 初期表示 comp が参照する asset を先に読み込むための優先集合
+   * （`collectReferencedAssetIds` 参照）。**ロード順序だけ**に影響し、`byId`/`byPath` の
+   * 最終内容・project.json 直列化とは無関係（INV 非影響）。
+   */
+  priorityAssetIds?: ReadonlySet<string>;
 }
+
+/** IndexedDbFs 固有の一括読み込み（他 FS には存在しない、duck-typed optional method）。 */
+interface FsWithReadBatch {
+  readBatch(paths: string[]): Promise<Map<string, Uint8Array>>;
+}
+
+function hasReadBatch(fs: FileSystem): fs is FileSystem & FsWithReadBatch {
+  return typeof (fs as Partial<FsWithReadBatch>).readBatch === "function";
+}
+
+/** §Phase3: メインスレッドに Layout/Paint の隙間を与える（起動フリーズ防止）。 */
+function yieldToFrame(): Promise<void> {
+  return new Promise((r) =>
+    typeof requestAnimationFrame === "function" ? requestAnimationFrame(() => r()) : setTimeout(r, 0),
+  );
+}
+
+const LOAD_BATCH_SIZE = 3;
 
 const EXT_MIME: Record<string, string> = {
   jpg: "image/jpeg",
@@ -170,10 +194,36 @@ export class ImageAssetCache {
     options?: ImageLoadOptions,
   ): Promise<void> {
     const proxyMaxDim = options?.proxyMaxDim;
+    const priority = options?.priorityAssetIds;
     // proxy 設定ごとに別キャッシュ（full-res と縮小版の取り違えを防ぐ）。
     const cacheKey = (path: string, kind: string) => `${kind}|${proxyMaxDim ?? "full"}|${path}`;
-    for (const asset of project.assets) {
-      if (asset.kind !== "image" && asset.kind !== "video") continue;
+
+    const candidates = project.assets.filter((a) => a.kind === "image" || a.kind === "video");
+    // §Phase3: 優先集合を安定ソートで先頭へ（元配列・byId/byPath の最終内容は不変・順序のみ変更）。
+    const ordered = priority && priority.size > 0
+      ? [
+          ...candidates.filter((a) => priority.has(a.id)),
+          ...candidates.filter((a) => !priority.has(a.id)),
+        ]
+      : candidates;
+
+    for (let i = 0; i < ordered.length; i += LOAD_BATCH_SIZE) {
+      const batch = ordered.slice(i, i + LOAD_BATCH_SIZE);
+      await this.loadAssetBatch(batch, fs, proxyMaxDim, cacheKey);
+      // 最終バッチの後は無駄な yield をしない。
+      if (i + LOAD_BATCH_SIZE < ordered.length) await yieldToFrame();
+    }
+  }
+
+  /** §Phase3: バッチ単位で読み込み（IndexedDbFs なら 1 tx の readBatch、他 FS は並列 fs.read）。 */
+  private async loadAssetBatch(
+    batch: Project["assets"],
+    fs: FileSystem,
+    proxyMaxDim: number | undefined,
+    cacheKey: (path: string, kind: string) => string,
+  ): Promise<void> {
+    const toRead: { asset: Project["assets"][number]; ck: string }[] = [];
+    for (const asset of batch) {
       if (asset.kind === "video") this.registerPackedLayoutIfPresent(asset.id, asset.meta);
       const ck = cacheKey(asset.path, asset.kind);
       if (this.byPath.has(ck)) {
@@ -184,8 +234,30 @@ export class ImageAssetCache {
         }
         continue;
       }
+      toRead.push({ asset, ck });
+    }
+    if (toRead.length === 0) return;
+
+    let bufByPath: Map<string, Uint8Array>;
+    if (hasReadBatch(fs)) {
+      bufByPath = await fs.readBatch(toRead.map((t) => t.asset.path));
+    } else {
+      bufByPath = new Map();
+      await Promise.all(
+        toRead.map(async ({ asset }) => {
+          try {
+            bufByPath.set(normalizePath(asset.path), await fs.read(asset.path));
+          } catch {
+            /* leave missing — treated as unreadable below */
+          }
+        }),
+      );
+    }
+
+    for (const { asset, ck } of toRead) {
+      const buf = bufByPath.get(normalizePath(asset.path));
+      if (!buf) continue; // skip unreadable asset（既存挙動と同一）
       try {
-        const buf = await fs.read(asset.path);
         const mime =
           (typeof asset.meta?.mime === "string" ? asset.meta.mime : null) ??
           (asset.kind === "video" ? videoMimeFromPath(asset.path) : mimeFromPath(asset.path));
