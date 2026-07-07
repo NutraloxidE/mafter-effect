@@ -5,6 +5,7 @@ import { useDragEdgeAutoScroll } from "../../dragEdgeAutoScroll";
 import { isBinExpanded, toggleBinExpanded } from "../../projectBinStorage";
 import { DRAG_MIME } from "../dragMime";
 import { useContextMenuStore, type ContextMenuItem } from "../../contextMenu/contextMenuStore";
+import { isSplitAlphaVideoMeta } from "../../../runtime/imageAssetCache";
 import {
   entryKey,
   filterMovableEntries,
@@ -45,6 +46,7 @@ export interface ProjectTreeViewProps {
   onAddAudioLayer: (assetId: string) => string | null;
   onSelectObjects: (ids: string[]) => void;
   onCreateCompFromAsset: (assetId: string) => void;
+  onConvertSplitToPacked: (assetId: string) => void;
 }
 
 function matchesSearch(name: string, query: string): boolean {
@@ -154,6 +156,7 @@ export function ProjectTreeView(props: ProjectTreeViewProps) {
     onAddAudioLayer,
     onSelectObjects,
     onCreateCompFromAsset,
+    onConvertSplitToPacked,
   } = props;
   const openContextMenu = useContextMenuStore((s) => s.openContextMenu);
 
@@ -475,11 +478,19 @@ export function ProjectTreeView(props: ProjectTreeViewProps) {
     const iconColor =
       asset.kind === "audio" ? "#a88" : asset.kind === "image" ? "#8a8" : asset.kind === "video" ? "#88a" : "#888";
     const canCreateCompFromAsset = asset.kind === "image" || asset.kind === "video";
+    const canConvertToPacked = asset.kind === "video" && isSplitAlphaVideoMeta(asset.meta);
     const handleAssetContextMenu = (e: MouseEvent) => {
       e.preventDefault();
       const items: ContextMenuItem[] = [
         { kind: "action", label: "このファイルでコンポジットを作成", onSelect: () => onCreateCompFromAsset(asset.id) },
       ];
+      if (canConvertToPacked) {
+        items.push({
+          kind: "action",
+          label: "Packed 化（split alpha を1本の動画に軽量化）",
+          onSelect: () => onConvertSplitToPacked(asset.id),
+        });
+      }
       openContextMenu(e.clientX, e.clientY, items);
     };
 

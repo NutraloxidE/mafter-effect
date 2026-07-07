@@ -2,6 +2,7 @@ import type { ComponentType } from "react";
 import type { ParamDescriptor, SceneObject } from "../../core/schema";
 import { globalPluginRegistry } from "../../runtime/pluginRegistry";
 import { MotionTrackFields } from "./MotionTrackFields";
+import { PackedAlphaConvertFields } from "./PackedAlphaConvertFields";
 import { SubjectExtractFields } from "./SubjectExtractFields";
 
 // InspectorPanel の ComponentFields を再利用するための props 型。
@@ -55,6 +56,7 @@ export function VideoComponentFields({
         onEditBlur={onEditBlur}
       />
       <div style={{ marginTop: 8 }}>
+        <PackedAlphaConvertFields videoLayer={obj} />
         <SubjectExtractFields videoLayer={obj} />
         <MotionTrackFields videoLayer={obj} />
       </div>

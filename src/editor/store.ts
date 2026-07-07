@@ -43,6 +43,11 @@ import { ModuleLoader } from "../runtime/moduleLoader";
 import type { PluginContext, PluginManifest, EffectDef } from "../runtime/plugin";
 import { globalPluginRegistry } from "../runtime/pluginRegistry";
 import { probeImageFile, evictPreviewMediaAsset } from "../runtime/imageAssetCache";
+import {
+  convertSplitAssetToPacked,
+  isConvertError,
+  resolveConversionFps,
+} from "./subjectExtract/convertSplitToPacked";
 import { probeVideoFile } from "../runtime/videoAssetProbe";
 import { detectAnimatedRaster, type AnimatedRasterInfo } from "../runtime/animatedRasterDetect";
 import { buildAnimatedRasterProxy } from "../runtime/animatedRasterProxy";
@@ -221,6 +226,9 @@ export interface EditorStore {
   ) => string | null;
   // §20.2c フッテージ（image/video）から寸法・尺を合わせた comp を作成し、レイヤーとして配置する
   addCompositionFromAsset: (assetId: string) => string | null;
+  // §16.2 プランv2 §2.4 — Project パネル（アセット単位）からの packed 化。レイヤー差し替えは
+  // 行わない（対象レイヤーが一意に決まらないため）。新規 packed アセットを追加するのみ。
+  convertSplitAssetToPackedFromAssetMenu: (assetId: string) => Promise<void>;
   removeComposition: (id: string) => void;
   renameComposition: (id: string, name: string) => void;
   // §20.5 Project Bin
@@ -672,6 +680,39 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const objId = asset.kind === "image" ? get().addImageLayer(assetId) : get().addVideoLayer(assetId);
     if (objId) get().selectObjects([objId]);
     return compId;
+  },
+
+  convertSplitAssetToPackedFromAssetMenu: async (assetId) => {
+    const project = get().project;
+    if (!project) return;
+    const fps = resolveConversionFps(project, assetId);
+    if (fps === null) {
+      window.alert(
+        "この素材を参照しているレイヤーが見つからないか、参照している comp 間で fps が一致しないため packed 化できません（fps の当て推量はしません）。Inspector（レイヤーを選択した状態）から変換してください。",
+      );
+      return;
+    }
+    // decode/encode 経路は abort・decode 失敗・エンコーダエラー等で例外を投げうる
+    // （isConvertError で拾えるのは事前バリデーションの分だけ）。ここで確実に拾って
+    // ユーザーに見せないと、失敗が無言の unhandled rejection になる。
+    let result: Awaited<ReturnType<typeof convertSplitAssetToPacked>>;
+    try {
+      result = await convertSplitAssetToPacked(project, get().getFs(), assetId, fps);
+    } catch (e) {
+      window.alert(`packed 化に失敗しました: ${e instanceof Error ? e.message : String(e)}`);
+      return;
+    }
+    if (isConvertError(result)) {
+      window.alert(`packed 化に失敗しました: ${result.error}`);
+      return;
+    }
+    const before = get().project;
+    if (!before) return;
+    const after: Project = { ...before, assets: [...before.assets, result.asset] };
+    get().applyCommand({ label: "packed 化（split → packed、アセット追加のみ）", before, after });
+    window.alert(
+      "packed 化が完了しました。Project パネルに新しいアセットが追加されました（元の split アセットはそのまま残っています）。レイヤーに使うには Inspector の Source から切り替えてください。",
+    );
   },
 
   removeComposition: (id) => {

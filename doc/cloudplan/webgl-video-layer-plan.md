@@ -132,14 +132,18 @@ export function createGlAlphaCompositor(canvas: HTMLCanvasElement): GlAlphaCompo
 
 > **なぜ必須か**: ユーザーの実際の痛みは**既に split で作られた既存 comp**（Comp 30/32 等）。§2.2 で新規 Subject Extract 出力を packed にしても、既存アセットは split のままで主因（decode×2 + holdTimeline）が残る。Phase 1（GL 合成）は既存 split の**副因（CPU 合成）だけ**軽くするが、decode×2 に無料の抜け道は無く、**再エンコード（=packed 化）だけが既存の主因を消せる**。
 
-- **UI（opt-in・非破壊）**: `alphaMode:"split"` のアセット/レイヤーに「packed 化」アクションを出す（Project パネルのアセット右クリック or Inspector）。1クリックでオフライン変換。
-  - **非破壊**: 元の split アセット（color+alpha webm）は FS に残す。packed を**新規アセット**として作り、対象レイヤーの参照を packed に差し替える（元 split を参照する他レイヤーがあれば残る）。ユーザーは気に入らなければ参照を戻せる。
-- **変換処理（オフライン・決定論）**: realtime を苦しめている 2クロック genlock は**変換では無関係**。export と同じフレームステップ機構で確実にペアリングできる:
-  1. color/alpha 両 `<video>`（or `VideoDecoder`）を frame ごとに決定論 seek（`waitForVideoFrame`）。
-  2. 各フレームで color と mask を 1 枚の上下パックフレーム（+gutter）に `drawImage` 合成。
-  3. §2.2 の packed エンコーダ（`mode:"packed"`）へ投入。音声トラックは元 color から copy（再エンコード不要なら remux、無理なら再エンコード）。
+- **UI（opt-in・非破壊）**: `alphaMode:"split"` のアセット/レイヤーに「packed 化」アクションを出す。**Inspector（レイヤー単位）を主経路**とする（fps は当該レイヤーの host comp から一意に決まる）。Project パネル（アセット右クリック）も用意するが、そのアセットを参照するレイヤーが1つも無い、または参照レイヤーが複数あり fps が食い違う場合は**変換せずスキップ理由を表示**する（fps を 30 既定などで当て推量しない。2026-07-07 Opus 4.8 レビューで確定）。
+  - **非破壊**: 元の split アセット（color+alpha webm）は FS に残す。packed を**新規アセット**として作り、対象レイヤーの参照を packed に差し替える（元 split を参照する他レイヤーがあれば残る）。ユーザーは気に入らなければ参照を戻せる。packed 側の `asset.meta.convertedFrom` に元 split の asset id を記録する（追跡性・revert 導線）。
+- **変換処理（オフライン・決定論の範囲を明確化・2026-07-07 Opus 4.8 レビューで是正）**: realtime を苦しめている 2クロック genlock は**変換では無関係**。export と同じフレームステップ機構で確実にペアリングできる:
+  1. 変換対象レイヤーの host comp の `fps` を使う（既存 split アセットの `asset.meta` に fps は保存されていないため、抽出時と同じ fps の情報源として comp を使う。§Phase2.5 実装ノート参照）。
+  2. color/alpha 両 `<video>` を frame ごとに決定論 seek（`waitForVideoFrame`、export と同型）。
+  3. 各フレームで color の RGB と mask の R チャンネルを合成し「分離前の1枚絵」を復元する（既存の純関数 `applyGrayscaleMaskToAlphaChannel` を再利用。Phase1/2 で使用中のものと同一）。
+  4. §2.2 の packed エンコーダ（`encodeRgbaFramesToPackedVideo`）へ投入。
+  - **決定論の主張範囲（重要な訂正）**: Phase 1 の実測（`texImage2D(video)` と `drawImage(video)` の YUV→RGB 変換が環境依存で最大 22/255 ズレる）により、**実動画を decode した RgbaFrame は環境間でビット一致しない**。したがって「decode→repack の決定論性」は **(a) pack 算術そのもの（合成 RGBA を入力にした `applyGrayscaleMaskToAlphaChannel`＋レイアウト計算）は純関数として決定論的**であることを unit test で担保し、**(b) 実動画を通す経路は「同一入力で完全同一バイト」ではなく「split 版との視覚一致（許容差内）」を verify する**、という2段構成に限定する。**「同一 packed バイト」を最終エンコード後のバイト列レベルで保証することは、VideoEncoder のハードウェア/ソフトウェア実装差もあり主張しない**。
+  - **音声（重要な訂正・当初「元 color から copy」としていたが撤回）**: 既存の split の color.webm 自体には**音声トラックが含まれていない**（Subject Extract の既存エンコード経路はそもそも音声を muxing していない）。`asset.meta.extractedFrom` は元 footage の asset id を記録するが、**その footage のどの時間範囲がこの split アセットに対応するかという情報が meta に残っていない**ため、正しい範囲の音声を安全に復元する手段が無い。よって **Phase 2.5 の変換では音声を同梱しない（無音の packed を生成する）**。音声込みが必要な場合は元 footage から Subject Extract を再実行する（Phase 2 の新規抽出経路は音声対応済み）よう UI で案内する。
+- **メモリ上限（2026-07-07 Opus 4.8 レビューで追加）**: `encodeRgbaFramesToPackedVideo` は全フレームを `RgbaFrame[]` としてオンメモリ保持するため、長尺・高解像度の既存 split を等倍のまま変換すると OOM しうる（例: 30秒/30fps/1080p ≈ 7GB 相当）。変換前に推定メモリ（`frameCount * width * height * 4` バイト）を計算し、閾値超過時は変換を拒否してエラーメッセージを表示する（v1 のサイズ上限として明記。ストリーミング encode への拡張は将来）。
 - **コスト**: Phase 2 の packed エンコーダ + export の seek 機構 + パック算術を**再利用**するため、増分は「decode→repack ループ + UI 入口 + アセット差し替え（store）」のみ。**Phase 2 の上に +1 集中フェーズ（~1日規模）**。
-- **代償（明示）**: 既に lossy な split の color を**もう1回 lossy 再エンコード**（世代劣化1回）。mask は grayscale で劣化ほぼ無し。perf 目的なら許容範囲。最高画質が要るケースは元 footage から Subject Extract 再実行（lossy 1回）が上位互換 — 両手段を併存させる。
+- **代償（明示）**: 既に lossy な split の color を**もう1回 lossy 再エンコード**（世代劣化1回）。mask は grayscale で劣化ほぼ無し。perf 目的なら許容範囲。最高画質が要るケースは元 footage から Subject Extract 再実行（lossy 1回、音声込み）が上位互換 — 両手段を併存させる。
 - **スコープ**: 「1レイヤー/1アセット単位の変換」まで。プロジェクト内の全 split を一括変換するバッチ UI は当面作らない（要望が出たら薄いラッパを足すだけ）。
 
 ### 2.3 変わらないもの（回帰不変条件）
@@ -189,8 +193,13 @@ export function createGlAlphaCompositor(canvas: HTMLCanvasElement): GlAlphaCompo
   - **実装中に発見・修正した重大バグ（e2e 検証で発覚）**: GL パケットシェーダの UV マッピングで color/mask 領域が入れ替わっていた（split の UV 反転教訓と同型の罠 — vUv は canvas 下端=0 になるよう反転済みのため、素朴に「vUv.y=0→raster先頭(color)」と対応付けると実際は逆になる）。合成テスト動画による e2e 検証で「red サンプルが0件」として発覚し、UV 式を入れ替えて修正（PASS 確認済み）。
   - **Opus 4.8 コードレビュー（2026-07-07）で発見・修正した2件**: (1) split↔packed のモード切替（同一レイヤーで参照アセットを split→packed 等に差し替え）時、旧モードの companion 要素・GL compositor が解放されず残存する漏れ → `clearAlphaRemnants()` を新設し split/packed 両分岌の先頭で「他モードの残骸」を解放するよう修正。(2) `sampleInterval>1`（フレーム間引き）のとき、映像は実質的に時間圧縮されるが音声は単純に同じ duration を等速切り出ししていたため映像とズレる → `sampleInterval===1`（既定）のときだけ音声を同梱するよう制限（タイムストレッチは範囲外・既知の制約として明記）。
   - テスト: [videoPackedAlpha.test.ts](../../test/videoPackedAlpha.test.ts)（packed フレーム合成の純関数：gutter 込み UV/rect 計算・サイズ上限判定、7件）+ `isPackedAlphaVideoMeta` unit test。実ブラウザ e2e verify（`verify-packed-alpha-e2e.mjs`、合成テスト動画で encode→import→再生→GL/CPU一致→export まで一気通貫、headed Chrome 必須＝headless は WebCodecs encode がハングする既知の制約）で PASS。Phase 1 の split alpha 非回帰も再確認済み（`verify-gl-alpha-parity.mjs`/`verify-export-split-alpha.mjs` 再実行 PASS）。
-- **Phase 2.5（既存 split → packed 変換・§2.4）**: Phase 2 のエンコーダ + export の seek 機構を再利用し、既存 split アセットをオフラインで packed 化する 1クリックアクション（非破壊・アセット差し替え）。**既存プロジェクト（Comp 30/32）の主因がここで初めて消える**。増分 ~1日規模。
-  - テスト: decode→repack の決定論性（同一入力で同一 packed バイト）+ 変換後レイヤーの視覚一致 verify（split 版とピクセル比較）+ 元 split アセットが FS に残る非破壊性の確認。
+- **Phase 2.5（既存 split → packed 変換・§2.4）✅ 実装済み（2026-07-07・実装前後とも Opus 4.8 レビュー実施）**: Phase 2 のエンコーダ + export の seek 機構を再利用し、既存 split アセットをオフラインで packed 化する 1クリックアクション（非破壊・アセット差し替え）。**既存プロジェクト（Comp 30/32）の主因がここで初めて消える**。
+  - **実装**: 新規 [convertSplitToPacked.ts](../../src/editor/subjectExtract/convertSplitToPacked.ts)（`resolveConversionFps`/`estimatePackedConversionBytes`/`convertSplitAssetToPacked`）。UI は Inspector（[PackedAlphaConvertFields.tsx](../../src/editor/panels/PackedAlphaConvertFields.tsx)、レイヤー単位・主経路・fps は host comp から一意）と Project パネル（アセット右クリック、[store.ts](../../src/editor/store.ts) の `convertSplitAssetToPackedFromAssetMenu`、参照レイヤーが無い/fps不一致ならスキップしエラー表示・レイヤー差し替えはしない）の両方。
+  - **実装前 Opus 4.8 レビューで確定した是正**（§2.4 本文に反映済み）: fps は参照レイヤーの host comp fps を使用（30fps 等の当て推量はしない）。既存 split の color.webm には音声トラックが元々無く時間範囲情報も残っていないため、変換後の packed は無音（音声込みが要る場合は元 footage から再抽出するよう案内）。決定論性は「pack 算術（純関数）は決定論的」「実動画 decode 経路は視覚一致 verify」の二段構成に限定し「同一 packed バイト」は主張しない。メモリ上限を設けて超過時は変換拒否。
+  - **実装中に発見・修正したバグ**: pack/encode の実解像度を `asset.meta.width/height`（表示サイズ）から取ってしまい、実際のデコード解像度（Subject Extract 抽出時のダウンサンプルにより表示サイズと異なる）と食い違って無駄な拡縮＋実データ e2e 検証で視覚差分が出た。`colorVideo.videoWidth/videoHeight`（実デコード解像度）を使うよう修正し、`asset.meta.width/height`（表示サイズ）は変換後の新アセットにそのまま引き継ぐよう分離。
+  - **実装後 Opus 4.8 レビューで発見・修正した2件**: (1) Project パネル経由（`convertSplitAssetToPackedFromAssetMenu`）が変換処理の例外（abort・decode失敗・エンコーダエラー等）を try/catch せず無言の unhandled rejection になっていた → try/catch を追加し `window.alert` で表示するよう修正。(2) `estimatePackedConversionBytes` が packed 解像度のフレーム配列分しか見積もっておらず、実際には「元解像度の `frames[]`」と「`encodeRgbaFramesToPackedVideo` が内部で構築する packed 解像度の配列」を**同時に**保持するため実ピーク（約1.5倍）を過小評価していた → 両方の配列サイズを合算する式に修正。
+  - **既知の限度（記録のみ）**: undo で FS 上の packed ファイル自体は削除されない（既存 Subject Extract と同型の特性・export は `project.assets` 駆動のため実害なし）。Project パネル経由の変換は進捗表示が粗く（`window.alert` ベース）、長尺では改善余地あり。
+  - テスト: [convertSplitToPacked.test.ts](../../test/convertSplitToPacked.test.ts)（メモリ推定・fps解決の純関数、10件）。実データ e2e verify（`verify-convert-split-to-packed-e2e.mjs`、**Comp 32 の実際の Person split アセット**で実施）: fps解決（孤立→null・実アセット→30）、メモリ上限拒否、非破壊性（変換後も元 color/alpha webm のバイト数不変）、meta正当性、視覚一致（split版と同一フレーム比較・許容差内0件不一致）まで全て PASS。
 - **Phase 3（export 全経路・無回帰）**: §5 の verify 一式 + 既存 export verify の再実行 + `npm run build:player`。
 - **Phase 4（実地受け入れ）**: Phase 0 と同条件で再計測し、stall%・decoder 種別（packed が hardware H.264 で decode されているか）・体感をユーザーが確認して close。
 

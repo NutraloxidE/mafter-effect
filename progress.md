@@ -6,6 +6,19 @@
 
 ---
 
+### 2026-07-07（Sonnet 5）— 透過動画軽量化プラン v2: Phase 2.5（既存split→packed変換）実装 ✅
+
+- **内容**: [doc/cloudplan/webgl-video-layer-plan.md](doc/cloudplan/webgl-video-layer-plan.md) §2.4/§4 Phase2.5 に従い、既存の split alpha アセット（Comp 30/32 等）を1クリック・非破壊で packed 化する変換を実装。ユーザー指示により実装前・実装後ともに Opus 4.8 によるレビューを実施（設計レビューはコード着手前、コードレビューは実装完了後）。
+- **実装前レビューで確定した是正**: fps は「対象アセットを参照する video レイヤーの host comp の fps」を使用（当て推量しない・参照無し/fps不一致は null を返し変換をスキップ）。既存 split の color.webm には音声トラックが元々無く時間範囲情報も meta に残っていないため、変換後 packed は無音とする（プラン §2.4 の「音声はcolorからcopy」という当初記述を撤回・是正）。決定論性は「pack算術（純関数）は決定論的」「実動画decode経路は視覚一致verify」の二段に限定（「同一packedバイト」は主張しない）。メモリ上限を設け超過時は拒否。
+- **新規/変更ファイル**: 新規 [convertSplitToPacked.ts](src/editor/subjectExtract/convertSplitToPacked.ts)（`resolveConversionFps`/`estimatePackedConversionBytes`/`convertSplitAssetToPacked`）。新規 [PackedAlphaConvertFields.tsx](src/editor/panels/PackedAlphaConvertFields.tsx)（Inspector・レイヤー単位・主経路）。[store.ts](src/editor/store.ts) に `convertSplitAssetToPackedFromAssetMenu`（Project パネル・アセット単位の入口）。[ProjectTreeView.tsx](src/editor/panels/projectTree/ProjectTreeView.tsx)/[ProjectPanel.tsx](src/editor/panels/ProjectPanel.tsx)/[VideoComponentFields.tsx](src/editor/panels/VideoComponentFields.tsx) を配線。
+- **実装中に発見・修正したバグ**: pack/encode の実解像度を asset.meta の表示サイズから取っており、実際のデコード解像度（Subject Extract 抽出時のダウンサンプルで表示サイズと異なりうる）と食い違っていた。実データ（Comp32 の実際の Person split アセット）でのe2e検証で視覚差分として発覚 → `colorVideo.videoWidth/videoHeight` を使うよう修正。
+- **実装後レビューで発見・修正した2件**: (1) Project パネル経由の変換が例外を無言で握りつぶす（unhandled rejection）バグ → try/catch 追加。(2) メモリ推定が実ピーク（元解像度frames[]とpacked解像度frames[]を同時保持）を約1.5倍過小評価していた → 両方合算する式に修正。
+- **検証**: `npm run typecheck` 緑・`npm test` 954 PASS・`playerBuildFreshness.test.ts` 緑（このフェーズはeditor-onlyの変更でsrc/runtime非変更のためbuild:player不要、確認済み）。新規unit test 10件（メモリ推定・fps解決）。実データe2e verify（`verify-convert-split-to-packed-e2e.mjs`、**Comp32の実際のPerson split資産**を使用）で fps解決・メモリ上限・非破壊性・meta正当性・視覚一致（split版と0件不一致）まで全てPASS。
+- **既知の限度（記録のみ）**: undo時にFS上のpackedファイル自体は削除されない（既存Subject Extractと同型の特性）。Project パネル経由の変換は進捗表示が粗い（window.alertベース）。VP9/webmフォールバック時・sampleInterval>1時は音声非同梱（Phase2と同じ制約）。
+- **Next steps**: Phase 3（export全経路の無回帰総仕上げ）→ Phase 4（実地受け入れ、Phase 0と同条件で再計測しユーザー確認）。
+
+---
+
 ### 2026-07-07（Sonnet 5）— 透過動画軽量化プラン v2: Phase 2（packed形式・新規出力）実装 ✅
 
 - **内容**: [doc/cloudplan/webgl-video-layer-plan.md](doc/cloudplan/webgl-video-layer-plan.md) §2.2/§4 Phase2 に従い、Subject Extract の新規出力を「color+mask 上下パック1本の動画（packed alpha）」にできるよう実装。優先順位は unified→packed（サイズ上限内）→split（既存フォールバック）。H.264/mp4 優先＋VP9/webm フォールバック、音声トラック同梱、単一 `<video>` 再生（companion/genlock 不発）、GL/CPU 両対応の合成。

@@ -27,6 +27,7 @@ export function ProjectPanel() {
   const importVideoAsset = useEditorStore((s) => s.importVideoAsset);
   const addVideoLayer = useEditorStore((s) => s.addVideoLayer);
   const addCompositionFromAsset = useEditorStore((s) => s.addCompositionFromAsset);
+  const convertSplitAssetToPackedFromAssetMenu = useEditorStore((s) => s.convertSplitAssetToPackedFromAssetMenu);
   const removeAsset = useEditorStore((s) => s.removeAsset);
   const selectObjects = useEditorStore((s) => s.selectObjects);
   const newProject = useEditorStore((s) => s.newProject);
@@ -230,6 +231,7 @@ export function ProjectPanel() {
             onAddAudioLayer={addAudioLayer}
             onSelectObjects={selectObjects}
             onCreateCompFromAsset={addCompositionFromAsset}
+            onConvertSplitToPacked={(assetId) => { void convertSplitAssetToPackedFromAssetMenu(assetId); }}
           />
           <input ref={imageInput} type="file" accept="image/*" style={{ display: "none" }}
             onChange={(e) => { const f = e.target.files?.[0]; if (f) void onImportImage(f); e.target.value = ""; }} />
