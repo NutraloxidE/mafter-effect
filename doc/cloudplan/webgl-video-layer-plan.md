@@ -26,6 +26,10 @@
 - **スキーマ変更なし**（`SceneObject`/§5 は不変。変わるのはアセット meta の §16.2 だけ）
 - **スコープ外を明確化**: 3D 深度交差・GL シーン共有・scene3d/glTF/light の seam は**全部やらない**（ユーザー指示: スコープを絞る）
 
+**既存プロジェクトも軽くする（§2.4・確定）**: (A) packed は新規 Subject Extract 出力に効くが、**既に split で作られた既存 comp（Comp 30/32 等）**は変わらない。そこで既存 split を 1クリック・非破壊で packed 化する変換をスコープに含める。リリースは **Phase 1（GL 合成／副因）先行** → Phase 2（新規 packed／主因）→ Phase 2.5（既存変換／既存の主因）の順。
+
+**非破壊性の要点**: 既存 project.json・既存 split アセット・blend/filter/matte/3D/カメラ配線は**完全に非破壊**（触らない・byte 等価）。合成経路は 2D→GL に差し替わるがピクセル一致 verify + CPU フォールバックで実質無害。「非可逆」なのは packed が再エンコード派生物である点のみ（split も同レベル・悪化しない。既存変換は世代劣化1回）。
+
 ---
 
 ## 1. v1 の失敗から学んだこと（post-mortem・必読）
@@ -107,13 +111,15 @@ export function createGlAlphaCompositor(canvas: HTMLCanvasElement): GlAlphaCompo
 - **上下（横並びでない）理由**: mask は grayscale＝輝度（Y）にだけ情報を持ち、4:2:0 サブサンプリングの影響を受けない。上下パックなら width が変わらず、エンコーダのマクロブロック幅・H.264 level 制約に当たりにくい。
 - **gutter**: 境界の 2x2 クロマブロック越境で color 最下行の色が mask 最上行の Y に混ざるのを防ぐ緩衝帯（8px 黒、シェーダ側は gutter を除いた領域を sample）。`PACKED_ALPHA_GUTTER_PX = 8` を encode/decode 共有定数に。
 - **コーデック**: `avc1.640028`（H.264 High）を第一候補に `VideoEncoder.isConfigSupported` で交渉（`hardwareAcceleration: "prefer-hardware"` → 無印の順、既存 `configureVideoEncoder` と同型）。コンテナは mp4（`mp4-muxer` は既存依存）。**AVC 不可環境は VP9/webm の packed にフォールバック**（それでも 1 ストリーム化の利益は残る）。
+- **音声トラック（確定・ユーザー承認 2026-07-07）**: **元 footage の音声を packed の mp4 に別トラックとして同梱する**。映像を上下パックしても音声は独立トラックなので影響を受けない（現行 split の color webm が内蔵音声を持つのと同じ挙動を維持）。`mp4-muxer` の audio track に既存の音声エンコード経路をそのまま流す。無音素材のときはトラック省略。
 - **サイズ上限**: packed 高さ `2h+8` が 4096 を超える場合（source h > 2044、つまり 4K 素材）は v1 では **split のまま**にする（無理に対応しない・既知の制約として §16.2 に明記）。Subject Extract の実用は 1080p 帯。
 - **アセット meta**（`asset.meta` は自由形の record・`SceneObject`/§5 は不変）:
   ```jsonc
   { "alphaMode": "packed", "packedLayout": "topBottom", "contentHeight": 1080, "gutterPx": 8 }
   ```
   既存 `alphaMode: "split"`（+`alphaPath`）はそのまま有効（後方互換・既存プロジェクトは無変更で再生継続）。判定ヘルパ `isPackedAlphaVideoMeta()` を `imageAssetCache.ts` の `isSplitAlphaVideoMeta()` の隣に追加。
-- **生成元**: Subject Extract（[encodeAlphaWebm.ts](../../src/editor/subjectExtract/encodeAlphaWebm.ts)）の出力を今後 packed に切替（`mode: "packed"` を union に追加。フレームは既存の `toOpaqueRgbColor`/`toGrayscaleAlpha` の出力を 1 枚のパックフレームに合成してから encode）。既存 split アセットの再パック変換ツールは**スコープ外**（§6）。
+- **生成元**: Subject Extract（[encodeAlphaWebm.ts](../../src/editor/subjectExtract/encodeAlphaWebm.ts)）の出力を今後 packed に切替（`mode: "packed"` を union に追加。フレームは既存の `toOpaqueRgbColor`/`toGrayscaleAlpha` の出力を 1 枚のパックフレームに合成してから encode）。
+- **既存 split → packed 変換（確定・スコープに含める・ユーザー承認 2026-07-07）**: §2.4 参照。既存プロジェクトを軽くする唯一の手段のため、当初「スコープ外」だったのを撤回して含める。
 
 **packed の再生配線**（ここが体感改善の本体）:
 
@@ -121,6 +127,20 @@ export function createGlAlphaCompositor(canvas: HTMLCanvasElement): GlAlphaCompo
 - 表示は split と同じく「video を opacity:0 にして合成 canvas を表示」。合成は `gl.compositePacked()`（GL 必須ではなく、CPU フォールバック `drawPackedAlphaComposite()` も実装する — `drawImage` の source rect 指定 ×2 + alpha 差し替えで、split の CPU 実装より `getImageData` が 1 回減る）。
 - `bundleCollect.ts`: packed は単一ファイル＝`alphaPath` 同梱の特殊処理が**そもそも不要**（split で起きた「companion 同梱漏れ」バグの類型が構造的に消える）。
 - Pipeline パネルの `alphaWarnings`（split 二重描画警告）: packed は対象外にする（警告理由が消滅するため）。
+
+### 2.4 既存 split → packed 変換（1クリック・非破壊・既存プロジェクトを軽くする本命）
+
+> **なぜ必須か**: ユーザーの実際の痛みは**既に split で作られた既存 comp**（Comp 30/32 等）。§2.2 で新規 Subject Extract 出力を packed にしても、既存アセットは split のままで主因（decode×2 + holdTimeline）が残る。Phase 1（GL 合成）は既存 split の**副因（CPU 合成）だけ**軽くするが、decode×2 に無料の抜け道は無く、**再エンコード（=packed 化）だけが既存の主因を消せる**。
+
+- **UI（opt-in・非破壊）**: `alphaMode:"split"` のアセット/レイヤーに「packed 化」アクションを出す（Project パネルのアセット右クリック or Inspector）。1クリックでオフライン変換。
+  - **非破壊**: 元の split アセット（color+alpha webm）は FS に残す。packed を**新規アセット**として作り、対象レイヤーの参照を packed に差し替える（元 split を参照する他レイヤーがあれば残る）。ユーザーは気に入らなければ参照を戻せる。
+- **変換処理（オフライン・決定論）**: realtime を苦しめている 2クロック genlock は**変換では無関係**。export と同じフレームステップ機構で確実にペアリングできる:
+  1. color/alpha 両 `<video>`（or `VideoDecoder`）を frame ごとに決定論 seek（`waitForVideoFrame`）。
+  2. 各フレームで color と mask を 1 枚の上下パックフレーム（+gutter）に `drawImage` 合成。
+  3. §2.2 の packed エンコーダ（`mode:"packed"`）へ投入。音声トラックは元 color から copy（再エンコード不要なら remux、無理なら再エンコード）。
+- **コスト**: Phase 2 の packed エンコーダ + export の seek 機構 + パック算術を**再利用**するため、増分は「decode→repack ループ + UI 入口 + アセット差し替え（store）」のみ。**Phase 2 の上に +1 集中フェーズ（~1日規模）**。
+- **代償（明示）**: 既に lossy な split の color を**もう1回 lossy 再エンコード**（世代劣化1回）。mask は grayscale で劣化ほぼ無し。perf 目的なら許容範囲。最高画質が要るケースは元 footage から Subject Extract 再実行（lossy 1回）が上位互換 — 両手段を併存させる。
+- **スコープ**: 「1レイヤー/1アセット単位の変換」まで。プロジェクト内の全 split を一括変換するバッチ UI は当面作らない（要望が出たら薄いラッパを足すだけ）。
 
 ### 2.3 変わらないもの（回帰不変条件）
 
@@ -149,17 +169,20 @@ export function createGlAlphaCompositor(canvas: HTMLCanvasElement): GlAlphaCompo
 ## 4. 実装フェーズ（Sonnet 5 向け・各フェーズが独立に緑になる粒度）
 
 > 各フェーズ完了時: `npm run typecheck`・`npm test`・**ランタイム変更時は `npm run build:player` を明示実行**（§1.2）。着手前に [implementation-loop](../../.claude/skills/implementation-loop/SKILL.md) を読むこと。
+> **リリース戦略（確定・ユーザー承認 2026-07-07）**: **Phase 1 を先行リリース**する。GL 合成（副因）だけで既存 split が即・部分的に軽くなり、体感を確認してから packed（主因）へ進む。Phase 1 は独立コミット・独立 revert 可能。
 
-- **Phase 0（診断・軽量・任意だが推奨）**: ユーザー実プロジェクト（Comp 30/32 相当）を実 Chrome で再生し、CDP Media ドメインで (a) decoder 種別（software/hardware）、(b) holdTimeline 発火率、(c) メインスレッド frame time を記録 → **改善判定のベースライン**にする。既存 `verify-comp32-webm-instability.mjs` を headed + 実プロジェクト zip で流用可。
-- **Phase 1（GL 合成・split 対応）**: `videoAlphaGl.ts` 新規（§2.1 API）+ `SplitAlphaCompanion.gl` + 呼び出し 3 箇所のラッパ置換 + context loss/予算/キルスイッチ。
+- **Phase 0（診断・軽量・推奨・実装前ゲート）**: ユーザー実プロジェクト（Comp 30/32 相当）を実 Chrome で再生し、CDP Media ドメインで (a) decoder 種別（software/hardware）、(b) holdTimeline 発火率、(c) メインスレッド frame time を記録 → **改善判定のベースライン**にする。既存 `verify-comp32-webm-instability.mjs` を headed + 実プロジェクト zip で流用可。
+- **Phase 1（GL 合成・split 対応）← ここまでで先行リリース**: `videoAlphaGl.ts` 新規（§2.1 API）+ `SplitAlphaCompanion.gl` + 呼び出し 3 箇所のラッパ置換 + context loss/予算/キルスイッチ。既存 split アセットの副因（CPU 合成）が消える。**主因（decode×2/holdTimeline）は残る**ので体感は部分改善（ここでユーザーが実 Chrome で確認）。
   - テスト: シェーダ合成式の期待値は CPU 実装（`applyGrayscaleMaskToAlphaChannel`）が正なので、**実ブラウザ verify でピクセル一致**（合成済み canvas の `getImageData` を GL/CPU 両経路で比較、±2/255）。unit test は「フォールバック分岐・予算・broken 遷移」の純ロジック。
   - **視覚 verify 必須**: 人物正立スクリーンショット比較（§1.2 反転教訓）。
-- **Phase 2（packed 形式）**: encode（`mode:"packed"` + avc/mp4 交渉 + gutter）→ アセット meta/判定ヘルパ → 再生配線（単一 video・companion 不発・`compositePacked`/CPU 版）→ `bundleCollect`（単一ファイル）→ Pipeline 警告除外。
+- **Phase 2（packed 形式・新規出力）**: encode（`mode:"packed"` + avc/mp4 交渉 + gutter + **音声トラック同梱**）→ アセット meta/判定ヘルパ → 再生配線（単一 video・companion 不発・`compositePacked`/CPU 版）→ `bundleCollect`（単一ファイル）→ Pipeline 警告除外。新規 Subject Extract 出力が主因まで解消。
   - テスト: packed フレーム合成の純関数（gutter 込み UV/rect 計算）unit test。encode→import→再生の e2e verify（実ブラウザ）。
+- **Phase 2.5（既存 split → packed 変換・§2.4）**: Phase 2 のエンコーダ + export の seek 機構を再利用し、既存 split アセットをオフラインで packed 化する 1クリックアクション（非破壊・アセット差し替え）。**既存プロジェクト（Comp 30/32）の主因がここで初めて消える**。増分 ~1日規模。
+  - テスト: decode→repack の決定論性（同一入力で同一 packed バイト）+ 変換後レイヤーの視覚一致 verify（split 版とピクセル比較）+ 元 split アセットが FS に残る非破壊性の確認。
 - **Phase 3（export 全経路・無回帰）**: §5 の verify 一式 + 既存 export verify の再実行 + `npm run build:player`。
 - **Phase 4（実地受け入れ）**: Phase 0 と同条件で再計測し、stall%・decoder 種別（packed が hardware H.264 で decode されているか）・体感をユーザーが確認して close。
 
-各フェーズは単独でコミット可能・単独で revert 可能。Phase 1 だけでも副因（CPU 合成）は解消し、Phase 2 が主因（decode/2クロック）を解消する。
+各フェーズは単独でコミット可能・単独で revert 可能。**Phase 1 = 副因解消（先行リリース）→ Phase 2 = 新規の主因解消 → Phase 2.5 = 既存の主因解消**、という順で「既存プロジェクトまで軽くする」物語が完結する。
 
 ---
 
@@ -180,16 +203,22 @@ export function createGlAlphaCompositor(canvas: HTMLCanvasElement): GlAlphaCompo
 - 3D 深度交差・GL シーン共有・`threeDGroupWithPrev`（v1 で撤去済み。将来やる場合も本プランとは別軸）
 - scene3d / glTF / light の拡張 seam（v1 の §2.4 は破棄）
 - `raster3d`（§5.4b の汎用ラスタライズ 3D）
-- 既存 split アセットの一括再パック変換ツール（要望が出たら別タスク）
+- 既存 split の**一括**変換バッチ UI（1レイヤー/1アセット単位の変換は §2.4 でスコープ内。全 split を一度に変換する UI だけが対象外）
 - 4K 超の packed 対応（§2.2 サイズ上限）
 - track matte 合成・調整レイヤー自体の GPU 化（現行のまま）
 
 ## 7. 実装前の承認事項（§5/直列化ルールに基づく）
 
+**確定済み（ユーザー承認 2026-07-07）**:
+- ✅ **Phase 1（GL 合成）を先行リリース** → Phase 2（新規 packed）→ Phase 2.5（既存 split→packed 変換）の順。
+- ✅ **既存 split → packed 変換を 1クリック・非破壊でスコープに含める**（§2.4）。既存プロジェクトを軽くする本命。
+- ✅ **packed に元 footage の音声トラックを同梱**（§2.2）。
+
+**残る確認事項（実装時に確定）**:
 1. **§16.2 への packed 追記**（meta フィールド名 `alphaMode:"packed"` / `packedLayout` / `contentHeight` / `gutterPx`）— アセット meta は自由形だが、直列化される値なので命名はここで確定する。
 2. **コーデック方針**: H.264(mp4) 優先 + VP9(webm) フォールバックで良いか。
 3. **Phase 0 診断を実装前ゲートにするか**（推奨: する。実測ベースラインが Phase 4 の合否基準になる）。
-4. Subject Extract の**新規出力を packed に切替**して良いか（既存アセットは split のまま共存）。
+4. **変換 UI の入口**: 既存 split → packed の「packed 化」アクションを Project パネルのアセット右クリックに置くか、Inspector のレイヤー単位に置くか（両方でも可）。
 
 ## 8. 残リスク
 
