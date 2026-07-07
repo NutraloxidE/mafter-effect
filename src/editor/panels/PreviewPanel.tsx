@@ -120,6 +120,16 @@ export function PreviewPanel() {
   }, []);
   const textQualityRef = useRef<"draft" | "precise">("draft");
   const [renderTick, setRenderTick] = useState(0);
+  // Phase 0 計測ハーネス（probe-preview-startup.mjs）専用: 起動後最初の renderFrame 反映を
+  // scene 内容に依存しない目印として記録する（scene 解決値・挙動には影響しない, INV-1 安全）。
+  const firstPreviewRenderMarkedRef = useRef(false);
+  const markFirstPreviewRenderOnce = () => {
+    if (firstPreviewRenderMarkedRef.current) return;
+    firstPreviewRenderMarkedRef.current = true;
+    if (typeof performance !== "undefined" && typeof performance.mark === "function") {
+      performance.mark("mafter:firstPreviewRender");
+    }
+  };
   const frameRef = useRef(frame);
   const renderCompRef = useRef<TimelineComposition | null>(null);
   const previewOverrideRef = useRef(previewOverride);
@@ -531,6 +541,7 @@ export function PreviewPanel() {
         }),
         frame,
       );
+      markFirstPreviewRenderOnce();
       void rendererRef.current.flushRasterEffects().then(() => {
         ram?.recordLiveRenderMs(performance.now() - t0);
         afterLiveRender();
@@ -559,6 +570,7 @@ export function PreviewPanel() {
         }),
         frame,
       );
+      markFirstPreviewRenderOnce();
       await rendererRef.current!.flushRasterEffects();
       ram?.recordLiveRenderMs(performance.now() - t0);
       afterLiveRender();

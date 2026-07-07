@@ -33,6 +33,26 @@ const EXT_MIME: Record<string, string> = {
   bmp: "image/bmp",
 };
 
+/**
+ * Phase 0 計測ハーネス（probe-preview-startup.mjs）専用の performance mark/measure。
+ * `performance` 未対応環境（Node テスト等）では no-op。scene 解決値・挙動には一切影響しない（INV-1）。
+ */
+function markPreviewStartup(name: string): void {
+  if (typeof performance !== "undefined" && typeof performance.mark === "function") {
+    performance.mark(name);
+  }
+}
+
+function measurePreviewStartup(name: string, start: string, end: string): void {
+  if (typeof performance !== "undefined" && typeof performance.measure === "function") {
+    try {
+      performance.measure(name, start, end);
+    } catch {
+      /* marks missing (e.g. cleared) — ignore, probe tolerates absent measures */
+    }
+  }
+}
+
 let previewCacheRef: ImageAssetCache | null = null;
 
 /** PreviewPanel がマウント時に登録。Footage 削除で blob URL を即解放する。 */
@@ -130,6 +150,24 @@ export class ImageAssetCache {
 
   /** project.assets の image / video を FS から読み込む。 */
   async loadFromProject(project: Project, fs: FileSystem, options?: ImageLoadOptions): Promise<void> {
+    markPreviewStartup("mafter:loadFromProject:start");
+    try {
+      await this.loadFromProjectImpl(project, fs, options);
+    } finally {
+      markPreviewStartup("mafter:loadFromProject:end");
+      measurePreviewStartup(
+        "mafter:loadFromProject",
+        "mafter:loadFromProject:start",
+        "mafter:loadFromProject:end",
+      );
+    }
+  }
+
+  private async loadFromProjectImpl(
+    project: Project,
+    fs: FileSystem,
+    options?: ImageLoadOptions,
+  ): Promise<void> {
     const proxyMaxDim = options?.proxyMaxDim;
     // proxy 設定ごとに別キャッシュ（full-res と縮小版の取り違えを防ぐ）。
     const cacheKey = (path: string, kind: string) => `${kind}|${proxyMaxDim ?? "full"}|${path}`;
