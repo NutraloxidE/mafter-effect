@@ -1,0 +1,123 @@
+{
+  "url": "https://localhost:5173/",
+  "durationMs": 8000,
+  "fps": 30,
+  "startFrame": 20,
+  "convert": {
+    "newAssetId": "01KX0BDF9X2DWG9KD24TC405XV",
+    "container": "webm"
+  },
+  "decoderActive": {
+    "flag": "1",
+    "hasSrc": false
+  },
+  "holds": [
+    {
+      "frame": 20,
+      "startMs": 150,
+      "durMs": 503
+    },
+    {
+      "frame": 26,
+      "startMs": 783,
+      "durMs": 66
+    },
+    {
+      "frame": 30,
+      "startMs": 1018,
+      "durMs": 197
+    },
+    {
+      "frame": 33,
+      "startMs": 1317,
+      "durMs": 82
+    },
+    {
+      "frame": 37,
+      "startMs": 1537,
+      "durMs": 117
+    },
+    {
+      "frame": 41,
+      "startMs": 1743,
+      "durMs": 1055
+    },
+    {
+      "frame": 42,
+      "startMs": 2818,
+      "durMs": 148
+    },
+    {
+      "frame": 46,
+      "startMs": 3070,
+      "durMs": 1013
+    },
+    {
+      "frame": 48,
+      "startMs": 4137,
+      "durMs": 212
+    },
+    {
+      "frame": 50,
+      "startMs": 4409,
+      "durMs": 191
+    },
+    {
+      "frame": 56,
+      "startMs": 4833,
+      "durMs": 117
+    },
+    {
+      "frame": 60,
+      "startMs": 5082,
+      "durMs": 216
+    },
+    {
+      "frame": 66,
+      "startMs": 5470,
+      "durMs": 135
+    },
+    {
+      "frame": 70,
+      "startMs": 5782,
+      "durMs": 1017
+    },
+    {
+      "frame": 74,
+      "startMs": 6916,
+      "durMs": 133
+    },
+    {
+      "frame": 77,
+      "startMs": 7138,
+      "durMs": 211
+    },
+    {
+      "frame": 80,
+      "startMs": 7439,
+      "durMs": 177
+    },
+    {
+      "frame": 84,
+      "startMs": 7763,
+      "durMs": 186
+    }
+  ],
+  "desyncStats": {
+    "samples": 391,
+    "medianAbsFrames": 1.14,
+    "maxAbsFrames": 4.79,
+    "p95AbsFrames": 3.42,
+    "meanSignedFrames": -1.33,
+    "leadCount": 24,
+    "lagCount": 322
+  },
+  "pacing": {
+    "frames": 370,
+    "spanMs": 7897,
+    "avgFps": 46.7,
+    "medianDtMs": 16.9,
+    "maxDtMs": 105.4
+  },
+  "pageErrors": []
+}

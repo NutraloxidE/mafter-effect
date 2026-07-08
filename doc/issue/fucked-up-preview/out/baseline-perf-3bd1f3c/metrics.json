@@ -1,0 +1,43 @@
+{
+  "url": "https://localhost:5173/",
+  "durationMs": 8000,
+  "fps": 30,
+  "startFrame": 20,
+  "convert": {
+    "newAssetId": "01KX0BYCQZ8CM1CYVYCQ7WK8NH",
+    "container": "webm"
+  },
+  "decoderActive": {
+    "flag": null,
+    "hasSrc": true
+  },
+  "holds": [
+    {
+      "frame": 20,
+      "startMs": 47,
+      "durMs": 417
+    },
+    {
+      "frame": 36,
+      "startMs": 981,
+      "durMs": 56
+    }
+  ],
+  "desyncStats": {
+    "samples": 270,
+    "medianAbsFrames": 0.37,
+    "maxAbsFrames": 4,
+    "p95AbsFrames": 0.82,
+    "meanSignedFrames": 0.41,
+    "leadCount": 65,
+    "lagCount": 2
+  },
+  "pacing": {
+    "frames": 373,
+    "spanMs": 8023,
+    "avgFps": 46.4,
+    "medianDtMs": 17.8,
+    "maxDtMs": 179.3
+  },
+  "pageErrors": []
+}
