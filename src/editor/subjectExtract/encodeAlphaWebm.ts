@@ -13,6 +13,7 @@ import {
   PACKED_ALPHA_GUTTER_PX,
   type PackedAlphaLayout,
 } from "../../runtime/videoPackedAlpha";
+import { RGBA_SOURCE_VIDEO_COLOR_SPACE } from "../../runtime/videoColorSpace";
 
 export interface RgbaFrame {
   width: number;
@@ -122,6 +123,7 @@ async function encodeRgbaFramesToVp9Webm(
     height: h,
     bitrate,
     framerate: fps,
+    colorSpace: RGBA_SOURCE_VIDEO_COLOR_SPACE,
   };
   if (opts.alphaKeep) {
     baseConfig.alpha = "keep";
@@ -236,6 +238,7 @@ async function encodeRgbaFramesToMp4H264(
     height: h,
     bitrate: clampVideoBitrate(DEFAULT_VIDEO_BITRATE),
     framerate: fps,
+    colorSpace: RGBA_SOURCE_VIDEO_COLOR_SPACE,
   });
 
   const usDuration = Math.round(1_000_000 / fps);

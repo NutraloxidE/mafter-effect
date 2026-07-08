@@ -7,6 +7,7 @@
 // 純粋な寸法計算（fitProxyDimensions）のみ単体テスト対象。
 
 import { Muxer as WebmMuxer, ArrayBufferTarget as WebmTarget } from "webm-muxer";
+import { RGBA_SOURCE_VIDEO_COLOR_SPACE } from "./videoColorSpace";
 
 /** 長辺が maxDim に収まるよう縦横比保持で縮小した偶数寸法を返す（拡大はしない）。 */
 export function fitProxyDimensions(
@@ -49,7 +50,10 @@ async function configureForCodec(encoder: VideoEncoder, base: VideoEncoderConfig
     try {
       const support = await VideoEncoder.isConfigSupported(cfg);
       if (support.supported) {
-        encoder.configure(support.config ?? cfg);
+        // exporter.ts の configureVideoEncoder と同じ理由: support.config は colorSpace を
+        // 黙って落とすため、呼び出し側が指定した colorSpace は明示的に配り直す。
+        const finalConfig = support.config ?? cfg;
+        encoder.configure(base.colorSpace ? { ...finalConfig, colorSpace: base.colorSpace } : finalConfig);
         return;
       }
     } catch {
@@ -103,6 +107,7 @@ export async function encodeFramesToWebm(opts: ProxyEncodeOptions): Promise<Uint
       height,
       bitrate,
       framerate: fps,
+      colorSpace: RGBA_SOURCE_VIDEO_COLOR_SPACE,
     });
 
     const usDuration = Math.round(1_000_000 / fps);

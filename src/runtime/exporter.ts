@@ -662,7 +662,12 @@ export async function configureVideoEncoder(
     try {
       const support = await VideoEncoder.isConfigSupported(cfg);
       if (support.supported) {
-        encoder.configure(support.config ?? cfg);
+        // isConfigSupported が返す support.config は「ブラウザが認識したフィールドだけの
+        // 正規化コピー」で、colorSpace のような未エコーなフィールドを黙って落とすことが
+        // 実測で判明した（§16.2b 色空間ポリシー）。呼び出し側が明示した colorSpace は
+        // support.config の有無に関わらず必ず configure() まで届くようにする。
+        const finalConfig = support.config ?? cfg;
+        encoder.configure(base.colorSpace ? { ...finalConfig, colorSpace: base.colorSpace } : finalConfig);
         return;
       }
     } catch {
