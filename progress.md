@@ -1573,3 +1573,15 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
 - **回帰確認**: `npm run typecheck` 緑。`npm test -- --run`（990/990 PASS、新規10件）。`npm run build:player` 実行済み・`playerBuildFreshness` 緑。
 
 **Next steps**: なし。余力があれば実 Chrome（非 headless）で Same as Export Quality の生成完了後の自動切り替わりを最終確認するとより確実（現状は unit test + headless での busy-state 確認まで）。
+
+### 2026-07-08（Claude）— packed alpha Preview Quality "Original" を文字通り原本にする（自動 tier 差し替えの撤回）
+
+- **報告された不満**: Preview Quality が "Original" のとき、明示的に "High" を選んだときより画質が低く見える。原因は `effectivePackedQuality()` が "Original"（未選択の既定値も含む）を黙って `low` tier proxy に差し替えていたため（decode-bound 回避目的、旧仕様）で、UI にその旨のヒントも出ておらず不透明だった。ユーザーからの明確な要望: 「Original を選んだら本当に Original にして、画質を下げるならドロップダウンで明示的に選ばせてほしい」。
+- **修正方針**: 「未設定時の安全なデフォルト」と「"Original" の意味」を分離した。
+  - `src/runtime/footageQuality.ts`: `effectivePackedQuality()` から "original → low tier" の自動差し替え分岐を削除（`PACKED_SAME_AS_EXPORT` の解決は従来通り）。`normalizePackedPreviewSelection()` は **未設定/不明値のときだけ** `low`（`PACKED_DEFAULT_PROXY_TIER`）にフォールバックし、`"original"` を含む既知の値は常にそのまま尊重するよう変更。
+  - `src/editor/subjectExtract/applySubjectExtract.ts`: 新規 Subject Extract レイヤー作成時、`asset.meta.alphaMode === "packed"` なら `footageQuality` prop を明示的に `"low"` で書き込む（`initialFootageQuality()`）。split/unified は従来通り `"original"`（proxy tier の仕組みが無いため無関係）。これにより decode-bound 回避は「ドロップダウンの初期選択」として可視化され、"Original" を選べば常に文字通り原本になる。
+  - `src/editor/panels/PackedPreviewQualitySelect.tsx`: Preview Quality が `"original"` のとき「⚠ may stutter (no proxy)」ヒントを追加。フッター説明文にも "Original" が文字通り原本を使う旨を追記。
+  - `doc/mafter-effect-spec.md` §16.2b の該当箇所を新仕様に書き換え。
+- **既存プロジェクトへの影響（意図的な挙動変更）**: 過去に Subject Extract で作成された packed レイヤー（旧コードが `footageQuality: "original"` を明示的に書き込んでいた）は、今回の変更後は黙って `low` に差し替わらず**文字通り原本を使うようになる**。decode-bound で重いままなら、ユーザーがドロップダウンで明示的に Low 等へ落とす操作が必要（ユーザー要望通りの意図的な仕様変更であり、regression ではない）。
+- **検証**: `npm run typecheck` 緑。`npm test`（993/993 PASS、新規3件: `footageQuality.test.ts` に normalize/effective の新挙動アサーション更新、`subjectExtractApply.test.ts` に packed→low・split→original の初期値テスト追加）。`footageQuality.ts` は `DomRenderer.ts` 経由で player にも import されるため、Claude Code hook が `public/player.js` を自動再ビルド済み（`playerBuildFreshness` 緑を確認）。
+- **Next steps**: なし。

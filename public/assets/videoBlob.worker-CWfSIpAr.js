@@ -1,0 +1,1 @@
+(function(){"use strict";self.onmessage=o=>{const{id:t,buffer:r,mime:n}=o.data;try{const s=new Blob([r],{type:n}),e={id:t,blob:s};self.postMessage(e)}catch(s){const e={id:t,error:s instanceof Error?s.message:String(s)};self.postMessage(e)}}})();

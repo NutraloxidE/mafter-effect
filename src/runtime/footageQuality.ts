@@ -89,6 +89,12 @@ export function normalizeFootageQuality(raw: unknown): FootageQuality {
  * できず holdTimeline が慢性発火する（実機計測: 8秒の壁時計でタイムライン進行が約半分）。
  * VP9 ソフトデコードでも確実に実時間へ収まるよう、通常 footage の既定（medium）より
  * 保守的に低い tier を既定にする。
+ *
+ * **この既定は「未設定（プロパティが無い）」場合にのみ適用する。ユーザーが明示的に
+ * "Original" を選んだ場合は文字通り原本を使う**（2026-07 変更・以前は "Original" 選択時も
+ * 黙って本 tier に差し替えていたが、ユーザーから見て不透明だったため撤回した。既定値そのものを
+ * この tier にする＝新規レイヤー作成時に prop へ明示的に書き込むことで、decode-bound 回避は
+ * 「ドロップダウンの初期選択」として可視化する。詳細は `applySubjectExtractToProject` 参照）。
  */
 const PACKED_DEFAULT_PROXY_TIER: ProxyTier = "low";
 
@@ -114,9 +120,17 @@ export function isPackedSameAsExport(v: unknown): v is typeof PACKED_SAME_AS_EXP
   return v === PACKED_SAME_AS_EXPORT;
 }
 
-/** 任意の raw 値（packed レイヤーの footageQuality prop）を PackedPreviewSelection へ正規化。 */
+/**
+ * 任意の raw 値（packed レイヤーの footageQuality prop）を PackedPreviewSelection へ正規化。
+ * **未設定（`undefined`）・不明値のときだけ** 既定 proxy tier（`low`）にフォールバックする。
+ * `"original"` を含む既知の値は常にそのまま尊重する（2026-07 変更・§16.2b 参照）。
+ */
 export function normalizePackedPreviewSelection(raw: unknown): PackedPreviewSelection {
-  return isPackedSameAsExport(raw) ? PACKED_SAME_AS_EXPORT : normalizeFootageQuality(raw);
+  if (isPackedSameAsExport(raw)) return PACKED_SAME_AS_EXPORT;
+  if (typeof raw === "string" && (FOOTAGE_QUALITY_TIERS as readonly string[]).includes(raw)) {
+    return raw as FootageQuality;
+  }
+  return PACKED_DEFAULT_PROXY_TIER;
 }
 
 /**
@@ -125,10 +139,11 @@ export function normalizePackedPreviewSelection(raw: unknown): PackedPreviewSele
  *   既定 `"original"`）をそのまま使う。preview quality（`previewSelection`）とは独立。
  * - preview / bundle live（exportStep 無し）:
  *   - `previewSelection === PACKED_SAME_AS_EXPORT` なら `mode.exportQuality` にそのまま追従する
- *     （既定 proxy tier への自動差し替えは行わない — Export Quality が `"original"` なら
- *     プレビューも文字通り原本を使う。ユーザーが明示的にリンクした結果は尊重する）。
- *   - user が proxy tier を明示していればそれを尊重する。
- *   - user が既定の `"original"` のままなら、decode-bound 回避のため既定 proxy tier に差し替える。
+ *     （Export Quality が `"original"` ならプレビューも文字通り原本を使う）。
+ *   - それ以外は `previewSelection` を**常にそのまま**使う。`"original"` が明示的に選ばれて
+ *     いれば文字通り原本を使う（decode-bound になり得ることを承知の上でのユーザーの明示選択、
+ *     2026-07 変更）。未設定時の安全側フォールバック（`low`）は `normalizePackedPreviewSelection`
+ *     側（呼び出し前）と新規レイヤー作成時の初期値書き込みで担保する。
  * packed 以外の通常 video はこの関数を通さない（呼び出し側で isPackedAlphaVideoMeta 等で分岐）。
  */
 export function effectivePackedQuality(
@@ -137,6 +152,5 @@ export function effectivePackedQuality(
 ): FootageQuality {
   if (mode.exportStep) return mode.exportQuality ?? "original";
   if (previewSelection === PACKED_SAME_AS_EXPORT) return mode.exportQuality ?? "original";
-  if (isProxyTier(previewSelection)) return previewSelection;
-  return PACKED_DEFAULT_PROXY_TIER;
+  return previewSelection;
 }

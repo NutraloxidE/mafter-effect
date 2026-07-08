@@ -132,4 +132,39 @@ describe("applySubjectExtractToProject", () => {
     const stored = after.assets.find((a) => a.id === "ASTNEW01");
     expect(stored?.binId).toBeDefined();
   });
+
+  it("initializes footageQuality to 'low' for packed alpha assets (decode-bound avoidance, §16.2b 2026-07 change)", () => {
+    const base = projectWithObjects([source]);
+    const packedAsset: AssetEntry = { ...asset, meta: { hasAlpha: true, alphaMode: "packed" } };
+    const after = applySubjectExtractToProject(base, {
+      compId: base.rootComposition,
+      sourceLayer: source,
+      asset: packedAsset,
+      layerId: "OBJNEW01",
+      layerName: "Footage — Person",
+      assetsBinId: "BINASSETS01",
+      extractBinId: "BINEXTR01",
+      target: "person",
+    });
+    const comp = after.compositions[0] as TimelineComposition;
+    const newLayer = comp.objects.find((o) => o.id === "OBJNEW01");
+    expect(newLayer?.components[0]?.props["footageQuality"]).toBe("low");
+  });
+
+  it("keeps footageQuality at 'original' for split/unified assets (no proxy tier system)", () => {
+    const base = projectWithObjects([source]);
+    const after = applySubjectExtractToProject(base, {
+      compId: base.rootComposition,
+      sourceLayer: source,
+      asset,
+      layerId: "OBJNEW01",
+      layerName: "Footage — Person",
+      assetsBinId: "BINASSETS01",
+      extractBinId: "BINEXTR01",
+      target: "person",
+    });
+    const comp = after.compositions[0] as TimelineComposition;
+    const newLayer = comp.objects.find((o) => o.id === "OBJNEW01");
+    expect(newLayer?.components[0]?.props["footageQuality"]).toBe("original");
+  });
 });

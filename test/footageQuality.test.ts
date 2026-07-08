@@ -76,10 +76,8 @@ describe("effectivePackedQuality (§16.2b decode-bound proxy)", () => {
     expect(effectivePackedQuality("potato", { exportStep: false })).toBe("potato");
   });
 
-  it("preview/bundle live: default 'original' is swapped for the packed default proxy tier", () => {
-    const tier = effectivePackedQuality("original", { exportStep: false });
-    expect(tier).not.toBe("original");
-    expect(isProxyTier(tier)).toBe(true);
+  it("preview/bundle live: explicit 'original' is honored literally, no silent tier substitution (2026-07 change)", () => {
+    expect(effectivePackedQuality("original", { exportStep: false })).toBe("original");
   });
 
   it("preview/bundle live ignores exportQuality entirely for a concrete preview tier", () => {
@@ -88,11 +86,15 @@ describe("effectivePackedQuality (§16.2b decode-bound proxy)", () => {
 });
 
 describe("PACKED_SAME_AS_EXPORT (Preview Quality → Export Quality link, §16.2b)", () => {
-  it("normalizePackedPreviewSelection recognizes the sentinel and normal tiers", () => {
+  it("normalizePackedPreviewSelection recognizes the sentinel and normal tiers, including explicit 'original'", () => {
     expect(normalizePackedPreviewSelection(PACKED_SAME_AS_EXPORT)).toBe(PACKED_SAME_AS_EXPORT);
     expect(normalizePackedPreviewSelection("medium")).toBe("medium");
-    expect(normalizePackedPreviewSelection(undefined)).toBe("original");
-    expect(normalizePackedPreviewSelection("nonsense")).toBe("original");
+    expect(normalizePackedPreviewSelection("original")).toBe("original");
+  });
+
+  it("normalizePackedPreviewSelection falls back to the safe default tier only for unset/unknown values (2026-07 change)", () => {
+    expect(normalizePackedPreviewSelection(undefined)).toBe("low");
+    expect(normalizePackedPreviewSelection("nonsense")).toBe("low");
   });
 
   it("isPackedSameAsExport is a precise type guard", () => {

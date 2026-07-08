@@ -3,6 +3,16 @@ import { appendTreeEntry } from "../../core/projectTree";
 import type { AssetEntry, Project, SceneObject } from "../../core/schema";
 import { ensureSubjectExtractBin } from "./subjectExtractBin";
 
+/**
+ * 新規 Subject Extract レイヤーの初期 Preview Quality。packed alpha は原本のままだと
+ * decode-bound（§16.2b）になり得るため、既定選択そのものを保守的な proxy tier にする
+ * （"Original" を選んだ場合に黙って差し替えることはしない・2026-07 変更）。
+ * split/unified は proxy tier の仕組みが無いため従来通り "original"。
+ */
+function initialFootageQuality(asset: AssetEntry): "original" | "low" {
+  return asset.meta?.["alphaMode"] === "packed" ? "low" : "original";
+}
+
 export type SubjectExtractTarget = "person";
 
 export interface SubjectExtractApplyInput {
@@ -46,7 +56,7 @@ export function applySubjectExtractToProject(
         fit,
         trimStart: 0,
         gain: staticProp(1),
-        footageQuality: "original",
+        footageQuality: initialFootageQuality(input.asset),
       },
     }],
   };
