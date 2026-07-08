@@ -1,0 +1,9 @@
+{
+  "container": "mp4",
+  "layout": {
+    "contentHeight": 16,
+    "gutterPx": 8
+  },
+  "fps": 30,
+  "frameCount": 33
+}

@@ -6,6 +6,19 @@
 
 ---
 
+### 2026-07-08（Sonnet 5）— packed alpha preview を VideoDecoder 明示デコードへ移行: Phase 0〜1 実施中 🟡
+
+- **経緯**: プラン [C:\Users\resis\.claude\plans\videodecoder-compiled-leaf.md]（ユーザーとの事前検討で確定済み・リポジトリ外）に従い実装着手。スコープ=preview再生のみ（scrub/export/bundleは既存`<video>`-seek経路のまま）。コーデックはVP9/webmとH.264/mp4両対応。§5/INV/project.json直列化は無変更（asset.metaへの追加のみ想定、現時点では追加なし）。
+- **Phase 0（baseline計測）✅**: 新規 [verify-packed-decoder-baseline.mjs](verify-packed-decoder-baseline.mjs)（既存 `verify-comp32-packed-instability.mjs` と同一 Comp32 fixture・同一シナリオA/B・headed実Chrome・3trials）。結果: decoderはHW（D3D11VideoDecoder、640x2284のVP9/webmフォールバック）。stall% avg: A=8.2%・B=16.9%。progression rate: A=0.941・B=0.729。移行後（Phase4完了後）に同一手法で再計測し比較する。生ログ: `verify-packed-decoder-baseline-result.json`（一時物、コミット対象外）。
+- **Phase 1（demux層）✅**: 新規 [packedDemux.ts](src/runtime/packedDemux.ts)。mp4/H.264は`mp4box`（新規 npm 依存・`--save`）でtrak/stbl解析、avcC（AVCDecoderConfigurationRecord）はChromeのWebCodecsサンプルと同じ手法（box書き戻し→先頭8バイト除去）で抽出。`track.codec`をそのままWebCodecs codec文字列として使う（自前エンコーダの出力を自前で読むため再導出不要）。webm/VP9は最小EBMLウォーカーを自前実装（Segment→Info/Tracks/Cluster→SimpleBlock or BlockGroup>Block、track number vint・relative timecode・keyframeビットを読む）。コーデック文字列は自前エンコーダの固定出力`"vp09.00.10.08"`を直接採用（VP9ビットストリーム解析は不要、対象は自前生成資産のみのためスコープを絞れる）。
+  - **設計上の判断（INV-2の錨に関わる重要な訂正）**: 実測で判明——webm-muxerは`chunk.duration`が定義されていると**SimpleBlockではなくBlockGroup+Block+BlockDuration**を書く（プラン記載の「SimpleBlock構成で予測可能」という前提は誤りだった）。両方をサポートするようdemuxを書いた。また、webmはTimestampScaleがms単位でmuxer側がフロア丸めするため、demuxが復元するtimestampはエンコード時の厳密値（`i*round(1e6/fps)`）と数百μs単位でズレる（mp4もtrack timescale=fpsの整数丸めで同様に完全一致はしない）。よって**frameIndexの正はchunk配列のindex（decode順）であり、demuxが返すtimestampフィールドは情報用途に留める**——Phase 2の`packedFrameDecoder`はVideoDecoderへ再投入する`EncodedVideoChunk`のtimestampを`index*round(1e6/fps)`から独自に再構成し、containerの丸め誤差に依存しない設計にする（プラン文書の想定より頑健）。
+  - **もう1つの発見**: 実エンコーダ（VP9）で検証用の合成フレーム（毎フレーム色が飛ぶ・scene-change相当）をencodeすると、要求していないindex（0・30の倍数以外）にも**エンコーダが自発的にkeyframeを追加**することを実測で確認した。これはGOP=30固定を仮定するテストには影響する（テストは「要求した位置は必ずkeyframe」のみ固定し、それ以外を非keyframeと断定しない形に緩めた）が、Phase 2のGOP-back実装には影響しない——`chunks[].keyFrame`の実フラグを信頼して直前の実keyframeから遡ればよく（`floor(idx/30)*30`という仮定の式より正確・効率的）、想定より早いkeyframeから遡っても正しさは保たれる（無駄な追加decodeがあるだけ）。
+  - **テスト**: `test/packedDemux.test.ts`（3件）。実エンコーダ出力の実バイト列fixture（`test/fixtures/packedDemuxFixture-mp4.mp4` 4.2KB・`packedDemuxFixture-webm.webm` 443KB、33フレーム）に対しdemuxを実行し、frameCount・要求keyframe位置・timestamp近似単調性・codec文字列・description有無・codedWidth/Heightを固定。fixtureは一回性の生成スクリプト[scripts/gen-packed-demux-fixtures.mjs](scripts/gen-packed-demux-fixtures.mjs)（headed実Chromeで実エンコーダを呼ぶ、通常のtest/buildパイプラインには含まれない）で作成（vitestはplain node環境でWebCodecs/canvas非対応のため、実装度・実データ性を保ちつつnode単体で回せるようにする設計）。
+  - **検証**: `npm run typecheck`緑・`npm test` 995/996 PASS（`projectBins.test.ts`1件は既存ULID順序flake、単独実行でPASS確認済み・無関係）。`npm install mp4box --save`でplaywrightがprune された（既知の事象）→ `npm i playwright@1.61.0 --no-save`で復旧確認済み。
+- **Next steps**: Phase 2（`packedFrameDecoder.ts` — VideoDecoderラッパ・LRUフレームキャッシュ・実keyframeベースのGOP-back・prefetch）→ Phase 3（compositor source型拡張）→ Phase 4（DomRenderer配線・hold-loop除外）→ (Phase 5 音声、独立デリバリ可)→ Phase 6（無回帰総仕上げ）。
+
+---
+
 ### 2026-07-07（Sonnet 5）— 透過動画軽量化プラン v2: Phase 4（実地受け入れ・自動計測）実施 🟡 ユーザー体感確認待ち
 
 - **内容**: [doc/cloudplan/webgl-video-layer-plan.md](doc/cloudplan/webgl-video-layer-plan.md) §4 Phase4 に従い、Phase 0 と同一の Comp32 相当ミニプロジェクト・同一シナリオA/B・同一手法（headed実Chrome・3trials）で packed 化後を再計測。新規 [verify-comp32-packed-instability.mjs](verify-comp32-packed-instability.mjs) を作成（Person レイヤーの split→packed 変換を Inspector と同じコミットロジックで実行してから計測）。

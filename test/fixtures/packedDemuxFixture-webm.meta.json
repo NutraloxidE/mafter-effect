@@ -1,0 +1,9 @@
+{
+  "container": "webm",
+  "layout": {
+    "contentHeight": 1138,
+    "gutterPx": 8
+  },
+  "fps": 30,
+  "frameCount": 33
+}
