@@ -1,5 +1,13 @@
 # Progress
 
+### 2026-07-09 (Codex Opus 4.8) — rendering pipeline snapshot doc translated
+
+- **Done**: Translated `doc/rendering-pipeline-current.md` into Japanese while preserving the Mermaid diagrams, code identifiers, and the preview-vs-export / alpha-video distinctions from the original snapshot.
+- **Scope**: Documentation only. No spec schema, invariant, runtime, or export behavior changes.
+- **Next steps**: Keep the Japanese snapshot in sync when the packed-alpha VideoDecoder path is wired into `DomRenderer`, or when preview / export media synchronization changes.
+
+---
+
 ### 2026-07-08 (Codex Opus 4.8) — rendering pipeline snapshot doc added
 
 - **Done**: Added `doc/rendering-pipeline-current.md` as a current implementation snapshot of the rendering pipeline. It maps the shared `resolve()` -> `DomRenderer` core, preview live playback/cache paths, browser export / `compFrameCapture` deterministic frame-step paths, HTML bundle playback, and alpha-video handling.
