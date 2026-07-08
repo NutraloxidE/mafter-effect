@@ -1,5 +1,14 @@
 # Progress
 
+### 2026-07-08 (Codex Opus 4.8) — rendering pipeline snapshot doc added
+
+- **Done**: Added `doc/rendering-pipeline-current.md` as a current implementation snapshot of the rendering pipeline. It maps the shared `resolve()` -> `DomRenderer` core, preview live playback/cache paths, browser export / `compFrameCapture` deterministic frame-step paths, HTML bundle playback, and alpha-video handling.
+- **Focus covered**: Explicitly documents preview-vs-export differences for video timing (`previewVideoPlayback` vs `exportVideoStep`), split alpha (`color <video>` + alpha `<video>` + canvas), packed alpha (single packed `<video>` + canvas), and final alpha support (mp4 opaque, webm/png-seq alpha-capable).
+- **Note**: `packedFrameDecoder.ts` / `packedDemux.ts` are documented as in-progress and not currently wired into `DomRenderer`.
+- **Next steps**: Keep this snapshot updated when the VideoDecoder packed-alpha preview path is actually connected, or when export/capture media synchronization changes.
+
+---
+
 > AIエージェントはセッション開始時にこのファイルを読み、終了時に更新すること。
 > 完了済みの詳細はコミット履歴を正とし、ここは「現在地・残タスク・既知バグ・次の一手」に絞る。
 > （2026-06-20 に compact 済み。古い詳細な更新履歴は git log を参照。）
