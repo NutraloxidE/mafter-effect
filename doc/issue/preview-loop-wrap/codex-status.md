@@ -1,10 +1,13 @@
-# Codex Status: preview-loop-wrap WP-1
+# Codex Status: preview-loop-wrap WP-1/WP-2
 
 - status: implemented-awaiting-capture
-- branch: codex/preview-v2-wp1-loop-doublebuffer
+- branch: codex/preview-v2-wp2-presented-servo
 - phase0 commit: e5f366e preview v2 phase0: record loop wrap findings
-- spec commit: 372ee07 preview v2 wp1: document loop warmup
-- implementation commit: c8d09e4 preview v2 wp1: implement loop doublebuffer
+- WP-1 spec commit: 372ee07 preview v2 wp1: document loop warmup
+- WP-1 implementation commit: c8d09e4 preview v2 wp1: implement loop doublebuffer
+- WP-1 tests/status commit: f8e722d preview v2 wp1: add loop warmup tests
+- WP-2 spec commit: 1a4086e preview v2 wp2: document presented-frame servo
+- WP-2 implementation commit: 72effb7 preview v2 wp2: implement presented-frame servo
 - tests/status commit: see the commit containing this file
 
 ## Scope
@@ -18,10 +21,19 @@ The change is preview/bundle scoped:
 - `PreviewPanel` and `BundlePlayer` pass loop range information into `DomRenderer` during playback.
 - Scrub/export paths were left unchanged.
 
+WP-2 adds presented-frame based servo sync:
+
+- `videoPresentedClock.ts` tracks the last rVFC `mediaTime` per video element when available.
+- `VideoClockSample.presentedSec` is used before `currentTimeSec` for lag/lead calculations.
+- Normal playback applies a continuous `playbackRate` correction clamped to 0.96-1.04 with a quarter-frame deadband.
+- `holdTimeline` / `pauseVideo` are now five-frame failsafes; scrub/export/pause reset `playbackRate` to 1.
+- Editor preview, HTML bundle no-audio playback, and bundle audio-clock playback all apply the same servo wiring.
+
 ## Verification
 
 - PASS: `npm run typecheck`
 - PASS: `npm test -- test/videoLookaheadWarmup.test.ts`
+- PASS: `npm test -- test/playbackVideoSync.test.ts test/videoElementSync.test.ts`
 - PASS: `npm run build:player`
 - PASS: `npm test`
 
@@ -32,4 +44,5 @@ No pixel/user-perception acceptance is claimed here. Per the plan, the next acce
 Residual risks:
 
 - The double-buffer swap depends on the loop warm-up element being ready at wrap time. If not ready, the renderer deliberately falls back to the existing seek behavior.
-- WP-2 is still pending and should address steady-state desync/playback-rate servo behavior after WP-1 capture.
+- rVFC is unavailable in some environments; those fall back to `currentTimeSec`.
+- Pixel/user-perception acceptance for both WP-1 and WP-2 is still pending.

@@ -1,5 +1,16 @@
 # Progress
 
+### 2026-07-09 (Codex Opus 4.8) - preview-loop-wrap WP-2 implemented, awaiting capture
+
+- **Context**: Continued `doc/preview-improvement-plan-v2-for-codex.md` after WP-1. Decision record route remains `order: [WP-1, WP-2]`.
+- **Spec**: Added §11.4 prose for presented-frame based playback sync: use rVFC `mediaTime` when available, apply a 0.96-1.04 playbackRate servo with a quarter-frame deadband, and demote `holdTimeline` / `pauseVideo` to five-frame failsafes. Scrub/export/stop reset playbackRate to 1.
+- **Implementation**: Added `src/runtime/videoPresentedClock.ts`, extended `VideoClockSample.presentedSec`, added `computePlaybackRateForSync` / `dominantVideoSyncErrorSec`, and wired servo rate through `DomRenderer`, `PreviewPanel`, `BundlePlayer`, and `BundleAudioClock`.
+- **Tests / verification**: Added/updated `test/playbackVideoSync.test.ts` and `test/videoElementSync.test.ts`. PASS: `npm run typecheck`; `npm test -- test/playbackVideoSync.test.ts test/videoElementSync.test.ts`; `npm run build:player`; `npm test` (106 files / 1021 tests).
+- **Status**: `doc/issue/preview-loop-wrap/codex-status.md` is updated to WP-1/WP-2 `implemented-awaiting-capture`. Pixel/perception acceptance is still not claimed.
+- **Next steps**: Run the Phase 0 capture/user-perception comparison for both WP-1 and WP-2.
+
+---
+
 ### 2026-07-09 (Codex Opus 4.8) - preview-loop-wrap WP-1 implemented, awaiting capture
 
 - **Context**: Continued from `doc/preview-improvement-plan-v2-for-codex.md` after committing Phase 0 (`e5f366e`) and confirming `doc/issue/preview-loop-wrap/decision-record.md` is `status: FINAL` with `order: [WP-1, WP-2]`.
