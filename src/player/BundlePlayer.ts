@@ -19,6 +19,8 @@ import { collectVideoClipsFromComp } from "../runtime/videoLookaheadWarmup";
 import { runPreviewPlaybackLoop } from "../runtime/previewPlaybackLoop";
 import {
   computePlaybackSyncState,
+  computePlaybackRateForSync,
+  dominantVideoSyncErrorSec,
   filterPrimaryVideoSamples,
   holdThresholdsForFps,
   initialPlaybackSyncState,
@@ -144,6 +146,7 @@ export class BundlePlayer {
         {
           // §11.4 preview と同じ双方向同期（split-alpha companion は primary から除外済み）。
           getVideoClockSamples: () => filterPrimaryVideoSamples(this.renderer.sampleMountedVideoClocks()),
+          onPlaybackRate: (rate) => this.renderer.setPlaybackRateForSync(rate),
           onPlaybackSyncState: (s) => this.renderer.setPlaybackPauseForSync(s.pauseVideo),
         },
       );
@@ -302,11 +305,15 @@ export class BundlePlayer {
    * サンプルは split-alpha companion 除外済みの primary のみで判定する。
    */
   private applyPlaybackSync(): boolean {
+    const samples = filterPrimaryVideoSamples(this.renderer.sampleMountedVideoClocks());
     this.syncState = computePlaybackSyncState(
       this.syncState,
-      filterPrimaryVideoSamples(this.renderer.sampleMountedVideoClocks()),
+      samples,
       holdThresholdsForFps(this.manifest.fps),
       performance.now(),
+    );
+    this.renderer.setPlaybackRateForSync(
+      computePlaybackRateForSync(dominantVideoSyncErrorSec(samples), this.manifest.fps),
     );
     this.renderer.setPlaybackPauseForSync(this.syncState.pauseVideo);
     return this.syncState.holdTimeline;

@@ -57,6 +57,11 @@ import {
   computeVideoLookaheadWarmupTargets,
   type VideoClipLookaheadInput,
 } from "./videoLookaheadWarmup";
+import {
+  attachPresentedClock,
+  detachPresentedClock,
+  getPresentedMediaTimeSec,
+} from "./videoPresentedClock";
 import type { ExportChain, ExportLayer, NestedCompositeMeta, ExportTaggedElement } from "./exportComposite";
 import type { EffectFilter } from "./plugin";
 import type { BlendMode, TrackMatteMode } from "../core/schema";
@@ -217,6 +222,7 @@ export class DomRenderer implements Renderer {
   private exportVideoStep = false;
   /** §11.4 映像先行ゲート: playback 中に video を pause（seek しない）。 */
   private playbackPauseForSync = false;
+  private playbackRateForSync = 1;
   /** §11.7 bundle: true の間は playbackMode 中でも video を unmute しない（autoplay ポリシー回避）。 */
   private muteVideoPlayback = false;
   private previewLoop: { enabled: boolean; loopStart: Frame; loopEnd: Frame } = {
@@ -244,6 +250,7 @@ export class DomRenderer implements Renderer {
     if (opts.previewVideoPlayback !== undefined) {
       if (this.previewVideoPlayback && !opts.previewVideoPlayback) {
         this.playbackPauseForSync = false;
+        this.playbackRateForSync = 1;
         this.pauseAllVideos();
         this.clearVideoLookaheadWarmups();
       }
@@ -276,6 +283,10 @@ export class DomRenderer implements Renderer {
         /* best-effort */
       }
     });
+  }
+
+  setPlaybackRateForSync(rate: number): void {
+    this.playbackRateForSync = Number.isFinite(rate) ? Math.max(0.96, Math.min(1.04, rate)) : 1;
   }
 
   setTextQuality(mode: "draft" | "precise"): void {
@@ -537,6 +548,7 @@ export class DomRenderer implements Renderer {
   }
 
   private teardownVideoElement(el: HTMLVideoElement): void {
+    detachPresentedClock(el);
     try {
       el.pause();
       el.removeAttribute("src");
@@ -868,6 +880,7 @@ export class DomRenderer implements Renderer {
       samples.push({
         targetSec,
         currentTimeSec: video.currentTime,
+        presentedSec: getPresentedMediaTimeSec(video) ?? undefined,
         paused: video.paused,
         ended: video.ended,
         error: video.error !== null,
@@ -974,6 +987,7 @@ export class DomRenderer implements Renderer {
         if (el instanceof HTMLVideoElement) {
           // §11.4 停止時はミュートも戻す（次のスクラブ前の音漏れ防止）。
           try {
+            el.playbackRate = 1;
             el.muted = true;
           } catch {
             /* muted best-effort */
@@ -1108,7 +1122,7 @@ export class DomRenderer implements Renderer {
           if (swapped) el = swapped;
           forceSeek = true;
         }
-        updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, frame, hostInPoint, fps, this.previewVideoPlayback, this.exportVideoStep, forceSeek, this.playbackPauseForSync, this.muteVideoPlayback);
+        updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, frame, hostInPoint, fps, this.previewVideoPlayback, this.exportVideoStep, forceSeek, this.playbackPauseForSync, this.muteVideoPlayback, this.playbackRateForSync);
       }
 
       // Plugin component: registry から ComponentDef.render を呼ぶ（組み込み型は未登録でスキップ）
@@ -1945,7 +1959,7 @@ export class DomRenderer implements Renderer {
           // updateComponentEl より先に append する（順序を変えると nested comp 内の split alpha
           // video が「parent なし」で例外を投げる）。
           div.appendChild(el);
-          updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, childFrame, hostInPoint, childComp.fps, this.previewVideoPlayback, this.exportVideoStep, false, this.playbackPauseForSync, this.muteVideoPlayback);
+          updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, childFrame, hostInPoint, childComp.fps, this.previewVideoPlayback, this.exportVideoStep, false, this.playbackPauseForSync, this.muteVideoPlayback, this.playbackRateForSync);
         }
       }
       container.appendChild(div);
@@ -2149,6 +2163,7 @@ function updateComponentEl(
   forceSeek = false,
   pauseForSync = false,
   muteVideoPlayback = false,
+  playbackRateForSync = 1,
 ): void {
   switch (type) {
     case "solid": {
@@ -2263,6 +2278,7 @@ function updateComponentEl(
         video.preload = "auto";
         video.controls = false;
       }
+      attachPresentedClock(video);
       const trimStart = (props["trimStart"] as number | undefined) ?? 0;
       const t = Math.max(0, (hostFrame - hostInPoint) / fps + trimStart / fps);
       // §11.4 内蔵音声の音量（resolve 済み scalar）。再生中のみ実際に鳴る（muted 制御は syncVideoElementTime）。
@@ -2288,6 +2304,7 @@ function updateComponentEl(
         forceSeek: cutSeek,
         pauseForSync: previewVideoPlayback && pauseForSync,
         forceMuted: muteVideoPlayback,
+        playbackRateForSync,
       });
       if (exportVideoStep) {
         video.setAttribute(EXPORT_VIDEO_TARGET_ATTR, String(t));
@@ -2326,6 +2343,7 @@ function updateComponentEl(
           forceSeek: cutSeek,
           pauseForSync: previewVideoPlayback && pauseForSync,
           forceMuted: muteVideoPlayback,
+          playbackRateForSync,
         });
         // §16.2 genlock: 定常再生中（scrub/export/カット境界/映像先行pauseのいずれでもない）
         // だけ、color の実 currentTime に合わせて alpha の playbackRate を穏やかに補正する。

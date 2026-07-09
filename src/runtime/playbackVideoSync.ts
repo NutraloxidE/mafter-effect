@@ -8,6 +8,7 @@ const HAVE_CURRENT_DATA = 2;
 export interface VideoClockSample {
   targetSec: number;
   currentTimeSec: number;
+  presentedSec?: number;
   paused: boolean;
   ended: boolean;
   error: boolean;
@@ -56,10 +57,22 @@ export interface PlaybackSyncState {
 export function holdThresholdsForFps(fps: number): HoldThresholds {
   const f = Math.max(1, fps);
   return {
-    enterSec: 1 / f,
+    enterSec: 5 / f,
     exitSec: videoSeekThresholdSec(f),
     maxHoldSec: 1,
   };
+}
+
+function sampleClockSec(sample: VideoClockSample): number {
+  return Number.isFinite(sample.presentedSec) ? sample.presentedSec! : sample.currentTimeSec;
+}
+
+export function computePlaybackRateForSync(errorSec: number, fps: number): number {
+  const f = Math.max(1, fps);
+  if (!Number.isFinite(errorSec)) return 1;
+  if (Math.abs(errorSec) <= 0.25 / f) return 1;
+  const correction = Math.max(-0.04, Math.min(0.04, errorSec * 2));
+  return 1 + correction;
 }
 
 export function initialHoldState(): HoldState {
@@ -88,7 +101,7 @@ export function isVideoSampleEligible(sample: VideoClockSample): boolean {
   ) {
     return false;
   }
-  return Number.isFinite(sample.targetSec) && Number.isFinite(sample.currentTimeSec);
+  return Number.isFinite(sample.targetSec) && Number.isFinite(sampleClockSec(sample));
 }
 
 /** 適格サンプルのうち最大のタイムライン先行量（秒）= 映像遅れ。適格なしは 0。 */
@@ -96,7 +109,7 @@ export function maxVideoLagSec(samples: ReadonlyArray<VideoClockSample>): number
   let maxLag = 0;
   for (const s of samples) {
     if (!isVideoSampleEligible(s)) continue;
-    const lag = s.targetSec - s.currentTimeSec;
+    const lag = s.targetSec - sampleClockSec(s);
     if (lag > maxLag) maxLag = lag;
   }
   return maxLag;
@@ -107,10 +120,16 @@ export function maxVideoLeadSec(samples: ReadonlyArray<VideoClockSample>): numbe
   let maxLead = 0;
   for (const s of samples) {
     if (!isVideoSampleEligible(s)) continue;
-    const lead = s.currentTimeSec - s.targetSec;
+    const lead = sampleClockSec(s) - s.targetSec;
     if (lead > maxLead) maxLead = lead;
   }
   return maxLead;
+}
+
+export function dominantVideoSyncErrorSec(samples: ReadonlyArray<VideoClockSample>): number {
+  const lag = maxVideoLagSec(samples);
+  const lead = maxVideoLeadSec(samples);
+  return lag >= lead ? lag : -lead;
 }
 
 function failsafeExpired(
