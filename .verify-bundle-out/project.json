@@ -1,0 +1,119 @@
+{
+  "assets": [],
+  "compositions": [
+    {
+      "duration": 150,
+      "fps": 30,
+      "height": 1080,
+      "id": "01KX09HH9W68NTVQ472XQVWVTS",
+      "kind": "timeline",
+      "name": "Main",
+      "objects": [
+        {
+          "components": [
+            {
+              "props": {
+                "color": {
+                  "keyframes": [],
+                  "value": {
+                    "a": 1,
+                    "b": 0.9,
+                    "g": 0.5,
+                    "r": 0.5
+                  }
+                },
+                "size": {
+                  "keyframes": [],
+                  "value": {
+                    "x": 400,
+                    "y": 300,
+                    "z": 0
+                  }
+                }
+              },
+              "type": "solid"
+            }
+          ],
+          "enabled": true,
+          "id": "01KX09HH9WQ2EMF6V52Z93KH3Z",
+          "inPoint": 0,
+          "labelIndex": 0,
+          "name": "BundleSolid",
+          "opacity": {
+            "keyframes": [],
+            "value": 1
+          },
+          "outPoint": 150,
+          "parent": null,
+          "transform": {
+            "anchor": {
+              "keyframes": [],
+              "value": {
+                "x": 0,
+                "y": 0,
+                "z": 0
+              }
+            },
+            "position": {
+              "keyframes": [
+                {
+                  "easing": {
+                    "type": "linear"
+                  },
+                  "frame": 0,
+                  "value": {
+                    "x": 100,
+                    "y": 300,
+                    "z": 0
+                  }
+                },
+                {
+                  "easing": {
+                    "type": "linear"
+                  },
+                  "frame": 60,
+                  "value": {
+                    "x": 1700,
+                    "y": 300,
+                    "z": 0
+                  }
+                }
+              ],
+              "value": {
+                "x": 400,
+                "y": 300,
+                "z": 0
+              }
+            },
+            "rotation": {
+              "keyframes": [],
+              "value": {
+                "x": 0,
+                "y": 0,
+                "z": 0
+              }
+            },
+            "scale": {
+              "keyframes": [],
+              "value": {
+                "x": 1,
+                "y": 1,
+                "z": 1
+              }
+            }
+          },
+          "zOrder": 1
+        }
+      ],
+      "width": 1920
+    }
+  ],
+  "meta": {
+    "createdAt": "2026-07-08T07:19:41.627Z",
+    "name": "Untitled",
+    "updatedAt": "2026-07-08T07:19:41.627Z"
+  },
+  "pluginRefs": [],
+  "rootComposition": "01KX09HH9W68NTVQ472XQVWVTS",
+  "schemaVersion": 1
+}

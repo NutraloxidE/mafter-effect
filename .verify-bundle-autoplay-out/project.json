@@ -1,0 +1,107 @@
+{
+  "assets": [
+    {
+      "id": "01KX09QJQNA55FJJ3014KJVDAA",
+      "kind": "video",
+      "meta": {
+        "footageKind": "native"
+      },
+      "path": "assets/01KX09QJQNA55FJJ3014KJVDAA.mp4"
+    }
+  ],
+  "compositions": [
+    {
+      "duration": 150,
+      "fps": 30,
+      "height": 1080,
+      "id": "01KX09QJQNP0Q6KA219SNAVSDX",
+      "kind": "timeline",
+      "name": "Main",
+      "objects": [
+        {
+          "components": [
+            {
+              "props": {
+                "asset": "01KX09QJQNA55FJJ3014KJVDAA",
+                "fit": "contain",
+                "gain": {
+                  "keyframes": [],
+                  "value": 1
+                },
+                "trimStart": 0
+              },
+              "type": "video"
+            }
+          ],
+          "enabled": true,
+          "id": "01KX09QJQTW1KPVTVGK0PR0ERV",
+          "inPoint": 0,
+          "labelIndex": 2,
+          "name": "v",
+          "opacity": {
+            "keyframes": [],
+            "value": 1
+          },
+          "outPoint": 150,
+          "parent": null,
+          "transform": {
+            "anchor": {
+              "keyframes": [],
+              "value": {
+                "x": 0,
+                "y": 0,
+                "z": 0
+              }
+            },
+            "position": {
+              "keyframes": [],
+              "value": {
+                "x": 0,
+                "y": 0,
+                "z": 0
+              }
+            },
+            "rotation": {
+              "keyframes": [],
+              "value": {
+                "x": 0,
+                "y": 0,
+                "z": 0
+              }
+            },
+            "scale": {
+              "keyframes": [],
+              "value": {
+                "x": 1,
+                "y": 1,
+                "z": 1
+              }
+            }
+          },
+          "zOrder": 1
+        }
+      ],
+      "width": 1920
+    }
+  ],
+  "meta": {
+    "createdAt": "2026-07-08T07:22:59.701Z",
+    "name": "Untitled",
+    "updatedAt": "2026-07-08T07:22:59.701Z"
+  },
+  "pluginRefs": [],
+  "rootComposition": "01KX09QJQNP0Q6KA219SNAVSDX",
+  "schemaVersion": 1,
+  "treeOrder": {
+    "": [
+      {
+        "id": "01KX09QJQNP0Q6KA219SNAVSDX",
+        "kind": "composition"
+      },
+      {
+        "id": "01KX09QJQNA55FJJ3014KJVDAA",
+        "kind": "asset"
+      }
+    ]
+  }
+}

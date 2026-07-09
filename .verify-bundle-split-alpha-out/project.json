@@ -1,0 +1,102 @@
+{
+  "assets": [
+    {
+      "id": "01KX09JXAABZCTFKY4E6SJKM64",
+      "kind": "video",
+      "meta": {
+        "alphaMode": "split",
+        "alphaPath": "assets/01KX09JXAABZCTFKY4E6SJKM64.alpha.webm",
+        "duration": 5,
+        "footageKind": "native",
+        "hasAlpha": true,
+        "height": 1080,
+        "mime": "video/mp4",
+        "width": 1920
+      },
+      "path": "assets/01KX09JXAABZCTFKY4E6SJKM64.mp4"
+    }
+  ],
+  "compositions": [
+    {
+      "duration": 150,
+      "fps": 30,
+      "height": 1080,
+      "id": "01KX09JXA58ETF3YXSRSZ6FGHQ",
+      "kind": "timeline",
+      "name": "Main",
+      "objects": [
+        {
+          "components": [
+            {
+              "props": {
+                "asset": "01KX09JXAABZCTFKY4E6SJKM64",
+                "fit": "contain",
+                "gain": {
+                  "keyframes": [],
+                  "value": 1
+                },
+                "trimStart": 0
+              },
+              "type": "video"
+            }
+          ],
+          "enabled": true,
+          "id": "01KX09JXAVRDDPD6KNV32VC4P2",
+          "inPoint": 0,
+          "labelIndex": 2,
+          "name": "Person",
+          "opacity": {
+            "keyframes": [],
+            "value": 1
+          },
+          "outPoint": 150,
+          "parent": null,
+          "transform": {
+            "anchor": {
+              "keyframes": [],
+              "value": {
+                "x": 0,
+                "y": 0,
+                "z": 0
+              }
+            },
+            "position": {
+              "keyframes": [],
+              "value": {
+                "x": 0,
+                "y": 0,
+                "z": 0
+              }
+            },
+            "rotation": {
+              "keyframes": [],
+              "value": {
+                "x": 0,
+                "y": 0,
+                "z": 0
+              }
+            },
+            "scale": {
+              "keyframes": [],
+              "value": {
+                "x": 1,
+                "y": 1,
+                "z": 1
+              }
+            }
+          },
+          "zOrder": 1
+        }
+      ],
+      "width": 1920
+    }
+  ],
+  "meta": {
+    "createdAt": "2026-07-08T07:20:26.693Z",
+    "name": "Untitled",
+    "updatedAt": "2026-07-08T07:20:26.693Z"
+  },
+  "pluginRefs": [],
+  "rootComposition": "01KX09JXA58ETF3YXSRSZ6FGHQ",
+  "schemaVersion": 1
+}

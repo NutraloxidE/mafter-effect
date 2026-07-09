@@ -1,0 +1,113 @@
+{
+  "compId": "01KWV0C45N17T1CXWQMDJZK64C",
+  "fps": 30,
+  "range": [
+    0,
+    90
+  ],
+  "loop": true,
+  "textRenderMode": "draft",
+  "assetBase": ".",
+  "project": {
+    "schemaVersion": 1,
+    "meta": {
+      "name": "Untitled",
+      "createdAt": "2026-07-06T06:03:14.997Z",
+      "updatedAt": "2026-07-06T06:03:14.997Z"
+    },
+    "assets": [
+      {
+        "id": "01KWV0C46CAPPY5RT4DEESS5SB",
+        "path": "assets/01KWV0C46CAPPY5RT4DEESS5SB.mp4",
+        "kind": "video",
+        "meta": {
+          "footageKind": "native",
+          "width": 1280,
+          "height": 720,
+          "duration": 3,
+          "mime": "video/mp4"
+        }
+      }
+    ],
+    "compositions": [
+      {
+        "id": "01KWV0C45N17T1CXWQMDJZK64C",
+        "name": "Main",
+        "kind": "timeline",
+        "width": 1920,
+        "height": 1080,
+        "fps": 30,
+        "duration": 150,
+        "objects": [
+          {
+            "id": "01KWV0C47QHJ9VKK4RQNVW47F5",
+            "name": "video-2d",
+            "parent": null,
+            "zOrder": 1,
+            "enabled": true,
+            "inPoint": 0,
+            "outPoint": 90,
+            "transform": {
+              "anchor": {
+                "value": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                },
+                "keyframes": []
+              },
+              "position": {
+                "value": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                },
+                "keyframes": []
+              },
+              "rotation": {
+                "value": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                },
+                "keyframes": []
+              },
+              "scale": {
+                "value": {
+                  "x": 1,
+                  "y": 1,
+                  "z": 1
+                },
+                "keyframes": []
+              }
+            },
+            "opacity": {
+              "value": 1,
+              "keyframes": []
+            },
+            "components": [
+              {
+                "type": "video",
+                "props": {
+                  "asset": "01KWV0C46CAPPY5RT4DEESS5SB",
+                  "fit": "contain",
+                  "trimStart": 0,
+                  "gain": {
+                    "value": 1,
+                    "keyframes": []
+                  }
+                }
+              }
+            ],
+            "labelIndex": 2
+          }
+        ]
+      }
+    ],
+    "rootComposition": "01KWV0C45N17T1CXWQMDJZK64C",
+    "pluginRefs": []
+  },
+  "textFiles": {},
+  "blobs": {},
+  "builtinFonts": []
+}

@@ -56,7 +56,6 @@
 
 ---
 
-
 ### 2026-07-09 (Codex Opus 4.8) — rendering pipeline snapshot doc translated
 
 - **Done**: Translated `doc/rendering-pipeline-current.md` into Japanese while preserving the Mermaid diagrams, code identifiers, and the preview-vs-export / alpha-video distinctions from the original snapshot.
@@ -70,6 +69,7 @@
 - **Done**: Added `doc/rendering-pipeline-current.md` as a current implementation snapshot of the rendering pipeline. It maps the shared `resolve()` -> `DomRenderer` core, preview live playback/cache paths, browser export / `compFrameCapture` deterministic frame-step paths, HTML bundle playback, and alpha-video handling.
 - **Focus covered**: Explicitly documents preview-vs-export differences for video timing (`previewVideoPlayback` vs `exportVideoStep`), split alpha (`color <video>` + alpha `<video>` + canvas), packed alpha (single packed `<video>` + canvas), and final alpha support (mp4 opaque, webm/png-seq alpha-capable).
 - **Note**: `packedFrameDecoder.ts` / `packedDemux.ts` are documented as in-progress and not currently wired into `DomRenderer`.
+- **Preview baseline note**: Current HEAD `a597f7559deb602665bc215a785b799f497628c7` (`docs: map current rendering pipeline`, 2026-07-08 19:20 +0900) is a useful reference point where preview feels relatively less sluggish. Treat this as a rollback/compare baseline for upcoming preview performance work; it is a user-observed feel note, not a formal benchmark result.
 - **Next steps**: Keep this snapshot updated when the VideoDecoder packed-alpha preview path is actually connected, or when export/capture media synchronization changes.
 
 ---
