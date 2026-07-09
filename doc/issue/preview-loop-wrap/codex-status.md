@@ -39,7 +39,16 @@ WP-2 adds presented-frame based servo sync:
 
 ## Awaiting Capture
 
-No pixel/user-perception acceptance is claimed here. Per the plan, the next acceptance step is the real capture comparison by Claude Code or the user using the Phase 0 harness/fixture.
+Real Chrome capture was run once after WP-1/WP-2:
+
+- command: `node doc/issue/preview-loop-wrap/capture-comp33-loop-wrap.mjs`
+- output: `doc/issue/preview-loop-wrap/out/live/metrics.json`
+- wraps: 11
+- wrapFreezeStats: median 103ms, max 485ms, min 0ms, values `[0,0,0,0,98,103,103,113,116,215,485]`
+- desyncStats: medianAbsFrames 1.77, p95AbsFrames 10.92, maxAbsFrames 147.09, meanSignedFrames 3.24
+- ffmpeg freezedetect: 0 windows / 0%
+
+No pixel/user-perception acceptance is claimed from this run. The internal hold proxy still reports a 485ms worst wrap, so status remains `implemented-awaiting-capture` rather than `verified`.
 
 Residual risks:
 

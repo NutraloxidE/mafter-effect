@@ -1,5 +1,15 @@
 # Progress
 
+### 2026-07-09 (Codex Opus 4.8) - preview-loop-wrap real Chrome capture run, not verified
+
+- **Command**: `node doc/issue/preview-loop-wrap/capture-comp33-loop-wrap.mjs` against `https://localhost:5173/` with `verify-comp33-mini-project.zip`.
+- **Result**: Harness completed with 2019 screencast frames, 3583 rAF samples, 13 seek events, and 11 detected wraps. `doc/issue/preview-loop-wrap/out/live/metrics.json` was generated.
+- **Metrics**: wrap freeze median 103ms, max 485ms, min 0ms, values `[0,0,0,0,98,103,103,113,116,215,485]`. desync p95 10.92 frames, medianAbs 1.77 frames, maxAbs 147.09 frames. ffmpeg freezedetect reported 0 windows / 0%.
+- **Status**: Not promoted to `verified`. Internal hold proxy still reports a 485ms worst wrap, so `doc/issue/preview-loop-wrap/codex-status.md` remains `implemented-awaiting-capture`.
+- **Next steps**: Investigate remaining hold/freeze if this exceeds the acceptance target; otherwise have user/Claude perform the final perception/capture acceptance decision.
+
+---
+
 ### 2026-07-09 (Codex Opus 4.8) - preview-loop-wrap WP-2 implemented, awaiting capture
 
 - **Context**: Continued `doc/preview-improvement-plan-v2-for-codex.md` after WP-1. Decision record route remains `order: [WP-1, WP-2]`.
