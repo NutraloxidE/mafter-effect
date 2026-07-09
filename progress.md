@@ -1,5 +1,62 @@
 # Progress
 
+### 2026-07-09 (Codex Opus 4.8) - preview-loop-wrap current build is lightest measured candidate
+
+- **Interpretation**: Based on the Phase 0 baseline and the post-WP-1/WP-2 real Chrome capture, the current implementation is the lightest measured candidate so far, but not verified. Worst wrap improved from 533ms to 485ms, and capture-level `overallFreezePct` is 0% versus the baseline internal-hold freeze ratio of about 9.8%.
+- **Caveat**: This is not a clean acceptance result: wrap median regressed from 0ms to 103ms, and desync p95 is 10.92 frames (between the two baseline trials, 5.73-24.39). Keep `codex-status.md` at `implemented-awaiting-capture`.
+- **Next steps**: If this still feels too heavy, investigate the remaining wrap holds; otherwise use this branch as the current best lightweight candidate for user/Claude acceptance testing.
+
+---
+
+### 2026-07-09 (Codex Opus 4.8) - preview-loop-wrap real Chrome capture run, not verified
+
+- **Command**: `node doc/issue/preview-loop-wrap/capture-comp33-loop-wrap.mjs` against `https://localhost:5173/` with `verify-comp33-mini-project.zip`.
+- **Result**: Harness completed with 2019 screencast frames, 3583 rAF samples, 13 seek events, and 11 detected wraps. `doc/issue/preview-loop-wrap/out/live/metrics.json` was generated.
+- **Metrics**: wrap freeze median 103ms, max 485ms, min 0ms, values `[0,0,0,0,98,103,103,113,116,215,485]`. desync p95 10.92 frames, medianAbs 1.77 frames, maxAbs 147.09 frames. ffmpeg freezedetect reported 0 windows / 0%.
+- **Status**: Not promoted to `verified`. Internal hold proxy still reports a 485ms worst wrap, so `doc/issue/preview-loop-wrap/codex-status.md` remains `implemented-awaiting-capture`.
+- **Next steps**: Investigate remaining hold/freeze if this exceeds the acceptance target; otherwise have user/Claude perform the final perception/capture acceptance decision.
+
+---
+
+### 2026-07-09 (Codex Opus 4.8) - preview-loop-wrap WP-2 implemented, awaiting capture
+
+- **Context**: Continued `doc/preview-improvement-plan-v2-for-codex.md` after WP-1. Decision record route remains `order: [WP-1, WP-2]`.
+- **Spec**: Added §11.4 prose for presented-frame based playback sync: use rVFC `mediaTime` when available, apply a 0.96-1.04 playbackRate servo with a quarter-frame deadband, and demote `holdTimeline` / `pauseVideo` to five-frame failsafes. Scrub/export/stop reset playbackRate to 1.
+- **Implementation**: Added `src/runtime/videoPresentedClock.ts`, extended `VideoClockSample.presentedSec`, added `computePlaybackRateForSync` / `dominantVideoSyncErrorSec`, and wired servo rate through `DomRenderer`, `PreviewPanel`, `BundlePlayer`, and `BundleAudioClock`.
+- **Tests / verification**: Added/updated `test/playbackVideoSync.test.ts` and `test/videoElementSync.test.ts`. PASS: `npm run typecheck`; `npm test -- test/playbackVideoSync.test.ts test/videoElementSync.test.ts`; `npm run build:player`; `npm test` (106 files / 1021 tests).
+- **Status**: `doc/issue/preview-loop-wrap/codex-status.md` is updated to WP-1/WP-2 `implemented-awaiting-capture`. Pixel/perception acceptance is still not claimed.
+- **Next steps**: Run the Phase 0 capture/user-perception comparison for both WP-1 and WP-2.
+
+---
+
+### 2026-07-09 (Codex Opus 4.8) - preview-loop-wrap WP-1 implemented, awaiting capture
+
+- **Context**: Continued from `doc/preview-improvement-plan-v2-for-codex.md` after committing Phase 0 (`e5f366e`) and confirming `doc/issue/preview-loop-wrap/decision-record.md` is `status: FINAL` with `order: [WP-1, WP-2]`.
+- **Spec**: Updated `doc/mafter-effect-spec.md` Section 11.4 to define loop playback warm-up: within one second before `loopEnd`, preview/bundle playback may warm clips active at `loopStart` and swap to the warmed element on wrap. Scrub/export remain outside this behavior.
+- **Implementation**: Added loop warm-up targets in `src/runtime/videoLookaheadWarmup.ts`, passed loop playback options from `PreviewPanel`/`BundlePlayer`, and taught `DomRenderer` to detect a wrap to `loopStart` and swap in a ready pooled `<video>` element. If the warmed element is missing or not ready, the existing seek path remains the fallback.
+- **Tests / verification**: Added loop-specific `test/videoLookaheadWarmup.test.ts` coverage. PASS: `npm run typecheck`; `npm test -- test/videoLookaheadWarmup.test.ts`; `npm run build:player`; `npm test` (106 files / 1014 tests).
+- **Status**: `doc/issue/preview-loop-wrap/codex-status.md` is `implemented-awaiting-capture`. Pixel/perception acceptance is not claimed yet; Phase 0 capture harness comparison is the next acceptance step.
+- **Next steps**: Run the real capture/user-perception check for WP-1. If accepted, proceed to WP-2 (presented-frame + playbackRate servo) from the decision record.
+
+---
+
+### 2026-07-09（Sonnet 5）— preview-loop-wrap Phase 0（per-wrap 分類計測・discriminator 確定）✅
+
+- **経緯**: [doc/preview-improvement-plan-v2-for-codex.md](doc/preview-improvement-plan-v2-for-codex.md) §0 の役割分担どおり、Phase 0（計測・判別因子の確定）を実施。成果物は [doc/issue/preview-loop-wrap/decision-record.md](doc/issue/preview-loop-wrap/decision-record.md)（`status: FINAL`）。Codex はこのファイルを確認してから Phase 1 以降（WP-1/WP-2 実装）に着手できる。
+- **フィクスチャ**: Downloads 最新 `mafter-project (25).zip` から Comp33（背景 native `<video>` + Person packed alpha `<video>` の混在ケース、fps30・5秒）を抽出し `verify-comp33-mini-project.zip`（repo root・一時物・未コミット）を作成（生成スクリプト `build-mini-comp33-zip.mjs`、`scratchpad-build-mini-comp32-zip.mjs` と同型）。
+- **計測**: 新規 [capture-comp33-loop-wrap.mjs](doc/issue/preview-loop-wrap/capture-comp33-loop-wrap.mjs)（実 Chrome headed・CDP screencast + rAF 全速内部ログ + `<video>` の `seeking`/`seeked` イベント計装、`previewCacheService` を直接 import して `shouldPreferCacheOverlay`/`isWorkAreaBuildComplete` の実値も記録）。workArea=comp全体・loop ON・63秒 ×2 trial（22 wrap 分類）+ Caching 強制 ON トライアル。
+- **セッション中の環境事故**: 実測直前に **C:ドライブが完全に満杯（空き0GB/476GB）** になり CDP screencast/ffmpeg の書き込みが `ENOSPC` で失敗。AskUserQuestion でユーザーに確認し、ユーザー側で空き容量確保（19GB 復旧）後に再開。dev server も同時に落ちていたため再起動した。
+- **主要な発見**（decision-record 本体に詳細・コード行番号込み）:
+  1. **cache-overlay は構造的に到達不能と実測で確定**: `Caching` を強制 ON にし `startBackgroundBuildIfNeeded()` を直接呼んでも、[ramPreview.ts:280](src/editor/ramPreview.ts#L280) の `if (this.isRealtimeCapable()) return;` により bake が一度も起動しなかった（120秒待機で timeout）。Comp33 は resolve/render 自体は軽く「realtime capable」と判定されるため、**video decode がボトルネックのケースでは Caching 設定を有効化しても bake が発火しない**。`compNeedsAutoPreviewCache` が video を条件に含まない既知の穴（idea doc 記載）に加え、二重の理由で cache-overlay 経路は本症状と無関係と判明。WP-A は route から除外（`isRealtimeCapable()` 側の改修が要るが今回のスコープ外）。
+  2. **`.buffered`（JS 可視 API）は全 22 wrap で不変**（loopStart=0秒 を常に含む・readyState=4 常時）だが、実際の seek 所要時間（`seeking`→`seeked`）は **5〜34ms（クリーン wrap）から 138〜1350ms（大 freeze wrap）まで実測で数十〜数百倍のばらつき**。つまり内部デコーダ状態は JS からは見えない形で非決定論的に変動しており、これが decision-record の discriminator=`buffered`（決定ゲート表）カテゴリの実測裏付けになった。
+  3. 大 freeze 3件中2件で Person 側 seek イベントが 2 回でなく **3 回**（冗長な再 seek で遅延が積み増し）、残り1件（trial2, 533ms=最大）は hold が単発でなく **6回・約1.8秒間断続**（H1 のゲート発振と一致）。単一変数で綺麗に分離できず、**discriminator = `mixed`** と判定。
+  4. **測定妥当性の追加教訓**: 同一キャプチャで ffmpeg `freezedetect`（全画面）は 0% を報告したが、内部 hold ログ基準では約9.8%のfreezeがあった。理由は「hold中もBG `<video>`はネイティブに描画を続ける（Person側だけ止まる）」ため全画面差分では検出されない、という report.md（[[alpha-video-perf-decode-bound]]）とは異なる新しい測定妥当性の罠。per-wrap 判定は内部 hold ログを一次指標に採用（decision-record に明記）。
+- **route 決定**: `order: [WP-1, WP-2]`。WP-1（ループ折り返しダブルバッファ）が先＝観測された全ての大 freeze は wrap 時点の live seek+decode に起因し、Idea 1 が構造的にこの経路自体を排除するため。WP-2（presented-frame + playbackRate サーボ）は steady-state desync（p95 5.73〜24.39 frame、trial間で大きく変動＝S1/H1 の直接証拠）に対応。WP-3・WP-A は route から除外（理由は decision-record 参照）。
+- **Next steps**: ユーザーが Codex に接続し、`doc/preview-improvement-plan-v2-for-codex.md` の手順で WP-1 → WP-2 の順に実装（Codex は decision-record の `status: FINAL` を確認してから着手）。受け入れ計測（実ピクセル）は Claude Code / ユーザーが実施。
+
+---
+
+
 ### 2026-07-09 (Codex Opus 4.8) — rendering pipeline snapshot doc translated
 
 - **Done**: Translated `doc/rendering-pipeline-current.md` into Japanese while preserving the Mermaid diagrams, code identifiers, and the preview-vs-export / alpha-video distinctions from the original snapshot.

@@ -24,6 +24,7 @@ export interface VideoLookaheadTarget {
   /** in 点でのソース時刻（秒）= trimStart / fps。 */
   targetSec: number;
   inPoint: Frame;
+  reason?: "upcoming" | "loop";
 }
 
 export interface VideoLookaheadOptions {
@@ -31,6 +32,8 @@ export interface VideoLookaheadOptions {
   lookaheadFrames?: number;
   /** 現フレームで表示中の video assetId。同一アセット連結カットはプール再利用で足りるため除外。 */
   activeAssetIds?: ReadonlySet<string>;
+  /** loop 折り返し直前に loopStart で active なクリップを先読みする。 */
+  loop?: { enabled: boolean; loopStart: Frame; loopEnd: Frame };
 }
 
 const DEFAULT_LOOKAHEAD_SEC = 1;
@@ -50,6 +53,10 @@ export function computeVideoLookaheadWarmupTargets(
     options?.lookaheadFrames ?? Math.max(1, Math.round(safeFps * DEFAULT_LOOKAHEAD_SEC));
   const active = options?.activeAssetIds;
   const out: VideoLookaheadTarget[] = [];
+  const pushUnique = (target: VideoLookaheadTarget): void => {
+    if (out.some((t) => t.objectId === target.objectId)) return;
+    out.push(target);
+  };
 
   for (const clip of clips) {
     if (!clip.enabled) continue;
@@ -58,12 +65,30 @@ export function computeVideoLookaheadWarmupTargets(
     if (framesUntilIn > lookahead) continue;
     if (active?.has(clip.assetId)) continue;
 
-    out.push({
+    pushUnique({
       objectId: clip.objectId,
       assetId: clip.assetId,
       targetSec: Math.max(0, clip.trimStart / safeFps),
       inPoint: clip.inPoint,
     });
+  }
+
+  const loop = options?.loop;
+  if (loop?.enabled) {
+    const framesUntilLoopEnd = loop.loopEnd - currentFrame;
+    if (framesUntilLoopEnd >= 0 && framesUntilLoopEnd <= lookahead) {
+      for (const clip of clips) {
+        if (!clip.enabled) continue;
+        if (!(clip.inPoint <= loop.loopStart && loop.loopStart < clip.outPoint)) continue;
+        pushUnique({
+          objectId: clip.objectId,
+          assetId: clip.assetId,
+          targetSec: Math.max(0, (clip.trimStart + (loop.loopStart - clip.inPoint)) / safeFps),
+          inPoint: loop.loopStart,
+          reason: "loop",
+        });
+      }
+    }
   }
 
   out.sort((a, b) => a.inPoint - b.inPoint || a.objectId.localeCompare(b.objectId));

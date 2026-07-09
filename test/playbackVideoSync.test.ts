@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   computePlaybackSyncState,
+  computePlaybackRateForSync,
+  dominantVideoSyncErrorSec,
   filterPrimaryVideoSamples,
   holdThresholdsForFps,
   initialPlaybackSyncState,
@@ -24,11 +26,28 @@ function sample(partial: Partial<VideoClockSample> & Pick<VideoClockSample, "tar
 }
 
 describe("holdThresholdsForFps", () => {
-  it("uses one frame enter and half-frame exit at 30fps", () => {
+  it("uses five-frame failsafe enter and half-frame exit at 30fps", () => {
     const t = holdThresholdsForFps(30);
-    expect(t.enterSec).toBeCloseTo(1 / 30, 6);
+    expect(t.enterSec).toBeCloseTo(5 / 30, 6);
     expect(t.exitSec).toBeCloseTo(videoSeekThresholdSec(30), 6);
     expect(t.maxHoldSec).toBe(1);
+  });
+});
+
+describe("computePlaybackRateForSync", () => {
+  it("returns 1.0 inside the quarter-frame deadband", () => {
+    expect(computePlaybackRateForSync(0.25 / 30, 30)).toBe(1);
+    expect(computePlaybackRateForSync(-0.25 / 30, 30)).toBe(1);
+  });
+
+  it("speeds up lagging video and slows down leading video", () => {
+    expect(computePlaybackRateForSync(0.05, 30)).toBeGreaterThan(1);
+    expect(computePlaybackRateForSync(-0.05, 30)).toBeLessThan(1);
+  });
+
+  it("clamps correction to +/-4 percent", () => {
+    expect(computePlaybackRateForSync(10, 30)).toBe(1.04);
+    expect(computePlaybackRateForSync(-10, 30)).toBe(0.96);
   });
 });
 
@@ -56,6 +75,16 @@ describe("maxVideoLagSec / maxVideoLeadSec", () => {
     expect(maxVideoLagSec(samples)).toBeCloseTo(1, 6);
     expect(maxVideoLeadSec(samples)).toBeCloseTo(0.5, 6);
   });
+
+  it("uses presentedSec when available and currentTimeSec as fallback", () => {
+    const samples = [
+      sample({ targetSec: 2, currentTimeSec: 1, presentedSec: 1.9 }),
+      sample({ targetSec: 1, currentTimeSec: 1.5 }),
+    ];
+    expect(maxVideoLagSec(samples)).toBeCloseTo(0.1, 6);
+    expect(maxVideoLeadSec(samples)).toBeCloseTo(0.5, 6);
+    expect(dominantVideoSyncErrorSec(samples)).toBeCloseTo(-0.5, 6);
+  });
 });
 
 describe("computePlaybackSyncState", () => {
@@ -63,7 +92,7 @@ describe("computePlaybackSyncState", () => {
   const enter = th.enterSec + 0.001;
   const exit = th.exitSec;
 
-  it("holds timeline when video lags beyond one frame", () => {
+  it("holds timeline when video lags beyond the five-frame failsafe", () => {
     const next = computePlaybackSyncState(
       initialPlaybackSyncState(),
       [sample({ targetSec: 1 + enter, currentTimeSec: 1 })],
@@ -74,7 +103,7 @@ describe("computePlaybackSyncState", () => {
     expect(next.pauseVideo).toBe(false);
   });
 
-  it("pauses video when video leads beyond one frame", () => {
+  it("pauses video when video leads beyond the five-frame failsafe", () => {
     const next = computePlaybackSyncState(
       initialPlaybackSyncState(),
       [sample({ targetSec: 1, currentTimeSec: 1 + enter })],

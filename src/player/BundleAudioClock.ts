@@ -3,6 +3,8 @@ import { readGainProp, sampleGain } from "../runtime/footageAudio";
 import { autoFadeMultiplierAtFrame, collectFadeClips, computeFadeSuppression, isAutoFadeEnabled, type FadeSuppression } from "../runtime/footageAutoFade";
 import {
   computePlaybackSyncState,
+  computePlaybackRateForSync,
+  dominantVideoSyncErrorSec,
   holdThresholdsForFps,
   initialPlaybackSyncState,
   type PlaybackSyncState,
@@ -13,6 +15,7 @@ import {
 export interface BundleAudioClockSyncOptions {
   getVideoClockSamples?: () => VideoClockSample[];
   onPlaybackSyncState?: (state: PlaybackSyncState) => void;
+  onPlaybackRate?: (rate: number) => void;
 }
 
 /**
@@ -202,6 +205,9 @@ export class BundleAudioClock {
       samples,
       holdThresholdsForFps(this.fps),
       performance.now(),
+    );
+    this.sync?.onPlaybackRate?.(
+      computePlaybackRateForSync(dominantVideoSyncErrorSec(samples), this.fps),
     );
     this.sync?.onPlaybackSyncState?.(this.syncState);
     if (this.syncState.holdTimeline) {

@@ -155,6 +155,7 @@ export interface VideoElementSyncOptions {
    * playbackMode 中のみ意味を持つ。旧 HW seek 連鎖を避けつつ双方向同期する。
    */
   pauseForSync?: boolean;
+  playbackRateForSync?: number;
   /**
    * §11.7 bundle: true の間は playbackMode 中でも unmute しない（muted のまま再生を進める）。
    * ページロード直後（ユーザー操作前）の unmute 付き play() はブラウザの autoplay ポリシーで
@@ -163,6 +164,16 @@ export interface VideoElementSyncOptions {
    * editor preview は Play 自体がユーザー操作なので常に false のまま無関係。
    */
   forceMuted?: boolean;
+}
+
+function setVideoPlaybackRate(video: HTMLVideoElement, rate: number): void {
+  const next = Number.isFinite(rate) ? Math.max(0.96, Math.min(1.04, rate)) : 1;
+  if (Math.abs(video.playbackRate - next) <= 0.001) return;
+  try {
+    video.playbackRate = next;
+  } catch {
+    /* playbackRate best-effort */
+  }
 }
 
 /** 半フレーム未満の差は無視（scrub/export の過剰 seek 抑制）。 */
@@ -234,6 +245,7 @@ function syncVideoElementExportStep(
 ): void {
   const halfFrame = videoSeekThresholdSec(fps);
   const seekTo = videoSeekTargetSec(targetSec, fps);
+  setVideoPlaybackRate(video, 1);
   try {
     video.muted = true;
     if (!video.paused) video.pause();
@@ -254,6 +266,7 @@ export function syncVideoElementTime(
   if (!Number.isFinite(targetSec) || targetSec < 0) return;
 
   if (options.exportStep) {
+    setVideoPlaybackRate(video, 1);
     syncVideoElementExportStep(video, targetSec, fps);
     return;
   }
@@ -261,6 +274,7 @@ export function syncVideoElementTime(
   const seekThreshold = videoSeekThresholdSec(fps);
 
   if (options.playbackMode) {
+    setVideoPlaybackRate(video, options.playbackRateForSync ?? 1);
     // §11.4 video 内蔵音声: 再生中のみアンミュートしてネイティブ A/V 同期に委ねる。
     // §11.7 forceMuted 中は autoplay ポリシー回避のため unmute を保留する。
     try {
@@ -270,6 +284,7 @@ export function syncVideoElementTime(
     }
     // 映像先行ゲート: pause のみ（seek しない＝旧 HW スタッタ対策 A を維持）。
     if (options.pauseForSync) {
+      setVideoPlaybackRate(video, 1);
       if (!video.paused) {
         try {
           video.pause();
@@ -306,6 +321,7 @@ export function syncVideoElementTime(
     return;
   }
 
+  setVideoPlaybackRate(video, 1);
   // §11.4 video 内蔵音声: スクラブ・停止・warm-up は決定論のため常にミュート。
   try {
     video.muted = true;

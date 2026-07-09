@@ -57,6 +57,11 @@ import {
   computeVideoLookaheadWarmupTargets,
   type VideoClipLookaheadInput,
 } from "./videoLookaheadWarmup";
+import {
+  attachPresentedClock,
+  detachPresentedClock,
+  getPresentedMediaTimeSec,
+} from "./videoPresentedClock";
 import type { ExportChain, ExportLayer, NestedCompositeMeta, ExportTaggedElement } from "./exportComposite";
 import type { EffectFilter } from "./plugin";
 import type { BlendMode, TrackMatteMode } from "../core/schema";
@@ -217,8 +222,15 @@ export class DomRenderer implements Renderer {
   private exportVideoStep = false;
   /** §11.4 映像先行ゲート: playback 中に video を pause（seek しない）。 */
   private playbackPauseForSync = false;
+  private playbackRateForSync = 1;
   /** §11.7 bundle: true の間は playbackMode 中でも video を unmute しない（autoplay ポリシー回避）。 */
   private muteVideoPlayback = false;
+  private previewLoop: { enabled: boolean; loopStart: Frame; loopEnd: Frame } = {
+    enabled: false,
+    loopStart: 0,
+    loopEnd: 0,
+  };
+  private lastRenderedFrame: Frame | null = null;
 
   setPreviewRenderOptions(opts: {
     holdLastRaster?: boolean;
@@ -227,15 +239,18 @@ export class DomRenderer implements Renderer {
     previewVideoPlayback?: boolean;
     exportVideoStep?: boolean;
     muteVideoPlayback?: boolean;
+    loop?: { enabled: boolean; loopStart: Frame; loopEnd: Frame };
   }): void {
     if (opts.holdLastRaster !== undefined) this.holdLastRaster = opts.holdLastRaster;
     if (opts.forceAdjustmentRaster !== undefined) this.forceAdjustmentRaster = opts.forceAdjustmentRaster;
     if (opts.exportCompositeMode !== undefined) this.exportCompositeMode = opts.exportCompositeMode;
     if (opts.exportVideoStep !== undefined) this.exportVideoStep = opts.exportVideoStep;
     if (opts.muteVideoPlayback !== undefined) this.muteVideoPlayback = opts.muteVideoPlayback;
+    if (opts.loop !== undefined) this.previewLoop = opts.loop;
     if (opts.previewVideoPlayback !== undefined) {
       if (this.previewVideoPlayback && !opts.previewVideoPlayback) {
         this.playbackPauseForSync = false;
+        this.playbackRateForSync = 1;
         this.pauseAllVideos();
         this.clearVideoLookaheadWarmups();
       }
@@ -268,6 +283,10 @@ export class DomRenderer implements Renderer {
         /* best-effort */
       }
     });
+  }
+
+  setPlaybackRateForSync(rate: number): void {
+    this.playbackRateForSync = Number.isFinite(rate) ? Math.max(0.96, Math.min(1.04, rate)) : 1;
   }
 
   setTextQuality(mode: "draft" | "precise"): void {
@@ -310,10 +329,18 @@ export class DomRenderer implements Renderer {
     container.appendChild(root);
     this.root = root;
     this.currentComp = comp;
+    this.lastRenderedFrame = null;
   }
 
   renderFrame(scene: ResolvedScene, frame: Frame): void {
     if (!this.root) return;
+    const previousRenderedFrame = this.lastRenderedFrame;
+    const loopWrapFrame =
+      this.previewVideoPlayback &&
+      this.previewLoop.enabled &&
+      previousRenderedFrame !== null &&
+      previousRenderedFrame > frame &&
+      frame === this.previewLoop.loopStart;
 
     if (this.forceAdjustmentRaster) {
       this.exportAdjustmentQueue = Promise.resolve();
@@ -431,7 +458,7 @@ export class DomRenderer implements Renderer {
         clearMatteSourceStyle(entry.div);
       }
 
-      this.applyObject(entry, obj, frame, compW, compH);
+      this.applyObject(entry, obj, frame, compW, compH, loopWrapFrame);
     }
 
     // §11.4 入場処理で再利用されずプールに残った <video> を静音（離脱クリップの音漏れ防止）。
@@ -439,6 +466,7 @@ export class DomRenderer implements Renderer {
 
     // §11.4 異なるアセット間カット境界 — 再生中のみ in 点が近い clip を offscreen で先読み prime しプールへ投入。
     this.scheduleVideoLookaheadWarmup(frame);
+    this.lastRenderedFrame = frame;
   }
 
   /**
@@ -520,6 +548,7 @@ export class DomRenderer implements Renderer {
   }
 
   private teardownVideoElement(el: HTMLVideoElement): void {
+    detachPresentedClock(el);
     try {
       el.pause();
       el.removeAttribute("src");
@@ -550,6 +579,7 @@ export class DomRenderer implements Renderer {
     const fps = this.currentComp?.fps ?? 30;
     const targets = computeVideoLookaheadWarmupTargets(frame, fps, clips, {
       activeAssetIds: this.getActiveVideoAssetIds(),
+      loop: this.previewLoop,
     });
     const wanted = new Set(targets.map((t) => t.objectId));
 
@@ -566,7 +596,7 @@ export class DomRenderer implements Renderer {
     }
 
     for (const t of targets) {
-      if (this.entries.has(t.objectId)) continue;
+      if (t.reason !== "loop" && this.entries.has(t.objectId)) continue;
       if (this.lookaheadVideos.has(t.objectId)) continue;
       if (this.videoPool.has(t.assetId)) continue;
 
@@ -612,6 +642,42 @@ export class DomRenderer implements Renderer {
         /* best-effort */
       });
     }
+  }
+
+  private swapVideoForLoopWarmup(
+    entry: ObjectEntry,
+    childIndex: number,
+    props: Record<string, unknown>,
+    frame: Frame,
+    hostInPoint: number,
+    fps: number,
+  ): HTMLVideoElement | null {
+    const current = entry.children[childIndex];
+    if (!(current instanceof HTMLVideoElement)) return null;
+    const assetId = typeof props["asset"] === "string" ? props["asset"] : undefined;
+    if (!assetId) return null;
+    const trimStart = (props["trimStart"] as number | undefined) ?? 0;
+    const targetSec = Math.max(0, (frame - hostInPoint) / fps + trimStart / fps);
+    const candidate = this.acquireVideoFromPool(assetId);
+    if (!candidate) return null;
+    if (!isVideoReadyAtTarget(candidate, targetSec, fps)) {
+      this.videoPool.stash(assetId, candidate);
+      const lookaheadObjectId = candidate.dataset.mafterLookaheadObjectId;
+      if (lookaheadObjectId) this.lookaheadVideos.set(lookaheadObjectId, candidate);
+      return null;
+    }
+
+    try {
+      current.muted = true;
+      if (!current.paused) current.pause();
+    } catch {
+      /* pause best-effort */
+    }
+    if (current.parentNode) current.parentNode.replaceChild(candidate, current);
+    else entry.contentRoot.appendChild(candidate);
+    entry.children[childIndex] = candidate;
+    this.teardownVideoElement(current);
+    return candidate;
   }
 
   resize(w: number, h: number): void {
@@ -814,6 +880,7 @@ export class DomRenderer implements Renderer {
       samples.push({
         targetSec,
         currentTimeSec: video.currentTime,
+        presentedSec: getPresentedMediaTimeSec(video) ?? undefined,
         paused: video.paused,
         ended: video.ended,
         error: video.error !== null,
@@ -911,6 +978,7 @@ export class DomRenderer implements Renderer {
     }
     this.entries.clear();
     this.currentComp = null;
+    this.lastRenderedFrame = null;
   }
 
   private pauseAllVideos(): void {
@@ -919,6 +987,7 @@ export class DomRenderer implements Renderer {
         if (el instanceof HTMLVideoElement) {
           // §11.4 停止時はミュートも戻す（次のスクラブ前の音漏れ防止）。
           try {
+            el.playbackRate = 1;
             el.muted = true;
           } catch {
             /* muted best-effort */
@@ -943,6 +1012,7 @@ export class DomRenderer implements Renderer {
     frame: Frame,
     compW = this.currentComp?.width ?? 0,
     compH = this.currentComp?.height ?? 0,
+    loopWrapFrame = false,
   ): void {
     // §6.5b/§5.4b 3D 層（threeD）のみカメラ view を per-object で焼く（root perspective を受けて
     // dolly/zoom が効く）。2D 層は素の worldTransform = カメラ免除（AE 準拠, z=0 で perspective 無歪み）。
@@ -1042,10 +1112,17 @@ export class DomRenderer implements Renderer {
 
     // props を in-place で更新（<img> src は変化時のみ → 再読込しない）
     obj.components.forEach((c, i) => {
-      const el = entry.children[i];
+      let el = entry.children[i];
+      let forceSeek = childrenRebuilt;
       if (el) {
         const hostInPoint = (c.props["_hostInPoint"] as number | undefined) ?? 0;
-        updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, frame, hostInPoint, this.currentComp?.fps ?? 30, this.previewVideoPlayback, this.exportVideoStep, childrenRebuilt, this.playbackPauseForSync, this.muteVideoPlayback);
+        const fps = this.currentComp?.fps ?? 30;
+        if (loopWrapFrame && c.type === "video" && el instanceof HTMLVideoElement) {
+          const swapped = this.swapVideoForLoopWarmup(entry, i, c.props, frame, hostInPoint, fps);
+          if (swapped) el = swapped;
+          forceSeek = true;
+        }
+        updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, frame, hostInPoint, fps, this.previewVideoPlayback, this.exportVideoStep, forceSeek, this.playbackPauseForSync, this.muteVideoPlayback, this.playbackRateForSync);
       }
 
       // Plugin component: registry から ComponentDef.render を呼ぶ（組み込み型は未登録でスキップ）
@@ -1882,7 +1959,7 @@ export class DomRenderer implements Renderer {
           // updateComponentEl より先に append する（順序を変えると nested comp 内の split alpha
           // video が「parent なし」で例外を投げる）。
           div.appendChild(el);
-          updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, childFrame, hostInPoint, childComp.fps, this.previewVideoPlayback, this.exportVideoStep, false, this.playbackPauseForSync, this.muteVideoPlayback);
+          updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, childFrame, hostInPoint, childComp.fps, this.previewVideoPlayback, this.exportVideoStep, false, this.playbackPauseForSync, this.muteVideoPlayback, this.playbackRateForSync);
         }
       }
       container.appendChild(div);
@@ -2086,6 +2163,7 @@ function updateComponentEl(
   forceSeek = false,
   pauseForSync = false,
   muteVideoPlayback = false,
+  playbackRateForSync = 1,
 ): void {
   switch (type) {
     case "solid": {
@@ -2200,6 +2278,7 @@ function updateComponentEl(
         video.preload = "auto";
         video.controls = false;
       }
+      attachPresentedClock(video);
       const trimStart = (props["trimStart"] as number | undefined) ?? 0;
       const t = Math.max(0, (hostFrame - hostInPoint) / fps + trimStart / fps);
       // §11.4 内蔵音声の音量（resolve 済み scalar）。再生中のみ実際に鳴る（muted 制御は syncVideoElementTime）。
@@ -2225,6 +2304,7 @@ function updateComponentEl(
         forceSeek: cutSeek,
         pauseForSync: previewVideoPlayback && pauseForSync,
         forceMuted: muteVideoPlayback,
+        playbackRateForSync,
       });
       if (exportVideoStep) {
         video.setAttribute(EXPORT_VIDEO_TARGET_ATTR, String(t));
@@ -2263,6 +2343,7 @@ function updateComponentEl(
           forceSeek: cutSeek,
           pauseForSync: previewVideoPlayback && pauseForSync,
           forceMuted: muteVideoPlayback,
+          playbackRateForSync,
         });
         // §16.2 genlock: 定常再生中（scrub/export/カット境界/映像先行pauseのいずれでもない）
         // だけ、color の実 currentTime に合わせて alpha の playbackRate を穏やかに補正する。

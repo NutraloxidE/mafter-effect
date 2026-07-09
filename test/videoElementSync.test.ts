@@ -20,6 +20,7 @@ function mockVideo(
     videoWidth: 1920,
     videoHeight: 1080,
     muted: false,
+    playbackRate: 1,
     play: vi.fn().mockResolvedValue(undefined),
     pause: vi.fn(),
     addEventListener: vi.fn(),
@@ -89,6 +90,27 @@ describe("syncVideoElementTime", () => {
     const video = mockVideo(1, false, { muted: true });
     syncVideoElementTime(video, 1 + 1 / 30, 30, { playbackMode: true });
     expect(video.muted).toBe(false);
+  });
+
+  it("applies playbackRate only during playback mode", () => {
+    const video = mockVideo(1, false);
+    syncVideoElementTime(video, 1 + 1 / 30, 30, {
+      playbackMode: true,
+      playbackRateForSync: 1.04,
+    });
+    expect(video.playbackRate).toBe(1.04);
+  });
+
+  it("resets playbackRate when leaving playback mode", () => {
+    const video = mockVideo(1, true, { playbackRate: 1.04 });
+    syncVideoElementTime(video, 1, 30, { playbackMode: false });
+    expect(video.playbackRate).toBe(1);
+  });
+
+  it("resets playbackRate for export step", () => {
+    const video = mockVideo(1, true, { playbackRate: 0.96 });
+    syncVideoElementTime(video, 1, 30, { playbackMode: false, exportStep: true });
+    expect(video.playbackRate).toBe(1);
   });
 
   it("mutes the video on scrub", () => {

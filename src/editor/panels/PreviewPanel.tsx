@@ -54,6 +54,8 @@ import { runPreviewFrameClock, runPreviewPlaybackLoop } from "../../runtime/prev
 import { PreviewAudioClock } from "../previewAudioClock";
 import {
   computePlaybackSyncState,
+  computePlaybackRateForSync,
+  dominantVideoSyncErrorSec,
   filterPrimaryVideoSamples,
   holdThresholdsForFps,
   initialPlaybackSyncState,
@@ -633,12 +635,14 @@ export function PreviewPanel() {
     const applyPlaybackSync = (): boolean => {
       const renderer = rendererRef.current;
       if (!renderer) return false;
+      const samples = filterPrimaryVideoSamples(renderer.sampleMountedVideoClocks());
       syncState = computePlaybackSyncState(
         syncState,
-        filterPrimaryVideoSamples(renderer.sampleMountedVideoClocks()),
+        samples,
         thresholds,
         performance.now(),
       );
+      renderer.setPlaybackRateForSync(computePlaybackRateForSync(dominantVideoSyncErrorSec(samples), cfg.fps));
       renderer.setPlaybackPauseForSync(syncState.pauseVideo);
       return syncState.holdTimeline;
     };
@@ -692,6 +696,9 @@ export function PreviewPanel() {
         getVideoClockSamples: () =>
           filterPrimaryVideoSamples(rendererRef.current?.sampleMountedVideoClocks() ?? []),
         onPlaybackSyncState: (s) => {
+          const renderer = rendererRef.current;
+          const samples = filterPrimaryVideoSamples(renderer?.sampleMountedVideoClocks() ?? []);
+          renderer?.setPlaybackRateForSync(computePlaybackRateForSync(dominantVideoSyncErrorSec(samples), cfg.fps));
           rendererRef.current?.setPlaybackPauseForSync(s.pauseVideo);
         },
       });
@@ -714,6 +721,11 @@ export function PreviewPanel() {
       renderer?.setPreviewRenderOptions({
         previewVideoPlayback: true,
         holdLastRaster: true,
+        loop: {
+          enabled: cfg.loop,
+          loopStart: cfg.loopStart,
+          loopEnd: cfg.loopEnd,
+        },
       });
       const f = frameRef.current;
       const gen = ++draftPlaybackRenderGenRef.current;
