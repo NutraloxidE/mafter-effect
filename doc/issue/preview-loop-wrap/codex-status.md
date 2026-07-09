@@ -50,6 +50,8 @@ Real Chrome capture was run once after WP-1/WP-2:
 
 No pixel/user-perception acceptance is claimed from this run. The internal hold proxy still reports a 485ms worst wrap, so status remains `implemented-awaiting-capture` rather than `verified`.
 
+Interpretation: among the measured states so far, the current WP-1/WP-2 implementation is the lightest overall candidate. The worst wrap improved from the Phase 0 baseline max 533ms to 485ms, and the capture-level `overallFreezePct` reported 0% versus the baseline internal-hold freeze ratio of about 9.8%. This is not a clean win: wrap median regressed from 0ms to 103ms and desync p95 landed at 10.92 frames, between the two baseline trials (5.73-24.39). Treat the branch as the best current lightweight candidate, not as accepted/verified.
+
 Residual risks:
 
 - The double-buffer swap depends on the loop warm-up element being ready at wrap time. If not ready, the renderer deliberately falls back to the existing seek behavior.

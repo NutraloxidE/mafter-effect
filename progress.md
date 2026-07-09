@@ -1,5 +1,13 @@
 # Progress
 
+### 2026-07-09 (Codex Opus 4.8) - preview-loop-wrap current build is lightest measured candidate
+
+- **Interpretation**: Based on the Phase 0 baseline and the post-WP-1/WP-2 real Chrome capture, the current implementation is the lightest measured candidate so far, but not verified. Worst wrap improved from 533ms to 485ms, and capture-level `overallFreezePct` is 0% versus the baseline internal-hold freeze ratio of about 9.8%.
+- **Caveat**: This is not a clean acceptance result: wrap median regressed from 0ms to 103ms, and desync p95 is 10.92 frames (between the two baseline trials, 5.73-24.39). Keep `codex-status.md` at `implemented-awaiting-capture`.
+- **Next steps**: If this still feels too heavy, investigate the remaining wrap holds; otherwise use this branch as the current best lightweight candidate for user/Claude acceptance testing.
+
+---
+
 ### 2026-07-09 (Codex Opus 4.8) - preview-loop-wrap real Chrome capture run, not verified
 
 - **Command**: `node doc/issue/preview-loop-wrap/capture-comp33-loop-wrap.mjs` against `https://localhost:5173/` with `verify-comp33-mini-project.zip`.
