@@ -714,6 +714,11 @@ export function PreviewPanel() {
       renderer?.setPreviewRenderOptions({
         previewVideoPlayback: true,
         holdLastRaster: true,
+        loop: {
+          enabled: cfg.loop,
+          loopStart: cfg.loopStart,
+          loopEnd: cfg.loopEnd,
+        },
       });
       const f = frameRef.current;
       const gen = ++draftPlaybackRenderGenRef.current;

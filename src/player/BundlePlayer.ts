@@ -95,7 +95,14 @@ export class BundlePlayer {
     // §11.7 autoplay ブロック回避: 初回ユーザー操作までは video を muted のまま再生を進める
     // （unmute 付き play() は autoplay ポリシーで拒否され currentTime が凍結するため）。
     // installAutoplayUnlock() が最初のジェスチャーで false に切り替える。
-    this.renderer.setPreviewRenderOptions({ muteVideoPlayback: true });
+    this.renderer.setPreviewRenderOptions({
+      muteVideoPlayback: true,
+      loop: {
+        enabled: this.manifest.loop,
+        loopStart: this.manifest.range[0],
+        loopEnd: this.manifest.range[1],
+      },
+    });
 
     const { viewport, stage } = this.setupViewport(this.config.stage, comp);
     this.viewportEl = viewport;
@@ -151,7 +158,14 @@ export class BundlePlayer {
       });
       this.audioClock.play(rangeStart);
       this.playing = true;
-      this.renderer.setPreviewRenderOptions({ previewVideoPlayback: true });
+      this.renderer.setPreviewRenderOptions({
+        previewVideoPlayback: true,
+        loop: {
+          enabled: this.manifest.loop,
+          loopStart: this.manifest.range[0],
+          loopEnd: this.manifest.range[1],
+        },
+      });
     } else {
       this.play(rangeStart);
     }
@@ -178,7 +192,15 @@ export class BundlePlayer {
         // video 内蔵音声: ユーザー操作のコールスタック内で再描画 → syncVideoElementTime が
         // アンミュート play() を呼ぶ（この文脈なら play が許可される）。muteVideoPlayback を
         // 解除して初めて実際に unmute される（それまでは muted のまま無音再生が進んでいた）。
-        this.renderer.setPreviewRenderOptions({ previewVideoPlayback: true, muteVideoPlayback: false });
+        this.renderer.setPreviewRenderOptions({
+          previewVideoPlayback: true,
+          muteVideoPlayback: false,
+          loop: {
+            enabled: this.manifest.loop,
+            loopStart: this.manifest.range[0],
+            loopEnd: this.manifest.range[1],
+          },
+        });
         this.renderFrame(this.currentFrame);
       }
       this.removeAutoplayUnlock();
@@ -233,11 +255,25 @@ export class BundlePlayer {
     if (this.audioClock) {
       this.audioClock.play(fromFrame ?? this.currentFrame);
       this.playing = true;
-      this.renderer.setPreviewRenderOptions({ previewVideoPlayback: true });
+      this.renderer.setPreviewRenderOptions({
+        previewVideoPlayback: true,
+        loop: {
+          enabled: this.manifest.loop,
+          loopStart: this.manifest.range[0],
+          loopEnd: this.manifest.range[1],
+        },
+      });
       return;
     }
     this.playing = true;
-    this.renderer.setPreviewRenderOptions({ previewVideoPlayback: true });
+    this.renderer.setPreviewRenderOptions({
+      previewVideoPlayback: true,
+      loop: {
+        enabled: this.manifest.loop,
+        loopStart: this.manifest.range[0],
+        loopEnd: this.manifest.range[1],
+      },
+    });
     this.syncState = initialPlaybackSyncState();
     this.stopLoop?.();
     const start = fromFrame ?? this.currentFrame;

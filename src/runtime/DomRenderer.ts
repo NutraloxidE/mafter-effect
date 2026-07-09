@@ -219,6 +219,12 @@ export class DomRenderer implements Renderer {
   private playbackPauseForSync = false;
   /** §11.7 bundle: true の間は playbackMode 中でも video を unmute しない（autoplay ポリシー回避）。 */
   private muteVideoPlayback = false;
+  private previewLoop: { enabled: boolean; loopStart: Frame; loopEnd: Frame } = {
+    enabled: false,
+    loopStart: 0,
+    loopEnd: 0,
+  };
+  private lastRenderedFrame: Frame | null = null;
 
   setPreviewRenderOptions(opts: {
     holdLastRaster?: boolean;
@@ -227,12 +233,14 @@ export class DomRenderer implements Renderer {
     previewVideoPlayback?: boolean;
     exportVideoStep?: boolean;
     muteVideoPlayback?: boolean;
+    loop?: { enabled: boolean; loopStart: Frame; loopEnd: Frame };
   }): void {
     if (opts.holdLastRaster !== undefined) this.holdLastRaster = opts.holdLastRaster;
     if (opts.forceAdjustmentRaster !== undefined) this.forceAdjustmentRaster = opts.forceAdjustmentRaster;
     if (opts.exportCompositeMode !== undefined) this.exportCompositeMode = opts.exportCompositeMode;
     if (opts.exportVideoStep !== undefined) this.exportVideoStep = opts.exportVideoStep;
     if (opts.muteVideoPlayback !== undefined) this.muteVideoPlayback = opts.muteVideoPlayback;
+    if (opts.loop !== undefined) this.previewLoop = opts.loop;
     if (opts.previewVideoPlayback !== undefined) {
       if (this.previewVideoPlayback && !opts.previewVideoPlayback) {
         this.playbackPauseForSync = false;
@@ -310,10 +318,18 @@ export class DomRenderer implements Renderer {
     container.appendChild(root);
     this.root = root;
     this.currentComp = comp;
+    this.lastRenderedFrame = null;
   }
 
   renderFrame(scene: ResolvedScene, frame: Frame): void {
     if (!this.root) return;
+    const previousRenderedFrame = this.lastRenderedFrame;
+    const loopWrapFrame =
+      this.previewVideoPlayback &&
+      this.previewLoop.enabled &&
+      previousRenderedFrame !== null &&
+      previousRenderedFrame > frame &&
+      frame === this.previewLoop.loopStart;
 
     if (this.forceAdjustmentRaster) {
       this.exportAdjustmentQueue = Promise.resolve();
@@ -431,7 +447,7 @@ export class DomRenderer implements Renderer {
         clearMatteSourceStyle(entry.div);
       }
 
-      this.applyObject(entry, obj, frame, compW, compH);
+      this.applyObject(entry, obj, frame, compW, compH, loopWrapFrame);
     }
 
     // §11.4 入場処理で再利用されずプールに残った <video> を静音（離脱クリップの音漏れ防止）。
@@ -439,6 +455,7 @@ export class DomRenderer implements Renderer {
 
     // §11.4 異なるアセット間カット境界 — 再生中のみ in 点が近い clip を offscreen で先読み prime しプールへ投入。
     this.scheduleVideoLookaheadWarmup(frame);
+    this.lastRenderedFrame = frame;
   }
 
   /**
@@ -550,6 +567,7 @@ export class DomRenderer implements Renderer {
     const fps = this.currentComp?.fps ?? 30;
     const targets = computeVideoLookaheadWarmupTargets(frame, fps, clips, {
       activeAssetIds: this.getActiveVideoAssetIds(),
+      loop: this.previewLoop,
     });
     const wanted = new Set(targets.map((t) => t.objectId));
 
@@ -566,7 +584,7 @@ export class DomRenderer implements Renderer {
     }
 
     for (const t of targets) {
-      if (this.entries.has(t.objectId)) continue;
+      if (t.reason !== "loop" && this.entries.has(t.objectId)) continue;
       if (this.lookaheadVideos.has(t.objectId)) continue;
       if (this.videoPool.has(t.assetId)) continue;
 
@@ -612,6 +630,42 @@ export class DomRenderer implements Renderer {
         /* best-effort */
       });
     }
+  }
+
+  private swapVideoForLoopWarmup(
+    entry: ObjectEntry,
+    childIndex: number,
+    props: Record<string, unknown>,
+    frame: Frame,
+    hostInPoint: number,
+    fps: number,
+  ): HTMLVideoElement | null {
+    const current = entry.children[childIndex];
+    if (!(current instanceof HTMLVideoElement)) return null;
+    const assetId = typeof props["asset"] === "string" ? props["asset"] : undefined;
+    if (!assetId) return null;
+    const trimStart = (props["trimStart"] as number | undefined) ?? 0;
+    const targetSec = Math.max(0, (frame - hostInPoint) / fps + trimStart / fps);
+    const candidate = this.acquireVideoFromPool(assetId);
+    if (!candidate) return null;
+    if (!isVideoReadyAtTarget(candidate, targetSec, fps)) {
+      this.videoPool.stash(assetId, candidate);
+      const lookaheadObjectId = candidate.dataset.mafterLookaheadObjectId;
+      if (lookaheadObjectId) this.lookaheadVideos.set(lookaheadObjectId, candidate);
+      return null;
+    }
+
+    try {
+      current.muted = true;
+      if (!current.paused) current.pause();
+    } catch {
+      /* pause best-effort */
+    }
+    if (current.parentNode) current.parentNode.replaceChild(candidate, current);
+    else entry.contentRoot.appendChild(candidate);
+    entry.children[childIndex] = candidate;
+    this.teardownVideoElement(current);
+    return candidate;
   }
 
   resize(w: number, h: number): void {
@@ -911,6 +965,7 @@ export class DomRenderer implements Renderer {
     }
     this.entries.clear();
     this.currentComp = null;
+    this.lastRenderedFrame = null;
   }
 
   private pauseAllVideos(): void {
@@ -943,6 +998,7 @@ export class DomRenderer implements Renderer {
     frame: Frame,
     compW = this.currentComp?.width ?? 0,
     compH = this.currentComp?.height ?? 0,
+    loopWrapFrame = false,
   ): void {
     // §6.5b/§5.4b 3D 層（threeD）のみカメラ view を per-object で焼く（root perspective を受けて
     // dolly/zoom が効く）。2D 層は素の worldTransform = カメラ免除（AE 準拠, z=0 で perspective 無歪み）。
@@ -1042,10 +1098,17 @@ export class DomRenderer implements Renderer {
 
     // props を in-place で更新（<img> src は変化時のみ → 再読込しない）
     obj.components.forEach((c, i) => {
-      const el = entry.children[i];
+      let el = entry.children[i];
+      let forceSeek = childrenRebuilt;
       if (el) {
         const hostInPoint = (c.props["_hostInPoint"] as number | undefined) ?? 0;
-        updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, frame, hostInPoint, this.currentComp?.fps ?? 30, this.previewVideoPlayback, this.exportVideoStep, childrenRebuilt, this.playbackPauseForSync, this.muteVideoPlayback);
+        const fps = this.currentComp?.fps ?? 30;
+        if (loopWrapFrame && c.type === "video" && el instanceof HTMLVideoElement) {
+          const swapped = this.swapVideoForLoopWarmup(entry, i, c.props, frame, hostInPoint, fps);
+          if (swapped) el = swapped;
+          forceSeek = true;
+        }
+        updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, frame, hostInPoint, fps, this.previewVideoPlayback, this.exportVideoStep, forceSeek, this.playbackPauseForSync, this.muteVideoPlayback);
       }
 
       // Plugin component: registry から ComponentDef.render を呼ぶ（組み込み型は未登録でスキップ）
