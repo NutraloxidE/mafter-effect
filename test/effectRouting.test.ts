@@ -6,12 +6,14 @@ import {
 } from "../src/runtime/effectRouting";
 
 describe("effectRouting", () => {
-  it("hasEnabledDisplacement includes Fast* distortion", () => {
+  it("hasEnabledDisplacement includes live displacement approximations", () => {
+    expect(hasEnabledDisplacement([{ type: "mosaicLite", enabled: true }])).toBe(true);
     expect(hasEnabledDisplacement([{ type: "fastWave", enabled: true }])).toBe(true);
     expect(hasEnabledDisplacement([{ type: "blur", enabled: true }])).toBe(false);
   });
 
-  it("hasEnabledFullDisplacement excludes Fast* and opticsCompensation", () => {
+  it("hasEnabledFullDisplacement excludes mosaicLite, Fast*, and opticsCompensation", () => {
+    expect(hasEnabledFullDisplacement([{ type: "mosaicLite", enabled: true }])).toBe(false);
     expect(hasEnabledFullDisplacement([{ type: "fastWave", enabled: true }])).toBe(false);
     expect(hasEnabledFullDisplacement([{ type: "fastTurbulentDisplace", enabled: true }])).toBe(false);
     expect(hasEnabledFullDisplacement([{ type: "opticsCompensation", enabled: true }])).toBe(false);
@@ -21,6 +23,11 @@ describe("effectRouting", () => {
   });
 
   it("needsSvgDisplaceCapture: 通常レイヤー + fast* → false（live・§27.12 改定3）", () => {
+    expect(
+      needsSvgDisplaceCapture({
+        effects: [{ type: "mosaicLite", enabled: true }],
+      }),
+    ).toBe(false);
     expect(
       needsSvgDisplaceCapture({
         effects: [{ type: "fastTurbulentDisplace", enabled: true }],

@@ -1349,8 +1349,13 @@ export class DomRenderer implements Renderer {
       const allSvgFilters = [...preSvgFilters, ...postSvgFilters];
       // §27.4: Raster調整は live effect（blur/tint/wipe）も backdrop-filter ではなく
       // comp 背面 capture で焼く。export（forceAdjustmentRaster）では Live調整も同様に raster 化
-      // （auto_raster_mp4）。通常レイヤーは従来どおり（displacement のみ capture）。
-      const needsCapture = needsSvgDisplaceCapture({
+      // （auto_raster_mp4）。mosaicLite は direct foreignObject capture が空白化するため、
+      // export composite の通常レイヤーだけ同じ SVG filter を焼いてから合成する。
+      const forceMosaicLiteExportCapture =
+        this.exportCompositeMode &&
+        obj.isAdjustment !== true &&
+        (obj.effects ?? []).some((effect) => effect.enabled && effect.type === "mosaicLite");
+      const needsCapture = forceMosaicLiteExportCapture || needsSvgDisplaceCapture({
         isAdjustment: obj.isAdjustment,
         adjustmentMode: obj.adjustmentMode,
         forceAdjustmentRaster: this.forceAdjustmentRaster,

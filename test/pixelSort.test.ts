@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  blockAverage,
   isPixelSortIdentity,
   luminance,
   processPixelSort,
@@ -71,5 +72,16 @@ describe("pixelSort (§27.3)", () => {
     const p00 = [output.data[0], output.data[1], output.data[2]];
     const p03 = [output.data[12], output.data[13], output.data[14]];
     expect(p03).toEqual(p00);
+  });
+
+  it("blockAverage averages partial edge blocks", () => {
+    const data = new Uint8ClampedArray([
+      0, 0, 0, 255, 100, 0, 0, 255, 200, 0, 0, 255,
+      50, 0, 0, 255, 150, 0, 0, 255, 250, 0, 0, 255,
+    ]);
+    const output = blockAverage({ data, width: 3, height: 2 }, 2);
+    expect(Array.from(output.data.slice(0, 4))).toEqual([75, 0, 0, 255]);
+    expect(Array.from(output.data.slice(4, 8))).toEqual([75, 0, 0, 255]);
+    expect(Array.from(output.data.slice(8, 12))).toEqual([225, 0, 0, 255]);
   });
 });

@@ -155,7 +155,7 @@ describe("previewCacheSettings", () => {
 });
 
 describe("comp preview bake", () => {
-  it("compRequiresPreviewBake is true for pixelSorter only among builtins", () => {
+  it("compRequiresPreviewBake is true for raster pixel builtins", () => {
     registerBuiltinEffects();
 
     const bakeObj: SceneObject = {
@@ -176,9 +176,16 @@ describe("comp preview bake", () => {
       id: "O2",
       effects: [{ id: "FX2", type: "blur", enabled: true, props: { blurriness: 4 } }],
     };
+    const mosaicObj: SceneObject = {
+      ...bakeObj,
+      id: "O3",
+      effects: [{ id: "FX3", type: "mosaic", enabled: true, props: { blockSize: 16 } }],
+    };
     expect(compRequiresPreviewBake(makeComp([bakeObj]))).toBe(true);
+    expect(compRequiresPreviewBake(makeComp([mosaicObj]))).toBe(true);
     expect(compRequiresPreviewBake(makeComp([blurObj]))).toBe(false);
     expect(shouldForceNonRealtime("draft", "full", makeComp([bakeObj]))).toBe(true);
+    expect(shouldForceNonRealtime("draft", "full", makeComp([mosaicObj]))).toBe(true);
     expect(shouldForceNonRealtime("draft", "full", makeComp([blurObj]))).toBe(false);
   });
 });

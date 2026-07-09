@@ -17,6 +17,7 @@ import {
   waveDisplaceMapSvg,
 } from "./effectSvg";
 import {
+  blockAverage,
   isPixelSortIdentity,
   processPixelSort,
 } from "./pixelSort";
@@ -357,6 +358,26 @@ const PIXEL_SORTER_EFFECT_DEF: EffectDef = {
   },
 };
 
+const MOSAIC_EFFECT_DEF: EffectDef = {
+  type: "mosaic",
+  label: "Mosaic",
+  category: "スタイライズ",
+  previewBakeRequired: true,
+  executionPath: "raster",
+  params: [
+    { key: "blockSize", label: "Block Size", kind: "scalar", default: 16, animatable: true, min: 1, max: 512, step: 1 },
+  ],
+  apply(props) {
+    const blockSize = Math.max(1, Math.round(num(props["blockSize"], 16)));
+    if (blockSize <= 1) return null;
+    return { kind: "raster" };
+  },
+  processPixels(input: RasterBuffer, props) {
+    const blockSize = Math.max(1, Math.round(num(props["blockSize"], 16)));
+    return blockAverage(input, blockSize);
+  },
+};
+
 const PIXEL_SORT_LITE_EFFECT_DEF: EffectDef = {
   type: "pixelSortLite",
   label: "Light Pixel Sort (WIP)",
@@ -403,6 +424,7 @@ export function registerBuiltinEffects(): void {
   globalPluginRegistry.registerEffect(ANGULAR_WIPE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(DITHER_DISSOLVE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(PIXEL_SORTER_EFFECT_DEF);
+  globalPluginRegistry.registerEffect(MOSAIC_EFFECT_DEF);
   globalPluginRegistry.registerEffect(PIXEL_SORT_LITE_EFFECT_DEF);
   registerFastEffects();
 }
@@ -418,5 +440,6 @@ export {
   ANGULAR_WIPE_EFFECT_DEF,
   DITHER_DISSOLVE_EFFECT_DEF,
   PIXEL_SORTER_EFFECT_DEF,
+  MOSAIC_EFFECT_DEF,
   PIXEL_SORT_LITE_EFFECT_DEF,
 };

@@ -1,5 +1,24 @@
 # Progress
 
+### 2026-07-09 (Codex Opus 4.8) - mosaicLite live effect and exact mosaic raster effect implemented
+
+- **Spec**: Updated `doc/mafter-effect-spec.md` §27 to define `mosaicLite` as a live lightweight block-center snap approximation and `mosaic` as an exact raster block-average effect. No §5 schema, invariant, or `project.json` serialization changes.
+- **Implementation**: Added `mosaicLite` (`Mosaic (Lite)`) to the lightweight distortion live SVG filter path, including layer-bounds filter clamp and export-composite raster fallback for the direct foreignObject blank-capture case. Added raster `mosaic` (`Mosaic`) using shared exact `blockAverage()` processing.
+- **Player bundle**: Ran `npm run build:player`; `public/player.js` now references the new `public/assets/rasterProcess.worker-DQuHjUri.js` chunk and the old raster worker chunk was removed.
+- **Verification**: PASS `npm run typecheck`; PASS targeted mosaic/effect routing/cache tests (`7 files / 170 tests`); PASS `npm test -- test/playerBuildFreshness.test.ts`; PASS full `npm test` (`106 files / 1029 tests`).
+- **Real browser check**: Playwright preview showed `mosaicLite` live blockiness with region clamp (`filter: url("#fx-O116-pre-0")`, region `0 0 96 56`). Direct foreignObject capture blanked this filter shape, so export-composite fallback was added and verified nonblank (`canvas` present, ink > 0).
+- **Next steps**: If higher visual parity is needed, add a small dedicated export screenshot fixture comparing `mosaicLite` preview/bundle/export positions at multiple `blockSize` values.
+
+---
+
+### 2026-07-09 (Codex Opus 4.8) - mosaic live effect plan reinterpreted for Codex
+
+- **Done**: Created `doc/cloudplan/mosaic-live-effect-for-codex.md` from `doc/cloudplan/mosaic-live-effect.md`, preserving the core technical conclusion while rewriting it as a Codex-oriented implementation plan.
+- **Scope**: Documentation only. No spec schema, invariant, runtime, export, or `project.json` serialization changes.
+- **Next steps**: If implementation proceeds, follow the new Codex plan: spec prose first, then `mosaicLite` live SVG displacement prototype with Playwright/preview-export verification, then optional exact raster `mosaic`.
+
+---
+
 ### 2026-07-09 (Codex Opus 4.8) - preview-loop-wrap current build is lightest measured candidate
 
 - **Interpretation**: Based on the Phase 0 baseline and the post-WP-1/WP-2 real Chrome capture, the current implementation is the lightest measured candidate so far, but not verified. Worst wrap improved from 533ms to 485ms, and capture-level `overallFreezePct` is 0% versus the baseline internal-hold freeze ratio of about 9.8%.

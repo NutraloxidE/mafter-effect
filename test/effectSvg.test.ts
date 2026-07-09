@@ -8,6 +8,7 @@ import {
   lightPixelSortFilter,
   linearWipeGradientCoords,
   linearWipeMask,
+  mosaicGridSnapFilter,
   phaseToSeed,
   evolutionToOffsetPx,
   displacementPadFromScale,
@@ -483,6 +484,7 @@ describe("§27.4 distortion quality knob", () => {
 
 describe("§27.5 Fast distortion (approximate)", () => {
   it("DISPLACEMENT_EFFECT_TYPES includes fast variants", () => {
+    expect(DISPLACEMENT_EFFECT_TYPES.has("mosaicLite")).toBe(true);
     expect(DISPLACEMENT_EFFECT_TYPES.has("fastWave")).toBe(true);
     expect(DISPLACEMENT_EFFECT_TYPES.has("fastRipple")).toBe(true);
     expect(DISPLACEMENT_EFFECT_TYPES.has("fastTurbulentDisplace")).toBe(true);
@@ -505,6 +507,26 @@ describe("§27.5 Fast distortion (approximate)", () => {
     expect(p).not.toContain("data:image/svg+xml");
     // scale = 2·amplitude
     expect(p).toContain('scale="40"');
+  });
+
+  it("mosaicGridSnapFilter emits a tiled displacement map with layer-sized coverage", () => {
+    const p = mosaicGridSnapFilter({ blockSize: 16, w: 320, h: 240 });
+    expect(p).toContain("feImage");
+    expect(p).toContain("feDisplacementMap");
+    expect(p).toContain('scale="16"');
+    const encoded = /href="(data:image\/svg\+xml,[^"]+)"/.exec(p)?.[1];
+    expect(encoded).toBeDefined();
+    const svg = decodeURIComponent(encoded!.split(",")[1]!);
+    expect(svg).toContain('width="320" height="240"');
+    expect(svg).toContain('patternUnits="userSpaceOnUse"');
+    expect(svg).toContain('width="16" height="16"');
+    expect(svg).toContain('id="mx"');
+    expect(svg).toContain('id="my"');
+    expect(svg).not.toContain("data:image/png;base64,");
+  });
+
+  it("mosaicGridSnapFilter is inert when blockSize <= 1", () => {
+    expect(mosaicGridSnapFilter({ blockSize: 1, w: 320, h: 240 })).toBe("");
   });
 
   it("§27.5 改定4: fastWave direction で baseFrequency の異方軸が入れ替わる", () => {

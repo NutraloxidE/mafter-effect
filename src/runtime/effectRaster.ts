@@ -35,13 +35,14 @@ export async function applyFilterChainToBuffer(
     .map(({ id, primitives }) => {
       const isDisplace = primitives.includes("feDisplacementMap");
       if (isDisplace && region.fxLayerW > 0 && region.fxLayerH > 0) {
+        const compFixed = region.fxUseBackdropDisplace || primitives.includes("mafter:mosaicLite");
         return svgDisplaceFilterMarkup(
           id,
           primitives,
           region.fxLayerW,
           region.fxLayerH,
           region.fxMaxDisplaceScale,
-          region.fxUseBackdropDisplace,
+          compFixed,
         );
       }
       return `<filter id="${id}" color-interpolation-filters="sRGB" x="-25%" y="-25%" width="150%" height="150%">${primitives}</filter>`;

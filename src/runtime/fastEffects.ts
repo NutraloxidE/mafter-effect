@@ -4,6 +4,7 @@ import {
   fastRippleDisplace,
   fastTurbulentDisplace,
   fastWaveDisplace,
+  mosaicGridSnapFilter,
 } from "./effectSvg";
 
 function num(v: unknown, fallback: number): number {
@@ -24,6 +25,26 @@ const ANTI_ALIAS_PARAM = {
   kind: "bool" as const,
   default: false,
   animatable: false,
+};
+
+const MOSAIC_LITE_EFFECT_DEF: EffectDef = {
+  type: "mosaicLite",
+  label: "Mosaic (Lite)",
+  category: "ディストーション（軽量）",
+  previewBakeRequired: false,
+  executionPath: "live",
+  params: [
+    { key: "blockSize", label: "Block Size", kind: "scalar", default: 16, animatable: true, min: 2, max: 256, step: 1 },
+  ],
+  apply(props, ctx: EffectRenderCtx) {
+    const blockSize = Math.max(1, Math.round(num(props["blockSize"], 16)));
+    if (blockSize <= 1) return null;
+    const w = Math.max(1, ctx.width);
+    const h = Math.max(1, ctx.height);
+    const primitives = mosaicGridSnapFilter({ blockSize, w, h });
+    if (!primitives) return null;
+    return { kind: "svg", primitives };
+  },
 };
 
 const FAST_WAVE_EFFECT_DEF: EffectDef = {
@@ -132,12 +153,14 @@ const FAST_TURBULENT_DISPLACE_EFFECT_DEF: EffectDef = {
 };
 
 export function registerFastEffects(): void {
+  globalPluginRegistry.registerEffect(MOSAIC_LITE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(FAST_WAVE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(FAST_RIPPLE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(FAST_TURBULENT_DISPLACE_EFFECT_DEF);
 }
 
 export {
+  MOSAIC_LITE_EFFECT_DEF,
   FAST_WAVE_EFFECT_DEF,
   FAST_RIPPLE_EFFECT_DEF,
   FAST_TURBULENT_DISPLACE_EFFECT_DEF,

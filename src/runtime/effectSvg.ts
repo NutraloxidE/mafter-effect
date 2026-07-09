@@ -49,6 +49,7 @@ export const DISPLACEMENT_EFFECT_TYPES = new Set([
   "turbulentDisplace",
   "ripple",
   "opticsCompensation",
+  "mosaicLite",
   "fastWave",
   "fastRipple",
   "fastTurbulentDisplace",
@@ -56,6 +57,7 @@ export const DISPLACEMENT_EFFECT_TYPES = new Set([
 
 /** §27.12 Draft Preview Fast Path 対象。 */
 export const FAST_DISPLACEMENT_EFFECT_TYPES = new Set([
+  "mosaicLite",
   "fastWave",
   "fastRipple",
   "fastTurbulentDisplace",
@@ -579,6 +581,41 @@ export function fastRippleDisplace(opts: {
     regionPadY: 0.5 * lh + 2,
     antiAlias,
   });
+}
+
+/** §27.5 Mosaic Lite — block center snap displacement map（live 近似）。 */
+export function mosaicGridSnapFilter(opts: {
+  blockSize: number;
+  w: number;
+  h: number;
+}): string {
+  const block = Math.max(1, Math.round(opts.blockSize));
+  if (block <= 1) return "";
+  const w = Math.max(1, Math.round(opts.w));
+  const h = Math.max(1, Math.round(opts.h));
+  const hi = Math.round((1 - 0.5 / block) * 255);
+  const lo = Math.round((0.5 / block) * 255);
+  const mapSvg = [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">`,
+    `<defs>`,
+    `<linearGradient id="mx" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="${block}" y2="0">`,
+    `<stop offset="0%" stop-color="rgb(${hi},0,0)"/>`,
+    `<stop offset="100%" stop-color="rgb(${lo},0,0)"/>`,
+    `</linearGradient>`,
+    `<linearGradient id="my" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="${block}">`,
+    `<stop offset="0%" stop-color="rgb(0,${hi},0)"/>`,
+    `<stop offset="100%" stop-color="rgb(0,${lo},0)"/>`,
+    `</linearGradient>`,
+    `<pattern id="m" width="${block}" height="${block}" patternUnits="userSpaceOnUse">`,
+    `<rect width="${block}" height="${block}" fill="rgb(0,0,128)"/>`,
+    `<rect width="${block}" height="${block}" fill="url(#mx)" style="mix-blend-mode:screen"/>`,
+    `<rect width="${block}" height="${block}" fill="url(#my)" style="mix-blend-mode:screen"/>`,
+    `</pattern>`,
+    `</defs>`,
+    `<rect width="${w}" height="${h}" fill="url(#m)" shape-rendering="crispEdges"/>`,
+    `</svg>`,
+  ].join("");
+  return `${displaceWithMap(svgDataUri(mapSvg), block, w, h)}<!--mafter:mosaicLite-->`;
 }
 
 /** §27.5 Fast Turbulent Displace — feTurbulence 直結（octaves cap 2・G bias）。 */
