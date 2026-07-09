@@ -1,5 +1,16 @@
 # Progress
 
+### 2026-07-09 (Codex Opus 4.8) - preview-loop-wrap WP-1 implemented, awaiting capture
+
+- **Context**: Continued from `doc/preview-improvement-plan-v2-for-codex.md` after committing Phase 0 (`e5f366e`) and confirming `doc/issue/preview-loop-wrap/decision-record.md` is `status: FINAL` with `order: [WP-1, WP-2]`.
+- **Spec**: Updated `doc/mafter-effect-spec.md` Section 11.4 to define loop playback warm-up: within one second before `loopEnd`, preview/bundle playback may warm clips active at `loopStart` and swap to the warmed element on wrap. Scrub/export remain outside this behavior.
+- **Implementation**: Added loop warm-up targets in `src/runtime/videoLookaheadWarmup.ts`, passed loop playback options from `PreviewPanel`/`BundlePlayer`, and taught `DomRenderer` to detect a wrap to `loopStart` and swap in a ready pooled `<video>` element. If the warmed element is missing or not ready, the existing seek path remains the fallback.
+- **Tests / verification**: Added loop-specific `test/videoLookaheadWarmup.test.ts` coverage. PASS: `npm run typecheck`; `npm test -- test/videoLookaheadWarmup.test.ts`; `npm run build:player`; `npm test` (106 files / 1014 tests).
+- **Status**: `doc/issue/preview-loop-wrap/codex-status.md` is `implemented-awaiting-capture`. Pixel/perception acceptance is not claimed yet; Phase 0 capture harness comparison is the next acceptance step.
+- **Next steps**: Run the real capture/user-perception check for WP-1. If accepted, proceed to WP-2 (presented-frame + playbackRate servo) from the decision record.
+
+---
+
 ### 2026-07-09（Sonnet 5）— preview-loop-wrap Phase 0（per-wrap 分類計測・discriminator 確定）✅
 
 - **経緯**: [doc/preview-improvement-plan-v2-for-codex.md](doc/preview-improvement-plan-v2-for-codex.md) §0 の役割分担どおり、Phase 0（計測・判別因子の確定）を実施。成果物は [doc/issue/preview-loop-wrap/decision-record.md](doc/issue/preview-loop-wrap/decision-record.md)（`status: FINAL`）。Codex はこのファイルを確認してから Phase 1 以降（WP-1/WP-2 実装）に着手できる。

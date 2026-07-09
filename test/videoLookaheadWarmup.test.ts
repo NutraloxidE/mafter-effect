@@ -84,6 +84,67 @@ describe("computeVideoLookaheadWarmupTargets", () => {
       }),
     ).toEqual([]);
   });
+
+  it("includes loopStart-active clip near loopEnd using loopStart source time", () => {
+    const targets = computeVideoLookaheadWarmupTargets(125, 30, [
+      clip("looping", "assetA", 0, { outPoint: 150, trimStart: 15 }),
+    ], {
+      loop: { enabled: true, loopStart: 0, loopEnd: 150 },
+    });
+    expect(targets).toEqual([
+      {
+        objectId: "looping",
+        assetId: "assetA",
+        targetSec: 0.5,
+        inPoint: 0,
+        reason: "loop",
+      },
+    ]);
+  });
+
+  it("does not include loopStart-active clip outside the loop lookahead window", () => {
+    expect(
+      computeVideoLookaheadWarmupTargets(100, 30, [
+        clip("looping", "assetA", 0, { outPoint: 150 }),
+      ], {
+        loop: { enabled: true, loopStart: 0, loopEnd: 150 },
+      }),
+    ).toEqual([]);
+  });
+
+  it("keeps loop disabled behavior identical to normal lookahead", () => {
+    expect(
+      computeVideoLookaheadWarmupTargets(125, 30, [
+        clip("looping", "assetA", 0, { outPoint: 150 }),
+      ], {
+        loop: { enabled: false, loopStart: 0, loopEnd: 150 },
+      }),
+    ).toEqual([]);
+  });
+
+  it("excludes disabled and loopStart-out-of-range clips from loop warm-up", () => {
+    expect(
+      computeVideoLookaheadWarmupTargets(125, 30, [
+        clip("disabled", "assetA", 0, { outPoint: 150, enabled: false }),
+        clip("late", "assetB", 10, { outPoint: 150 }),
+      ], {
+        loop: { enabled: true, loopStart: 0, loopEnd: 150 },
+      }),
+    ).toEqual([]);
+  });
+
+  it("returns both normal cut and loop warm-up targets without duplicate object ids", () => {
+    const targets = computeVideoLookaheadWarmupTargets(125, 30, [
+      clip("upcoming", "assetB", 140),
+      clip("looping", "assetA", 0, { outPoint: 150 }),
+    ], {
+      loop: { enabled: true, loopStart: 0, loopEnd: 150 },
+    });
+    expect(targets).toEqual([
+      { objectId: "looping", assetId: "assetA", targetSec: 0, inPoint: 0, reason: "loop" },
+      { objectId: "upcoming", assetId: "assetB", targetSec: 0, inPoint: 140 },
+    ]);
+  });
 });
 
 describe("collectVideoClipsFromComp", () => {
