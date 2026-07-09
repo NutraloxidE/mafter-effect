@@ -1,5 +1,17 @@
 # Progress
 
+### 2026-07-10 (Codex Opus 4.8) - adaptive frame skip for HTML bundle playback implemented
+
+- **Savepoint**: Committed the implementation plan before code changes: `b1b43dd` (`docs: add adaptive frame skip bundle plan`).
+- **Spec**: Added §11.7 prose for adaptive real-time frame drop in HTML bundle playback. No §5 schema, invariant wording/table, `project.json`, or `BundleManifest` shape changes.
+- **Implementation**: Added pure `adaptiveRenderBudget` helpers with EMA-based render gating. Wired HTML bundle playback so audio-master `holdTimeline` no longer pauses audio, while video drift remains handled by per-video pause/seek/playbackRate sync. Added render-call thinning for both audio-clock and no-audio bundle playback, with forced current/final-frame renders around playback start/end/pause.
+- **Player bundle**: Ran `npm run build:player`; `public/player.js` regenerated.
+- **Verification**: PASS `npm run typecheck`; PASS targeted tests (`adaptiveRenderBudget`, `bundleAudioClock`, `bundleExport`); PASS `npm test -- playerBuildFreshness`; PASS full `npm test` (`107 files / 1033 tests`); PASS `VERIFY_PORT=5184 node verify-bundle-export.mjs` (`2 passed, 0 failed`).
+- **Blocked / not claimed**: `verify-bundle-autoplay-unlock.mjs` could not provide a valid result because `for-debug-data/video_with_audio.mp4` is 0 bytes, producing a 0-byte bundle mp4 and Chromium `ERR_REQUEST_RANGE_NOT_SATISFIABLE`. Human/heavy-load audio continuity capture remains required by the plan.
+- **Next steps**: Re-run autoplay/heavy-load bundle capture with a non-empty audio-video fixture, then tune `RENDER_TARGET_OCCUPANCY` if real playback still glitches.
+
+---
+
 ### 2026-07-09 (Codex Opus 4.8) - mosaicLite live effect and exact mosaic raster effect implemented
 
 - **Spec**: Updated `doc/mafter-effect-spec.md` §27 to define `mosaicLite` as a live lightweight block-center snap approximation and `mosaic` as an exact raster block-average effect. No §5 schema, invariant, or `project.json` serialization changes.
@@ -1723,3 +1735,10 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
   1. ユーザーの実際に黄色く見えているアセット（大元の動画ファイル）を `ffprobe -show_entries stream=color_primaries,color_transfer,color_space,color_range -select_streams v` で確認し、HDR系タグ（`arib-std-b67`=HLG, `smpte2084`=PQ, `bt2020*`）が無いか確認したい。
   2. 本 fix（`colorSpace` 指定）は効果不明なため、実際に効くかは**非headless の実 Chrome + Windows 実機**での before/after 目視確認が必須（本セッションのサンドボックスでは原理的に検証不能）。
   3. 上記で解消しない場合、`<video>` に依存せず `VideoDecoder` を独自 `colorSpace` で configure する再生経路への切替を検討（アーキテクチャ変更のため実装前に要相談）。
+## 2026-07-10 - Static noise investigation (bundle loop seam)
+
+- Investigated the reported crackle/static without changing production behavior. Added `doc/issue/static-noise-problem/` with a report, implementation plan, and `verify-loop-audio-seam.mjs` diagnostic.
+- Reproduced against Downloads `mafter-project (25).zip` / `Comp 10`: the video-only timeline loops `[0,112)` at 30 fps, seeking its embedded AAC audio from 3.733333 s back to zero. Decoded source PCM has a non-zero seam jump (L `-0.0316361`, R `-0.0197550`).
+- Primary cause: bundle video audio uses `video.volume` set only during render. The 120 ms declick envelope is not sample-accurate at 30 fps (last-frame multiplier `0.362285`); the adaptive render gate can skip that frame entirely, so the native `<video>` seek occurs while non-silent.
+- Secondary finding: `BundleAudioClock` does not yet apply `inPoint`/`outPoint`/`trimStart` timing to standalone `<audio>` elements. This is not involved in Comp 10 but should be fixed in the shared bundle media-audio controller.
+- Next step: implement the documented bundle-only Web Audio gain controller and loop-boundary callback, then make the diagnostic pass against the same unsafe source seam.

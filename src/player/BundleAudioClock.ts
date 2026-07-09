@@ -13,6 +13,7 @@ import {
 
 /** §11.4 preview と同じ双方向同期を bundle にも配線するためのコールバック（省略可＝同期無効）。 */
 export interface BundleAudioClockSyncOptions {
+  audioMaster?: boolean;
   getVideoClockSamples?: () => VideoClockSample[];
   onPlaybackSyncState?: (state: PlaybackSyncState) => void;
   onPlaybackRate?: (rate: number) => void;
@@ -210,7 +211,7 @@ export class BundleAudioClock {
       computePlaybackRateForSync(dominantVideoSyncErrorSec(samples), this.fps),
     );
     this.sync?.onPlaybackSyncState?.(this.syncState);
-    if (this.syncState.holdTimeline) {
+    if (this.syncState.holdTimeline && this.sync?.audioMaster === false) {
       if (this.frozenFrame === null) {
         const elapsedSec = (performance.now() - this.startWallMs) / 1000;
         this.frozenFrame = this.rangeStart + Math.floor(elapsedSec * this.fps);

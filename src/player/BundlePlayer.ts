@@ -18,6 +18,12 @@ import { applyFitTransform } from "./bundleFit";
 import { collectVideoClipsFromComp } from "../runtime/videoLookaheadWarmup";
 import { runPreviewPlaybackLoop } from "../runtime/previewPlaybackLoop";
 import {
+  computeRenderGate,
+  initialRenderBudgetState,
+  recordRenderCost,
+  type RenderBudgetState,
+} from "../runtime/adaptiveRenderBudget";
+import {
   computePlaybackSyncState,
   computePlaybackRateForSync,
   dominantVideoSyncErrorSec,
@@ -46,6 +52,7 @@ export class BundlePlayer {
   private stopLoop: (() => void) | null = null;
   /** §11.4 双方向同期（no-audio 経路）— editor Preview パネルと同じ判定関数を使う。 */
   private syncState: PlaybackSyncState = initialPlaybackSyncState();
+  private renderBudgetState: RenderBudgetState = initialRenderBudgetState();
   private viewportEl: HTMLDivElement | null = null;
   private stageEl: HTMLDivElement | null = null;
   private resizeObserver: ResizeObserver | null = null;
@@ -145,6 +152,7 @@ export class BundlePlayer {
         this.manifest.loop,
         {
           // §11.4 preview と同じ双方向同期（split-alpha companion は primary から除外済み）。
+          audioMaster: true,
           getVideoClockSamples: () => filterPrimaryVideoSamples(this.renderer.sampleMountedVideoClocks()),
           onPlaybackRate: (rate) => this.renderer.setPlaybackRateForSync(rate),
           onPlaybackSyncState: (s) => this.renderer.setPlaybackPauseForSync(s.pauseVideo),
@@ -153,9 +161,12 @@ export class BundlePlayer {
       await this.audioClock.prepare(project, comp);
       this.audioClock.setFrameCallback((f) => {
         this.currentFrame = f;
-        this.renderFrame(f);
+        if (this.shouldRenderPlaybackFrame(performance.now())) {
+          this.renderPlaybackFrame(f);
+        }
       });
       this.audioClock.setEndedCallback(() => {
+        this.renderPlaybackFrame(this.currentFrame);
         this.playing = false;
         this.renderer.setPreviewRenderOptions({ previewVideoPlayback: false });
       });
@@ -256,6 +267,7 @@ export class BundlePlayer {
 
   play(fromFrame?: number): void {
     if (this.audioClock) {
+      this.renderBudgetState = initialRenderBudgetState();
       this.audioClock.play(fromFrame ?? this.currentFrame);
       this.playing = true;
       this.renderer.setPreviewRenderOptions({
@@ -278,9 +290,11 @@ export class BundlePlayer {
       },
     });
     this.syncState = initialPlaybackSyncState();
+    this.renderBudgetState = initialRenderBudgetState();
     this.stopLoop?.();
     const start = fromFrame ?? this.currentFrame;
     this.currentFrame = start;
+    this.renderPlaybackFrame(start);
     const [, rangeEnd] = this.manifest.range;
     this.stopLoop = runPreviewPlaybackLoop({
       fps: this.manifest.fps,
@@ -297,6 +311,12 @@ export class BundlePlayer {
       },
       // §11.4 preview と同じ双方向同期: 映像遅れでタイムライン全体を hold / 先行で video を pause。
       shouldHold: () => this.applyPlaybackSync(),
+      renderGate: {
+        shouldRender: (nowMs, msPerFrame) => this.shouldRenderPlaybackFrame(nowMs, msPerFrame),
+        recordRenderCost: (costMs) => {
+          this.renderBudgetState = recordRenderCost(this.renderBudgetState, costMs);
+        },
+      },
     });
   }
 
@@ -326,6 +346,7 @@ export class BundlePlayer {
     this.stopLoop = null;
     this.syncState = initialPlaybackSyncState();
     this.audioClock?.pause();
+    this.renderPlaybackFrame(this.currentFrame);
   }
 
   dispose(): void {
@@ -383,6 +404,18 @@ export class BundlePlayer {
     const scene = resolve(this.comp, frame, { expressions: this.evaluator });
     this.renderer.renderFrame(scene, frame);
     void this.renderer.flushRasterEffects();
+  }
+
+  private shouldRenderPlaybackFrame(nowMs: number, msPerFrame = 1000 / this.manifest.fps): boolean {
+    const gate = computeRenderGate(this.renderBudgetState, nowMs, msPerFrame);
+    this.renderBudgetState = gate.nextState;
+    return gate.render;
+  }
+
+  private renderPlaybackFrame(frame: number): void {
+    const start = performance.now();
+    this.renderFrame(frame);
+    this.renderBudgetState = recordRenderCost(this.renderBudgetState, performance.now() - start);
   }
 }
 

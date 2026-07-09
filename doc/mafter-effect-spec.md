@@ -889,6 +889,7 @@ MP4 とは別の出力経路。作品を**ブラウザで実時間再生する D
 - **bake 経路**: `exportStrategy: 'bake'` のレイヤ（将来の WebGL/3D/重 plugin 等）は §11.4 / M3.5 の headless 機構で**そのレイヤだけ**フレーム書き出しして MP4/WebP 化し、`video` アセットとして同 `worldTransform`/`zOrder` で player に差し戻す。重ライティングをテクスチャに焼くゲームエンジン的割り切り。
 - **alpha 動画の制約（要注意）**: ベイクレイヤを live シーンに透過合成するには alpha 動画が要るが、Web の alpha video は VP9 alpha（Chrome/FF）止まりで Safari が弱い、HEVC-alpha は Safari 専用。→ **v1 は不透明ベイクのみ**を保証。透過が要る軽い要素は WebP/PNG 連番、本格的な透過は color+matte 2 ストリーム（§16 将来）。
 - **再生クロック**: マスタークロック = `AudioContext.currentTime`（音声があれば）。`currentFrame = round(t * fps)` を毎 rAF で算出し `resolve(comp, currentFrame)` を描く。低スペックでは中間 frame を描かずスキップ＝音ズレしない（INV-8）。音声が無ければ rAF 経過時間をクロックにする。
+- **実時間再生の適応 frame drop（音声優先）**: HTML bundle player は、音声マスター時に video 遅延の `holdTimeline` で音声要素を pause しない。video の遅れ・先行は各 video 要素の seek / `pauseVideo` / playbackRate サーボで吸収し、音声クロックと frame 番号進行は止めない。描画は best-effort とし、`renderFrame` 所要時間の EMA から重負荷時だけ描画呼び出しを間引く。間引き tick でも現在 frame は wall-clock / 音声クロックに追従し続け、次に描ける tick でその frame へ `resolve()` でワープする。これは INV-8 の実時間 bundle 専用挙動であり、`resolve()` の scene 解決値、INV-2、MP4/WebM/PNG/headless の決定論 frame-step には影響しない。
 - **セキュリティ**: 公開 bundle は author の JS がエンドユーザのブラウザで走る。**第三者 plugin は既定 `bake`**（§5.5 / §12）でコードを焼き消し、`live` で出るのは author 自筆コードに限るのが安全側。ホスト側 CSP は author の責任範囲として明記。
 - **インタラクティブは v1 では非対応**。click/scroll 応答を入れると `(frame)→絵` が `(frame, 入力状態)→絵` になり決定論・オーサリングモデルが別物になるため、v1 は**タイムライン駆動・音声クロックの再生のみ**（§16 将来）。
 

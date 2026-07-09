@@ -11,6 +11,10 @@ export interface PreviewPlaybackLoopOptions {
   renderFrame: (frame: number) => void | Promise<void>;
   onFrameChange: (frame: number) => void;
   onPlaybackEnd: () => void;
+  renderGate?: {
+    shouldRender: (nowMs: number, msPerFrame: number) => boolean;
+    recordRenderCost: (costMs: number) => void;
+  };
   /**
    * true の間は frame を進めない(映像ピクセル待ち)。
    * wall-clock の lastRafMs は通常どおり消費し、解除時のフレームジャンプを防ぐ。
@@ -53,7 +57,9 @@ export function runPreviewPlaybackLoop(options: PreviewPlaybackLoopOptions): () 
           currentFrame = lastFrame;
           options.onFrameChange(lastFrame);
           const gen = ++renderGen;
+          const renderStart = performance.now();
           void Promise.resolve(options.renderFrame(lastFrame)).finally(() => {
+            options.renderGate?.recordRenderCost(performance.now() - renderStart);
             if (gen === renderGen) options.onPlaybackEnd();
           });
           return;
@@ -61,10 +67,14 @@ export function runPreviewPlaybackLoop(options: PreviewPlaybackLoopOptions): () 
       }
       currentFrame = next;
       options.onFrameChange(currentFrame);
-      const gen = ++renderGen;
-      void Promise.resolve(options.renderFrame(currentFrame)).finally(() => {
-        if (gen !== renderGen) return;
-      });
+      if (options.renderGate?.shouldRender(now, msPerFrame) !== false) {
+        const gen = ++renderGen;
+        const renderStart = performance.now();
+        void Promise.resolve(options.renderFrame(currentFrame)).finally(() => {
+          options.renderGate?.recordRenderCost(performance.now() - renderStart);
+          if (gen !== renderGen) return;
+        });
+      }
     }
     rafId = requestAnimationFrame(tick);
   };
