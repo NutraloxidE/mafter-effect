@@ -1,5 +1,13 @@
 # Progress
 
+### 2026-07-11 (Codex Opus 4.8) - rendering pipeline snapshot updated
+
+- **Done**: Updated `doc/rendering-pipeline-current.md` after the preview Phase B change. The snapshot now includes editor `PreviewAudioClock`, video-embedded audio extraction and persistent mute, audio-master behavior when video lags, offline export audio mixing, bundle `BundleAudioClock`, and adaptive bundle render cadence.
+- **Scope**: Documentation only. No spec schema, invariant, project serialization, or runtime behavior changes in this session.
+- **Next steps**: Revisit the snapshot when bundle loop-boundary audio handoff or the pending static-noise fix is implemented.
+
+---
+
 ### 2026-07-11 (Claude Opus 4.8 + Sonnet 5 subagent) - editor preview の video 内蔵音声 static 修正 (Phase B)
 
 - **診断**: フル pj `mafter-project (23).zip` の Comp 10 を実データ解析。preview の static は **video 内蔵 AAC が表示 `<video>` から直接鳴り、§11.4 sync（playbackRate ±4% サーボ・drift>0.5s の resync seek・pauseForSync）に晒されて glitch** するのが原因。standalone audio 用 Phase A では未解決。bundle は v2-plus で分離済み（`persistentlyMutedVideoIds`）のため既に解消していた。
