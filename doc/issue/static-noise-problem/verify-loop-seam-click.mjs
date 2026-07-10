@@ -236,6 +236,17 @@ await bp.addInitScript(() => {
     for (const el of els) tapMediaElement(el);
   }
 
+  // Some players (v2-plus audio separation) create <audio> elements with
+  // document.createElement("audio") and never append them to the DOM, so
+  // querySelectorAll / MutationObserver can't see them. Hook play() so ANY media element
+  // that actually plays gets tapped, attached or not. This is the authoritative signal that
+  // real audio is flowing from that element.
+  const OrigPlay = HTMLMediaElement.prototype.play;
+  HTMLMediaElement.prototype.play = function (...a) {
+    try { tapMediaElement(this); } catch { /* best-effort */ }
+    return OrigPlay.apply(this, a);
+  };
+
   const observer = new MutationObserver((muts) => {
     for (const m of muts) {
       for (const node of m.addedNodes) scanForMedia(node);

@@ -10,6 +10,7 @@ import {
   type PlaybackSyncState,
   type VideoClockSample,
 } from "../runtime/playbackVideoSync";
+import { clampFadeWindowToLoopRange, collectBundleFootageAudioSources, footageAudioMediaTimeSec } from "./bundleFootageAudio";
 
 /** §11.4 preview と同じ双方向同期を bundle にも配線するためのコールバック（省略可＝同期無効）。 */
 export interface BundleAudioClockSyncOptions {
@@ -66,6 +67,7 @@ interface LayerGainInfo {
   gainProp: AnimatedProp<number>;
   inPoint: Frame;
   outPoint: Frame;
+  trimStart: Frame;
   autoFade: boolean;
   suppression: FadeSuppression;
 }
@@ -95,8 +97,15 @@ export class BundleAudioClock {
     private readonly sync?: BundleAudioClockSyncOptions,
   ) {}
 
+  /**
+   * fix-plan-v2plus: standalone audio レイヤーに加え、video 内蔵音声（collectFootageAudioSources
+   * の video 側）も別 <audio> 要素として鳴らす対象に含める（bundle 専用 collectBundleFootageAudioSources
+   * 経由。hasAudioLayers は変更しない — あちらは editor preview 共有で standalone audio のみ判定）。
+   * objectId は video レイヤーの obj.id をそのまま使う（DomRenderer の <video> 要素とは別 Map なので
+   * 衝突しない — BundlePlayer 側で「この objectId の video は音声抽出済み＝常時ミュート」に使う）。
+   */
   async prepare(project: Project, comp: TimelineComposition): Promise<boolean> {
-    const layers = collectAudioLayers(project, comp);
+    const layers = collectBundleFootageAudioSources(project, comp);
     if (layers.length === 0) return false;
 
     for (const layer of layers) {
@@ -108,6 +117,7 @@ export class BundleAudioClock {
         gainProp: layer.gainProp,
         inPoint: layer.inPoint,
         outPoint: layer.outPoint,
+        trimStart: layer.trimStart,
         autoFade: layer.autoFade,
         suppression: layer.suppression,
       });
@@ -115,7 +125,7 @@ export class BundleAudioClock {
       try {
         await audio.play();
         audio.pause();
-        audio.currentTime = 0;
+        audio.currentTime = footageAudioMediaTimeSec(this.rangeStart, layer.inPoint, layer.trimStart, this.fps);
       } catch {
         /* autoplay policy — unmute on user gesture if needed */
       }
@@ -138,9 +148,9 @@ export class BundleAudioClock {
     this.holdEnteredWallMs = null;
     this.startWallMs = performance.now() - (fromFrame - this.rangeStart) * (1000 / this.fps);
     for (const [id, el] of this.elements) {
-      void id;
+      const info = this.gainByObjectId.get(id);
       try {
-        el.currentTime = Math.max(0, (fromFrame - this.rangeStart) / this.fps);
+        el.currentTime = footageAudioMediaTimeSec(fromFrame, info?.inPoint ?? this.rangeStart, info?.trimStart ?? 0, this.fps);
         void el.play();
       } catch {
         /* ignore */
@@ -164,10 +174,12 @@ export class BundleAudioClock {
       this.startWallMs,
       performance.now(),
     );
-    for (const el of this.elements.values()) {
+    const transportFrame = this.rangeStart + elapsedSec * this.fps;
+    for (const [id, el] of this.elements) {
       if (!el.paused) continue;
+      const info = this.gainByObjectId.get(id);
       try {
-        el.currentTime = elapsedSec;
+        el.currentTime = footageAudioMediaTimeSec(transportFrame, info?.inPoint ?? this.rangeStart, info?.trimStart ?? 0, this.fps);
         void el.play();
       } catch {
         /* best-effort */
@@ -256,9 +268,17 @@ export class BundleAudioClock {
       this.onFrame?.(lastFrame);
       if (this.loop) {
         this.startWallMs = performance.now();
-        for (const el of this.elements.values()) {
+        for (const [id, el] of this.elements) {
+          const info = this.gainByObjectId.get(id);
           try {
-            el.currentTime = 0;
+            // fix-plan-v2plus: ループ継ぎ目の seek はソース波形の不連続を生む。tick は frame>=lastFrame
+            // を検出した時点で applyGains を通らずここへ来るため、declick フェードアウトが 0 まで
+            // 到達しないまま seek すると不連続が可聴 gain で通過する（＝クリック）。seek の瞬間だけ
+            // volume を 0 に落として不連続を無音でくるみ、直後の applyGains（in フェード）で 0→1 へ
+            // 戻す。el.volume は完全な sample 精度ではないが、seek 前後を無音側に寄せることで
+            // 残留クリックを大幅に低減する。
+            el.volume = 0;
+            el.currentTime = footageAudioMediaTimeSec(this.rangeStart, info?.inPoint ?? this.rangeStart, info?.trimStart ?? 0, this.fps);
             void el.play();
           } catch {
             /* ignore */
@@ -285,9 +305,13 @@ export class BundleAudioClock {
       let v = sampleGain(info.gainProp, frame);
       // §11.5.2 declick: best-effort（volume 粒度）。video/preview と同一の長さ・抑制で乗算。
       if (info.autoFade) {
+        // fix-plan-v2plus: ループ境界を実質的なカット端として扱い、フェード窓をループ範囲で
+        // クランプする（bundleFootageAudio.ts の純関数・unit test 済み）。bundle 専用の
+        // autoFadeMultiplierAtFrame 呼び出し引数のみの変更 — 関数自体・他経路は変更しない。
+        const fadeWindow = clampFadeWindowToLoopRange(info.inPoint, info.outPoint, this.rangeStart, this.rangeEnd, this.loop);
         v *= autoFadeMultiplierAtFrame(frame, {
-          inPoint: info.inPoint,
-          outPoint: info.outPoint,
+          inPoint: fadeWindow.inPoint,
+          outPoint: fadeWindow.outPoint,
           fps: this.fps,
           suppression: info.suppression,
         });

@@ -226,6 +226,13 @@ export class DomRenderer implements Renderer {
   private playbackRateForSync = 1;
   /** §11.7 bundle: true の間は playbackMode 中でも video を unmute しない（autoplay ポリシー回避）。 */
   private muteVideoPlayback = false;
+  /**
+   * fix-plan-v2plus (bundle 専用): 音声を別 <audio> 要素へ抽出済みの video オブジェクトID集合。
+   * 該当する <video> は muteVideoPlayback の解除（gesture unmute）後も常時ミュートのまま
+   * （音は BundleAudioClock の <audio> 要素側から鳴る＝二重音声防止）。null/未設定 = 全て通常挙動
+   * （既存 export / editor preview はこのオプションを一切セットしないため無関係・無回帰）。
+   */
+  private persistentlyMutedVideoIds: ReadonlySet<string> | null = null;
   private previewLoop: { enabled: boolean; loopStart: Frame; loopEnd: Frame } = {
     enabled: false,
     loopStart: 0,
@@ -240,6 +247,7 @@ export class DomRenderer implements Renderer {
     previewVideoPlayback?: boolean;
     exportVideoStep?: boolean;
     muteVideoPlayback?: boolean;
+    persistentlyMutedVideoIds?: ReadonlySet<string> | null;
     loop?: { enabled: boolean; loopStart: Frame; loopEnd: Frame };
   }): void {
     if (opts.holdLastRaster !== undefined) this.holdLastRaster = opts.holdLastRaster;
@@ -247,6 +255,7 @@ export class DomRenderer implements Renderer {
     if (opts.exportCompositeMode !== undefined) this.exportCompositeMode = opts.exportCompositeMode;
     if (opts.exportVideoStep !== undefined) this.exportVideoStep = opts.exportVideoStep;
     if (opts.muteVideoPlayback !== undefined) this.muteVideoPlayback = opts.muteVideoPlayback;
+    if (opts.persistentlyMutedVideoIds !== undefined) this.persistentlyMutedVideoIds = opts.persistentlyMutedVideoIds;
     if (opts.loop !== undefined) this.previewLoop = opts.loop;
     if (opts.previewVideoPlayback !== undefined) {
       if (this.previewVideoPlayback && !opts.previewVideoPlayback) {
@@ -1142,7 +1151,8 @@ export class DomRenderer implements Renderer {
           if (swapped) el = swapped;
           forceSeek = true;
         }
-        updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, frame, hostInPoint, fps, this.previewVideoPlayback, this.exportVideoStep, forceSeek, this.playbackPauseForSync, this.muteVideoPlayback, this.playbackRateForSync);
+        const persistentlyMuted = this.persistentlyMutedVideoIds?.has(obj.id) ?? false;
+        updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, frame, hostInPoint, fps, this.previewVideoPlayback, this.exportVideoStep, forceSeek, this.playbackPauseForSync, this.muteVideoPlayback, this.playbackRateForSync, persistentlyMuted);
       }
 
       // Plugin component: registry から ComponentDef.render を呼ぶ（組み込み型は未登録でスキップ）
@@ -1984,7 +1994,8 @@ export class DomRenderer implements Renderer {
           // updateComponentEl より先に append する（順序を変えると nested comp 内の split alpha
           // video が「parent なし」で例外を投げる）。
           div.appendChild(el);
-          updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, childFrame, hostInPoint, childComp.fps, this.previewVideoPlayback, this.exportVideoStep, false, this.playbackPauseForSync, this.muteVideoPlayback, this.playbackRateForSync);
+          const nestedPersistentlyMuted = this.persistentlyMutedVideoIds?.has(obj.id) ?? false;
+          updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, childFrame, hostInPoint, childComp.fps, this.previewVideoPlayback, this.exportVideoStep, false, this.playbackPauseForSync, this.muteVideoPlayback, this.playbackRateForSync, nestedPersistentlyMuted);
         }
       }
       container.appendChild(div);
@@ -2189,6 +2200,8 @@ function updateComponentEl(
   pauseForSync = false,
   muteVideoPlayback = false,
   playbackRateForSync = 1,
+  /** fix-plan-v2plus (bundle 専用): 音声抽出済み video は gesture unmute 後も常時ミュート維持。 */
+  persistentlyMuted = false,
 ): void {
   switch (type) {
     case "solid": {
@@ -2328,7 +2341,7 @@ function updateComponentEl(
         exportStep: exportVideoStep,
         forceSeek: cutSeek,
         pauseForSync: previewVideoPlayback && pauseForSync,
-        forceMuted: muteVideoPlayback,
+        forceMuted: muteVideoPlayback || persistentlyMuted,
         playbackRateForSync,
       });
       if (exportVideoStep) {
@@ -2367,7 +2380,7 @@ function updateComponentEl(
           exportStep: exportVideoStep,
           forceSeek: cutSeek,
           pauseForSync: previewVideoPlayback && pauseForSync,
-          forceMuted: muteVideoPlayback,
+          forceMuted: muteVideoPlayback || persistentlyMuted,
           playbackRateForSync,
         });
         // §16.2 genlock: 定常再生中（scrub/export/カット境界/映像先行pauseのいずれでもない）

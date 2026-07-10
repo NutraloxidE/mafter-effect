@@ -9,6 +9,35 @@
 
 ---
 
+## ⚠️ 実装結果（2026-07-10・実 Chromium 計測）— 分離だけでは不十分と判明
+
+**配線は成功したが、継ぎ目クリックは消えなかった。** 実装（Phase 1〜3）を Sonnet 5 が完了し、Claude が実ブラウザで計測した結果:
+
+- **配線は正しい**（実機で確認）: 表示 `<video>` は `muted=true` で再生、別 `<audio>` 要素（同素材・detached）が `muted=false` で再生、**二重音声なし**。`persistentlyMutedVideoIds` 機構が機能。trimStart/inPoint 反映（report.md 副次発見）と `clampFadeWindowToLoopRange`（ループ境界を declick 窓にクランプ）も入った。
+- **しかしクリックは残った**（`verify-loop-seam-click.mjs` の実音声 wrap 計測）:
+
+  | 版 | wrapPeakDelta | 備考 |
+  |---|---:|---|
+  | 無修正 | ~0.10 | 元のクリック |
+  | c903ab0（gain 分離・最小） | ~0.05 | |
+  | v2-plus（分離のみ） | ~0.13 | 悪化 |
+  | v2-plus + seek 時 volume=0 | 0.07〜0.16（run ばらつき大） | **不安定** |
+
+- **原因（確定）**: 分離した `<audio>` 要素も、継ぎ目で `el.currentTime=0` の**ハード seek** を行い、declick を **`el.volume`** で掛けている。継ぎ目付近の実測 volume は seek 直前で **0.80 までしか下がらず**（tick が wrap 検出時に applyGains を通らない＋`el.volume` に**出力レイテンシがあり sample 精度で当たらない**）、seek の波形不連続が可聴 gain で通過する。**これは postmortem と同じ「HTMLMediaElement.volume は sample 精度の declick に使えない」限界**であり、音声を別要素に分離しても declick 手段が `el.volume` のままなら解決しない。
+- run ごとに 0.07〜0.16 とばらつく＝**確実に消せない**ため、受け入れ基準（ノイズが消えたらパス）を**満たさない**。マージ見送り。
+
+### 次にやるべきこと（ユーザー判断待ち）
+
+分離アーキテクチャ自体は正しい土台。**真に消すには sample 精度の declick が要る**。選択肢:
+
+1. **分離 `<audio>` を Web Audio の fadeGain（AudioParam automation）に通す**（推奨候補）。postmortem の失敗は「**タップした video 要素を muted にしてグラフごと無音化**」した事故であって、fadeGain 概念自体ではない。今回は **video に触れず、専用の `<audio>` 要素だけを graph に通し muted にしない**ため、postmortem の罠に当たらない。seek 前に fadeGain を 0 へ sample 精度でランプ→seek→戻す。ユーザーは Web Audio を避けたい意向だったので**要確認**。
+2. **デコード済みバッファの gapless ループ**（AudioBufferSourceNode + loop points + crossfade）。最も綺麗だが重い。
+3. **継ぎ目の短いハードミュート窓**（~40ms）。crude だが `el.volume` レイテンシに勝てるかは要計測。
+
+現状の v2-plus コミットは **調査成果（配線・trimStart 修正・計測）として保存**。クリック解消は上記いずれかの追加実装が必要。
+
+---
+
 ## 参照すべき前提（実装前に必読）
 
 1. [`report.md`](report.md) — 一次調査。継ぎ目の生の不連続とコード経路。

@@ -12,7 +12,8 @@ import { ModuleLoader } from "../runtime/moduleLoader";
 import { resolve, type ExpressionEvaluator } from "../runtime/resolve";
 import type { BundleBootConfig } from "../runtime/bundleTypes";
 import { htmlCompositionsInProject, timelineCompositionsInProject } from "../runtime/bundleCollect";
-import { BundleAudioClock, hasAudioLayers } from "./BundleAudioClock";
+import { BundleAudioClock } from "./BundleAudioClock";
+import { collectBundleFootageAudioSources } from "./bundleFootageAudio";
 import { assetUrlForBundle, buildBundleFs } from "./BundleFs";
 import { applyFitTransform } from "./bundleFit";
 import { collectVideoClipsFromComp } from "../runtime/videoLookaheadWarmup";
@@ -142,7 +143,16 @@ export class BundlePlayer {
     // §11.4: Play barrier — primed キャッシュを信用せず実要素を現フレームへ再同期してから再生。
     await this.renderer.syncMountedVideosForPlay(this.manifest.fps).catch(() => false);
 
-    const hasAudio = hasAudioLayers(project, comp);
+    // fix-plan-v2plus: bundle 専用の footage 音声検出（standalone audio + video 内蔵音声の両方）。
+    // hasAudioLayers（BundleAudioClock.ts, editor preview 共有）とはセマンティクスが異なる別関数。
+    const footageAudioSources = collectBundleFootageAudioSources(project, comp);
+    const hasAudio = footageAudioSources.length > 0;
+    // video 内蔵音声は別 <audio> 要素へ抽出するため、対応する <video> は常時ミュートする
+    // （gesture unmute でも解除しない — 音は BundleAudioClock 側のみ・二重音声防止）。
+    const persistentlyMutedVideoIds = new Set(
+      footageAudioSources.filter((s) => s.componentType === "video").map((s) => s.objectId),
+    );
+    this.renderer.setPreviewRenderOptions({ persistentlyMutedVideoIds });
     if (hasAudio) {
       this.audioClock = new BundleAudioClock(
         this.manifest.fps,
@@ -206,6 +216,9 @@ export class BundlePlayer {
         // video 内蔵音声: ユーザー操作のコールスタック内で再描画 → syncVideoElementTime が
         // アンミュート play() を呼ぶ（この文脈なら play が許可される）。muteVideoPlayback を
         // 解除して初めて実際に unmute される（それまでは muted のまま無音再生が進んでいた）。
+        // fix-plan-v2plus: 音声抽出済み video（persistentlyMutedVideoIds）はここで
+        // muteVideoPlayback:false にしても DomRenderer 側の forceMuted 判定で常時ミュートのまま
+        // （音は BundleAudioClock の <audio> 側 unlock() のみから鳴る＝二重音声防止）。
         this.renderer.setPreviewRenderOptions({
           previewVideoPlayback: true,
           muteVideoPlayback: false,
