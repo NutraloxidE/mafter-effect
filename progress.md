@@ -1742,3 +1742,10 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
 - Primary cause: bundle video audio uses `video.volume` set only during render. The 120 ms declick envelope is not sample-accurate at 30 fps (last-frame multiplier `0.362285`); the adaptive render gate can skip that frame entirely, so the native `<video>` seek occurs while non-silent.
 - Secondary finding: `BundleAudioClock` does not yet apply `inPoint`/`outPoint`/`trimStart` timing to standalone `<audio>` elements. This is not involved in Comp 10 but should be fixed in the shared bundle media-audio controller.
 - Next step: implement the documented bundle-only Web Audio gain controller and loop-boundary callback, then make the diagnostic pass against the same unsafe source seam.
+
+### 2026-07-10 (Codex) — fix-plan review before implementation
+
+- The documented direction (bundle-only Web Audio gain controller) remains appropriate, but the current plan is not implementation-ready: it does not define (1) a render-cadence-independent clock that begins the pre-seek fade before the loop boundary, (2) the DomRenderer video-pool lifecycle / one-source-node-per-element contract, or (3) the forced loop-start render and media-readiness gate before fade-in. A callback that runs only after wrap is too late to prevent the click.
+- Standalone `<audio>` timing also needs a layer-time mapping (`inPoint` / `outPoint` / `trimStart`) before it shares the controller; otherwise the fix would preserve the known timing error.
+- Tried a read-only Opus 4.8 design review under `RG-20260710-01`, but the local `Codex` CLI launch was denied by the OS. The delegation was recorded as abandoned; no code or spec was changed.
+- Next step: revise `doc/issue/static-noise-problem/fix-plan.md` to specify the clock, media-audio bridge, loop handoff state machine, and acceptance gates; obtain confirmation before implementing the revised scope.
