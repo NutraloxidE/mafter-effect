@@ -1,4 +1,4 @@
-# fix-plan v3 — Codex 実装票（GPT-5.6 terra medium・ワンショット）
+# fix-plan v3 — Codex 実装票（GPT-5.6 terra light・ワンショット）
 
 > このドキュメントは [fix-plan-v3-continuous-audio.md](fix-plan-v3-continuous-audio.md) を Codex medium が
 > **1 回の投入で燃えずに完了できる単一 Ticket** へ落とし込んだもの。設計理由・仮説・背景は本家プランにあり、
