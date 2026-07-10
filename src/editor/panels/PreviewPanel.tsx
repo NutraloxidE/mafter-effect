@@ -51,7 +51,7 @@ import { previewCacheService } from "../previewCacheService";
 import { precompRasterService } from "../precompRasterService";
 import { compNeedsAutoPreviewCache } from "../previewCompAnalysis";
 import { runPreviewFrameClock, runPreviewPlaybackLoop } from "../../runtime/previewPlaybackLoop";
-import { PreviewAudioClock } from "../previewAudioClock";
+import { PreviewAudioClock, hasPreviewAudioCandidates } from "../previewAudioClock";
 import {
   computePlaybackSyncState,
   computePlaybackRateForSync,
@@ -60,7 +60,6 @@ import {
   holdThresholdsForFps,
   initialPlaybackSyncState,
 } from "../../runtime/playbackVideoSync";
-import { hasAudioLayers } from "../../player/BundleAudioClock";
 import { loadAudioBuffer, peekAudioBuffer } from "../audioBufferCache";
 import { loadWorkArea } from "../workAreaStorage";
 import { currentTimelineComp, selectedObjects, useEditorStore } from "../store";
@@ -678,7 +677,11 @@ export function PreviewPanel() {
 
     const startClock = (): void => {
       if (cancelled) return;
-      if (!project || !hasAudioLayers(project, comp)) {
+      // Phase B（doc/issue/static-noise-problem/after-v3-implement-report.md §4）: standalone audio
+      // だけでなく video 内蔵音声「候補」があれば PreviewAudioClock を試す（実際に音声トラックが
+      // あるかは prepareAudioLayers の decode 側で判定・無ければ start() が false を返し rAF へ
+      // フォールバックする）。
+      if (!project || !hasPreviewAudioCandidates(comp)) {
         stop = startRafClock();
         return;
       }
@@ -704,11 +707,20 @@ export function PreviewPanel() {
       });
       void clock.start().then((ok) => {
         if (cancelled) { clock.stop(); return; }
-        if (!ok) fallbackStop = startRafClock();
+        if (ok) {
+          // Phase B: このクロックが音声を抽出済みの video は表示 <video> を持続ミュートし、
+          // ネイティブ A/V 再生（§11.4 playbackMode の unmute）との二重発音を防ぐ。
+          rendererRef.current?.setPreviewRenderOptions({
+            persistentlyMutedVideoIds: clock.getMutedVideoObjectIds(),
+          });
+        } else {
+          fallbackStop = startRafClock();
+        }
       });
       stop = () => {
         clock.stop();
         fallbackStop?.();
+        rendererRef.current?.setPreviewRenderOptions({ persistentlyMutedVideoIds: null });
       };
     };
 

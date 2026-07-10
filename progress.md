@@ -1,5 +1,17 @@
 # Progress
 
+### 2026-07-11 (Claude Opus 4.8 + Sonnet 5 subagent) - editor preview の video 内蔵音声 static 修正 (Phase B)
+
+- **診断**: フル pj `mafter-project (23).zip` の Comp 10 を実データ解析。preview の static は **video 内蔵 AAC が表示 `<video>` から直接鳴り、§11.4 sync（playbackRate ±4% サーボ・drift>0.5s の resync seek・pauseForSync）に晒されて glitch** するのが原因。standalone audio 用 Phase A では未解決。bundle は v2-plus で分離済み（`persistentlyMutedVideoIds`）のため既に解消していた。
+- **Savepoint**: `9d4f0ed`（v3 bundle 削除 D1–D4 のスナップショット）。
+- **実装 (Phase B, Sonnet 5 subagent → Opus 4.8 レビュー)**: editor preview only。`prepareAudioLayers` を共有 `collectFootageAudioSources`（bundle と同一）で書き換え、内蔵音声を持つ enabled `video` も Web Audio（decodeAudioData→AudioBufferSourceNode）で audio-master クロックに載せる。`hasPreviewAudioCandidates` / `mutedVideoObjectIds` / `getMutedVideoObjectIds()` を追加し、`PreviewPanel` が `setPreviewRenderOptions({ persistentlyMutedVideoIds })` で表示 `<video>` を持続ミュート（停止時 null クリア）。`updateLiveGains` の component 型決め打ち（"audio"）を `node.componentType` に修正。
+- **非変更**: §5 スキーマ / INV / bundle / player / mp4·webm·PNG export に不触。`src/editor/*` のみ → `build:player` 不要（playerBuildFreshness PASS）。
+- **検証**: PASS `npm run typecheck`; PASS 対象 unit (`previewAudioClock`〔新規 12〕/`bundleFootageAudio`/`footageAutoFade`/`videoElementSync`); PASS 全 `npx vitest run`（**111 files / 1069 tests**）。
+- **未実施 / 未claim**: 実 Chromium・**実耳**での Comp 10 static 消失確認（音声 static は聴覚が ground truth）。起動直後の二重発音トランジェント（clock.start() 解決前の一瞬）と、ネストコンプ内 video 音声は本スコープ外（bundle も同様）。
+- **Next steps**: ユーザーが Comp 10 を実機再生し static 消失を実耳確認。残ればループ wrap 時の rAF タイミング揺れ or 起動トランジェントを追う。
+
+---
+
 ### 2026-07-10 (Codex Opus 4.8) - adaptive frame skip for HTML bundle playback implemented
 
 - **Savepoint**: Committed the implementation plan before code changes: `b1b43dd` (`docs: add adaptive frame skip bundle plan`).
