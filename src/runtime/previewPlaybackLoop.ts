@@ -16,6 +16,13 @@ export interface PreviewPlaybackLoopOptions {
     recordRenderCost: (costMs: number) => void;
   };
   /**
+   * §11.5.2 declick を renderGate から独立させるための音声専用コールバック（省略可）。
+   * renderGate が視覚描画を間引いても frame が進むたびに必ず呼ぶ（renderFrame とは別・呼び出し
+   * コストが軽いことが前提）。未指定なら従来と完全一致（editor preview はこのループを共有する
+   * ため無指定時は無影響）。
+   */
+  onFrameAudio?: (frame: number) => void;
+  /**
    * true の間は frame を進めない(映像ピクセル待ち)。
    * wall-clock の lastRafMs は通常どおり消費し、解除時のフレームジャンプを防ぐ。
    */
@@ -56,6 +63,7 @@ export function runPreviewPlaybackLoop(options: PreviewPlaybackLoopOptions): () 
           const lastFrame = Math.max(loopStart, loopEnd - 1);
           currentFrame = lastFrame;
           options.onFrameChange(lastFrame);
+          options.onFrameAudio?.(lastFrame);
           const gen = ++renderGen;
           const renderStart = performance.now();
           void Promise.resolve(options.renderFrame(lastFrame)).finally(() => {
@@ -67,6 +75,7 @@ export function runPreviewPlaybackLoop(options: PreviewPlaybackLoopOptions): () 
       }
       currentFrame = next;
       options.onFrameChange(currentFrame);
+      options.onFrameAudio?.(currentFrame);
       if (options.renderGate?.shouldRender(now, msPerFrame) !== false) {
         const gen = ++renderGen;
         const renderStart = performance.now();

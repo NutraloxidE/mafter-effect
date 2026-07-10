@@ -12,6 +12,7 @@ import type { ResolvedComponent, ResolvedEffect, ResolvedObject, ResolvedScene }
 import { compChildFrame, isCompNestDepthAllowed } from "./compLayer";
 import type { NestedCompRasterizer } from "./compFrameCapture";
 import { resolve, type ExpressionEvaluator } from "./resolve";
+import { resolveVideoGainForFrame } from "./videoGainOnly";
 import { applyTextEl, rgbaCss } from "./textRender";
 import { buildMultiRingPathD, buildShapePathD, type ResolvedShapeVertex } from "./shapePath";
 import { composeRings, multiPolygonToPathD } from "./shapePathBoolean";
@@ -780,6 +781,25 @@ export class DomRenderer implements Renderer {
         compositePackedAlpha(v, companion.canvas, companion.maskScratch, packedLayout);
       }
     }
+  }
+
+  /**
+   * §11.5.2 declick を renderGate から独立させるための軽量音声適用（bundle 専用）。
+   * resolveVideoGainForFrame は transform/effect/DOM に触れないため、adaptiveRenderBudget が
+   * 視覚描画を間引いているフレームでも毎フレーム呼べるコストで、ループ継ぎ目の fade-out/in が
+   * video.volume に確実に反映される（renderFrame() 呼び出しの有無と無関係）。マウント済み要素
+   * だけを更新し、要素の生成・破棄・seek・muted 制御には一切触れない（それらは renderFrame の
+   * 責務のまま）。
+   */
+  applyAudioForFrame(comp: TimelineComposition, frame: Frame, evaluator?: ExpressionEvaluator): void {
+    if (!this.root) return;
+    const gains = resolveVideoGainForFrame(comp, frame, evaluator);
+    if (gains.size === 0) return;
+    this.forEachVideoElement((video, objectId) => {
+      const gain = gains.get(objectId);
+      if (gain === undefined) return;
+      video.volume = gain;
+    });
   }
 
   /** §11.4 preview/bundle warm-up — マウント済み video 要素を列挙（ネスト comp 内も含む）。 */

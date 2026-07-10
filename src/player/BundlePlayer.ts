@@ -306,6 +306,9 @@ export class BundlePlayer {
       onFrameChange: (f) => {
         this.currentFrame = f;
       },
+      // §11.5.2 declick を adaptiveRenderBudget から独立させる（video 内蔵音声のみ・fix-plan-v2）。
+      // renderGate が視覚描画を間引いても、continuity フェードは毎フレーム video.volume へ届く。
+      onFrameAudio: (f) => this.applyAudioForFrame(f),
       onPlaybackEnd: () => {
         this.playing = false;
       },
@@ -404,6 +407,12 @@ export class BundlePlayer {
     const scene = resolve(this.comp, frame, { expressions: this.evaluator });
     this.renderer.renderFrame(scene, frame);
     void this.renderer.flushRasterEffects();
+  }
+
+  /** fix-plan-v2-minimal: renderGate に関係なく毎フレーム declick gain だけを適用する軽量経路。 */
+  private applyAudioForFrame(frame: number): void {
+    if (!this.comp) return;
+    this.renderer.applyAudioForFrame(this.comp, frame, this.evaluator);
   }
 
   private shouldRenderPlaybackFrame(nowMs: number, msPerFrame = 1000 / this.manifest.fps): boolean {

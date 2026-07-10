@@ -92,3 +92,28 @@ resolve+volume の毎フレーム適用でも取り切れない場合のみ:
 4. `build:player` → 実機であなたが試聴 → progress 更新。
 
 > どの段階でも「PASS」を名乗る前に、実 Chromium で鳴っている音をキャプチャした計測を通すこと。unit/typecheck/build のグリーンは前提条件にすぎない。
+
+---
+
+## 実装結果（2026-07-10・実 Chromium 計測）
+
+第1案（DomRenderer 音声適用分離 → `onFrameAudio` → BundlePlayer 配線）を実装し、[`verify-loop-seam-click.mjs`](verify-loop-seam-click.mjs) で実 Chromium・実音声キャプチャによる before/after 計測を行った。
+
+手法: ループ継ぎ目に生の不連続を持つ H.264+AAC フィクスチャ（5s ソース、comp のループ範囲 3.0s で mid-file cut）を実 Chromium で再生し、実際に destination へ流れる音声波形を `ScriptProcessorNode` タップで直接観測。`video.currentTime` のリセット（wrap）を検出し、その瞬間のサンプル間最大差分（click の大きさ）を測定。
+
+| 条件 | wrapPeakDelta | wrapMeanPeakDelta | 備考 |
+|---|---:|---:|---|
+| 修正前・CPU 6x throttle | 0.1046 | 0.0929 | adaptive skip を強制発生させた状態 |
+| 修正前・throttle なし | 0.1075 | 0.0764 | 理想条件でも既に大きい |
+| **修正後・CPU 6x throttle** | **0.0435** | **0.0406** | 修正前の約 **42%**（約 58% 減） |
+| **修正後・throttle なし** | **0.0508** | **0.0508** | throttle 有無でほぼ同じ＝skip 起因の悪化分を解消 |
+
+### 解釈
+
+1. **修正の効果は実測で確認できた**: throttle 有無を問わずクリックのピークがおよそ半分（0.10→0.05）に減少。特に「修正後は throttle をかけてもかけなくてもほぼ同じ値」になった点が重要で、これは **adaptive frame skip が悪さをする分（本 issue の主訴）を実質的に解消できた**ことを示す。
+2. **完全には消えていない**: throttle なしの理想条件でも修正後に ~0.05 の残留クリックがある。これは修正前の throttle なし条件でもほぼ同じレンジ（0.076〜0.108）で観測されており、**「フレームスキップとは独立した、declick フェード・seek タイミングそのものに内在する床（floor）」**の可能性が高い。fix-plan-v2-minimal のスコープ（adaptive skip 対策）はこの床には効かない。
+3. サンプル数が少ない（wrap イベント 1〜3 件/実行）ため、数値には実行ごとのブレがある。方向性（修正後 < 修正前）は複数条件で一貫している。
+
+### 現状は fix-plan-v2-minimal の Step 3 の分岐点
+
+計画の記述どおり「継ぎ目残留が閾値以下になるか確認。ダメならフォールバック（ミュート窓）へ」の判断が必要な段階。自動計測だけでは「主訴（skip 起因の悪化）は解消・ただし元々あった床は未解消」という中間結果であり、**この床が実際に耳で気になるレベルか**はユーザーの試聴でしか判定できない（→ 受け入れ基準どおり実機試聴が必須）。
