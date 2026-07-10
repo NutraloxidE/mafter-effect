@@ -61,6 +61,29 @@
 
 ---
 
+## 重さ（perf）の評価と分岐
+
+「video をミュートして別 `<audio>` を足す」ことの重さは、次のように分解できる。
+
+| 要素 | コスト | 補足 |
+|---|---|---|
+| `video.muted = true` 自体 | ほぼ0 | フレームデコード量は不変。ミュートで動画の音声トラック decode を省くかはブラウザ依存（保証なし） |
+| 別 `<audio src=同じ素材>` 1個 | **AAC decode 1本（軽い）** | bundle は blob URL 済み＝再フェッチ無し。再 demux + AAC decode のみ（概ね CPU 1〜2%） |
+| 二重音声 decode の無駄 | 小 | muted video が自トラックも decode し続けると同じ音声を2回 decode しうる |
+| メモリ | 小 | bytes は RAM 済み、デコード済み音声バッファは小 |
+
+**判断の芯:** 弱いマシンで重いのは**映像 decode（H.264/VP9）**で、これは video 要素数が変わらない本修正では**増えない**。増えるのは軽い音声 decode 1本のみ（[[alpha-video-perf-decode-bound]] / old-hardware stutter もボトルネックは映像側）。**音声付き動画1枚（Comp 10）なら体感差はほぼ無い見込み。** 効くとしたら「音声付き動画レイヤーが多数」で音声デコーダが N 本になる場合。
+
+### 単純版 → 計測 → 必要なら escalate（計測駆動）
+
+1. **まず単純版**（ミュート video + 別 `<audio>`）を実装する。
+2. **Phase 4 で decode/stutter を実測**する。`verify-loop-seam-click.mjs` の CPU throttle を使い、分離前後で「フレーム進行の安定度・映像 stutter・decode lag」を比較（既存の再生計測ハーネス手法＝rAF ループで `{currentFrame, video.currentTime, readyState}` を積む、を流用してよい）。判定は絶対値でなく**分離前後の差**で見る。
+3. **有意に重くなった場合のみ** escalate: **export 時に音声を別ファイルへ demux 分離**（video ストリーム＝映像のみ／小さな audio-only `.m4a`/`.opus` を別 `<audio>` で再生）。二重 decode を完全に消せるが、export の muxer 機構追加で複雑化するため、計測が要求するまでやらない。
+
+> つまり「video ミュートの重さ」は先に単純版で作って**実測で分岐**する。重くない限り分離 export はやらない（YAGNI）。この perf 実測も Phase 4 の完了条件に含める。
+
+---
+
 ## Phase 0 — 仮説の実ブラウザ再確認（コード変更なし・基準取り）
 
 **目的:** 「動画をミュートして同素材の別 audio 要素で鳴らすとクリックが消える」を、本リポの実 Chromium ハーネスで数値化する。直す前に「分離すれば消える」ことを自分の計測で確認しておく。
@@ -107,10 +130,11 @@
 1. **実ブラウザ回帰ゲート（主）:** `verify-loop-seam-click.mjs` を CPU throttle 有/無で実行し、**継ぎ目 `wrapPeakDelta` が背景（~0.002）に近いレベルまで下がる**ことを before（c903ab0）と比較して示す。throttle 有無で結果が一致すること（skip 依存が消えたこと）も確認。
 2. **A/V 同期の目視/計測:** 分離した音声と muted video がズレないこと（wrap 後も currentTime が破綻しない）。ハーネスの `videoCurrentTime` 系列で確認。
 3. **二重音声が無いこと:** video がミュートで、音は `<audio>` 側のみから出ている（実音声キャプチャで単一ソース）。
-4. **回帰:** `npm run typecheck` / `npx vitest run`（既存 1043 + 追加）/ **`npm run build:player`**（src/player・src/runtime を触るので必須）/ `playerBuildFreshness`。
-5. **既存 export/preview 無回帰:** 既存の video/audio 関連 verify が該当すれば実行。editor preview の audio 経路が変わっていないこと（`hasAudioLayers` 未変更）。
-6. 結果を本文書に追記し、`progress.md` を更新。
-7. **最終判定はユーザーの耳**: Comp 10 を実機再生してクリックが消えたか確認してもらう（自己宣言しない）。
+4. **perf 実測（重さの分岐判定）:** CPU throttle 下で分離前後のフレーム進行安定度・映像 stutter・decode lag を比較（上の「重さの評価と分岐」参照）。有意に重ければ export 音声分離へ escalate、そうでなければ単純版で完了。**「重くない」を計測で示すこと。**
+5. **回帰:** `npm run typecheck` / `npx vitest run`（既存 1043 + 追加）/ **`npm run build:player`**（src/player・src/runtime を触るので必須）/ `playerBuildFreshness`。
+6. **既存 export/preview 無回帰:** 既存の video/audio 関連 verify が該当すれば実行。editor preview の audio 経路が変わっていないこと（`hasAudioLayers` 未変更）。
+7. 結果を本文書に追記し、`progress.md` を更新。
+8. **最終判定はユーザーの耳**: Comp 10 を実機再生してクリックが消えたか確認してもらう（自己宣言しない）。
 
 ---
 
@@ -134,6 +158,7 @@ Phase 4  実ブラウザ計測（前後比較）+ build:player + progress 更新
 - video 音声トラック有無の判定手段が `asset.meta` 等に見当たらず、全 video 抽出の副作用（無音 video での master 経路切替）が無視できないと判断した場合。
 - §5 スキーマ / INV / `project.json` 形式に触れないと実装できないと判明した場合。
 - A/V 同期が実機で明確にズレ、既存 §11.4 machinery で吸収できない場合。
+- perf 実測で分離が有意に重い（映像 stutter / decode lag が悪化）と出た場合 → 単純版のまま進めず、export 音声分離 escalate の要否をユーザーに確認。
 - 既存の standalone audio bundle / export / editor preview に回帰が出た場合。
 
 ---
@@ -150,6 +175,7 @@ Phase 4  実ブラウザ計測（前後比較）+ build:player + progress 更新
 - [ ] 実 Chromium 計測で継ぎ目 wrapPeakDelta が背景レベル近くまで低下（前後比較）
 - [ ] throttle 有/無で結果が一致（skip 依存の消滅）
 - [ ] 二重音声なし・A/V 同期 OK
+- [ ] perf 実測で「分離前後で有意に重くない」ことを確認（重ければ export 音声分離へ escalate 判断）
 - [ ] typecheck / vitest / build:player / playerBuildFreshness 緑
 - [ ] export・editor preview 無回帰（hasAudioLayers 未変更）
 - [ ] progress.md 更新・ユーザー実機試聴の handoff
