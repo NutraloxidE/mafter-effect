@@ -89,30 +89,3 @@ export function footageAudioMediaTimeSec(
 ): number {
   return Math.max(0, (transportFrame - inPoint) / fps + trimStart / fps);
 }
-
-/**
- * 純関数: ループ再生中の declick フェード窓を、素材自身の inPoint/outPoint からループ範囲で
- * クランプする。
- *
- * 素材が「継ぎ目より広い範囲」を持つ場合（例: 5s 素材の一部だけを 3s ループさせる mid-file
- * cut — 本 issue の regression fixture がまさにこの形）、素の inPoint/outPoint だけで
- * autoFadeMultiplierAtFrame を評価すると、継ぎ目（ループ境界）から離れた場所にしか
- * フェード窓が来ず、継ぎ目そのものには一切フェードがかからない（クリックが残る）。
- * ループ境界＝実質的なカット端として扱い、フェード窓をループ範囲でクランプすることで、
- * 継ぎ目に必ずフェードがかかるようにする。
- *
- * 素材の範囲がループ範囲と一致 or 内包する通常ケース（inPoint>=rangeStart かつ
- * outPoint<=rangeEnd）では max/min が no-op になり、既存挙動と同一になる。
- * loop=false のときはクランプしない（ループしない bundle で意図せず素材の実際の端より
- * 手前でフェードを始めてしまうのを避ける）。
- */
-export function clampFadeWindowToLoopRange(
-  inPoint: Frame,
-  outPoint: Frame,
-  rangeStart: Frame,
-  rangeEnd: Frame,
-  loop: boolean,
-): { inPoint: Frame; outPoint: Frame } {
-  if (!loop) return { inPoint, outPoint };
-  return { inPoint: Math.max(inPoint, rangeStart), outPoint: Math.min(outPoint, rangeEnd) };
-}

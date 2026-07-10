@@ -10,7 +10,7 @@ import {
   type PlaybackSyncState,
   type VideoClockSample,
 } from "../runtime/playbackVideoSync";
-import { clampFadeWindowToLoopRange, collectBundleFootageAudioSources, footageAudioMediaTimeSec } from "./bundleFootageAudio";
+import { collectBundleFootageAudioSources, footageAudioMediaTimeSec } from "./bundleFootageAudio";
 
 /** §11.4 preview と同じ双方向同期を bundle にも配線するためのコールバック（省略可＝同期無効）。 */
 export interface BundleAudioClockSyncOptions {
@@ -271,13 +271,8 @@ export class BundleAudioClock {
         for (const [id, el] of this.elements) {
           const info = this.gainByObjectId.get(id);
           try {
-            // fix-plan-v2plus: ループ継ぎ目の seek はソース波形の不連続を生む。tick は frame>=lastFrame
-            // を検出した時点で applyGains を通らずここへ来るため、declick フェードアウトが 0 まで
-            // 到達しないまま seek すると不連続が可聴 gain で通過する（＝クリック）。seek の瞬間だけ
-            // volume を 0 に落として不連続を無音でくるみ、直後の applyGains（in フェード）で 0→1 へ
-            // 戻す。el.volume は完全な sample 精度ではないが、seek 前後を無音側に寄せることで
-            // 残留クリックを大幅に低減する。
-            el.volume = 0;
+            // fix-plan-v3: ループ wrap の seek 1 回のみ。継ぎ目 declick はしない（コンテンツ由来の
+            // 波形段差は素材側の責務・el.volume は sample 精度でなく隠蔽は逆効果と実測で判明）。
             el.currentTime = footageAudioMediaTimeSec(this.rangeStart, info?.inPoint ?? this.rangeStart, info?.trimStart ?? 0, this.fps);
             void el.play();
           } catch {
@@ -305,13 +300,11 @@ export class BundleAudioClock {
       let v = sampleGain(info.gainProp, frame);
       // §11.5.2 declick: best-effort（volume 粒度）。video/preview と同一の長さ・抑制で乗算。
       if (info.autoFade) {
-        // fix-plan-v2plus: ループ境界を実質的なカット端として扱い、フェード窓をループ範囲で
-        // クランプする（bundleFootageAudio.ts の純関数・unit test 済み）。bundle 専用の
-        // autoFadeMultiplierAtFrame 呼び出し引数のみの変更 — 関数自体・他経路は変更しない。
-        const fadeWindow = clampFadeWindowToLoopRange(info.inPoint, info.outPoint, this.rangeStart, this.rangeEnd, this.loop);
+        // fix-plan-v3: §11.5.2 標準カット端フェードのみ（素材自身の inPoint/outPoint 端）。
+        // ループ境界を疑似カット端扱いする v2-plus 拡張は撤去（継ぎ目で volume を動かさない）。
         v *= autoFadeMultiplierAtFrame(frame, {
-          inPoint: fadeWindow.inPoint,
-          outPoint: fadeWindow.outPoint,
+          inPoint: info.inPoint,
+          outPoint: info.outPoint,
           fps: this.fps,
           suppression: info.suppression,
         });

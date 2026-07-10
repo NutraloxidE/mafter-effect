@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { defaultTransform, staticProp } from "../src/core/props";
 import type { AssetEntry, Component, Project, SceneObject, TimelineComposition } from "../src/core/schema";
 import {
-  clampFadeWindowToLoopRange,
   collectBundleFootageAudioSources,
   footageAudioMediaTimeSec,
   hasBundleFootageAudio,
@@ -148,29 +147,5 @@ describe("footageAudioMediaTimeSec (fix-plan-v2plus Phase 2 time mapping)", () =
 
   it("accepts fractional transportFrame (e.g. derived from wall-clock elapsed seconds)", () => {
     expect(footageAudioMediaTimeSec(15.5, 0, 0, 30)).toBeCloseTo(15.5 / 30, 6);
-  });
-});
-
-describe("clampFadeWindowToLoopRange (fix-plan-v2plus — seam declick for mid-file-cut loops)", () => {
-  it("clamps a source wider than the loop range so the fade window lands on the loop seam", () => {
-    // 5s (150-frame) source, but the bundle loops [0,90). Without clamping the out-fade would sit
-    // near frame 150 and never touch the actual seam at 90 → residual click.
-    const w = clampFadeWindowToLoopRange(0, 150, 0, 90, true);
-    expect(w).toEqual({ inPoint: 0, outPoint: 90 });
-  });
-
-  it("is a no-op when the source range fits inside the loop range (normal case)", () => {
-    const w = clampFadeWindowToLoopRange(10, 80, 0, 90, true);
-    expect(w).toEqual({ inPoint: 10, outPoint: 80 });
-  });
-
-  it("does not clamp when loop is disabled (avoid fading before the real source end)", () => {
-    const w = clampFadeWindowToLoopRange(0, 150, 0, 90, false);
-    expect(w).toEqual({ inPoint: 0, outPoint: 150 });
-  });
-
-  it("clamps a layer starting before the loop range up to the range start", () => {
-    const w = clampFadeWindowToLoopRange(-30, 200, 0, 90, true);
-    expect(w).toEqual({ inPoint: 0, outPoint: 90 });
   });
 });
