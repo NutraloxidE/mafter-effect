@@ -213,46 +213,53 @@ export class PreviewAudioClock {
   private tick = (): void => {
     if (!this.playing || !this.ctx) return;
 
-    // §11.4 双方向同期: holdTimeline（映像遅れ）は pauseVideo 判定の副産物として算出・報告する
-    // だけで、AudioContext の suspend/resume や frame 進行の凍結には使わない（audio-master、
-    // doc/issue/static-noise-problem/after-v3-implement-report.md Phase A）。
-    const samples = this.opts.getVideoClockSamples?.() ?? [];
-    this.syncState = computePlaybackSyncState(
-      this.syncState,
-      samples,
-      holdThresholdsForFps(this.opts.fps),
-      performance.now(),
-    );
-    this.opts.onPlaybackSyncState?.(this.syncState);
+    // §16.2/§16.2b フリーズ対策: onFrameChange/renderFrame 等が同期例外を投げると、catch が無ければ
+    // この tick が末尾の requestAnimationFrame(this.tick) 再スケジュールに届かず、再生が二度と
+    // 進まない恒久フリーズになる（bundle 側 BundleAudioClock/previewPlaybackLoop と同型の自己修復）。
+    try {
+      // §11.4 双方向同期: holdTimeline（映像遅れ）は pauseVideo 判定の副産物として算出・報告する
+      // だけで、AudioContext の suspend/resume や frame 進行の凍結には使わない（audio-master、
+      // doc/issue/static-noise-problem/after-v3-implement-report.md Phase A）。
+      const samples = this.opts.getVideoClockSamples?.() ?? [];
+      this.syncState = computePlaybackSyncState(
+        this.syncState,
+        samples,
+        holdThresholdsForFps(this.opts.fps),
+        performance.now(),
+      );
+      this.opts.onPlaybackSyncState?.(this.syncState);
 
-    const elapsedSec = this.ctx.currentTime - this.originCtxTime;
-    const frame = this.originFrame + Math.floor(elapsedSec * this.opts.fps);
-    const { loopStart, loopEnd, loop } = this.opts;
-    const lastFrame = Math.max(loopStart, loopEnd - 1);
+      const elapsedSec = this.ctx.currentTime - this.originCtxTime;
+      const frame = this.originFrame + Math.floor(elapsedSec * this.opts.fps);
+      const { loopStart, loopEnd, loop } = this.opts;
+      const lastFrame = Math.max(loopStart, loopEnd - 1);
 
-    if (frame >= lastFrame) {
-      if (loop) {
+      if (frame >= lastFrame) {
+        if (loop) {
+          this.opts.onFrameChange(lastFrame);
+          void this.opts.renderFrame?.(lastFrame);
+          this.schedule(loopStart);
+          this.opts.onFrameChange(loopStart);
+          void this.opts.renderFrame?.(loopStart);
+          return;
+        }
+        this.playing = false;
+        this.stopNodes();
         this.opts.onFrameChange(lastFrame);
-        void this.opts.renderFrame?.(lastFrame);
-        this.schedule(loopStart);
-        this.opts.onFrameChange(loopStart);
-        void this.opts.renderFrame?.(loopStart);
-        this.rafId = requestAnimationFrame(this.tick);
+        const done = this.opts.onPlaybackEnd;
+        void Promise.resolve(this.opts.renderFrame?.(lastFrame)).finally(() => done());
         return;
       }
-      this.playing = false;
-      this.stopNodes();
-      this.opts.onFrameChange(lastFrame);
-      const done = this.opts.onPlaybackEnd;
-      void Promise.resolve(this.opts.renderFrame?.(lastFrame)).finally(() => done());
-      return;
-    }
 
-    const clamped = Math.max(loopStart, frame);
-    this.updateLiveGains(clamped);
-    this.opts.onFrameChange(clamped);
-    void this.opts.renderFrame?.(clamped);
-    this.rafId = requestAnimationFrame(this.tick);
+      const clamped = Math.max(loopStart, frame);
+      this.updateLiveGains(clamped);
+      this.opts.onFrameChange(clamped);
+      void this.opts.renderFrame?.(clamped);
+    } catch (err) {
+      console.error("PreviewAudioClock: tick failed", err);
+    } finally {
+      if (this.playing) this.rafId = requestAnimationFrame(this.tick);
+    }
   };
 
   /**

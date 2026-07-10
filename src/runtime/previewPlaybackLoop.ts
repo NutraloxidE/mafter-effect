@@ -44,48 +44,60 @@ export function runPreviewPlaybackLoop(options: PreviewPlaybackLoopOptions): () 
       rafId = requestAnimationFrame(tick);
       return;
     }
-    const msPerFrame = 1000 / options.fps;
-    const elapsed = now - lastRafMs;
-    const advance = Math.floor(elapsed / msPerFrame);
-    if (advance > 0) {
-      lastRafMs = now - (elapsed % msPerFrame);
-      if (options.shouldHold?.()) {
-        rafId = requestAnimationFrame(tick);
-        return;
-      }
-      let next = currentFrame + advance;
-      const { loopStart, loopEnd, loop } = options;
-      if (next >= loopEnd) {
-        if (loop) {
-          next = loopStart + ((next - loopStart) % Math.max(1, loopEnd - loopStart));
-        } else {
-          playing = false;
-          const lastFrame = Math.max(loopStart, loopEnd - 1);
-          currentFrame = lastFrame;
-          options.onFrameChange(lastFrame);
-          options.onFrameAudio?.(lastFrame);
-          const gen = ++renderGen;
-          const renderStart = performance.now();
-          void Promise.resolve(options.renderFrame(lastFrame)).finally(() => {
-            options.renderGate?.recordRenderCost(performance.now() - renderStart);
-            if (gen === renderGen) options.onPlaybackEnd();
-          });
+    // §16.2/§16.2b フリーズ対策: renderFrame（DomRenderer 経由で alpha 合成等を呼ぶ）が同期例外を
+    // 投げると、catch が無ければこの tick が末尾の requestAnimationFrame(tick) 再スケジュールに
+    // 届かず、再生が二度と進まない恒久フリーズになる（bundle player / editor Preview 共有ループ）。
+    // try/finally で「例外が起きても playing なら必ず次 rAF を予約する」を保証し、自己修復させる。
+    try {
+      const msPerFrame = 1000 / options.fps;
+      const elapsed = now - lastRafMs;
+      const advance = Math.floor(elapsed / msPerFrame);
+      if (advance > 0) {
+        lastRafMs = now - (elapsed % msPerFrame);
+        if (options.shouldHold?.()) {
           return;
         }
+        let next = currentFrame + advance;
+        const { loopStart, loopEnd, loop } = options;
+        if (next >= loopEnd) {
+          if (loop) {
+            next = loopStart + ((next - loopStart) % Math.max(1, loopEnd - loopStart));
+          } else {
+            playing = false;
+            const lastFrame = Math.max(loopStart, loopEnd - 1);
+            currentFrame = lastFrame;
+            options.onFrameChange(lastFrame);
+            options.onFrameAudio?.(lastFrame);
+            const gen = ++renderGen;
+            const renderStart = performance.now();
+            void Promise.resolve(options.renderFrame(lastFrame))
+              .catch((err) => console.error("previewPlaybackLoop: renderFrame failed", err))
+              .finally(() => {
+                options.renderGate?.recordRenderCost(performance.now() - renderStart);
+                if (gen === renderGen) options.onPlaybackEnd();
+              });
+            return;
+          }
+        }
+        currentFrame = next;
+        options.onFrameChange(currentFrame);
+        options.onFrameAudio?.(currentFrame);
+        if (options.renderGate?.shouldRender(now, msPerFrame) !== false) {
+          const gen = ++renderGen;
+          const renderStart = performance.now();
+          void Promise.resolve(options.renderFrame(currentFrame))
+            .catch((err) => console.error("previewPlaybackLoop: renderFrame failed", err))
+            .finally(() => {
+              options.renderGate?.recordRenderCost(performance.now() - renderStart);
+              if (gen !== renderGen) return;
+            });
+        }
       }
-      currentFrame = next;
-      options.onFrameChange(currentFrame);
-      options.onFrameAudio?.(currentFrame);
-      if (options.renderGate?.shouldRender(now, msPerFrame) !== false) {
-        const gen = ++renderGen;
-        const renderStart = performance.now();
-        void Promise.resolve(options.renderFrame(currentFrame)).finally(() => {
-          options.renderGate?.recordRenderCost(performance.now() - renderStart);
-          if (gen !== renderGen) return;
-        });
-      }
+    } catch (err) {
+      console.error("previewPlaybackLoop: tick failed", err);
+    } finally {
+      if (playing) rafId = requestAnimationFrame(tick);
     }
-    rafId = requestAnimationFrame(tick);
   };
 
   rafId = requestAnimationFrame(tick);
@@ -112,33 +124,39 @@ export function runPreviewFrameClock(options: Omit<PreviewPlaybackLoopOptions, "
       rafId = requestAnimationFrame(tick);
       return;
     }
-    const msPerFrame = 1000 / options.fps;
-    const elapsed = now - lastRafMs;
-    const advance = Math.floor(elapsed / msPerFrame);
-    if (advance > 0) {
-      lastRafMs = now - (elapsed % msPerFrame);
-      if (options.shouldHold?.()) {
-        rafId = requestAnimationFrame(tick);
-        return;
-      }
-      let next = currentFrame + advance;
-      const { loopStart, loopEnd, loop } = options;
-      if (next >= loopEnd) {
-        if (loop) {
-          next = loopStart + ((next - loopStart) % Math.max(1, loopEnd - loopStart));
-        } else {
-          playing = false;
-          const lastFrame = Math.max(loopStart, loopEnd - 1);
-          currentFrame = lastFrame;
-          options.onFrameChange(lastFrame);
-          options.onPlaybackEnd();
+    // 同じ理由（上の runPreviewPlaybackLoop 参照）: onFrameChange/shouldHold が同期例外を投げても
+    // 次 rAF を必ず予約し、恒久フリーズにしない。
+    try {
+      const msPerFrame = 1000 / options.fps;
+      const elapsed = now - lastRafMs;
+      const advance = Math.floor(elapsed / msPerFrame);
+      if (advance > 0) {
+        lastRafMs = now - (elapsed % msPerFrame);
+        if (options.shouldHold?.()) {
           return;
         }
+        let next = currentFrame + advance;
+        const { loopStart, loopEnd, loop } = options;
+        if (next >= loopEnd) {
+          if (loop) {
+            next = loopStart + ((next - loopStart) % Math.max(1, loopEnd - loopStart));
+          } else {
+            playing = false;
+            const lastFrame = Math.max(loopStart, loopEnd - 1);
+            currentFrame = lastFrame;
+            options.onFrameChange(lastFrame);
+            options.onPlaybackEnd();
+            return;
+          }
+        }
+        currentFrame = next;
+        options.onFrameChange(currentFrame);
       }
-      currentFrame = next;
-      options.onFrameChange(currentFrame);
+    } catch (err) {
+      console.error("previewFrameClock: tick failed", err);
+    } finally {
+      if (playing) rafId = requestAnimationFrame(tick);
     }
-    rafId = requestAnimationFrame(tick);
   };
 
   rafId = requestAnimationFrame(tick);

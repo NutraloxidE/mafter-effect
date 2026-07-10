@@ -1,5 +1,35 @@
 # Progress
 
+### 2026-07-11（Claude Sonnet 5）— 続報: file:// vs http:// 実機 A/B で H1（canvas tainting）を確定 + ローカルサーバ推奨の案内追加
+
+- **ユーザー報告**: 修正後も実際にエクスポートした（ただし修正前の player.js を含む古い）`Comp_32_bundle` を file:// 直開きしたところ、まさに以下のログが出た: 全アセットで `Access to fetch at 'file:///...' ... blocked by CORS policy ... origin 'null'`（bundle の blob 化 fetch が file:// で無条件ブロック）、`Uncaught (in promise) SecurityError: getImageData ... tainted by cross-origin data`（前セッションで特定した投げどころそのもの）、`NotAllowedError: play() failed because the user didn't interact with the document first`（別件・後述）。
+- **実機 A/B 検証（新規 [verify-bundle-packed-alpha-file-protocol.mjs](verify-bundle-packed-alpha-file-protocol.mjs)・headed Chrome・修正後の現行コードでビルドした新規 bundle を使用）**: 合成 packed-alpha 動画を作り、同一 bundle を (a) Playwright route 経由の `http://` と (b) `file://` 直開き（フラグ無し・既定セキュリティ）の両方で再生し、`video.currentTime` の進行・console/pageerror を計測。
+  - **結果**: 両 leg とも `video.currentTime` は継続的に進行（0.9s→2.17s 等、停止なし）。`file://` leg では `getImageData` の `SecurityError` が発生するが、**`console.error("drawPackedAlphaComposite: composite failed", ...)` として捕捉されるのみ**（`Uncaught` ではない）＝ 前セッションの fix が効いている状態を実機で確認。`NotAllowedError`（play() 未ジェスチャ）は http/file 両方で同一頻度発生＝ file:// 固有ではなく別件（本調査の対象外・今回は深追いせず）。
+  - **結論**: **H1（file:// 環境での canvas tainting起因の SecurityError）が実際の根本原因だったことを実機で確定**。かつ前回実装した fix（合成関数の try/catch 化）で **恒久ハングは解消済み**（再生ループは止まらない）。ただし tainting 自体は原理的に回避できないため、**alpha レイヤーは file:// 直開きでは空白/透明のまま**（合成の実行そのものが不可能）— これは事前にユーザーへ確認済みの許容トレードオフ（「ローカルサーバ推奨の注意書きで十分」を選択）。
+- **実装（ユーザー選択どおり: 完全な file:// alpha 対応は行わず、案内のみ）**:
+  - [doc/mafter-effect-spec.md](doc/mafter-effect-spec.md) §11.7 に file:// 直開きの既知の制約を追記（散文のみ・§5/INV 不変）。
+  - [ExportDialog.tsx](src/editor/ExportDialog.tsx): HTML bundle export 対象に packed/split alpha 動画が実際に含まれる場合のみ、「file:// 直開きでは透過レイヤーが表示されない・ローカル HTTP サーバ推奨」という警告注記を表示（`hasAlphaVideoInBundle` を `bakeTargetCount` と同型のパターンで算出）。
+- **検証**: PASS `npm run typecheck`；PASS `npx vitest run`（111 files / 1075 tests、追加テスト無し・UI 文言のみのため）。`ExportDialog.tsx` は player バンドルに非同梱（`src/player/` から import されない）ため `build:player` 不要・`playerBuildFreshness` 緑のまま。
+- **一時投入した調査スクリプト**: `verify-bundle-packed-alpha-file-protocol.mjs` は恒久的な回帰スクリプトとして repo root に残置（既存 `verify-bundle-*.mjs` 命名規則に合わせた・`file://` を実際にテストする唯一のスクリプトのため今後の regression gate として有用）。
+- **Next steps**: 別件として見つかった `NotAllowedError: play() failed`（file/http 両方で発生・ミュート済みのはずの初回 play が非ミュート扱いで拒否される疑い）は未調査。実害（無音再生自体は成立しているため見た目上は無害）だが、気になる場合は次セッションで `installAutoplayUnlock` 周りを調査する。
+
+---
+
+### 2026-07-11（Claude Sonnet 5）— HTML bundle export の packed-alpha 動画「完全に止まって戻らない」フリーズ修正
+
+- **経緯**: ユーザー報告「アルファチャンネル付き動画のバンドル書き出しがフリーズする」。質問で症状を確定: (1) 完全に止まって二度と戻らないハング（一時的スタッタではない）、(2) packed alpha（Subject Extract §16.2b の1本動画）、(3) 同じ内容の編集 Preview では起きない/まし。
+- **調査（実装前・Explore + Plan agent 3体）**: preview と bundle player は `DomRenderer`・`videoElementSync`・`playbackVideoSync`・loop-wrap warmup（WP-1/WP-2）・packed proxy 埋め込みパイプラインをほぼ全経路で**既に共有**しており、静的に読む限り parity していることを確認（bundle 固有の別実装は無い）。その上で、「この自己修復アーキテクチャ（`failsafeExpired` 1秒フェイルセーフ・`audioMaster:true` の hold 無効化）で唯一“恒久的な”フリーズが起こりうるのは、rAF tick 内で render/audio コールバックが**同期例外を投げ**、tick が自分自身の `requestAnimationFrame(tick)` 再スケジュールに届かず二度と呼ばれなくなるケースだけ」という診断に到達（Plan agent の分析）。具体的な投げどころとして `drawPackedAlphaComposite`/`drawSplitAlphaComposite` の `getImageData`/`putImageData`（try/catch 無し。`file://` 経由 video を drawImage した canvas が tainted 判定されると `SecurityError` を投げうる環境依存要因を含む）を特定。
+- **実装（型/経路スコープを閉じた最小 diff・§5/INV/直列化 不変）**:
+  1. [videoPackedAlpha.ts](src/runtime/videoPackedAlpha.ts) `drawPackedAlphaComposite` / [videoSplitAlpha.ts](src/runtime/videoSplitAlpha.ts) `drawSplitAlphaComposite` — 合成本体を try/catch で包み、例外時は `console.error` して `false`（＝この1フレームは失敗）を返すよう変更。既存の bounded retry（`scheduleXxxAlphaRedrawWhenReady`）がそのまま効く。
+  2. [previewPlaybackLoop.ts](src/runtime/previewPlaybackLoop.ts) の `runPreviewPlaybackLoop`/`runPreviewFrameClock`、[BundleAudioClock.ts](src/player/BundleAudioClock.ts) の `tick`、[previewAudioClock.ts](src/editor/previewAudioClock.ts) の `tick` — tick 本体を try/finally で包み、`finally` で「`playing` なら必ず次 rAF を予約する」よう統一（既存の意図的な停止分岐＝`playing=false` を先に設定してから return、は finally の `if (playing)` 判定でそのまま従来どおり停止する。副作用の呼び出し順・停止条件は完全に維持）。これで **preview・bundle 双方の共有 rAF ループ全体**が「予期しない同期例外で再生が永久に止まる」クラスの障害を閉じる（unhandled promise rejection による非同期失敗は従来どおり console warning のみで次 tick には影響しない）。
+- **回帰テスト追加（純関数・INV-1 準拠）**: [test/previewPlaybackLoop.test.ts](test/previewPlaybackLoop.test.ts) に「renderFrame/onFrameChange が同期例外を投げても以降のフレームが進み続ける」ケースを2件追加。[test/videoPackedAlpha.test.ts](test/videoPackedAlpha.test.ts) / [test/videoSplitAlpha.test.ts](test/videoSplitAlpha.test.ts) に「`getImageData` が `SecurityError` を投げても `drawXxxAlphaComposite` は例外を外に漏らさず `false` を返す」ケースを追加。
+- **検証**: PASS `npm run typecheck`；PASS `npx vitest run`（**111 files / 1075 tests**）；**`npm run build:player` 実行済み**・`playerBuildFreshness` 緑（bundle 経路に反映確認）。実 Chromium（headed）で `verify-packed-alpha-e2e.mjs`（packed alpha 再生+GL/CPU parity+PNG export）・`verify-bundle-split-alpha-playback.mjs`（split alpha 同梱+再生継続+autoplay-safe）を無回帰確認。`verify-bundle-autoplay-unlock.mjs` はフィクスチャ `for-debug-data/video_with_audio.mp4` が 0 バイトだったため ffmpeg で実体（testsrc2+sine, 3s, h264/aac）を再生成して実行 — 1件目（gesture 前の無音自動再生・フリーズしない）は PASS、2件目（クリック後の自動アンムート）は本修正の**前後で結果が同一**であることを確認し、本件と無関係の pre-existing 課題と判定（`installAutoplayUnlock` のジェスチャー検知回りの別課題・未着手）。
+- **意図的に未実施（plan 通り）**: Plan agent が提案した「実 Chromium で `file://` と `http://` を A/B 計測して SecurityError の発生をピンポイントで実証する」フルハーネス（`verify-bundle-hold-parity.mjs`／`verify-bundle-video-playback.mjs` が現状空ファイルなのはそのまま・今回のスコープでは書かなかった）は今回実施していない。今回入れた fix は「どのタイミング・どの環境要因で例外が起きても、rAF ループを道連れにしない」という**原因を問わない防御修正**であり、ユーザー報告の「完全ハング」症状（＝この自己修復アーキテクチャで唯一ハングを説明できるメカニズム）を直接閉じる。
+- **Next steps**: ユーザーに実際の Subject Extract packed alpha 動画で書き出し→ブラウザ再生の実機確認を依頼（file:// 直開き・ローカルサーバ経由の両方を推奨）。もし依然フリーズが残る場合は、本修正が閉じたのとは別の経路（例えば H3＝低画質 proxy が実際には bundle 実行時に使われていない wiring 漏れ）を疑い、Plan agent が用意した A/B 計測手順（`file://` vs `http://`・CDP Media instrumentation）で局在化する。`verify-bundle-hold-parity.mjs`/`verify-bundle-video-playback.mjs`（現状 0 バイト）はこの追加調査の受け皿として使うのが良い。
+- **その他**: `for-debug-data/video_with_audio.mp4`（旧 0 バイト）を ffmpeg 生成の実動画に差し替え済み（`verify-bundle-autoplay-unlock.mjs` を動かすため必須だった）。コミット時にこのバイナリ差分を含めるかはユーザー判断。
+
+---
+
 ### 2026-07-11 (Codex Opus 4.8) - rendering pipeline snapshot updated
 
 - **Done**: Updated `doc/rendering-pipeline-current.md` after the preview Phase B change. The snapshot now includes editor `PreviewAudioClock`, video-embedded audio extraction and persistent mute, audio-master behavior when video lags, offline export audio mixing, bundle `BundleAudioClock`, and adaptive bundle render cadence.

@@ -210,86 +210,93 @@ export class BundleAudioClock {
   private tick = (): void => {
     if (!this.playing) return;
 
-    // §11.4 双方向同期: 映像遅れ→timeline hold（音声も pause）/ 映像先行→pauseVideo。
-    // sync 未指定なら samples は常に [] → 常に非 hold（既存挙動と完全互換）。
-    const samples = this.sync?.getVideoClockSamples?.() ?? [];
-    this.syncState = computePlaybackSyncState(
-      this.syncState,
-      samples,
-      holdThresholdsForFps(this.fps),
-      performance.now(),
-    );
-    this.sync?.onPlaybackRate?.(
-      computePlaybackRateForSync(dominantVideoSyncErrorSec(samples), this.fps),
-    );
-    this.sync?.onPlaybackSyncState?.(this.syncState);
-    if (this.syncState.holdTimeline && this.sync?.audioMaster === false) {
-      if (this.frozenFrame === null) {
-        const elapsedSec = (performance.now() - this.startWallMs) / 1000;
-        this.frozenFrame = this.rangeStart + Math.floor(elapsedSec * this.fps);
-        this.holdEnteredWallMs = performance.now();
+    // §16.2/§16.2b フリーズ対策: onFrame/renderFrame 等が同期例外を投げると、catch が無ければ
+    // この tick が末尾の requestAnimationFrame(this.tick) 再スケジュールに届かず、再生が二度と
+    // 進まない恒久フリーズになる。try/finally で「例外が起きても playing なら必ず次 rAF を
+    // 予約する」を保証する（previewPlaybackLoop.ts と同型の自己修復）。
+    try {
+      // §11.4 双方向同期: 映像遅れ→timeline hold（音声も pause）/ 映像先行→pauseVideo。
+      // sync 未指定なら samples は常に [] → 常に非 hold（既存挙動と完全互換）。
+      const samples = this.sync?.getVideoClockSamples?.() ?? [];
+      this.syncState = computePlaybackSyncState(
+        this.syncState,
+        samples,
+        holdThresholdsForFps(this.fps),
+        performance.now(),
+      );
+      this.sync?.onPlaybackRate?.(
+        computePlaybackRateForSync(dominantVideoSyncErrorSec(samples), this.fps),
+      );
+      this.sync?.onPlaybackSyncState?.(this.syncState);
+      if (this.syncState.holdTimeline && this.sync?.audioMaster === false) {
+        if (this.frozenFrame === null) {
+          const elapsedSec = (performance.now() - this.startWallMs) / 1000;
+          this.frozenFrame = this.rangeStart + Math.floor(elapsedSec * this.fps);
+          this.holdEnteredWallMs = performance.now();
+          for (const el of this.elements.values()) {
+            try {
+              el.pause();
+            } catch {
+              /* best-effort */
+            }
+          }
+        }
+        // editor 同様、hold 中は onFrame を呼ばない（他レイヤーの DOM 更新も含め見た目上完全に静止する）。
+        return;
+      }
+      if (this.frozenFrame !== null) {
+        // hold 解除: held 分だけ起点を前進させる（frame 連続性を保つ。§11.4 previewAudioClock の
+        // originFrame/originCtxTime 再アンカーと同じ考え方を wall-clock で行う）。
+        if (this.holdEnteredWallMs !== null) {
+          this.startWallMs = reanchorStartWallMsAfterHold(
+            this.startWallMs,
+            this.holdEnteredWallMs,
+            performance.now(),
+          );
+        }
+        this.frozenFrame = null;
+        this.holdEnteredWallMs = null;
         for (const el of this.elements.values()) {
           try {
-            el.pause();
+            void el.play();
           } catch {
             /* best-effort */
           }
         }
       }
-      // editor 同様、hold 中は onFrame を呼ばない（他レイヤーの DOM 更新も含め見た目上完全に静止する）。
-      this.rafId = requestAnimationFrame(this.tick);
-      return;
-    }
-    if (this.frozenFrame !== null) {
-      // hold 解除: held 分だけ起点を前進させる（frame 連続性を保つ。§11.4 previewAudioClock の
-      // originFrame/originCtxTime 再アンカーと同じ考え方を wall-clock で行う）。
-      if (this.holdEnteredWallMs !== null) {
-        this.startWallMs = reanchorStartWallMsAfterHold(
-          this.startWallMs,
-          this.holdEnteredWallMs,
-          performance.now(),
-        );
-      }
-      this.frozenFrame = null;
-      this.holdEnteredWallMs = null;
-      for (const el of this.elements.values()) {
-        try {
-          void el.play();
-        } catch {
-          /* best-effort */
-        }
-      }
-    }
 
-    const elapsedSec = (performance.now() - this.startWallMs) / 1000;
-    const frame = this.rangeStart + Math.floor(elapsedSec * this.fps);
-    const lastFrame = this.rangeEnd - 1;
-    if (frame >= lastFrame) {
-      this.onFrame?.(lastFrame);
-      if (this.loop) {
-        this.startWallMs = performance.now();
-        for (const [id, el] of this.elements) {
-          const info = this.gainByObjectId.get(id);
-          try {
-            // fix-plan-v3: ループ wrap の seek 1 回のみ。継ぎ目 declick はしない（コンテンツ由来の
-            // 波形段差は素材側の責務・el.volume は sample 精度でなく隠蔽は逆効果と実測で判明）。
-            el.currentTime = footageAudioMediaTimeSec(this.rangeStart, info?.inPoint ?? this.rangeStart, info?.trimStart ?? 0, this.fps);
-            void el.play();
-          } catch {
-            /* ignore */
+      const elapsedSec = (performance.now() - this.startWallMs) / 1000;
+      const frame = this.rangeStart + Math.floor(elapsedSec * this.fps);
+      const lastFrame = this.rangeEnd - 1;
+      if (frame >= lastFrame) {
+        this.onFrame?.(lastFrame);
+        if (this.loop) {
+          this.startWallMs = performance.now();
+          for (const [id, el] of this.elements) {
+            const info = this.gainByObjectId.get(id);
+            try {
+              // fix-plan-v3: ループ wrap の seek 1 回のみ。継ぎ目 declick はしない（コンテンツ由来の
+              // 波形段差は素材側の責務・el.volume は sample 精度でなく隠蔽は逆効果と実測で判明）。
+              el.currentTime = footageAudioMediaTimeSec(this.rangeStart, info?.inPoint ?? this.rangeStart, info?.trimStart ?? 0, this.fps);
+              void el.play();
+            } catch {
+              /* ignore */
+            }
           }
+        } else {
+          this.playing = false;
+          for (const el of this.elements.values()) el.pause();
+          this.onEnded?.();
         }
-        this.rafId = requestAnimationFrame(this.tick);
-      } else {
-        this.playing = false;
-        for (const el of this.elements.values()) el.pause();
-        this.onEnded?.();
+        return;
       }
-      return;
+      this.applyGains(frame);
+      this.onFrame?.(frame);
+    } catch (err) {
+      console.error("BundleAudioClock: tick failed", err);
+    } finally {
+      if (this.playing) this.rafId = requestAnimationFrame(this.tick);
     }
-    this.applyGains(frame);
-    this.onFrame?.(frame);
-    this.rafId = requestAnimationFrame(this.tick);
   };
 
   /** §11.5 — keyframed gain を毎 tick で反映（bundle は previewOverride なし・comp 固定）。 */

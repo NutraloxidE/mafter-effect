@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { runPreviewPlaybackLoop } from "../src/runtime/previewPlaybackLoop";
+import { runPreviewFrameClock, runPreviewPlaybackLoop } from "../src/runtime/previewPlaybackLoop";
 
 // fix-plan-v2-minimal: onFrameAudio は renderGate が視覚描画を間引いても frame が進むたびに
 // 必ず呼ばれることが要件（declick を adaptiveRenderBudget から独立させるための土台）。
@@ -152,6 +152,79 @@ describe("runPreviewPlaybackLoop — onFrameAudio independence from renderGate",
     raf.advance(msPerFrame);
 
     expect(renderedFrames).toEqual([1, 2]); // unchanged behavior, no crash without the callback
+    stop();
+  });
+});
+
+// Bundle export packed/split-alpha freeze investigation: the only way this rAF-loop family can
+// produce a genuinely permanent (non-recovering) freeze is a synchronous exception thrown from
+// inside a tick, before that tick reaches its own requestAnimationFrame(tick) reschedule call.
+// Guard against regressing the try/finally self-heal that closes this failure class.
+describe("runPreviewPlaybackLoop / runPreviewFrameClock — self-heal after a synchronous exception", () => {
+  let raf: FakeRaf;
+  beforeEach(() => {
+    raf = makeFakeRaf();
+    raf.install();
+    vi.spyOn(performance, "now").mockImplementation(() => raf.now);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    raf.restore();
+    vi.restoreAllMocks();
+  });
+
+  it("keeps advancing frames after renderFrame throws synchronously on one frame", () => {
+    const seenFrames: number[] = [];
+    const fps = 30;
+    const msPerFrame = 1000 / fps;
+
+    const stop = runPreviewPlaybackLoop({
+      fps,
+      loopStart: 0,
+      loopEnd: 10,
+      loop: false,
+      initialFrame: 0,
+      renderFrame: (f) => {
+        seenFrames.push(f);
+        if (f === 1) throw new Error("simulated alpha-composite exception");
+      },
+      onFrameChange: () => {},
+      onPlaybackEnd: () => {},
+    });
+
+    raf.advance(0); // prime lastRafMs
+    raf.advance(msPerFrame + 0.01); // frame 1 — renderFrame throws here
+    raf.advance(msPerFrame + 0.01); // frame 2 — must still fire (loop must not have died)
+    raf.advance(msPerFrame + 0.01); // frame 3
+
+    expect(seenFrames).toEqual([1, 2, 3]);
+    stop();
+  });
+
+  it("keeps advancing frames after onFrameChange throws synchronously in the no-renderFrame clock", () => {
+    const seenFrames: number[] = [];
+    const fps = 30;
+    const msPerFrame = 1000 / fps;
+
+    const stop = runPreviewFrameClock({
+      fps,
+      loopStart: 0,
+      loopEnd: 10,
+      loop: false,
+      initialFrame: 0,
+      onFrameChange: (f) => {
+        seenFrames.push(f);
+        if (f === 1) throw new Error("simulated exception");
+      },
+      onPlaybackEnd: () => {},
+    });
+
+    raf.advance(0);
+    raf.advance(msPerFrame + 0.01); // frame 1 — onFrameChange throws here
+    raf.advance(msPerFrame + 0.01); // frame 2 — must still fire
+    raf.advance(msPerFrame + 0.01); // frame 3
+
+    expect(seenFrames).toEqual([1, 2, 3]);
     stop();
   });
 });
