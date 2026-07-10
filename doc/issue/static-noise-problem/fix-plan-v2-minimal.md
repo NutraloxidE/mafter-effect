@@ -67,18 +67,28 @@ resolve+volume の毎フレーム適用でも取り切れない場合のみ:
 
 ## 受け入れ・検証
 
-1. **自動計測（回帰ゲート）:**
-   - `verify-loop-audio-seam.mjs`（既存・ソース境界差分の事実計測）を維持。
-   - 実クローム音声ハーネス（postmortem 参照の Range サーバ + AnalyserNode）を **継ぎ目区間の残留エネルギー計測**に拡張し、seek 前後で「フェード適用済み＝閾値以下」を assert。単一トーンではなく**ループ継ぎ目を持つ**フィクスチャで測る。
-2. **純関数テスト:** autoFade 適用が毎フレーム呼ばれることを、ループの `onFrameAudio` 発火回数（renderGate が render を抑制するフレームでも呼ばれる）で固定。
-3. **あなたの耳:** Comp 10 を実機再生し、ループ継ぎ目のクリックが消えたか最終判定。
-4. `npm run typecheck` / focused test / `npm test` / **`npm run build:player`** / `playerBuildFreshness`。
+> **鉄則（postmortem の最大の教訓）: 「直った」の判定は必ず実ブラウザ＋実キャプチャで行う。**
+> 前回は typecheck・unit（fake AudioParam）・build が全部グリーンなのに実際の書き出しは完全無音だった。
+> 音声・autoplay・WebAudio・video 再生に触る変更は、**ヘッドレスの内部カウンタや fake ノードでは真偽が出ない**。
+> よって本 issue の完了条件は、下記いずれも **実 Chromium（`playwright` の実ブラウザ）で、実際に鳴っている音波形をキャプチャして計測**することを必須とする。fake AudioParam / モック / unit テストだけで PASS を宣言してはならない。
+
+1. **実ブラウザ＋実音声キャプチャ（主・回帰ゲート）:**
+   - **駆動:** 実 Chromium で、**再ビルドした `public/player.js` を埋め込んだ本物の HTML bundle** を Range 対応 HTTP サーバで配信し、ユーザー操作（クリック）で autoplay を unlock する（postmortem の教訓：`route.fulfill` は Range 非対応で `<video>` がロード不能／実 HTTP Range サーバ必須）。
+   - **キャプチャ:** プレイヤー自身の `AudioContext` を `AudioNode.prototype.connect` フックで **AnalyserNode にタップし、実際に destination へ流れている音波形（time-domain）を取得**する。内部の gain 値やフラグの読み取りではなく、**鳴っている音そのもの**を計測する。
+   - **測る対象:** 単一トーンではなく **ループ継ぎ目を持つフィクスチャ**で、seek をまたぐ継ぎ目区間の残留エネルギー（不連続）を計測し、「フェード適用済み＝閾値以下」を assert。修正前は継ぎ目残留が閾値超（＝クリック有）、修正後は閾値以下（＝クリック消）を **前後比較**で示す。
+   - **コーデック/フィクスチャの注意:** Playwright Chromium は HEVC 非対応・空 mp4 は再生不可。**H.264+AAC の実音声入り**フィクスチャを ffmpeg で生成して使う。export 前に `saveToFs()` フラッシュ必須。
+   - 既存 `verify-loop-audio-seam.mjs`（ソース境界差分の事実計測）は補助として維持。
+2. **純関数/ループ挙動テスト（補助・単独では完了条件にしない）:** autoFade 適用が renderGate 抑制フレームでも毎フレーム呼ばれることを、`onFrameAudio` 発火回数で固定。ただしこれは実ブラウザ計測の代替にはならない。
+3. **あなたの耳（最終判定）:** Comp 10 を**実機で再生**し、ループ継ぎ目のクリックが消えたか耳で最終確認。
+4. `npm run typecheck` / focused test / `npm test` / **`npm run build:player`** / `playerBuildFreshness`（これらは前提条件であって、単独では「直った」の証明にならない）。
 
 ---
 
 ## 実装順（小さく・検証しながら）
 
-1. seam 計測フィクスチャ（ループ継ぎ目を持つ H.264+AAC）と計測プロキシを先に用意（直す前に「クリックがある」を数値化）。
+1. **実ブラウザ計測ハーネスとフィクスチャを先に用意**（直す前に「クリックがある」を実 Chromium の音波形キャプチャで数値化）。ループ継ぎ目を持つ H.264+AAC フィクスチャ＋継ぎ目残留エネルギー計測。**この基準取りも実ブラウザで行う**（unit では基準にならない）。
 2. 第1案を実装（DomRenderer 音声適用分離 → loop 配線 → BundlePlayer）。
-3. 計測で継ぎ目残留が閾値以下になるか確認。ダメならフォールバック（ミュート窓）へ。
+3. **実ブラウザ計測**で継ぎ目残留が閾値以下になるか確認（前後比較）。ダメならフォールバック（ミュート窓）へ。
 4. `build:player` → 実機であなたが試聴 → progress 更新。
+
+> どの段階でも「PASS」を名乗る前に、実 Chromium で鳴っている音をキャプチャした計測を通すこと。unit/typecheck/build のグリーンは前提条件にすぎない。
