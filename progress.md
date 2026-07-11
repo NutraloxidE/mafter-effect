@@ -1813,3 +1813,16 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
 - Standalone `<audio>` timing also needs a layer-time mapping (`inPoint` / `outPoint` / `trimStart`) before it shares the controller; otherwise the fix would preserve the known timing error.
 - Tried a read-only Opus 4.8 design review under `RG-20260710-01`, but the local `Codex` CLI launch was denied by the OS. The delegation was recorded as abandoned; no code or spec was changed.
 - Next step: revise `doc/issue/static-noise-problem/fix-plan.md` to specify the clock, media-audio bridge, loop handoff state machine, and acceptance gates; obtain confirmation before implementing the revised scope.
+
+## 2026-07-11 — macOS 向け Electron ビルド対応（未署名 dmg/zip, arm64+x64, GitHub Actions 経由）✅
+
+- **要請**: 「これelectron:macみたいな感じでMac用ビルドできるようにしたい」。既存は `electron:dist`（`--win portable` 固定、`win.target` のみ）で mac/Linux は未検証だった（2026-07-06 セッション記録）。
+- **確定事項（ユーザー確認）**: 実行環境は **GitHub Actions（`macos-latest` runner）を追加**（electron-builder の mac ターゲットは Apple ツールチェーン制約で macOS ホスト必須・Windows 機ではローカル実行不可）。アーキテクチャは **arm64 + x64 両方**。署名は **なし（未署名）**、Windows portable 版と同じ運用（初回起動は Gatekeeper 警告 → 右クリック「開く」で回避）。
+- **実装**:
+  - [package.json](package.json) `build.mac` を追加（`target: [{dmg, arch:[x64,arm64]}, {zip, arch:[x64,arm64]}]`、`category: "public.app-category.video"`、`identity: null` で自動署名試行を明示的に無効化）。
+  - `scripts` に `electron:dist:win`（既存 `electron:dist` と同一コマンド、後方互換のため `electron:dist` 自体は変更せず残置）と `electron:dist:mac`（`electron-builder --mac`）を追加。
+  - 新規 [.github/workflows/electron-mac.yml](.github/workflows/electron-mac.yml)：`workflow_dispatch` 手動トリガー、`macos-latest`、Node 20（`electron@^35.7.5` が Node 20 前提という既存の固定理由に合わせた）、`CSC_IDENTITY_AUTO_DISCOVERY: false` で偶発的な署名試行を二重に防止、`npm ci && npm run electron:dist:mac`、`release/*.dmg` / `release/*.zip` を artifact アップロード。
+  - `electron/main.ts` / `preload.ts` / `build.mjs` は Node 標準 API のみでプラットフォーム非依存のため無改修。タイトルバーは既存方針通り全 OS で自前ボタン（mac 信号機なし、2026-07-06 決定）のため無改修。
+- **検証**: `npm run typecheck` 緑。`node -e "require('./package.json')"` で JSON 構文確認。ローカル（Windows）では mac ターゲットの実ビルドは原理的に検証不可 — 次回 GitHub Actions を `workflow_dispatch` で手動実行し `release/*.dmg`/`*.zip` が生成されることを確認する必要あり（未実施）。
+- **対象外（今回やらない）**: コード署名・Notarization（Apple Developer Program 未登録）、カスタム mac アイコン（.icns 未用意、Electron デフォルトのまま）、自動アップデート（electron-updater）。
+- **Next steps**: ユーザーに GitHub Actions ワークフローを一度手動実行してもらい、生成された dmg/zip を実機 Mac で開けるか（Gatekeeper 警告の右クリック回避含め）確認してもらうこと。将来 Apple Developer 証明書を用意する場合は `mac.identity`/`CSC_LINK`/`CSC_KEY_PASSWORD` の配線を追加する。
