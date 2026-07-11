@@ -5,6 +5,7 @@ import {
   collectBundleDependencies,
   componentNeedsBake,
   canonicalBundleProject,
+  pruneProjectToBundleScope,
 } from "../src/runtime/bundleCollect";
 import { injectBuiltinExpressionPresetScripts } from "../src/runtime/builtinExpressionPresetScripts";
 import { findBakeTargets } from "../src/runtime/bundleBake";
@@ -107,6 +108,89 @@ describe("bundleCollect", () => {
     expect(deps.timelineCompIds.has("01COMPROOT0000000000000001")).toBe(true);
     expect(deps.timelineCompIds.has(childId)).toBe(true);
     expect(deps.binaryPaths.has("assets/photo.png")).toBe(true);
+  });
+
+  it("pruneProjectToBundleScope drops comps/assets unreachable from the export root (bundle 404 regression)", () => {
+    // Regression for a real-world report: an exported bundle's project.json contained the
+    // ENTIRE project (all comps/assets across the whole file), not just what the exported comp
+    // actually uses. At runtime the bundle player iterates project.assets unconditionally and
+    // tries to preload every video, so unrelated comps' assets (never embedded as binaries)
+    // 404 on every load — wasted requests/console noise and a bloated project.json.
+    const rootId = "01COMPROOT0000000000000001";
+    const usedAsset = "01ASSETIMG000000000000002";
+    const unusedAsset = "01ASSETVID000000000000003";
+    const unrelatedCompId = "01COMPUNRELATED00000000001";
+    const identityTransform = {
+      anchor: { value: { x: 0, y: 0, z: 0 }, keyframes: [] },
+      position: { value: { x: 0, y: 0, z: 0 }, keyframes: [] },
+      rotation: { value: { x: 0, y: 0, z: 0 }, keyframes: [] },
+      scale: { value: { x: 1, y: 1, z: 1 }, keyframes: [] },
+    };
+    const project: Project = {
+      ...minimalProject([]),
+      compositions: [
+        {
+          id: rootId,
+          name: "Main",
+          kind: "timeline",
+          width: 1920,
+          height: 1080,
+          fps: 30,
+          duration: 90,
+          objects: [
+            {
+              id: "01OBJ00000000000000000004",
+              name: "Img",
+              parent: null,
+              zOrder: 1,
+              enabled: true,
+              inPoint: 0,
+              outPoint: 90,
+              transform: identityTransform,
+              opacity: { value: 1, keyframes: [] },
+              components: [{ type: "image", props: { asset: usedAsset, fit: "contain" } }],
+            },
+          ],
+        },
+        {
+          // Not nested under rootId — represents some other comp elsewhere in the project.
+          id: unrelatedCompId,
+          name: "Unrelated",
+          kind: "timeline",
+          width: 1920,
+          height: 1080,
+          fps: 30,
+          duration: 90,
+          objects: [
+            {
+              id: "01OBJ00000000000000000005",
+              name: "OtherVideo",
+              parent: null,
+              zOrder: 1,
+              enabled: true,
+              inPoint: 0,
+              outPoint: 90,
+              transform: identityTransform,
+              opacity: { value: 1, keyframes: [] },
+              components: [{ type: "video", props: { asset: unusedAsset, fit: "contain" } }],
+            },
+          ],
+        },
+      ],
+      assets: [
+        { id: usedAsset, path: "assets/photo.png", kind: "image", meta: { width: 100, height: 100 } },
+        { id: unusedAsset, path: "assets/other.mp4", kind: "video", meta: { width: 1920, height: 1080 } },
+      ],
+    };
+
+    const scope = collectBundleDependencies(project, rootId);
+    const pruned = pruneProjectToBundleScope(project, rootId, scope);
+
+    expect(pruned.compositions.some((c) => c.id === rootId)).toBe(true);
+    expect(pruned.compositions.some((c) => c.id === unrelatedCompId)).toBe(false);
+    expect(pruned.assets.some((a) => a.id === usedAsset)).toBe(true);
+    expect(pruned.assets.some((a) => a.id === unusedAsset)).toBe(false);
+    expect(pruned.rootComposition).toBe(rootId);
   });
 
   it("collects split-alpha companion webm path for video layers (§16.2)", () => {

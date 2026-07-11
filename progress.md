@@ -1,5 +1,19 @@
 # Progress
 
+### 2026-07-11（Claude Sonnet 5）— HTML bundle export に無関係な全プロジェクトが埋め込まれ 404 が出る不具合を修正
+
+- **ユーザー報告**（前項の file:// 検証中に発覚）: ローカルサーバ経由で Comp_32 の bundle を開いても、無関係な asset ID（プロジェクト全体に散らばる 20+ の他 comp の動画）へ大量の 404 が出る。
+- **根本原因**: `bundleExporter.ts` の `exportBundle()` は `project.json`/`bundle-manifest.json` に**プロジェクト全体**（`canonicalizeProject(project)` の生の結果）をそのまま埋め込んでいた。`collectBundleDependencies()` は「FS から読むべきバイナリ/テキスト path」（＝実際に zip の `assets/` に同梱するもの）は正しく export 対象 comp から到達可能な範囲に絞っていたが、**埋め込む `project.assets`/`project.compositions` 自体は絞っていなかった**。実データで確認: 32 comp・22 video asset のプロジェクトから Comp 32 だけを export したところ、`assets/` フォルダには実際に使う **4 ファイルのみ**同梱される一方、`project.json` は **22 asset 全部**を列挙していた。bundle player（`registerProjectUrls`/`loadVideoBlobsFromUrls`）は `project.assets` を無条件に走査してプリロードを試みるため、同梱されていない 18 asset 分が毎回 404 する（実害＝ハングではなく起動時の無駄なネットワーク要求とコンソールノイズ・project.json の肥大化）。
+- **実装（純関数追加・§5 スキーマ/直列化形式は不変・"埋め込む内容を絞る"だけ）**:
+  1. [bundleCollect.ts](src/runtime/bundleCollect.ts): `BundleCollectResult` に `assetIds: Set<string>` を追加。`collectObjectAssets`/`collectAssetFromProp` が既存の path 収集と同時に asset id も記録するよう拡張。
+  2. [bundleCollect.ts](src/runtime/bundleCollect.ts) 新規 `pruneProjectToBundleScope(project, rootCompId, { timelineCompIds, htmlCompIds, assetIds })`: 到達可能な comp/asset だけを残した `Project` を返す純関数（`rootComposition` も export 対象 comp に更新）。`bins`/`treeOrder` は bundle player が一切参照しないため（grep で確認済み）意図的に非対象（実害が無く、削るリスクの方が高い）。
+  3. [bundleExporter.ts](src/runtime/bundleExporter.ts): bake 適用後（`bundleProject = bakeResult.project`）に `collectBundleDependencies(bundleProject, compId)` を**再実行**（bake が asset 参照を書き換えるため post-bake の到達性で再計算）し、`pruneProjectToBundleScope` で `bundleProject` を刈り込んでから `manifest`/`projectJson` を組み立てる。
+- **検証**: PASS `npm run typecheck`；PASS `npx vitest run`（**111 files / 1076 tests**、新規回帰テスト1件: 到達不能な comp+asset が実際に落ちることを固定）。`playerBuildFreshness` 緑（`bundleExporter.ts`/`bundleCollect.ts` は export 時のみ editor 側で実行され `src/player/` から import されないため `build:player` 不要）。**実ブラウザでの一気通貫確認**（使い捨てスクリプト・実行後削除済み）: 2 comp・2 asset の実プロジェクトを構築し、片方の comp だけを html-bundle export → 出力 `project.json` が `compositions.length=1`/`assets.length=1`（絞り込み前は 2/2）であることを確認、無関係 comp/asset が正しく除外・使用中のものは保持されることを実証。
+- **Next steps**: なし（本件はこれで解消）。前項の file:// alpha 制約の案内（§11.7 追記・ExportDialog 警告）とは独立した別バグとして扱った。
+
+---
+
+### 2026-07-11（Claude Sonnet 5）— 続報: file:// vs http:// 実機 A/B で H1（canvas tainting）を確定 + ローカルサーバ推奨の案内追加
 ### 2026-07-11（Claude Sonnet 5）— 続報: file:// vs http:// 実機 A/B で H1（canvas tainting）を確定 + ローカルサーバ推奨の案内追加
 
 - **ユーザー報告**: 修正後も実際にエクスポートした（ただし修正前の player.js を含む古い）`Comp_32_bundle` を file:// 直開きしたところ、まさに以下のログが出た: 全アセットで `Access to fetch at 'file:///...' ... blocked by CORS policy ... origin 'null'`（bundle の blob 化 fetch が file:// で無条件ブロック）、`Uncaught (in promise) SecurityError: getImageData ... tainted by cross-origin data`（前セッションで特定した投げどころそのもの）、`NotAllowedError: play() failed because the user didn't interact with the document first`（別件・後述）。

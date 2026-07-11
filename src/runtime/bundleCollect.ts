@@ -25,6 +25,14 @@ export interface BundleCollectResult {
   textPaths: Set<string>;
   binaryPaths: Set<string>;
   livePluginIds: Set<string>;
+  /**
+   * §11.7 — root comp から到達可能なオブジェクトが実際に参照する asset の id。
+   * `bundleExporter.ts` が `project.json` に埋め込む `assets[]`/`compositions[]` を
+   * このプロジェクト全体ではなく到達可能な範囲だけへ削るために使う（無関係な他 comp の
+   * asset を含めると bundle player がそれらも読み込もうとし 404 になる — 実害は無いが
+   * bundle サイズ膨張 + 起動時の無駄な fetch のノイズになる）。
+   */
+  assetIds: Set<string>;
 }
 
 function isTimelineComp(c: Composition | undefined): c is TimelineComposition {
@@ -53,15 +61,28 @@ function collectExpressionPaths(obj: SceneObject, out: Set<string>): void {
   }
 }
 
-function collectAssetFromProp(val: unknown, project: Project, binaries: Set<string>): void {
+function collectAssetFromProp(
+  val: unknown,
+  project: Project,
+  binaries: Set<string>,
+  assetIds: Set<string>,
+): void {
   if (!val || typeof val !== "object" || !("value" in val)) return;
   const assetId = (val as { value: unknown }).value;
   if (typeof assetId !== "string") return;
   const asset = project.assets.find((a) => a.id === assetId);
-  if (asset) binaries.add(asset.path);
+  if (asset) {
+    binaries.add(asset.path);
+    assetIds.add(asset.id);
+  }
 }
 
-function collectObjectAssets(obj: SceneObject, project: Project, binaries: Set<string>): void {
+function collectObjectAssets(
+  obj: SceneObject,
+  project: Project,
+  binaries: Set<string>,
+  assetIds: Set<string>,
+): void {
   for (const cmp of obj.components) {
     // §11.4b video はレイヤー quality で resolve した映像 path のみ同梱（原本全体は積まない）。
     // 内蔵音声付き native は原本 path も同梱（proxy tier でも音声は原本から再生）。
@@ -70,6 +91,7 @@ function collectObjectAssets(obj: SceneObject, project: Project, binaries: Set<s
       if (typeof assetId === "string") {
         const asset = project.assets.find((a) => a.id === assetId);
         if (asset) {
+          assetIds.add(asset.id);
           // §16.2b packed alpha は live 再生で effectivePackedQuality（既定 proxy tier への
           // 差し替え・Same as Export Quality 追従）を経由した quality を使う。生の footageQuality
           // をそのまま渡すと、player が実際に要求する proxy tier のファイルが zip に同梱されず
@@ -94,17 +116,23 @@ function collectObjectAssets(obj: SceneObject, project: Project, binaries: Set<s
       continue;
     }
     for (const val of Object.values(cmp.props)) {
-      collectAssetFromProp(val, project, binaries);
+      collectAssetFromProp(val, project, binaries, assetIds);
       if (typeof val === "string" && project.assets.some((a) => a.id === val)) {
         const asset = project.assets.find((a) => a.id === val);
-        if (asset) binaries.add(asset.path);
+        if (asset) {
+          binaries.add(asset.path);
+          assetIds.add(asset.id);
+        }
       }
     }
     if (cmp.type === "image" || cmp.type === "audio") {
       const assetId = cmp.props["asset"];
       if (typeof assetId === "string") {
         const asset = project.assets.find((a) => a.id === assetId);
-        if (asset) binaries.add(asset.path);
+        if (asset) {
+          binaries.add(asset.path);
+          assetIds.add(asset.id);
+        }
       }
     }
   }
@@ -136,6 +164,7 @@ export function collectBundleDependencies(
   const textPaths = new Set<string>();
   const binaryPaths = new Set<string>();
   const livePluginIds = new Set<string>();
+  const assetIds = new Set<string>();
   let usesLivePlugin = false;
 
   textPaths.add(PROJECT_JSON);
@@ -151,7 +180,7 @@ export function collectBundleDependencies(
     collectExpressionPresetScriptPaths(comp, textPaths);
     for (const obj of comp.objects) {
       collectExpressionPaths(obj, textPaths);
-      collectObjectAssets(obj, project, binaryPaths);
+      collectObjectAssets(obj, project, binaryPaths, assetIds);
 
       for (const cmp of obj.components) {
         if (cmp.type === "comp") {
@@ -186,6 +215,7 @@ export function collectBundleDependencies(
     textPaths,
     binaryPaths,
     livePluginIds,
+    assetIds,
   };
 }
 
@@ -215,6 +245,30 @@ export function scriptPathsForObject(obj: SceneObject): string[] {
 
 export function canonicalBundleProject(project: Project): Project {
   return canonicalizeProject(project);
+}
+
+/**
+ * §11.7 — `project.json` に埋め込む前に、root comp から到達不能な comp/asset を削る。
+ * `collectBundleDependencies` は「FS から読むべきバイナリ/テキストの path」を集めるためのもの
+ * だったが、埋め込む `project`（`Project.compositions`/`Project.assets`）自体は従来
+ * プロジェクト全体を無加工でそのまま埋めていた。bundle player は `project.assets` を無条件に
+ * 走査してプリロードを試みるため、無関係な他 comp の asset が大量に混ざっていると
+ * 存在しない proxy/バイナリへの 404 フェッチが多発し（実害は無いが起動時のノイズ・帯域の無駄）、
+ * かつ全 comp の分だけ `project.json` が肥大化する。純関数・`resolve()` 契約には影響しない
+ * （resolve は渡された comp の中だけしか見ないため、削っても対象 comp の解決値は不変）。
+ */
+export function pruneProjectToBundleScope(
+  project: Project,
+  rootCompId: string,
+  scope: Pick<BundleCollectResult, "timelineCompIds" | "htmlCompIds" | "assetIds">,
+): Project {
+  const keepCompIds = new Set<string>([...scope.timelineCompIds, ...scope.htmlCompIds]);
+  return {
+    ...project,
+    rootComposition: rootCompId,
+    compositions: project.compositions.filter((c) => keepCompIds.has(c.id)),
+    assets: project.assets.filter((a) => scope.assetIds.has(a.id)),
+  };
 }
 
 export function htmlCompositionsInProject(
