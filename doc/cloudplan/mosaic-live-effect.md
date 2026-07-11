@@ -3,6 +3,9 @@
 > **ステータス**: ドラフト（未承認）。本ファイルは `doc/mafter-effect-spec.md`（SSoT）を置き換えない。
 > §5 データスキーマ・INVARIANT に触れる項目は **ユーザー承認が必須**（CLAUDE.md 運用体制）。結論から言うと、本エフェクトは **§5/INV 変更ゼロ**で実装可能（§5参照）。
 > 作成日: 2026-07-06 / 対象ブランチ: `claude/shape-editing-design-plan-b58rmg`
+>
+> **続報（2026-07-11）**: 本 PLAN の Phase A（毎フレーム無条件 `<defs>` 再構築の解消）を実装・実プロジェクトでベンチ済み。
+> 結果と選択肢Bへの判断は [mosaic-lite-phase-a-bench-report.md](mosaic-lite-phase-a-bench-report.md) を参照。
 
 ---
 

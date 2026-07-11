@@ -1,5 +1,23 @@
 # Progress
 
+### 2026-07-11（Claude Sonnet 5）— mosaicLite（Mosaic Live）軽量化 Phase A: 毎フレーム無条件の filter DOM 再構築を解消
+
+- **背景**: ユーザー依頼「mosaicLiteエフェクトを解析して軽量化の余地がないか」。調査 PLAN（`C:\Users\resis\.claude\plans\mosaic-live-plan-encapsulated-spring.md`）で、`mosaicLite` が `fastWave`/`fastRipple`/`fastTurbulentDisplace`（改定4で `feImage` 廃止・`feTurbulence` 直結に統一済み・spec:2376）と違い唯一 `feImage`（埋め込み SVG data URI）方式のまま実装されていること、かつ `DomRenderer.applyEffects`→`applyFilterTokens`→`syncSvgFilters` が `fxSig` 比較を計算していながら実際には**毎フレーム無条件で `<defs>`/`<filter>` を再構築**していること（`blockSize` が静的でも feImage を毎フレーム再デコード）を特定。
+- **実装（Phase A のみ・PLAN の B/C は未着手）**: `ObjectEntry` に `svgFiltersKey`（`syncSvgFilters` が最後に書いた primitives の signature）を追加。`svgFilters` の内容が前回と byte 一致なら `<defs>` 再構築（feImage 再デコード契機）をスキップする。`applyFilterTokens` の `style.filter`/`backdropFilter` 代入自体は**引き続き毎フレーム無条件実行**（安いため）。
+- **踏んだ罠（実機で確定・要注意）**: 最初 `applyFilterTokens` 全体を signature 比較でスキップする設計にしたところ、実機 Playwright 検証で「初回は正しく効くが 2 フレーム目以降 filter が消えたまま戻らない」regression を確認。原因は `DomRenderer.ts` の別関数（transform/opacity 適用、object 更新処理内）が**非トラックマット時に毎フレーム `clearMatteSourceStyle(entry.div)` を呼び `entry.div.style.filter=""` を無条件リセットしている**こと（トラックマット離脱の後始末目的、`applyEffects` とは別コードパス）。旧実装はこの外部リセットを `applyFilterTokens` が毎フレーム無条件に上書きしていたため症状が出なかった。教訓: `style.filter` への書き込みは `applyFilterTokens` だけでなく `clearMatteSourceStyle`（トラックマット離脱）や raster pipeline（`runDirectSvgDisplacePipeline`/`runAdjustmentSvgDisplacePipeline`/`finalizeRasterPresentation`）からも直接発生しうる — **安い style 代入自体はキャッシュでスキップしない**方針に倒し、高コストな `<defs>` 再構築だけをキャッシュ対象にした。
+- **検証**: PASS `npm run typecheck`；PASS `npm test`（1076 test 中 1075 pass・`test/projectBins.test.ts` はフルスイート実行時のみ発生する既存の順序依存 flake で本変更と無関係と実機確認済み — 単体実行・変更前 baseline どちらでも常に pass）。`npm run build:player` 実行済み・`playerBuildFreshness` 緑。**実ブラウザ Playwright 検証**（使い捨てスクリプト・削除済み）: (1) 静的 `blockSize` で 10 フレーム scrub → `<filter>`/`<defs>`/`<svg>` 生成は初回 1 回のみ・以後ゼロ、`style.filter` は全フレームで正しく `url(#fx-...)` を維持。(2) `blockSize` を 2 キーフレームでアニメートしつつ静的区間へ 5 回リプレイ → 値が変わるフレームのみ再構築・プラトー区間は再構築ゼロ。(3) `fastTurbulentDisplace`（別 live effect）を静的パラメータで検証 → filter 消失なし。(4) Live 調整レイヤー + `fastTurbulentDisplace` → `backdropFilter` が 10 フレーム維持。
+- **Next steps**: PLAN の選択肢 B（mosaicGridSnapFilter の pattern+gradient+mix-blend-mode を事前計算 RGBA PNG タイルへ置換、`rippleDisplaceMap` と同パターン）は Phase A の実測効果を見てから着手判断。選択肢 C（feTurbulence ノイズ近似への置換）は却下のまま（モザイクの視覚的アイデンティティ＝矩形グリッドを壊すため）。作業ブランチ: `perf/mosaic-lite-lightweight`（`main` から新規、未コミット）。
+
+### 2026-07-11（Claude Sonnet 5）— mosaicLite Phase A 実プロジェクトベンチ + CPU プロファイリング（結論: defs 再構築削減の体感効果は限定的）
+
+- **やったこと**: 最新実プロジェクト（`mafter-project (11).zip`）の Comp 10（+ネスト precomp、到達可能 asset のみに刈り込み）を複製し `mosaicLite` を追加、Phase A の before/after を `git stash`/`pop` で切り替えつつ実測。scrub（全150フレーム・3run）と static replay（同一フレーム60回・project参照だけ更新）の両方で計測。
+- **結果**: `<defs>`/`<filter>` 再構築回数は狙い通り削減（scrub: 144/150→40/150、static replay: 60/60→0/60）が、**壁時計時間は有意差なし**（scrub 中央値 8409ms→8799ms、同一コード内 run 間ブレ ±800〜900ms の範囲内）。CDP `Profiler` での CPU プロファイリングで裏付け: `DomRenderer` の effect 関連処理は総 CPU 時間の 2.5〜5% に過ぎず、defs 再構築コスト削減の理論上限もその範囲。このクラスの実プロジェクト（動画・音声・ネスト precomp を含む）では feImage 再デコードは支配的コストではなかった。
+- **副産物の発見（本件スコープ外）**: `waveform.ts`（`mixToMono`/`applyTransient`/`processMode`/`bucketPeaks`）が frame 変更時・project 参照変更時の両方で CPU 時間の 5〜12% を占めていることが判明。mosaicLite より ROI が高い可能性がある別の軽量化候補として記録のみ（未着手）。
+- **詳細レポート**: [doc/cloudplan/mosaic-lite-phase-a-bench-report.md](doc/cloudplan/mosaic-lite-phase-a-bench-report.md)（生データ: `doc/cloudplan/mosaic-lite-phase-a-bench/`）。
+- **Next steps**: PLAN 選択肢 B（PNG タイル化）は優先度を下げる（今回の実測では効果が薄いと予想されるため）。着手するなら「動画/音声なし・エフェクト多数」という別ワークロードでの再検証が前提（未実施）。`waveform.ts` のキャッシュ有無調査は別セッションで。
+
+---
+
 ### 2026-07-11（Claude Sonnet 5）— HTML bundle export に無関係な全プロジェクトが埋め込まれ 404 が出る不具合を修正
 
 - **ユーザー報告**（前項の file:// 検証中に発覚）: ローカルサーバ経由で Comp_32 の bundle を開いても、無関係な asset ID（プロジェクト全体に散らばる 20+ の他 comp の動画）へ大量の 404 が出る。
