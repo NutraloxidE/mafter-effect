@@ -1,0 +1,121 @@
+{
+  "assets": [
+    {
+      "binId": "01KX09FHBZ4N8Y0SVB0S05CP9A",
+      "id": "01KX09FHBYH18BRMDAN8XCHBVY",
+      "kind": "video",
+      "meta": {
+        "alphaMode": "packed",
+        "contentHeight": 64,
+        "duration": 1.2,
+        "gutterPx": 8,
+        "hasAlpha": true,
+        "height": 64,
+        "mime": "video/mp4",
+        "packedLayout": "topBottom",
+        "width": 64
+      },
+      "path": "assets/01KX09FHBYH18BRMDAN8XCHBVY.mp4"
+    }
+  ],
+  "bins": [
+    {
+      "id": "01KX09FHBZ4N8Y0SVB0S05CP9A",
+      "name": "Verify Packed Export",
+      "parentId": null
+    }
+  ],
+  "compositions": [
+    {
+      "duration": 150,
+      "fps": 30,
+      "height": 1080,
+      "id": "01KX09FG4HBHYYSM1RM4HFGTB6",
+      "kind": "timeline",
+      "name": "Main",
+      "objects": [],
+      "width": 1920
+    },
+    {
+      "duration": 12,
+      "fps": 10,
+      "height": 64,
+      "id": "01KX09FHBZCQF0MKS54NMQM3XV",
+      "kind": "timeline",
+      "name": "Verify Packed Comp",
+      "objects": [
+        {
+          "components": [
+            {
+              "props": {
+                "asset": "01KX09FHBYH18BRMDAN8XCHBVY",
+                "fit": "contain",
+                "gain": {
+                  "keyframes": [],
+                  "value": 1
+                },
+                "trimStart": 0
+              },
+              "type": "video"
+            }
+          ],
+          "enabled": true,
+          "id": "01KX09FHC0E2HP2BEJ5JDE7ZW5",
+          "inPoint": 0,
+          "labelIndex": 2,
+          "name": "packed-test",
+          "opacity": {
+            "keyframes": [],
+            "value": 1
+          },
+          "outPoint": 12,
+          "parent": null,
+          "transform": {
+            "anchor": {
+              "keyframes": [],
+              "value": {
+                "x": 0,
+                "y": 0,
+                "z": 0
+              }
+            },
+            "position": {
+              "keyframes": [],
+              "value": {
+                "x": 0,
+                "y": 0,
+                "z": 0
+              }
+            },
+            "rotation": {
+              "keyframes": [],
+              "value": {
+                "x": 0,
+                "y": 0,
+                "z": 0
+              }
+            },
+            "scale": {
+              "keyframes": [],
+              "value": {
+                "x": 1,
+                "y": 1,
+                "z": 1
+              }
+            }
+          },
+          "zOrder": 1
+        }
+      ],
+      "width": 64
+    }
+  ],
+  "meta": {
+    "createdAt": "2026-07-08T07:18:34.897Z",
+    "name": "Untitled",
+    "updatedAt": "2026-07-08T07:18:34.897Z"
+  },
+  "pluginRefs": [],
+  "rootComposition": "01KX09FG4HBHYYSM1RM4HFGTB6",
+  "schemaVersion": 1
+}

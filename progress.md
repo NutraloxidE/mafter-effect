@@ -1,5 +1,100 @@
 # Progress
 
+### 2026-07-11（Claude Sonnet 5）— HTML bundle export に無関係な全プロジェクトが埋め込まれ 404 が出る不具合を修正
+
+- **ユーザー報告**（前項の file:// 検証中に発覚）: ローカルサーバ経由で Comp_32 の bundle を開いても、無関係な asset ID（プロジェクト全体に散らばる 20+ の他 comp の動画）へ大量の 404 が出る。
+- **根本原因**: `bundleExporter.ts` の `exportBundle()` は `project.json`/`bundle-manifest.json` に**プロジェクト全体**（`canonicalizeProject(project)` の生の結果）をそのまま埋め込んでいた。`collectBundleDependencies()` は「FS から読むべきバイナリ/テキスト path」（＝実際に zip の `assets/` に同梱するもの）は正しく export 対象 comp から到達可能な範囲に絞っていたが、**埋め込む `project.assets`/`project.compositions` 自体は絞っていなかった**。実データで確認: 32 comp・22 video asset のプロジェクトから Comp 32 だけを export したところ、`assets/` フォルダには実際に使う **4 ファイルのみ**同梱される一方、`project.json` は **22 asset 全部**を列挙していた。bundle player（`registerProjectUrls`/`loadVideoBlobsFromUrls`）は `project.assets` を無条件に走査してプリロードを試みるため、同梱されていない 18 asset 分が毎回 404 する（実害＝ハングではなく起動時の無駄なネットワーク要求とコンソールノイズ・project.json の肥大化）。
+- **実装（純関数追加・§5 スキーマ/直列化形式は不変・"埋め込む内容を絞る"だけ）**:
+  1. [bundleCollect.ts](src/runtime/bundleCollect.ts): `BundleCollectResult` に `assetIds: Set<string>` を追加。`collectObjectAssets`/`collectAssetFromProp` が既存の path 収集と同時に asset id も記録するよう拡張。
+  2. [bundleCollect.ts](src/runtime/bundleCollect.ts) 新規 `pruneProjectToBundleScope(project, rootCompId, { timelineCompIds, htmlCompIds, assetIds })`: 到達可能な comp/asset だけを残した `Project` を返す純関数（`rootComposition` も export 対象 comp に更新）。`bins`/`treeOrder` は bundle player が一切参照しないため（grep で確認済み）意図的に非対象（実害が無く、削るリスクの方が高い）。
+  3. [bundleExporter.ts](src/runtime/bundleExporter.ts): bake 適用後（`bundleProject = bakeResult.project`）に `collectBundleDependencies(bundleProject, compId)` を**再実行**（bake が asset 参照を書き換えるため post-bake の到達性で再計算）し、`pruneProjectToBundleScope` で `bundleProject` を刈り込んでから `manifest`/`projectJson` を組み立てる。
+- **検証**: PASS `npm run typecheck`；PASS `npx vitest run`（**111 files / 1076 tests**、新規回帰テスト1件: 到達不能な comp+asset が実際に落ちることを固定）。`playerBuildFreshness` 緑（`bundleExporter.ts`/`bundleCollect.ts` は export 時のみ editor 側で実行され `src/player/` から import されないため `build:player` 不要）。**実ブラウザでの一気通貫確認**（使い捨てスクリプト・実行後削除済み）: 2 comp・2 asset の実プロジェクトを構築し、片方の comp だけを html-bundle export → 出力 `project.json` が `compositions.length=1`/`assets.length=1`（絞り込み前は 2/2）であることを確認、無関係 comp/asset が正しく除外・使用中のものは保持されることを実証。
+- **Next steps**: なし（本件はこれで解消）。前項の file:// alpha 制約の案内（§11.7 追記・ExportDialog 警告）とは独立した別バグとして扱った。
+
+---
+
+### 2026-07-11（Claude Sonnet 5）— 続報: file:// vs http:// 実機 A/B で H1（canvas tainting）を確定 + ローカルサーバ推奨の案内追加
+### 2026-07-11（Claude Sonnet 5）— 続報: file:// vs http:// 実機 A/B で H1（canvas tainting）を確定 + ローカルサーバ推奨の案内追加
+
+- **ユーザー報告**: 修正後も実際にエクスポートした（ただし修正前の player.js を含む古い）`Comp_32_bundle` を file:// 直開きしたところ、まさに以下のログが出た: 全アセットで `Access to fetch at 'file:///...' ... blocked by CORS policy ... origin 'null'`（bundle の blob 化 fetch が file:// で無条件ブロック）、`Uncaught (in promise) SecurityError: getImageData ... tainted by cross-origin data`（前セッションで特定した投げどころそのもの）、`NotAllowedError: play() failed because the user didn't interact with the document first`（別件・後述）。
+- **実機 A/B 検証（新規 [verify-bundle-packed-alpha-file-protocol.mjs](verify-bundle-packed-alpha-file-protocol.mjs)・headed Chrome・修正後の現行コードでビルドした新規 bundle を使用）**: 合成 packed-alpha 動画を作り、同一 bundle を (a) Playwright route 経由の `http://` と (b) `file://` 直開き（フラグ無し・既定セキュリティ）の両方で再生し、`video.currentTime` の進行・console/pageerror を計測。
+  - **結果**: 両 leg とも `video.currentTime` は継続的に進行（0.9s→2.17s 等、停止なし）。`file://` leg では `getImageData` の `SecurityError` が発生するが、**`console.error("drawPackedAlphaComposite: composite failed", ...)` として捕捉されるのみ**（`Uncaught` ではない）＝ 前セッションの fix が効いている状態を実機で確認。`NotAllowedError`（play() 未ジェスチャ）は http/file 両方で同一頻度発生＝ file:// 固有ではなく別件（本調査の対象外・今回は深追いせず）。
+  - **結論**: **H1（file:// 環境での canvas tainting起因の SecurityError）が実際の根本原因だったことを実機で確定**。かつ前回実装した fix（合成関数の try/catch 化）で **恒久ハングは解消済み**（再生ループは止まらない）。ただし tainting 自体は原理的に回避できないため、**alpha レイヤーは file:// 直開きでは空白/透明のまま**（合成の実行そのものが不可能）— これは事前にユーザーへ確認済みの許容トレードオフ（「ローカルサーバ推奨の注意書きで十分」を選択）。
+- **実装（ユーザー選択どおり: 完全な file:// alpha 対応は行わず、案内のみ）**:
+  - [doc/mafter-effect-spec.md](doc/mafter-effect-spec.md) §11.7 に file:// 直開きの既知の制約を追記（散文のみ・§5/INV 不変）。
+  - [ExportDialog.tsx](src/editor/ExportDialog.tsx): HTML bundle export 対象に packed/split alpha 動画が実際に含まれる場合のみ、「file:// 直開きでは透過レイヤーが表示されない・ローカル HTTP サーバ推奨」という警告注記を表示（`hasAlphaVideoInBundle` を `bakeTargetCount` と同型のパターンで算出）。
+- **検証**: PASS `npm run typecheck`；PASS `npx vitest run`（111 files / 1075 tests、追加テスト無し・UI 文言のみのため）。`ExportDialog.tsx` は player バンドルに非同梱（`src/player/` から import されない）ため `build:player` 不要・`playerBuildFreshness` 緑のまま。
+- **一時投入した調査スクリプト**: `verify-bundle-packed-alpha-file-protocol.mjs` は恒久的な回帰スクリプトとして repo root に残置（既存 `verify-bundle-*.mjs` 命名規則に合わせた・`file://` を実際にテストする唯一のスクリプトのため今後の regression gate として有用）。
+- **Next steps**: 別件として見つかった `NotAllowedError: play() failed`（file/http 両方で発生・ミュート済みのはずの初回 play が非ミュート扱いで拒否される疑い）は未調査。実害（無音再生自体は成立しているため見た目上は無害）だが、気になる場合は次セッションで `installAutoplayUnlock` 周りを調査する。
+
+---
+
+### 2026-07-11（Claude Sonnet 5）— HTML bundle export の packed-alpha 動画「完全に止まって戻らない」フリーズ修正
+
+- **経緯**: ユーザー報告「アルファチャンネル付き動画のバンドル書き出しがフリーズする」。質問で症状を確定: (1) 完全に止まって二度と戻らないハング（一時的スタッタではない）、(2) packed alpha（Subject Extract §16.2b の1本動画）、(3) 同じ内容の編集 Preview では起きない/まし。
+- **調査（実装前・Explore + Plan agent 3体）**: preview と bundle player は `DomRenderer`・`videoElementSync`・`playbackVideoSync`・loop-wrap warmup（WP-1/WP-2）・packed proxy 埋め込みパイプラインをほぼ全経路で**既に共有**しており、静的に読む限り parity していることを確認（bundle 固有の別実装は無い）。その上で、「この自己修復アーキテクチャ（`failsafeExpired` 1秒フェイルセーフ・`audioMaster:true` の hold 無効化）で唯一“恒久的な”フリーズが起こりうるのは、rAF tick 内で render/audio コールバックが**同期例外を投げ**、tick が自分自身の `requestAnimationFrame(tick)` 再スケジュールに届かず二度と呼ばれなくなるケースだけ」という診断に到達（Plan agent の分析）。具体的な投げどころとして `drawPackedAlphaComposite`/`drawSplitAlphaComposite` の `getImageData`/`putImageData`（try/catch 無し。`file://` 経由 video を drawImage した canvas が tainted 判定されると `SecurityError` を投げうる環境依存要因を含む）を特定。
+- **実装（型/経路スコープを閉じた最小 diff・§5/INV/直列化 不変）**:
+  1. [videoPackedAlpha.ts](src/runtime/videoPackedAlpha.ts) `drawPackedAlphaComposite` / [videoSplitAlpha.ts](src/runtime/videoSplitAlpha.ts) `drawSplitAlphaComposite` — 合成本体を try/catch で包み、例外時は `console.error` して `false`（＝この1フレームは失敗）を返すよう変更。既存の bounded retry（`scheduleXxxAlphaRedrawWhenReady`）がそのまま効く。
+  2. [previewPlaybackLoop.ts](src/runtime/previewPlaybackLoop.ts) の `runPreviewPlaybackLoop`/`runPreviewFrameClock`、[BundleAudioClock.ts](src/player/BundleAudioClock.ts) の `tick`、[previewAudioClock.ts](src/editor/previewAudioClock.ts) の `tick` — tick 本体を try/finally で包み、`finally` で「`playing` なら必ず次 rAF を予約する」よう統一（既存の意図的な停止分岐＝`playing=false` を先に設定してから return、は finally の `if (playing)` 判定でそのまま従来どおり停止する。副作用の呼び出し順・停止条件は完全に維持）。これで **preview・bundle 双方の共有 rAF ループ全体**が「予期しない同期例外で再生が永久に止まる」クラスの障害を閉じる（unhandled promise rejection による非同期失敗は従来どおり console warning のみで次 tick には影響しない）。
+- **回帰テスト追加（純関数・INV-1 準拠）**: [test/previewPlaybackLoop.test.ts](test/previewPlaybackLoop.test.ts) に「renderFrame/onFrameChange が同期例外を投げても以降のフレームが進み続ける」ケースを2件追加。[test/videoPackedAlpha.test.ts](test/videoPackedAlpha.test.ts) / [test/videoSplitAlpha.test.ts](test/videoSplitAlpha.test.ts) に「`getImageData` が `SecurityError` を投げても `drawXxxAlphaComposite` は例外を外に漏らさず `false` を返す」ケースを追加。
+- **検証**: PASS `npm run typecheck`；PASS `npx vitest run`（**111 files / 1075 tests**）；**`npm run build:player` 実行済み**・`playerBuildFreshness` 緑（bundle 経路に反映確認）。実 Chromium（headed）で `verify-packed-alpha-e2e.mjs`（packed alpha 再生+GL/CPU parity+PNG export）・`verify-bundle-split-alpha-playback.mjs`（split alpha 同梱+再生継続+autoplay-safe）を無回帰確認。`verify-bundle-autoplay-unlock.mjs` はフィクスチャ `for-debug-data/video_with_audio.mp4` が 0 バイトだったため ffmpeg で実体（testsrc2+sine, 3s, h264/aac）を再生成して実行 — 1件目（gesture 前の無音自動再生・フリーズしない）は PASS、2件目（クリック後の自動アンムート）は本修正の**前後で結果が同一**であることを確認し、本件と無関係の pre-existing 課題と判定（`installAutoplayUnlock` のジェスチャー検知回りの別課題・未着手）。
+- **意図的に未実施（plan 通り）**: Plan agent が提案した「実 Chromium で `file://` と `http://` を A/B 計測して SecurityError の発生をピンポイントで実証する」フルハーネス（`verify-bundle-hold-parity.mjs`／`verify-bundle-video-playback.mjs` が現状空ファイルなのはそのまま・今回のスコープでは書かなかった）は今回実施していない。今回入れた fix は「どのタイミング・どの環境要因で例外が起きても、rAF ループを道連れにしない」という**原因を問わない防御修正**であり、ユーザー報告の「完全ハング」症状（＝この自己修復アーキテクチャで唯一ハングを説明できるメカニズム）を直接閉じる。
+- **Next steps**: ユーザーに実際の Subject Extract packed alpha 動画で書き出し→ブラウザ再生の実機確認を依頼（file:// 直開き・ローカルサーバ経由の両方を推奨）。もし依然フリーズが残る場合は、本修正が閉じたのとは別の経路（例えば H3＝低画質 proxy が実際には bundle 実行時に使われていない wiring 漏れ）を疑い、Plan agent が用意した A/B 計測手順（`file://` vs `http://`・CDP Media instrumentation）で局在化する。`verify-bundle-hold-parity.mjs`/`verify-bundle-video-playback.mjs`（現状 0 バイト）はこの追加調査の受け皿として使うのが良い。
+- **その他**: `for-debug-data/video_with_audio.mp4`（旧 0 バイト）を ffmpeg 生成の実動画に差し替え済み（`verify-bundle-autoplay-unlock.mjs` を動かすため必須だった）。コミット時にこのバイナリ差分を含めるかはユーザー判断。
+
+---
+
+### 2026-07-11 (Codex Opus 4.8) - rendering pipeline snapshot updated
+
+- **Done**: Updated `doc/rendering-pipeline-current.md` after the preview Phase B change. The snapshot now includes editor `PreviewAudioClock`, video-embedded audio extraction and persistent mute, audio-master behavior when video lags, offline export audio mixing, bundle `BundleAudioClock`, and adaptive bundle render cadence.
+- **Scope**: Documentation only. No spec schema, invariant, project serialization, or runtime behavior changes in this session.
+- **Next steps**: Revisit the snapshot when bundle loop-boundary audio handoff or the pending static-noise fix is implemented.
+
+---
+
+### 2026-07-11 (Claude Opus 4.8 + Sonnet 5 subagent) - editor preview の video 内蔵音声 static 修正 (Phase B)
+
+- **診断**: フル pj `mafter-project (23).zip` の Comp 10 を実データ解析。preview の static は **video 内蔵 AAC が表示 `<video>` から直接鳴り、§11.4 sync（playbackRate ±4% サーボ・drift>0.5s の resync seek・pauseForSync）に晒されて glitch** するのが原因。standalone audio 用 Phase A では未解決。bundle は v2-plus で分離済み（`persistentlyMutedVideoIds`）のため既に解消していた。
+- **Savepoint**: `9d4f0ed`（v3 bundle 削除 D1–D4 のスナップショット）。
+- **実装 (Phase B, Sonnet 5 subagent → Opus 4.8 レビュー)**: editor preview only。`prepareAudioLayers` を共有 `collectFootageAudioSources`（bundle と同一）で書き換え、内蔵音声を持つ enabled `video` も Web Audio（decodeAudioData→AudioBufferSourceNode）で audio-master クロックに載せる。`hasPreviewAudioCandidates` / `mutedVideoObjectIds` / `getMutedVideoObjectIds()` を追加し、`PreviewPanel` が `setPreviewRenderOptions({ persistentlyMutedVideoIds })` で表示 `<video>` を持続ミュート（停止時 null クリア）。`updateLiveGains` の component 型決め打ち（"audio"）を `node.componentType` に修正。
+- **非変更**: §5 スキーマ / INV / bundle / player / mp4·webm·PNG export に不触。`src/editor/*` のみ → `build:player` 不要（playerBuildFreshness PASS）。
+- **検証**: PASS `npm run typecheck`; PASS 対象 unit (`previewAudioClock`〔新規 12〕/`bundleFootageAudio`/`footageAutoFade`/`videoElementSync`); PASS 全 `npx vitest run`（**111 files / 1069 tests**）。
+- **未実施 / 未claim**: 実 Chromium・**実耳**での Comp 10 static 消失確認（音声 static は聴覚が ground truth）。起動直後の二重発音トランジェント（clock.start() 解決前の一瞬）と、ネストコンプ内 video 音声は本スコープ外（bundle も同様）。
+- **Next steps**: ユーザーが Comp 10 を実機再生し static 消失を実耳確認。残ればループ wrap 時の rAF タイミング揺れ or 起動トランジェントを追う。
+
+---
+
+### 2026-07-10 (Codex Opus 4.8) - adaptive frame skip for HTML bundle playback implemented
+
+- **Savepoint**: Committed the implementation plan before code changes: `b1b43dd` (`docs: add adaptive frame skip bundle plan`).
+- **Spec**: Added §11.7 prose for adaptive real-time frame drop in HTML bundle playback. No §5 schema, invariant wording/table, `project.json`, or `BundleManifest` shape changes.
+- **Implementation**: Added pure `adaptiveRenderBudget` helpers with EMA-based render gating. Wired HTML bundle playback so audio-master `holdTimeline` no longer pauses audio, while video drift remains handled by per-video pause/seek/playbackRate sync. Added render-call thinning for both audio-clock and no-audio bundle playback, with forced current/final-frame renders around playback start/end/pause.
+- **Player bundle**: Ran `npm run build:player`; `public/player.js` regenerated.
+- **Verification**: PASS `npm run typecheck`; PASS targeted tests (`adaptiveRenderBudget`, `bundleAudioClock`, `bundleExport`); PASS `npm test -- playerBuildFreshness`; PASS full `npm test` (`107 files / 1033 tests`); PASS `VERIFY_PORT=5184 node verify-bundle-export.mjs` (`2 passed, 0 failed`).
+- **Blocked / not claimed**: `verify-bundle-autoplay-unlock.mjs` could not provide a valid result because `for-debug-data/video_with_audio.mp4` is 0 bytes, producing a 0-byte bundle mp4 and Chromium `ERR_REQUEST_RANGE_NOT_SATISFIABLE`. Human/heavy-load audio continuity capture remains required by the plan.
+- **Next steps**: Re-run autoplay/heavy-load bundle capture with a non-empty audio-video fixture, then tune `RENDER_TARGET_OCCUPANCY` if real playback still glitches.
+
+---
+
+### 2026-07-09 (Codex Opus 4.8) - mosaicLite live effect and exact mosaic raster effect implemented
+
+- **Spec**: Updated `doc/mafter-effect-spec.md` §27 to define `mosaicLite` as a live lightweight block-center snap approximation and `mosaic` as an exact raster block-average effect. No §5 schema, invariant, or `project.json` serialization changes.
+- **Implementation**: Added `mosaicLite` (`Mosaic (Lite)`) to the lightweight distortion live SVG filter path, including layer-bounds filter clamp and export-composite raster fallback for the direct foreignObject blank-capture case. Added raster `mosaic` (`Mosaic`) using shared exact `blockAverage()` processing.
+- **Player bundle**: Ran `npm run build:player`; `public/player.js` now references the new `public/assets/rasterProcess.worker-DQuHjUri.js` chunk and the old raster worker chunk was removed.
+- **Verification**: PASS `npm run typecheck`; PASS targeted mosaic/effect routing/cache tests (`7 files / 170 tests`); PASS `npm test -- test/playerBuildFreshness.test.ts`; PASS full `npm test` (`106 files / 1029 tests`).
+- **Real browser check**: Playwright preview showed `mosaicLite` live blockiness with region clamp (`filter: url("#fx-O116-pre-0")`, region `0 0 96 56`). Direct foreignObject capture blanked this filter shape, so export-composite fallback was added and verified nonblank (`canvas` present, ink > 0).
+- **Next steps**: If higher visual parity is needed, add a small dedicated export screenshot fixture comparing `mosaicLite` preview/bundle/export positions at multiple `blockSize` values.
+
+---
+
+### 2026-07-09 (Codex Opus 4.8) - mosaic live effect plan reinterpreted for Codex
+
+- **Done**: Created `doc/cloudplan/mosaic-live-effect-for-codex.md` from `doc/cloudplan/mosaic-live-effect.md`, preserving the core technical conclusion while rewriting it as a Codex-oriented implementation plan.
+- **Scope**: Documentation only. No spec schema, invariant, runtime, export, or `project.json` serialization changes.
+- **Next steps**: If implementation proceeds, follow the new Codex plan: spec prose first, then `mosaicLite` live SVG displacement prototype with Playwright/preview-export verification, then optional exact raster `mosaic`.
+
+---
+
 ### 2026-07-09 (Codex Opus 4.8) - preview-loop-wrap current build is lightest measured candidate
 
 - **Interpretation**: Based on the Phase 0 baseline and the post-WP-1/WP-2 real Chrome capture, the current implementation is the lightest measured candidate so far, but not verified. Worst wrap improved from 533ms to 485ms, and capture-level `overallFreezePct` is 0% versus the baseline internal-hold freeze ratio of about 9.8%.
@@ -56,7 +151,6 @@
 
 ---
 
-
 ### 2026-07-09 (Codex Opus 4.8) — rendering pipeline snapshot doc translated
 
 - **Done**: Translated `doc/rendering-pipeline-current.md` into Japanese while preserving the Mermaid diagrams, code identifiers, and the preview-vs-export / alpha-video distinctions from the original snapshot.
@@ -70,6 +164,7 @@
 - **Done**: Added `doc/rendering-pipeline-current.md` as a current implementation snapshot of the rendering pipeline. It maps the shared `resolve()` -> `DomRenderer` core, preview live playback/cache paths, browser export / `compFrameCapture` deterministic frame-step paths, HTML bundle playback, and alpha-video handling.
 - **Focus covered**: Explicitly documents preview-vs-export differences for video timing (`previewVideoPlayback` vs `exportVideoStep`), split alpha (`color <video>` + alpha `<video>` + canvas), packed alpha (single packed `<video>` + canvas), and final alpha support (mp4 opaque, webm/png-seq alpha-capable).
 - **Note**: `packedFrameDecoder.ts` / `packedDemux.ts` are documented as in-progress and not currently wired into `DomRenderer`.
+- **Preview baseline note**: Current HEAD `a597f7559deb602665bc215a785b799f497628c7` (`docs: map current rendering pipeline`, 2026-07-08 19:20 +0900) is a useful reference point where preview feels relatively less sluggish. Treat this as a rollback/compare baseline for upcoming preview performance work; it is a user-observed feel note, not a formal benchmark result.
 - **Next steps**: Keep this snapshot updated when the VideoDecoder packed-alpha preview path is actually connected, or when export/capture media synchronization changes.
 
 ---
@@ -1704,3 +1799,30 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
   1. ユーザーの実際に黄色く見えているアセット（大元の動画ファイル）を `ffprobe -show_entries stream=color_primaries,color_transfer,color_space,color_range -select_streams v` で確認し、HDR系タグ（`arib-std-b67`=HLG, `smpte2084`=PQ, `bt2020*`）が無いか確認したい。
   2. 本 fix（`colorSpace` 指定）は効果不明なため、実際に効くかは**非headless の実 Chrome + Windows 実機**での before/after 目視確認が必須（本セッションのサンドボックスでは原理的に検証不能）。
   3. 上記で解消しない場合、`<video>` に依存せず `VideoDecoder` を独自 `colorSpace` で configure する再生経路への切替を検討（アーキテクチャ変更のため実装前に要相談）。
+## 2026-07-10 - Static noise investigation (bundle loop seam)
+
+- Investigated the reported crackle/static without changing production behavior. Added `doc/issue/static-noise-problem/` with a report, implementation plan, and `verify-loop-audio-seam.mjs` diagnostic.
+- Reproduced against Downloads `mafter-project (25).zip` / `Comp 10`: the video-only timeline loops `[0,112)` at 30 fps, seeking its embedded AAC audio from 3.733333 s back to zero. Decoded source PCM has a non-zero seam jump (L `-0.0316361`, R `-0.0197550`).
+- Primary cause: bundle video audio uses `video.volume` set only during render. The 120 ms declick envelope is not sample-accurate at 30 fps (last-frame multiplier `0.362285`); the adaptive render gate can skip that frame entirely, so the native `<video>` seek occurs while non-silent.
+- Secondary finding: `BundleAudioClock` does not yet apply `inPoint`/`outPoint`/`trimStart` timing to standalone `<audio>` elements. This is not involved in Comp 10 but should be fixed in the shared bundle media-audio controller.
+- Next step: implement the documented bundle-only Web Audio gain controller and loop-boundary callback, then make the diagnostic pass against the same unsafe source seam.
+
+### 2026-07-10 (Codex) — fix-plan review before implementation
+
+- The documented direction (bundle-only Web Audio gain controller) remains appropriate, but the current plan is not implementation-ready: it does not define (1) a render-cadence-independent clock that begins the pre-seek fade before the loop boundary, (2) the DomRenderer video-pool lifecycle / one-source-node-per-element contract, or (3) the forced loop-start render and media-readiness gate before fade-in. A callback that runs only after wrap is too late to prevent the click.
+- Standalone `<audio>` timing also needs a layer-time mapping (`inPoint` / `outPoint` / `trimStart`) before it shares the controller; otherwise the fix would preserve the known timing error.
+- Tried a read-only Opus 4.8 design review under `RG-20260710-01`, but the local `Codex` CLI launch was denied by the OS. The delegation was recorded as abandoned; no code or spec was changed.
+- Next step: revise `doc/issue/static-noise-problem/fix-plan.md` to specify the clock, media-audio bridge, loop handoff state machine, and acceptance gates; obtain confirmation before implementing the revised scope.
+
+## 2026-07-11 — macOS 向け Electron ビルド対応（未署名 dmg/zip, arm64+x64, GitHub Actions 経由）✅
+
+- **要請**: 「これelectron:macみたいな感じでMac用ビルドできるようにしたい」。既存は `electron:dist`（`--win portable` 固定、`win.target` のみ）で mac/Linux は未検証だった（2026-07-06 セッション記録）。
+- **確定事項（ユーザー確認）**: 実行環境は **GitHub Actions（`macos-latest` runner）を追加**（electron-builder の mac ターゲットは Apple ツールチェーン制約で macOS ホスト必須・Windows 機ではローカル実行不可）。アーキテクチャは **arm64 + x64 両方**。署名は **なし（未署名）**、Windows portable 版と同じ運用（初回起動は Gatekeeper 警告 → 右クリック「開く」で回避）。
+- **実装**:
+  - [package.json](package.json) `build.mac` を追加（`target: [{dmg, arch:[x64,arm64]}, {zip, arch:[x64,arm64]}]`、`category: "public.app-category.video"`、`identity: null` で自動署名試行を明示的に無効化）。
+  - `scripts` に `electron:dist:win`（既存 `electron:dist` と同一コマンド、後方互換のため `electron:dist` 自体は変更せず残置）と `electron:dist:mac`（`electron-builder --mac`）を追加。
+  - 新規 [.github/workflows/electron-mac.yml](.github/workflows/electron-mac.yml)：`workflow_dispatch` 手動トリガー、`macos-latest`、Node 20（`electron@^35.7.5` が Node 20 前提という既存の固定理由に合わせた）、`CSC_IDENTITY_AUTO_DISCOVERY: false` で偶発的な署名試行を二重に防止、`npm ci && npm run electron:dist:mac`、`release/*.dmg` / `release/*.zip` を artifact アップロード。
+  - `electron/main.ts` / `preload.ts` / `build.mjs` は Node 標準 API のみでプラットフォーム非依存のため無改修。タイトルバーは既存方針通り全 OS で自前ボタン（mac 信号機なし、2026-07-06 決定）のため無改修。
+- **検証**: `npm run typecheck` 緑。`node -e "require('./package.json')"` で JSON 構文確認。ローカル（Windows）では mac ターゲットの実ビルドは原理的に検証不可 — 次回 GitHub Actions を `workflow_dispatch` で手動実行し `release/*.dmg`/`*.zip` が生成されることを確認する必要あり（未実施）。
+- **対象外（今回やらない）**: コード署名・Notarization（Apple Developer Program 未登録）、カスタム mac アイコン（.icns 未用意、Electron デフォルトのまま）、自動アップデート（electron-updater）。
+- **Next steps**: ユーザーに GitHub Actions ワークフローを一度手動実行してもらい、生成された dmg/zip を実機 Mac で開けるか（Gatekeeper 警告の右クリック回避含め）確認してもらうこと。将来 Apple Developer 証明書を用意する場合は `mac.identity`/`CSC_LINK`/`CSC_KEY_PASSWORD` の配線を追加する。

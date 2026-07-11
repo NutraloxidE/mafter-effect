@@ -845,6 +845,7 @@ interface ExportConfig {
 
 - `audio` は `asset(audio)` + `gain`（**`AnimatedProp<number>`, 0..1, keyframe 可**）+ `trimStart`。タイムライン配置（inPoint/outPoint）で再生区間が決まる。後方互換: 既存 plain number の `gain` は `readGainProp()` で `staticProp` に正規化する。
 - **preview（音声マスタークロック）**: 再生中はオーディオレイヤーが 1 つでもあれば `AudioContext.currentTime` を**マスタークロック**とし、`currentFrame = rangeStart + floor((ctx.currentTime − t0) · fps)` を毎 rAF で算出して `resolve`/描画する（§11.7 と同型・INV-8）。各レイヤーは `inPoint`/`outPoint`/`trimStart` に従って `AudioBufferSourceNode` をスケジュールし、`gain` は毎 tick に live comp から `sampleGain(gainProp, currentFrame)` を再評価して `GainNode.gain.value` へ反映する（編集中スライダーが再生中に効く）。**スクラブ時・停止時は無音**。`AudioContext` の resume はユーザージェスチャ（再生ボタン）で行う。オーディオが無ければ従来の rAF 経過時間クロックを使う。
+- **映像遅れ時も音声は止めない（audio-master, holdTimeline 非依存）**: §11.4 の双方向同期が `holdTimeline`（映像遅れ）を検出しても、`PreviewAudioClock` は `AudioContext.suspend()`/`resume()` を呼ばず、frame 進行も凍結しない。`ctx.currentTime` から求めた `currentFrame` の算出を継続し、毎 rAF tick は直近の frame だけを `onFrameChange`/`renderFrame` に渡す（中間フレームの描画は行わない＝取りこぼす）。すなわち音声が正準の transport clock であり、decode が追いつかない video は一時的に古いフレーム表示・コマ落ちを起こしうる（意図的なトレードオフ）。`pauseVideo`（映像先行時に video を pause）・±4% の `playbackRate` 補正・loop wrap／scrub／明示 pause・stop による音声制御は本項の対象外で従来どおり。video 内蔵音声（`<video>` 要素の直接再生）は本項の対象外（別途 Phase B）。
 - **プリロード（再生レイテンシ回避・非直列化）**: decode 済み `AudioBuffer` は **assetId をキーに共有メモリキャッシュ**へ常駐させる。編集中 comp に音声レイヤーがあれば事前に decode しておき、再生ボタンで decode 待ちなく即発音する。波形抽出（§11.5.1）・再生・duration メタ取得は**同一バッファを共有**し、大きなソースを多重 decode しない。
 - **asset.duration メタ**: 音声 import 時に 1 回 decode して尺（秒）を `asset.meta`（`duration`/`sampleRate`/`channels`）に記録する。`AssetEntry.meta` は既存の任意フィールド（image と同様）で **§5 スキーマ非変更**。波形のソース尺マッピング（§11.5.1・§21.3）はこの値を使う。未記録時のみ尺をレイヤー長へフォールバックする。
 - **export**: §11.2 のとおり mux（決定論・`OfflineAudioContext`）。`gain` は keyframe を反映するため、export 区間を **1/fps 刻み**で `sampleScalar(gainProp, frame)` を評価し `GainNode.gain.setValueAtTime(mixSec, value)` をフレーム境界ごとに打つ（`linearRamp` では hold/bezier easing と一致しないため。`interpolate.ts` の `findSegment`/`easingFn` と完全同一曲線になる）。
@@ -886,9 +887,11 @@ MP4 とは別の出力経路。作品を**ブラウザで実時間再生する D
 - **2 出力モード**:
   - **Single-file**（全 `live`・vector/text/CSS の軽量作品専用）: プレイヤー JS + 正準 JCS データ + 軽量アセットを **DataURL inline した 1 枚の静的 HTML**。Lottie 上位互換のスイートスポット。**ベイク動画を inline すると「軽量」が即死する**ため、`bake` レイヤがある作品では選べない。
   - **Folder bundle**（ベイク動画/重アセット有り）: `dist/` に `index.html` + プレイヤー + データ + メディアを出力。**全アセットは相対パス `./...`（Vite `base: './'`）** にしてサブディレクトリ/ローカル double-click でも動くポータビリティを保証。
+- **`file://` 直開き（double-click）の既知の制約（要注意）**: 通常動画・テキスト・図形等は `file://` で double-click しても再生できる。しかし **packed/split alpha 動画（§16.2/§16.2b）だけは Chromium の `file://` セキュリティ制約の影響を受ける** — ブラウザは `file://` オリジンからの `fetch()` を CORS で無条件ブロックするため、bundle 側の blob-URL 化（本来 HTTP range 非対応ホストでも滑らかに再生させるための仕組み）が働かず、alpha 動画は生の `file://` src にフォールバックする。この状態で `<video>` を canvas に描画して alpha 合成すると canvas が "tainted" 扱いになり、`getImageData`/`putImageData`（および tainted 状態での WebGL テクスチャアップロード）が `SecurityError` を投げる。**2026-07 修正済み**: この例外は合成関数内で捕捉し「この 1 フレームは合成失敗」として扱うため、再生ループ自体は止まらない（他レイヤー・音声は正常に進む）— が、**alpha レイヤーは `file://` 直開きでは透明/空白のまま描画されない**（合成そのものは原理的に不可能なため）。**推奨: alpha 動画を含む bundle はローカル HTTP サーバ経由（`npx serve` 等）で開く**。通常動画のみの bundle は `file://` 直開きで問題ない。
 - **bake 経路**: `exportStrategy: 'bake'` のレイヤ（将来の WebGL/3D/重 plugin 等）は §11.4 / M3.5 の headless 機構で**そのレイヤだけ**フレーム書き出しして MP4/WebP 化し、`video` アセットとして同 `worldTransform`/`zOrder` で player に差し戻す。重ライティングをテクスチャに焼くゲームエンジン的割り切り。
 - **alpha 動画の制約（要注意）**: ベイクレイヤを live シーンに透過合成するには alpha 動画が要るが、Web の alpha video は VP9 alpha（Chrome/FF）止まりで Safari が弱い、HEVC-alpha は Safari 専用。→ **v1 は不透明ベイクのみ**を保証。透過が要る軽い要素は WebP/PNG 連番、本格的な透過は color+matte 2 ストリーム（§16 将来）。
 - **再生クロック**: マスタークロック = `AudioContext.currentTime`（音声があれば）。`currentFrame = round(t * fps)` を毎 rAF で算出し `resolve(comp, currentFrame)` を描く。低スペックでは中間 frame を描かずスキップ＝音ズレしない（INV-8）。音声が無ければ rAF 経過時間をクロックにする。
+- **実時間再生の適応 frame drop（音声優先）**: HTML bundle player は、音声マスター時に video 遅延の `holdTimeline` で音声要素を pause しない。video の遅れ・先行は各 video 要素の seek / `pauseVideo` / playbackRate サーボで吸収し、音声クロックと frame 番号進行は止めない。描画は best-effort とし、`renderFrame` 所要時間の EMA から重負荷時だけ描画呼び出しを間引く。間引き tick でも現在 frame は wall-clock / 音声クロックに追従し続け、次に描ける tick でその frame へ `resolve()` でワープする。これは INV-8 の実時間 bundle 専用挙動であり、`resolve()` の scene 解決値、INV-2、MP4/WebM/PNG/headless の決定論 frame-step には影響しない。
 - **セキュリティ**: 公開 bundle は author の JS がエンドユーザのブラウザで走る。**第三者 plugin は既定 `bake`**（§5.5 / §12）でコードを焼き消し、`live` で出るのは author 自筆コードに限るのが安全側。ホスト側 CSP は author の責任範囲として明記。
 - **インタラクティブは v1 では非対応**。click/scroll 応答を入れると `(frame)→絵` が `(frame, 入力状態)→絵` になり決定論・オーサリングモデルが別物になるため、v1 は**タイムライン駆動・音声クロックの再生のみ**（§16 将来）。
 
@@ -2230,8 +2233,8 @@ interface EffectDef {
 
 | executionPath | builtin effect | 経路 |
 |---|---|---|
-| **`"live"`** | `blur` / `tint` / `linearWipe` / `angularWipe` / `pixelSortLite` / `opticsCompensation` / `fastWave` / `fastRipple` / `fastTurbulentDisplace` | DOM `filter` / `backdrop-filter` を同期適用（中間 raster 化なし・軽量） |
-| **`"raster"`** | `wave` / `turbulentDisplace` / `ripple` / `pixelSorter` | canvas でピクセル処理（full displacement はドリフト対策で raster 必須・§27.1） |
+| **`"live"`** | `blur` / `tint` / `linearWipe` / `angularWipe` / `pixelSortLite` / `mosaicLite` / `opticsCompensation` / `fastWave` / `fastRipple` / `fastTurbulentDisplace` | DOM `filter` / `backdrop-filter` を同期適用（中間 raster 化なし・軽量） |
+| **`"raster"`** | `wave` / `turbulentDisplace` / `ripple` / `pixelSorter` / `mosaic` | canvas でピクセル処理（full displacement はドリフト対策で raster 必須・§27.1） |
 
 - **Live調整レイヤー**の effect ピッカーは **`executionPath === "live"` のみ列挙**（§27.4 / §27.6）。**Raster調整レイヤー**と**通常レイヤー**は両方可。
 - plugin effect は `executionPath` を必須明示。`processPixels` を持つなら原則 `"raster"`。
@@ -2246,7 +2249,7 @@ interface EffectDef {
 
 `exportStrategy: 'bake'`（§11.7 bundle export）とは **独立**（preview 専用メタ）。
 
-**builtin 初期値**: `pixelSorter` → `true`。その他 builtin（blur/tint/wave/turbulentDisplace/ripple/wipe/pixelSortLite/fast*）→ `false`。
+**builtin 初期値**: `pixelSorter` / `mosaic` → `true`。その他 builtin（blur/tint/wave/turbulentDisplace/ripple/wipe/pixelSortLite/mosaicLite/fast*）→ `false`。
 
 ### §27.3 builtin エフェクト（確定）
 
@@ -2365,7 +2368,7 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 
 #### §27.5 Fast ディストーション（近似・Web/編集 UX 向け）— 確定
 
-低スペック PC での編集スムーズ化・HTML/live 配布向けに、フル版（§27.3 `wave` / `ripple` / `turbulentDisplace`）と**共存**する超軽量近似 builtin エフェクト 3 種を提供する。カテゴリ **`ディストーション（軽量）`**。label は **`Fast Wave` / `Fast Ripple` / `Fast Turbulent Displace`**（type: `fastWave` / `fastRipple` / `fastTurbulentDisplace`）。
+低スペック PC での編集スムーズ化・HTML/live 配布向けに、フル版（§27.3 `wave` / `ripple` / `turbulentDisplace`）と**共存**する超軽量近似 builtin エフェクトを提供する。カテゴリ **`ディストーション（軽量）`**。label は **`Mosaic (Lite)` / `Fast Wave` / `Fast Ripple` / `Fast Turbulent Displace`**（type: `mosaicLite` / `fastWave` / `fastRipple` / `fastTurbulentDisplace`）。
 
 - **使い分け**: 編集中・Web 配布・プレビュー重視 → Fast。最終仕上げ・AE 近似 → フル版 + `quality`。
 - **`quality` param は持たない**（Fast 自体が常時低品質）。
@@ -2386,6 +2389,18 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 
 - 改定5: Fast 3 種は **既定で feature-size 比例の map smoothing（§27.5 改定5 (1)）が常時 ON**。`antiAlias` はそれに **+1px** を足す追加の増分（より滑らか）。`stdDeviation` 合計 = `smoothPx + (antiAlias ? 1 : 0)`、`>0` のとき noise / map 直後に `feGaussianBlur` 1 回 → `feDisplacementMap`。
 - （フル版 displacement で本 param を使う場合は従来どおり ON で固定 1px）。
+
+##### `mosaicLite` — Mosaic (Lite)
+
+| param key | label | kind | default | range | animatable |
+|---|---|---|---|---|---|
+| `blockSize` | Block Size | scalar | `16` | `2..256`, step 1 | ✅ |
+
+- **目的**: 真のブロック平均化ではなく、各出力ピクセルのサンプリング位置を `blockSize` グリッドのブロック中心へスナップする軽量近似ピクセレート。多くの pixelate shader と同じ「代表点サンプル」方式で、`mosaic`（下記）の正確な平均化とは見た目が一致しないことを許容する。
+- **描画**: `apply` → `{ kind: "svg", primitives }`。`feImage` に layer 全域の SVG pattern map を渡し、R/G チャンネルで X/Y の中心スナップ変位をエンコードして `feDisplacementMap` へ入力する。map は `patternUnits="userSpaceOnUse"` の tile で layer 全域に定義し、filter region は既存 Fast* と同じく layer bounds `(0,0,w,h)` にクランプする。
+- **経路**: `executionPath: "live"` / `previewBakeRequired: false` / `LIVE_DISPLACEMENT_EFFECT_TYPES`。通常レイヤーは `filter: url(#fx)`、Live調整レイヤーは `backdrop-filter: url(#fx)` に同期適用する。Auto Preview Cache 対象外。
+- **恒等**: `blockSize <= 1` は `null`（filter なし）。
+- **既知差**: 端の半端なブロックは full block tile の中心スナップ近似になる。厳密な端ブロック平均が必要な場合は raster 版 `mosaic` を使う。
 
 ##### `fastWave` — Fast Wave
 
@@ -2499,6 +2514,17 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 - **恒等**: `thresholdLow >= thresholdHigh` かつ `feather === 0`、または実質変化なし → `null`。
 - **カテゴリ**: `"スタイライズ"`。
 - **非目標（Phase 1）**: Gradients 出力 / Random Length / Noise / Mirror / Constraint masks / Stretch / v3+ 機能。**AEPS2 100% 一致は非目標**。
+
+#### `mosaic` — Mosaic（正確なブロック平均）
+
+| param key | label | kind | default | range | animatable |
+|---|---|---|---|---|---|
+| `blockSize` | Block Size | scalar | `16` | `1..512`, step 1 | ✅ |
+
+- **目的**: `blockSize × blockSize` ごとに RGBA を平均し、その平均色でブロック全体を塗る正確なブロックピクセレート。右端・下端の半端ブロックは実在ピクセルだけを平均する。
+- **経路**: `executionPath: "raster"` / `previewBakeRequired: true` / `processPixels` あり。通常レイヤー・Raster調整レイヤー・export composite は同じ buffer→buffer 処理を呼ぶ。
+- **恒等**: `blockSize <= 1` は `null`（filter なし）。`processPixels` は入力を clone して返す。
+- **使い分け**: 編集中・HTML/live 配布では `mosaicLite`、正確なブロック平均・端ブロックの厳密さが必要な場合は `mosaic`。
 
 #### `pixelSortLite` — Light Pixel Sort（GPU 近似・§27.3 additive）
 
@@ -2818,17 +2844,17 @@ interface PreviewCacheSettings {
 
 ### §27.12 Fast* Displacement 描画経路（確定・2026-06-21 改定3）
 
-**preview / export / HTML bundle 共通** — Fast* distortion（`fastWave` / `fastRipple` / `fastTurbulentDisplace`）は **raster 無し・フォールバック無しの live CSS filter 直適用**で描く。通常レイヤーは `filter: url(#fx)`、Live 調整レイヤーは `backdrop-filter: url(#fx)`。いずれも **filter region を layer bounds (0,0,w,h) にクランプ**する（§27.5 改定3）。
+**preview / HTML bundle 共通** — live displacement 近似（`mosaicLite` / `fastWave` / `fastRipple` / `fastTurbulentDisplace`）は **raster 無し・フォールバック無しの live CSS filter 直適用**で描く。通常レイヤーは `filter: url(#fx)`、Live 調整レイヤーは `backdrop-filter: url(#fx)`。いずれも **filter region を layer bounds (0,0,w,h) にクランプ**する（§27.5 改定3）。browser export の `exportCompositeMode` では、`mosaicLite` のみ foreignObject capture の空白化を避けるため `rasterizeFilteredImage` 経由で同じ SVG filter を焼く。
 
 > **改定理由（旧 改定2 = 全経路 raster を覆す）**: 旧版はかつての「未エフェクトの素矩形が右下に露出する」ドリフトを raster で隠していた。実機計測スパイク（`verify-fast-drift-spike.mjs`）で**真因は raster の有無ではなく filter region の pad 帯**と判明。`feImage` map は (0,0,w,h) 外で未定義 → pad 帯で channel≈0 → 定数 `−scale/2` 変位が内容を引きずる。raster は出力を W×H にクリップするので隠れていただけ。**region を (0,0,w,h) にクランプすると live CSS filter の centroid drift は raster と小数2桁まで一致**（3 effect × amount 0/50/100/155・turbulent 含む）。よって Fast* は raster コスト（per-frame capture + readback）無しで同等のドリフト無しを達成できる。フル版 displacement（`wave`/`ripple`/`turbulentDisplace`）は raster 維持。
 
-**経路判定 SSOT**: [src/runtime/effectRouting.ts](../src/runtime/effectRouting.ts) の `needsSvgDisplaceCapture()` / `hasEnabledFullDisplacement()`。capture 対象は **full displacement のみ**（Fast* は除外）。DomRenderer・Pipeline 分析の双方がこれを参照する。
+**経路判定 SSOT**: [src/runtime/effectRouting.ts](../src/runtime/effectRouting.ts) の `needsSvgDisplaceCapture()` / `hasEnabledFullDisplacement()`。capture 対象は **full displacement のみ**（`mosaicLite` / Fast* は除外）。DomRenderer・Pipeline 分析の双方がこれを参照する。
 
 | 条件 | 経路 |
 |---|---|
-| 通常レイヤー・**Fast* のみ** | **live** `filter: url(#fx)`（region = (0,0,w,h)・raster 無し） |
+| 通常レイヤー・**`mosaicLite` / Fast* のみ** | **live** `filter: url(#fx)`（region = (0,0,w,h)・raster 無し。browser export の `mosaicLite` のみ capture 前に焼く） |
 | 通常レイヤー・**full displacement 含む** | `runDirectSvgDisplacePipeline`（self-capture raster） |
-| Live 調整・**Fast* のみ** | **live** `backdrop-filter: url(#fx)`（region = (0,0,w,h)・raster 無し） |
+| Live 調整・**`mosaicLite` / Fast* のみ** | **live** `backdrop-filter: url(#fx)`（region = (0,0,w,h)・raster 無し） |
 | Live 調整・**full displacement 含む** | `runAdjustmentSvgDisplacePipeline`（comp 背面 capture raster） |
 | Raster 調整（`adjustmentMode="raster"`）| comp 背面 capture（§27.4・明示モード。Fast* も焼く） |
 | Raster 調整 + live effect tokens（blur/tint/wipe）| comp 背面 capture（§27.4） |
@@ -2837,10 +2863,10 @@ interface PreviewCacheSettings {
 
 > Fast* は raster を**強制しない**（live 完結）。Raster 調整は明示的ユーザーモードであり Fast の「フォールバック」ではない（焼く挙動を維持）。
 
-- **export/bundle 妥当性**: export は foreignObject `captureElementToCanvas` 経由だが、既存の live SVG filter 効果 `linearWipe`/`angularWipe`/`pixelSortLite`（`feImage`/`feDisplacementMap` 使用）が**同じ経路で raster 化せず export 済み**。Fast* も同じ primitives なので live のまま export に通る。bundle player は実ブラウザ compositor（preview と同条件）。export-parity は実機検証で固定（`verify-fast-export-parity.mjs`）。
+- **export/bundle 妥当性**: export は foreignObject `captureElementToCanvas` 経由だが、既存の live SVG filter 効果 `linearWipe`/`angularWipe`/`pixelSortLite`（`feImage`/`feDisplacementMap` 使用）と Fast* は**同じ経路で raster 化せず export 済み**。`mosaicLite` は map 形状の実機検証で direct foreignObject capture が空白化したため、browser export の通常レイヤーだけ composite capture 前に `rasterizeFilteredImage` で焼く。bundle player は実ブラウザ compositor（preview と同条件）なので live のまま描く。Fast* export-parity は実機検証で固定（`verify-fast-export-parity.mjs`）。
 - **`fastDisplaceDirect`**: **撤去**（live が無条件・opt-in 不要。`setPreviewRenderOptions` から削除）。
-- **Pipeline UI**: 通常レイヤー + Fast* のみ → `live`。full displacement → `raster`（reason: 自己 capture・ドリフト回避）。
-- **`compNeedsAutoPreviewCache`**: fast-only comp は **Auto Cache 対象外**（live・per-frame raster ではない）。full displacement comp のみ対象。
+- **Pipeline UI**: 通常レイヤー + `mosaicLite` / Fast* のみ → `live`。full displacement / `mosaic` → `raster`（reason: 自己 capture・ドリフト回避 / buffer 処理）。
+- **`compNeedsAutoPreviewCache`**: `mosaicLite` / fast-only comp は **Auto Cache 対象外**（live・per-frame raster ではない）。full displacement / `mosaic` comp は対象。
 - **再生 UX 補助**: `holdLastRaster` — raster 完了まで前フレームの canvas を保持（full displacement / raster 調整向け）。`draftPlayback` モード（RAF バイパス等）は §28.9 と独立。
 
 ### §27.13 Live / Raster 調整レイヤー — 実装作業分解（確定 2026-06-20）
@@ -2855,7 +2881,7 @@ interface PreviewCacheSettings {
 - [src/core/validate.ts](../src/core/validate.ts): `adjustmentMode` は `isAdjustment` 時のみ有効、不正値は warn。canonical 直列化（`"live"` 省略・`"raster"` のみ書く・§5.6-canon）。
 
 **effect メタ**
-- [src/runtime/builtinEffects.ts](../src/runtime/builtinEffects.ts) / [src/runtime/fastEffects.ts](../src/runtime/fastEffects.ts): 各 `EffectDef` に `executionPath` をリテラル付与（live: blur/tint/linearWipe/angularWipe/pixelSortLite/fastWave/fastRipple/fastTurbulentDisplace、raster: wave/turbulentDisplace/ripple/pixelSorter）。
+- [src/runtime/builtinEffects.ts](../src/runtime/builtinEffects.ts) / [src/runtime/fastEffects.ts](../src/runtime/fastEffects.ts): 各 `EffectDef` に `executionPath` をリテラル付与（live: blur/tint/linearWipe/angularWipe/pixelSortLite/mosaicLite/fastWave/fastRipple/fastTurbulentDisplace、raster: wave/turbulentDisplace/ripple/pixelSorter/mosaic）。
 
 **描画**
 - [src/runtime/DomRenderer.ts](../src/runtime/DomRenderer.ts):

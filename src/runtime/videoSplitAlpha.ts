@@ -176,17 +176,25 @@ export function drawSplitAlphaComposite(
   const maskCtx = maskScratch.getContext("2d");
   if (!ctx || !maskCtx) return false;
 
-  ctx.clearRect(0, 0, w, h);
-  ctx.drawImage(colorVideo, 0, 0, w, h);
-  const colorData = ctx.getImageData(0, 0, w, h);
+  // packed 版（drawPackedAlphaComposite）と同じ理由: getImageData/putImageData の同期例外を
+  // ここで拾わないと、呼び出し元 rAF ループの tick が己の再スケジュールに届く前に中断し、
+  // 再生が二度と進まない恒久フリーズになる。false を返せば既存の bounded retry がそのまま効く。
+  try {
+    ctx.clearRect(0, 0, w, h);
+    ctx.drawImage(colorVideo, 0, 0, w, h);
+    const colorData = ctx.getImageData(0, 0, w, h);
 
-  maskCtx.clearRect(0, 0, w, h);
-  maskCtx.drawImage(alphaVideo, 0, 0, w, h);
-  const maskData = maskCtx.getImageData(0, 0, w, h);
+    maskCtx.clearRect(0, 0, w, h);
+    maskCtx.drawImage(alphaVideo, 0, 0, w, h);
+    const maskData = maskCtx.getImageData(0, 0, w, h);
 
-  applyGrayscaleMaskToAlphaChannel(colorData, maskData);
-  ctx.putImageData(colorData, 0, 0);
-  return true;
+    applyGrayscaleMaskToAlphaChannel(colorData, maskData);
+    ctx.putImageData(colorData, 0, 0);
+    return true;
+  } catch (err) {
+    console.error("drawSplitAlphaComposite: composite failed", err);
+    return false;
+  }
 }
 
 const pendingRedraws = new WeakSet<HTMLCanvasElement>();

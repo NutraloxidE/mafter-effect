@@ -88,6 +88,20 @@ describe("layerPipelineKind", () => {
     expect(layerPipelineKind(obj)).toBe("live");
   });
 
+  it("通常レイヤー + mosaicLite は live（軽量モザイク近似）", () => {
+    const obj = baseObj("01A", {
+      effects: [{ id: "fx1", type: "mosaicLite", enabled: true, props: { blockSize: 16 } }],
+    });
+    expect(layerPipelineKind(obj)).toBe("live");
+  });
+
+  it("通常レイヤー + mosaic は raster（正確なブロック平均）", () => {
+    const obj = baseObj("01A", {
+      effects: [{ id: "fx1", type: "mosaic", enabled: true, props: { blockSize: 16 } }],
+    });
+    expect(layerPipelineKind(obj)).toBe("raster");
+  });
+
   it("Live調整 + fastWave は live（backdrop・§27.12 改定3）", () => {
     const obj = baseObj("01A", {
       isAdjustment: true,

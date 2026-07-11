@@ -12,6 +12,7 @@ import type { ResolvedComponent, ResolvedEffect, ResolvedObject, ResolvedScene }
 import { compChildFrame, isCompNestDepthAllowed } from "./compLayer";
 import type { NestedCompRasterizer } from "./compFrameCapture";
 import { resolve, type ExpressionEvaluator } from "./resolve";
+import { resolveVideoGainForFrame } from "./videoGainOnly";
 import { applyTextEl, rgbaCss } from "./textRender";
 import { buildMultiRingPathD, buildShapePathD, type ResolvedShapeVertex } from "./shapePath";
 import { composeRings, multiPolygonToPathD } from "./shapePathBoolean";
@@ -225,6 +226,13 @@ export class DomRenderer implements Renderer {
   private playbackRateForSync = 1;
   /** §11.7 bundle: true の間は playbackMode 中でも video を unmute しない（autoplay ポリシー回避）。 */
   private muteVideoPlayback = false;
+  /**
+   * fix-plan-v2plus (bundle 専用): 音声を別 <audio> 要素へ抽出済みの video オブジェクトID集合。
+   * 該当する <video> は muteVideoPlayback の解除（gesture unmute）後も常時ミュートのまま
+   * （音は BundleAudioClock の <audio> 要素側から鳴る＝二重音声防止）。null/未設定 = 全て通常挙動
+   * （既存 export / editor preview はこのオプションを一切セットしないため無関係・無回帰）。
+   */
+  private persistentlyMutedVideoIds: ReadonlySet<string> | null = null;
   private previewLoop: { enabled: boolean; loopStart: Frame; loopEnd: Frame } = {
     enabled: false,
     loopStart: 0,
@@ -239,6 +247,7 @@ export class DomRenderer implements Renderer {
     previewVideoPlayback?: boolean;
     exportVideoStep?: boolean;
     muteVideoPlayback?: boolean;
+    persistentlyMutedVideoIds?: ReadonlySet<string> | null;
     loop?: { enabled: boolean; loopStart: Frame; loopEnd: Frame };
   }): void {
     if (opts.holdLastRaster !== undefined) this.holdLastRaster = opts.holdLastRaster;
@@ -246,6 +255,7 @@ export class DomRenderer implements Renderer {
     if (opts.exportCompositeMode !== undefined) this.exportCompositeMode = opts.exportCompositeMode;
     if (opts.exportVideoStep !== undefined) this.exportVideoStep = opts.exportVideoStep;
     if (opts.muteVideoPlayback !== undefined) this.muteVideoPlayback = opts.muteVideoPlayback;
+    if (opts.persistentlyMutedVideoIds !== undefined) this.persistentlyMutedVideoIds = opts.persistentlyMutedVideoIds;
     if (opts.loop !== undefined) this.previewLoop = opts.loop;
     if (opts.previewVideoPlayback !== undefined) {
       if (this.previewVideoPlayback && !opts.previewVideoPlayback) {
@@ -782,6 +792,25 @@ export class DomRenderer implements Renderer {
     }
   }
 
+  /**
+   * §11.5.2 declick を renderGate から独立させるための軽量音声適用（bundle 専用）。
+   * resolveVideoGainForFrame は transform/effect/DOM に触れないため、adaptiveRenderBudget が
+   * 視覚描画を間引いているフレームでも毎フレーム呼べるコストで、ループ継ぎ目の fade-out/in が
+   * video.volume に確実に反映される（renderFrame() 呼び出しの有無と無関係）。マウント済み要素
+   * だけを更新し、要素の生成・破棄・seek・muted 制御には一切触れない（それらは renderFrame の
+   * 責務のまま）。
+   */
+  applyAudioForFrame(comp: TimelineComposition, frame: Frame, evaluator?: ExpressionEvaluator): void {
+    if (!this.root) return;
+    const gains = resolveVideoGainForFrame(comp, frame, evaluator);
+    if (gains.size === 0) return;
+    this.forEachVideoElement((video, objectId) => {
+      const gain = gains.get(objectId);
+      if (gain === undefined) return;
+      video.volume = gain;
+    });
+  }
+
   /** §11.4 preview/bundle warm-up — マウント済み video 要素を列挙（ネスト comp 内も含む）。 */
   forEachVideoElement(cb: (video: HTMLVideoElement, objectId: string) => void): void {
     if (!this.root) return;
@@ -1122,7 +1151,8 @@ export class DomRenderer implements Renderer {
           if (swapped) el = swapped;
           forceSeek = true;
         }
-        updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, frame, hostInPoint, fps, this.previewVideoPlayback, this.exportVideoStep, forceSeek, this.playbackPauseForSync, this.muteVideoPlayback, this.playbackRateForSync);
+        const persistentlyMuted = this.persistentlyMutedVideoIds?.has(obj.id) ?? false;
+        updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, frame, hostInPoint, fps, this.previewVideoPlayback, this.exportVideoStep, forceSeek, this.playbackPauseForSync, this.muteVideoPlayback, this.playbackRateForSync, persistentlyMuted);
       }
 
       // Plugin component: registry から ComponentDef.render を呼ぶ（組み込み型は未登録でスキップ）
@@ -1349,8 +1379,13 @@ export class DomRenderer implements Renderer {
       const allSvgFilters = [...preSvgFilters, ...postSvgFilters];
       // §27.4: Raster調整は live effect（blur/tint/wipe）も backdrop-filter ではなく
       // comp 背面 capture で焼く。export（forceAdjustmentRaster）では Live調整も同様に raster 化
-      // （auto_raster_mp4）。通常レイヤーは従来どおり（displacement のみ capture）。
-      const needsCapture = needsSvgDisplaceCapture({
+      // （auto_raster_mp4）。mosaicLite は direct foreignObject capture が空白化するため、
+      // export composite の通常レイヤーだけ同じ SVG filter を焼いてから合成する。
+      const forceMosaicLiteExportCapture =
+        this.exportCompositeMode &&
+        obj.isAdjustment !== true &&
+        (obj.effects ?? []).some((effect) => effect.enabled && effect.type === "mosaicLite");
+      const needsCapture = forceMosaicLiteExportCapture || needsSvgDisplaceCapture({
         isAdjustment: obj.isAdjustment,
         adjustmentMode: obj.adjustmentMode,
         forceAdjustmentRaster: this.forceAdjustmentRaster,
@@ -1959,7 +1994,8 @@ export class DomRenderer implements Renderer {
           // updateComponentEl より先に append する（順序を変えると nested comp 内の split alpha
           // video が「parent なし」で例外を投げる）。
           div.appendChild(el);
-          updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, childFrame, hostInPoint, childComp.fps, this.previewVideoPlayback, this.exportVideoStep, false, this.playbackPauseForSync, this.muteVideoPlayback, this.playbackRateForSync);
+          const nestedPersistentlyMuted = this.persistentlyMutedVideoIds?.has(obj.id) ?? false;
+          updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, childFrame, hostInPoint, childComp.fps, this.previewVideoPlayback, this.exportVideoStep, false, this.playbackPauseForSync, this.muteVideoPlayback, this.playbackRateForSync, nestedPersistentlyMuted);
         }
       }
       container.appendChild(div);
@@ -2164,6 +2200,8 @@ function updateComponentEl(
   pauseForSync = false,
   muteVideoPlayback = false,
   playbackRateForSync = 1,
+  /** fix-plan-v2plus (bundle 専用): 音声抽出済み video は gesture unmute 後も常時ミュート維持。 */
+  persistentlyMuted = false,
 ): void {
   switch (type) {
     case "solid": {
@@ -2303,7 +2341,7 @@ function updateComponentEl(
         exportStep: exportVideoStep,
         forceSeek: cutSeek,
         pauseForSync: previewVideoPlayback && pauseForSync,
-        forceMuted: muteVideoPlayback,
+        forceMuted: muteVideoPlayback || persistentlyMuted,
         playbackRateForSync,
       });
       if (exportVideoStep) {
@@ -2342,7 +2380,7 @@ function updateComponentEl(
           exportStep: exportVideoStep,
           forceSeek: cutSeek,
           pauseForSync: previewVideoPlayback && pauseForSync,
-          forceMuted: muteVideoPlayback,
+          forceMuted: muteVideoPlayback || persistentlyMuted,
           playbackRateForSync,
         });
         // §16.2 genlock: 定常再生中（scrub/export/カット境界/映像先行pauseのいずれでもない）

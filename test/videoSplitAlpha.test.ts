@@ -2,9 +2,15 @@ import { describe, expect, it, vi } from "vitest";
 import {
   applyAlphaGenlock,
   computeAlphaGenlockRate,
+  drawSplitAlphaComposite,
   resetAlphaGenlockRate,
   scheduleSplitAlphaRedrawWhenReady,
 } from "../src/runtime/videoSplitAlpha";
+
+// test env is node (no DOM); drawSplitAlphaComposite reads HTMLMediaElement.HAVE_CURRENT_DATA.
+if (typeof HTMLMediaElement === "undefined") {
+  (globalThis as unknown as { HTMLMediaElement: unknown }).HTMLMediaElement = { HAVE_CURRENT_DATA: 2 };
+}
 
 function fakeCanvas(isConnected = true): HTMLCanvasElement {
   return { isConnected } as unknown as HTMLCanvasElement;
@@ -167,5 +173,53 @@ describe("resetAlphaGenlockRate", () => {
     const alpha = fakeVideoWithTime(2.0, 1);
     resetAlphaGenlockRate(alpha);
     expect(alpha.playbackRate).toBe(1);
+  });
+});
+
+function fakeVideoReadyForComposite(w = 64, h = 64): HTMLVideoElement {
+  return { readyState: 4, videoWidth: w, videoHeight: h } as unknown as HTMLVideoElement;
+}
+
+function fakeCanvasWithCtx(ctx: unknown): HTMLCanvasElement {
+  return { width: 0, height: 0, getContext: () => ctx } as unknown as HTMLCanvasElement;
+}
+
+describe("drawSplitAlphaComposite — bundle export split-alpha freeze regression", () => {
+  it("returns false instead of throwing when getImageData throws (e.g. tainted-canvas SecurityError)", () => {
+    // Same throw site/mechanism as drawPackedAlphaComposite's regression test: an uncaught
+    // synchronous exception here used to permanently kill the shared rAF playback tick instead
+    // of just failing this one composite attempt.
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const ctx = {
+      clearRect: vi.fn(),
+      drawImage: vi.fn(),
+      getImageData: vi.fn(() => {
+        throw new DOMException("The canvas has been tainted by cross-origin data.", "SecurityError");
+      }),
+      putImageData: vi.fn(),
+    };
+    const canvas = fakeCanvasWithCtx(ctx);
+    const maskScratch = fakeCanvasWithCtx(ctx);
+    const colorVideo = fakeVideoReadyForComposite();
+    const alphaVideo = fakeVideoReadyForComposite();
+
+    expect(() => drawSplitAlphaComposite(colorVideo, alphaVideo, canvas, maskScratch)).not.toThrow();
+    expect(drawSplitAlphaComposite(colorVideo, alphaVideo, canvas, maskScratch)).toBe(false);
+    errorSpy.mockRestore();
+  });
+
+  it("still returns true on the normal (non-throwing) path", () => {
+    const ctx = {
+      clearRect: vi.fn(),
+      drawImage: vi.fn(),
+      getImageData: vi.fn(() => ({ data: new Uint8ClampedArray(4 * 8 * 8) })),
+      putImageData: vi.fn(),
+    };
+    const canvas = fakeCanvasWithCtx(ctx);
+    const maskScratch = fakeCanvasWithCtx(ctx);
+    const colorVideo = fakeVideoReadyForComposite(8, 8);
+    const alphaVideo = fakeVideoReadyForComposite(8, 8);
+
+    expect(drawSplitAlphaComposite(colorVideo, alphaVideo, canvas, maskScratch)).toBe(true);
   });
 });

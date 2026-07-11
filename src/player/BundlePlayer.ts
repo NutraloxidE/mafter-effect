@@ -12,11 +12,18 @@ import { ModuleLoader } from "../runtime/moduleLoader";
 import { resolve, type ExpressionEvaluator } from "../runtime/resolve";
 import type { BundleBootConfig } from "../runtime/bundleTypes";
 import { htmlCompositionsInProject, timelineCompositionsInProject } from "../runtime/bundleCollect";
-import { BundleAudioClock, hasAudioLayers } from "./BundleAudioClock";
+import { BundleAudioClock } from "./BundleAudioClock";
+import { collectBundleFootageAudioSources } from "./bundleFootageAudio";
 import { assetUrlForBundle, buildBundleFs } from "./BundleFs";
 import { applyFitTransform } from "./bundleFit";
 import { collectVideoClipsFromComp } from "../runtime/videoLookaheadWarmup";
 import { runPreviewPlaybackLoop } from "../runtime/previewPlaybackLoop";
+import {
+  computeRenderGate,
+  initialRenderBudgetState,
+  recordRenderCost,
+  type RenderBudgetState,
+} from "../runtime/adaptiveRenderBudget";
 import {
   computePlaybackSyncState,
   computePlaybackRateForSync,
@@ -46,6 +53,7 @@ export class BundlePlayer {
   private stopLoop: (() => void) | null = null;
   /** §11.4 双方向同期（no-audio 経路）— editor Preview パネルと同じ判定関数を使う。 */
   private syncState: PlaybackSyncState = initialPlaybackSyncState();
+  private renderBudgetState: RenderBudgetState = initialRenderBudgetState();
   private viewportEl: HTMLDivElement | null = null;
   private stageEl: HTMLDivElement | null = null;
   private resizeObserver: ResizeObserver | null = null;
@@ -135,7 +143,16 @@ export class BundlePlayer {
     // §11.4: Play barrier — primed キャッシュを信用せず実要素を現フレームへ再同期してから再生。
     await this.renderer.syncMountedVideosForPlay(this.manifest.fps).catch(() => false);
 
-    const hasAudio = hasAudioLayers(project, comp);
+    // fix-plan-v2plus: bundle 専用の footage 音声検出（standalone audio + video 内蔵音声の両方）。
+    // hasAudioLayers（BundleAudioClock.ts, editor preview 共有）とはセマンティクスが異なる別関数。
+    const footageAudioSources = collectBundleFootageAudioSources(project, comp);
+    const hasAudio = footageAudioSources.length > 0;
+    // video 内蔵音声は別 <audio> 要素へ抽出するため、対応する <video> は常時ミュートする
+    // （gesture unmute でも解除しない — 音は BundleAudioClock 側のみ・二重音声防止）。
+    const persistentlyMutedVideoIds = new Set(
+      footageAudioSources.filter((s) => s.componentType === "video").map((s) => s.objectId),
+    );
+    this.renderer.setPreviewRenderOptions({ persistentlyMutedVideoIds });
     if (hasAudio) {
       this.audioClock = new BundleAudioClock(
         this.manifest.fps,
@@ -145,6 +162,7 @@ export class BundlePlayer {
         this.manifest.loop,
         {
           // §11.4 preview と同じ双方向同期（split-alpha companion は primary から除外済み）。
+          audioMaster: true,
           getVideoClockSamples: () => filterPrimaryVideoSamples(this.renderer.sampleMountedVideoClocks()),
           onPlaybackRate: (rate) => this.renderer.setPlaybackRateForSync(rate),
           onPlaybackSyncState: (s) => this.renderer.setPlaybackPauseForSync(s.pauseVideo),
@@ -153,9 +171,12 @@ export class BundlePlayer {
       await this.audioClock.prepare(project, comp);
       this.audioClock.setFrameCallback((f) => {
         this.currentFrame = f;
-        this.renderFrame(f);
+        if (this.shouldRenderPlaybackFrame(performance.now())) {
+          this.renderPlaybackFrame(f);
+        }
       });
       this.audioClock.setEndedCallback(() => {
+        this.renderPlaybackFrame(this.currentFrame);
         this.playing = false;
         this.renderer.setPreviewRenderOptions({ previewVideoPlayback: false });
       });
@@ -195,6 +216,9 @@ export class BundlePlayer {
         // video 内蔵音声: ユーザー操作のコールスタック内で再描画 → syncVideoElementTime が
         // アンミュート play() を呼ぶ（この文脈なら play が許可される）。muteVideoPlayback を
         // 解除して初めて実際に unmute される（それまでは muted のまま無音再生が進んでいた）。
+        // fix-plan-v2plus: 音声抽出済み video（persistentlyMutedVideoIds）はここで
+        // muteVideoPlayback:false にしても DomRenderer 側の forceMuted 判定で常時ミュートのまま
+        // （音は BundleAudioClock の <audio> 側 unlock() のみから鳴る＝二重音声防止）。
         this.renderer.setPreviewRenderOptions({
           previewVideoPlayback: true,
           muteVideoPlayback: false,
@@ -256,6 +280,7 @@ export class BundlePlayer {
 
   play(fromFrame?: number): void {
     if (this.audioClock) {
+      this.renderBudgetState = initialRenderBudgetState();
       this.audioClock.play(fromFrame ?? this.currentFrame);
       this.playing = true;
       this.renderer.setPreviewRenderOptions({
@@ -278,9 +303,11 @@ export class BundlePlayer {
       },
     });
     this.syncState = initialPlaybackSyncState();
+    this.renderBudgetState = initialRenderBudgetState();
     this.stopLoop?.();
     const start = fromFrame ?? this.currentFrame;
     this.currentFrame = start;
+    this.renderPlaybackFrame(start);
     const [, rangeEnd] = this.manifest.range;
     this.stopLoop = runPreviewPlaybackLoop({
       fps: this.manifest.fps,
@@ -292,11 +319,20 @@ export class BundlePlayer {
       onFrameChange: (f) => {
         this.currentFrame = f;
       },
+      // §11.5.2 declick を adaptiveRenderBudget から独立させる（video 内蔵音声のみ・fix-plan-v2）。
+      // renderGate が視覚描画を間引いても、continuity フェードは毎フレーム video.volume へ届く。
+      onFrameAudio: (f) => this.applyAudioForFrame(f),
       onPlaybackEnd: () => {
         this.playing = false;
       },
       // §11.4 preview と同じ双方向同期: 映像遅れでタイムライン全体を hold / 先行で video を pause。
       shouldHold: () => this.applyPlaybackSync(),
+      renderGate: {
+        shouldRender: (nowMs, msPerFrame) => this.shouldRenderPlaybackFrame(nowMs, msPerFrame),
+        recordRenderCost: (costMs) => {
+          this.renderBudgetState = recordRenderCost(this.renderBudgetState, costMs);
+        },
+      },
     });
   }
 
@@ -326,6 +362,7 @@ export class BundlePlayer {
     this.stopLoop = null;
     this.syncState = initialPlaybackSyncState();
     this.audioClock?.pause();
+    this.renderPlaybackFrame(this.currentFrame);
   }
 
   dispose(): void {
@@ -383,6 +420,24 @@ export class BundlePlayer {
     const scene = resolve(this.comp, frame, { expressions: this.evaluator });
     this.renderer.renderFrame(scene, frame);
     void this.renderer.flushRasterEffects();
+  }
+
+  /** fix-plan-v2-minimal: renderGate に関係なく毎フレーム declick gain だけを適用する軽量経路。 */
+  private applyAudioForFrame(frame: number): void {
+    if (!this.comp) return;
+    this.renderer.applyAudioForFrame(this.comp, frame, this.evaluator);
+  }
+
+  private shouldRenderPlaybackFrame(nowMs: number, msPerFrame = 1000 / this.manifest.fps): boolean {
+    const gate = computeRenderGate(this.renderBudgetState, nowMs, msPerFrame);
+    this.renderBudgetState = gate.nextState;
+    return gate.render;
+  }
+
+  private renderPlaybackFrame(frame: number): void {
+    const start = performance.now();
+    this.renderFrame(frame);
+    this.renderBudgetState = recordRenderCost(this.renderBudgetState, performance.now() - start);
   }
 }
 

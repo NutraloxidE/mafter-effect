@@ -1,0 +1,496 @@
+{
+  "label": "live",
+  "cacheMode": false,
+  "url": "https://localhost:5173/",
+  "durationMs": 63000,
+  "fps": 30,
+  "startFrame": 0,
+  "wraps": 11,
+  "perWrap": [
+    {
+      "wrapIdx": 448,
+      "tSec": 8.68,
+      "fromFrame": 149,
+      "toFrame": 0,
+      "freezeMs": 215,
+      "holds": [
+        {
+          "frame": 144,
+          "startMs": 8227,
+          "endMs": 8442,
+          "durMs": 215
+        }
+      ],
+      "cacheOverlayActive": false,
+      "buildComplete": false,
+      "bg": {
+        "containsLoopStart": true,
+        "readyState": 4,
+        "paused": false,
+        "buffered": [
+          [
+            0,
+            7.768
+          ]
+        ]
+      },
+      "person": {
+        "containsLoopStart": true,
+        "readyState": 4,
+        "paused": false,
+        "buffered": [
+          [
+            0,
+            4.966
+          ]
+        ]
+      },
+      "bgSeekCount": 0,
+      "personSeekCount": 2,
+      "bgSeekDurationMs": null,
+      "personSeekDurationMs": 31
+    },
+    {
+      "wrapIdx": 719,
+      "tSec": 13.63,
+      "fromFrame": 149,
+      "toFrame": 0,
+      "freezeMs": 103,
+      "holds": [
+        {
+          "frame": 0,
+          "startMs": 13630,
+          "endMs": 13733,
+          "durMs": 103
+        }
+      ],
+      "cacheOverlayActive": false,
+      "buildComplete": false,
+      "bg": {
+        "containsLoopStart": true,
+        "readyState": 4,
+        "paused": false,
+        "buffered": [
+          [
+            0,
+            7.768
+          ]
+        ]
+      },
+      "person": {
+        "containsLoopStart": true,
+        "readyState": 4,
+        "paused": false,
+        "buffered": [
+          [
+            0,
+            4.966
+          ]
+        ]
+      },
+      "bgSeekCount": 0,
+      "personSeekCount": 0,
+      "bgSeekDurationMs": null,
+      "personSeekDurationMs": null
+    },
+    {
+      "wrapIdx": 997,
+      "tSec": 18.65,
+      "fromFrame": 149,
+      "toFrame": 0,
+      "freezeMs": 0,
+      "holds": [],
+      "cacheOverlayActive": false,
+      "buildComplete": false,
+      "bg": {
+        "containsLoopStart": true,
+        "readyState": 4,
+        "paused": false,
+        "buffered": [
+          [
+            0,
+            7.768
+          ]
+        ]
+      },
+      "person": {
+        "containsLoopStart": true,
+        "readyState": 4,
+        "paused": false,
+        "buffered": [
+          [
+            0,
+            4.966
+          ]
+        ]
+      },
+      "bgSeekCount": 0,
+      "personSeekCount": 0,
+      "bgSeekDurationMs": null,
+      "personSeekDurationMs": null
+    },
+    {
+      "wrapIdx": 1289,
+      "tSec": 23.65,
+      "fromFrame": 149,
+      "toFrame": 0,
+      "freezeMs": 0,
+      "holds": [],
+      "cacheOverlayActive": false,
+      "buildComplete": false,
+      "bg": {
+        "containsLoopStart": true,
+        "readyState": 4,
+        "paused": false,
+        "buffered": [
+          [
+            0,
+            7.768
+          ]
+        ]
+      },
+      "person": {
+        "containsLoopStart": true,
+        "readyState": 4,
+        "paused": false,
+        "buffered": [
+          [
+            0,
+            4.966
+          ]
+        ]
+      },
+      "bgSeekCount": 0,
+      "personSeekCount": 0,
+      "bgSeekDurationMs": null,
+      "personSeekDurationMs": null
+    },
+    {
+      "wrapIdx": 1583,
+      "tSec": 28.64,
+      "fromFrame": 149,
+      "toFrame": 0,
+      "freezeMs": 103,
+      "holds": [
+        {
+          "frame": 0,
+          "startMs": 28638,
+          "endMs": 28741,
+          "durMs": 103
+        }
+      ],
+      "cacheOverlayActive": false,
+      "buildComplete": false,
+      "bg": {
+        "containsLoopStart": true,
+        "readyState": 4,
+        "paused": false,
+        "buffered": [
+          [
+            0,
+            7.768
+          ]
+        ]
+      },
+      "person": {
+        "containsLoopStart": true,
+        "readyState": 4,
+        "paused": false,
+        "buffered": [
+          [
+            0,
+            4.966
+          ]
+        ]
+      },
+      "bgSeekCount": 0,
+      "personSeekCount": 0,
+      "bgSeekDurationMs": null,
+      "personSeekDurationMs": null
+    },
+    {
+      "wrapIdx": 1873,
+      "tSec": 33.63,
+      "fromFrame": 149,
+      "toFrame": 0,
+      "freezeMs": 116,
+      "holds": [
+        {
+          "frame": 0,
+          "startMs": 33634,
+          "endMs": 33750,
+          "durMs": 116
+        }
+      ],
+      "cacheOverlayActive": false,
+      "buildComplete": false,
+      "bg": {
+        "containsLoopStart": true,
+        "readyState": 4,
+        "paused": false,
+        "buffered": [
+          [
+            0,
+            7.768
+          ]
+        ]
+      },
+      "person": {
+        "containsLoopStart": true,
+        "readyState": 4,
+        "paused": false,
+        "buffered": [
+          [
+            0,
+            4.966
+          ]
+        ]
+      },
+      "bgSeekCount": 0,
+      "personSeekCount": 0,
+      "bgSeekDurationMs": null,
+      "personSeekDurationMs": null
+    },
+    {
+      "wrapIdx": 2159,
+      "tSec": 38.64,
+      "fromFrame": 149,
+      "toFrame": 0,
+      "freezeMs": 0,
+      "holds": [],
+      "cacheOverlayActive": false,
+      "buildComplete": false,
+      "bg": {
+        "containsLoopStart": true,
+        "readyState": 4,
+        "paused": false,
+        "buffered": [
+          [
+            0,
+            7.768
+          ]
+        ]
+      },
+      "person": {
+        "containsLoopStart": true,
+        "readyState": 4,
+        "paused": true,
+        "buffered": [
+          [
+            0,
+            4.966
+          ]
+        ]
+      },
+      "bgSeekCount": 0,
+      "personSeekCount": 0,
+      "bgSeekDurationMs": null,
+      "personSeekDurationMs": null
+    },
+    {
+      "wrapIdx": 2502,
+      "tSec": 44.69,
+      "fromFrame": 149,
+      "toFrame": 0,
+      "freezeMs": 485,
+      "holds": [
+        {
+          "frame": 145,
+          "startMs": 44293,
+          "endMs": 44529,
+          "durMs": 236
+        },
+        {
+          "frame": 6,
+          "startMs": 44875,
+          "endMs": 45124,
+          "durMs": 249
+        }
+      ],
+      "cacheOverlayActive": false,
+      "buildComplete": false,
+      "bg": {
+        "containsLoopStart": true,
+        "readyState": 4,
+        "paused": true,
+        "buffered": [
+          [
+            0,
+            7.768
+          ]
+        ]
+      },
+      "person": {
+        "containsLoopStart": true,
+        "readyState": 4,
+        "paused": true,
+        "buffered": [
+          [
+            0,
+            4.916
+          ]
+        ]
+      },
+      "bgSeekCount": 0,
+      "personSeekCount": 2,
+      "bgSeekDurationMs": null,
+      "personSeekDurationMs": 64
+    },
+    {
+      "wrapIdx": 2802,
+      "tSec": 49.92,
+      "fromFrame": 149,
+      "toFrame": 0,
+      "freezeMs": 113,
+      "holds": [
+        {
+          "frame": 0,
+          "startMs": 49917,
+          "endMs": 50030,
+          "durMs": 113
+        }
+      ],
+      "cacheOverlayActive": false,
+      "buildComplete": false,
+      "bg": {
+        "containsLoopStart": true,
+        "readyState": 4,
+        "paused": false,
+        "buffered": [
+          [
+            0,
+            7.768
+          ]
+        ]
+      },
+      "person": {
+        "containsLoopStart": true,
+        "readyState": 4,
+        "paused": true,
+        "buffered": [
+          [
+            0,
+            4.916
+          ]
+        ]
+      },
+      "bgSeekCount": 0,
+      "personSeekCount": 0,
+      "bgSeekDurationMs": null,
+      "personSeekDurationMs": null
+    },
+    {
+      "wrapIdx": 3087,
+      "tSec": 54.92,
+      "fromFrame": 149,
+      "toFrame": 0,
+      "freezeMs": 0,
+      "holds": [],
+      "cacheOverlayActive": false,
+      "buildComplete": false,
+      "bg": {
+        "containsLoopStart": true,
+        "readyState": 4,
+        "paused": false,
+        "buffered": [
+          [
+            0,
+            7.768
+          ]
+        ]
+      },
+      "person": {
+        "containsLoopStart": true,
+        "readyState": 1,
+        "paused": false,
+        "buffered": [
+          [
+            0,
+            4.916
+          ]
+        ]
+      },
+      "bgSeekCount": 0,
+      "personSeekCount": 1,
+      "bgSeekDurationMs": null,
+      "personSeekDurationMs": null
+    },
+    {
+      "wrapIdx": 3382,
+      "tSec": 59.92,
+      "fromFrame": 149,
+      "toFrame": 0,
+      "freezeMs": 98,
+      "holds": [
+        {
+          "frame": 0,
+          "startMs": 59924,
+          "endMs": 60021,
+          "durMs": 98
+        }
+      ],
+      "cacheOverlayActive": false,
+      "buildComplete": false,
+      "bg": {
+        "containsLoopStart": true,
+        "readyState": 4,
+        "paused": false,
+        "buffered": [
+          [
+            0,
+            7.768
+          ]
+        ]
+      },
+      "person": {
+        "containsLoopStart": true,
+        "readyState": 4,
+        "paused": true,
+        "buffered": [
+          [
+            0,
+            4.916
+          ]
+        ]
+      },
+      "bgSeekCount": 0,
+      "personSeekCount": 0,
+      "bgSeekDurationMs": null,
+      "personSeekDurationMs": null
+    }
+  ],
+  "wrapFreezeStats": {
+    "median": 103,
+    "max": 485,
+    "min": 0,
+    "values": [
+      0,
+      0,
+      0,
+      0,
+      98,
+      103,
+      103,
+      113,
+      116,
+      215,
+      485
+    ]
+  },
+  "desyncStats": {
+    "samples": 3566,
+    "medianAbsFrames": 1.77,
+    "p95AbsFrames": 10.92,
+    "maxAbsFrames": 147.09,
+    "meanSignedFrames": 3.24
+  },
+  "overallFreezePct": 0,
+  "holdsCount": 33,
+  "pageErrors": [
+    "Failed to load resource: net::ERR_FILE_NOT_FOUND",
+    "NotSupportedError: Failed to load because no supported source was found.",
+    "AbortError: The play() request was interrupted by a new load request. https://goo.gl/LdLk22",
+    "AbortError: The play() request was interrupted by a call to pause(). https://goo.gl/LdLk22",
+    "AbortError: The play() request was interrupted by a call to pause(). https://goo.gl/LdLk22"
+  ]
+}

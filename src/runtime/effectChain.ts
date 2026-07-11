@@ -68,6 +68,8 @@ export function resolveEffectChain(
       effect.type === "fastWave" ||
       effect.type === "fastRipple"
         ? Math.max(0, typeof p["amplitude"] === "number" ? p["amplitude"] : 0)
+        : effect.type === "mosaicLite"
+          ? Math.max(1, typeof p["blockSize"] === "number" ? p["blockSize"] : 16)
         : effect.type === "opticsCompensation"
           ? opticsDisplaceScalePx(
               typeof p["fieldOfView"] === "number" ? p["fieldOfView"] : 0,

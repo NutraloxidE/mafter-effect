@@ -1,0 +1,10 @@
+import { chromium } from "playwright";
+const b = await chromium.launch();
+const p = await b.newPage({ viewport: { width: 1600, height: 900 } });
+await p.goto("http://localhost:5173/");
+await p.waitForFunction(() => window.__mafterEditorStore?.getState().currentCompId, { timeout: 15000 });
+await p.evaluate(() => { const s = window.__mafterEditorStore.getState(); s.setCompFps(30); s.setCompDuration(150); s.setFrame(45); });
+await p.waitForTimeout(400);
+await p.screenshot({ path: "verify-timeline-topright.png" });
+await b.close();
+console.log("done");

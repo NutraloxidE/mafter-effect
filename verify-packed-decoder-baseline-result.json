@@ -1,0 +1,405 @@
+{
+  "note": "Phase 0 baseline: <video> native playback + currentTime-polling sync loop (pre-VideoDecoder migration). Compare against post-Phase4 measurement with the same fixture/scenarios.",
+  "convertResult": {
+    "originalAssetId": "01KWSS67VPRA5KE4HWC42D5AKG",
+    "originalContainer": "webm",
+    "newAssetId": "01KWZRS6VV1HT3GTZY68EH9KFY",
+    "newAssetPath": "assets/01KWZRS6VV1HT3GTZY68EH9KFY.webm",
+    "newContainer": "webm",
+    "meta": {
+      "width": 1080,
+      "height": 1920,
+      "duration": 5,
+      "mime": "video/webm",
+      "hasAlpha": true,
+      "alphaMode": "packed",
+      "packedLayout": "topBottom",
+      "contentHeight": 1138,
+      "gutterPx": 8,
+      "extractedFrom": "01KWR47Y1AJ3GNX9Q7XK7KT8K7",
+      "footageKind": "native",
+      "convertedFrom": "01KWSS67VPRA5KE4HWC42D5AKG"
+    }
+  },
+  "distinctPlayerIds": 7,
+  "decoderSummary": [
+    {
+      "playerId": "1532911CEC6D4DAE553BB8C5103851C2",
+      "relevant": [
+        {
+          "name": "kVideoDecoderName",
+          "value": "D3D11VideoDecoder"
+        },
+        {
+          "name": "kResolution",
+          "value": "1080x1920"
+        },
+        {
+          "name": "kIsPlatformAudioDecoder",
+          "value": "false"
+        },
+        {
+          "name": "kAudioDecoderName",
+          "value": "FFmpegAudioDecoder"
+        },
+        {
+          "name": "kIsPlatformVideoDecoder",
+          "value": "true"
+        }
+      ]
+    },
+    {
+      "playerId": "18426F44689944C52C122B6198ECDF0A",
+      "relevant": [
+        {
+          "name": "kVideoDecoderName",
+          "value": "D3D11VideoDecoder"
+        },
+        {
+          "name": "kIsPlatformVideoDecoder",
+          "value": "true"
+        },
+        {
+          "name": "kResolution",
+          "value": "640x1138"
+        }
+      ]
+    },
+    {
+      "playerId": "F40B646B4013B00C2E702431A29BFD6A",
+      "relevant": [
+        {
+          "name": "kVideoDecoderName",
+          "value": "D3D11VideoDecoder"
+        },
+        {
+          "name": "kIsPlatformVideoDecoder",
+          "value": "true"
+        },
+        {
+          "name": "kResolution",
+          "value": "640x1138"
+        }
+      ]
+    },
+    {
+      "playerId": "72D160BDAC9A7190E2D67F52F23F090D",
+      "relevant": [
+        {
+          "name": "kVideoDecoderName",
+          "value": "D3D11VideoDecoder"
+        },
+        {
+          "name": "kIsPlatformVideoDecoder",
+          "value": "true"
+        },
+        {
+          "name": "kResolution",
+          "value": "640x1138"
+        }
+      ]
+    },
+    {
+      "playerId": "196E41D867CDC55B5EA5CBF573839C52",
+      "relevant": [
+        {
+          "name": "kVideoDecoderName",
+          "value": "D3D11VideoDecoder"
+        },
+        {
+          "name": "kIsPlatformVideoDecoder",
+          "value": "true"
+        },
+        {
+          "name": "kResolution",
+          "value": "640x1138"
+        }
+      ]
+    },
+    {
+      "playerId": "07B9291DE36BFF6BDDB1F7DED219BBC0",
+      "relevant": [
+        {
+          "name": "kVideoDecoderName",
+          "value": "D3D11VideoDecoder"
+        },
+        {
+          "name": "kIsPlatformVideoDecoder",
+          "value": "true"
+        },
+        {
+          "name": "kResolution",
+          "value": "640x2284"
+        }
+      ]
+    }
+  ],
+  "A": {
+    "aggregate": {
+      "trials": 3,
+      "stallCount": {
+        "values": [
+          3,
+          8,
+          0
+        ],
+        "avg": 3.67
+      },
+      "totalStallDurMs": {
+        "values": [
+          191.2,
+          547.4000000000001,
+          0
+        ],
+        "avg": 246.2
+      },
+      "stallPercent": {
+        "values": [
+          6.4,
+          18.2,
+          0
+        ],
+        "avg": 8.2
+      },
+      "readyAllAtStart": {
+        "values": [
+          true,
+          true,
+          true
+        ],
+        "rate": 1
+      },
+      "progressionRate": {
+        "values": [
+          0.938,
+          0.888,
+          0.998
+        ],
+        "avg": 0.941
+      }
+    },
+    "trials": [
+      {
+        "stalls": [
+          {
+            "frame": 23,
+            "startT": 66.5,
+            "durMs": 60.7
+          },
+          {
+            "frame": 54,
+            "startT": 1166.4000000357628,
+            "durMs": 60.9
+          },
+          {
+            "frame": 56,
+            "startT": 1264.800000011921,
+            "durMs": 69.6
+          }
+        ],
+        "readyAtStart": {
+          "bg": true,
+          "person": true
+        },
+        "sampleCount": 92,
+        "framesAdvanced": 85,
+        "wallSec": 3.022,
+        "progressionRate": 0.938
+      },
+      {
+        "stalls": [
+          {
+            "frame": 22,
+            "startT": 56,
+            "durMs": 62.2
+          },
+          {
+            "frame": 29,
+            "startT": 355.7999999523163,
+            "durMs": 68.9
+          },
+          {
+            "frame": 31,
+            "startT": 456,
+            "durMs": 103.1
+          },
+          {
+            "frame": 34,
+            "startT": 623.5999999642372,
+            "durMs": 68.4
+          },
+          {
+            "frame": 36,
+            "startT": 723.3999999761581,
+            "durMs": 61.3
+          },
+          {
+            "frame": 38,
+            "startT": 824.1999999880791,
+            "durMs": 60.1
+          },
+          {
+            "frame": 51,
+            "startT": 1289.8999999761581,
+            "durMs": 61
+          },
+          {
+            "frame": 53,
+            "startT": 1389.3999999761581,
+            "durMs": 62.4
+          }
+        ],
+        "readyAtStart": {
+          "bg": true,
+          "person": true
+        },
+        "sampleCount": 91,
+        "framesAdvanced": 80,
+        "wallSec": 3.004,
+        "progressionRate": 0.888
+      },
+      {
+        "stalls": [],
+        "readyAtStart": {
+          "bg": true,
+          "person": true
+        },
+        "sampleCount": 91,
+        "framesAdvanced": 90,
+        "wallSec": 3.004700000047684,
+        "progressionRate": 0.998
+      }
+    ]
+  },
+  "B": {
+    "aggregate": {
+      "trials": 3,
+      "stallCount": {
+        "values": [
+          2,
+          6,
+          1
+        ],
+        "avg": 3
+      },
+      "totalStallDurMs": {
+        "values": [
+          399.9,
+          789,
+          332.3
+        ],
+        "avg": 507.1
+      },
+      "stallPercent": {
+        "values": [
+          13.3,
+          26.3,
+          11.1
+        ],
+        "avg": 16.9
+      },
+      "readyAllAtStart": {
+        "values": [
+          false,
+          false,
+          false
+        ],
+        "rate": 0
+      },
+      "progressionRate": {
+        "values": [
+          0.849,
+          0.464,
+          0.873
+        ],
+        "avg": 0.729
+      }
+    },
+    "trials": [
+      {
+        "stalls": [
+          {
+            "frame": 20,
+            "startT": 27.600000023841858,
+            "durMs": 333.3
+          },
+          {
+            "frame": 23,
+            "startT": 477.60000002384186,
+            "durMs": 66.6
+          }
+        ],
+        "readyAtStart": {
+          "bg": false,
+          "person": false
+        },
+        "sampleCount": 90,
+        "framesAdvanced": 76,
+        "wallSec": 2.983300000011921,
+        "progressionRate": 0.849
+      },
+      {
+        "stalls": [
+          {
+            "frame": 20,
+            "startT": 0.800000011920929,
+            "durMs": 389.4
+          },
+          {
+            "frame": 24,
+            "startT": 416.80000001192093,
+            "durMs": 133.2
+          },
+          {
+            "frame": 26,
+            "startT": 616.6000000238419,
+            "durMs": 66.7
+          },
+          {
+            "frame": 28,
+            "startT": 750.1000000238419,
+            "durMs": 66.6
+          },
+          {
+            "frame": 58,
+            "startT": 2716.600000023842,
+            "durMs": 66.7
+          },
+          {
+            "frame": 60,
+            "startT": 2850.100000023842,
+            "durMs": 66.4
+          }
+        ],
+        "readyAtStart": {
+          "bg": false,
+          "person": false
+        },
+        "sampleCount": 89,
+        "framesAdvanced": 42,
+        "wallSec": 3.0158000000119207,
+        "progressionRate": 0.464
+      },
+      {
+        "stalls": [
+          {
+            "frame": 20,
+            "startT": 1.2000000476837158,
+            "durMs": 332.3
+          }
+        ],
+        "readyAtStart": {
+          "bg": false,
+          "person": false
+        },
+        "sampleCount": 91,
+        "framesAdvanced": 79,
+        "wallSec": 3.0153999999761583,
+        "progressionRate": 0.873
+      }
+    ]
+  },
+  "pageErrors": [
+    "AbortError: The play() request was interrupted by a call to pause(). https://goo.gl/LdLk22"
+  ]
+}

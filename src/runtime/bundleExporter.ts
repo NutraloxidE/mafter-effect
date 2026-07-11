@@ -6,7 +6,7 @@ import { canonicalizeProject, serializeProject } from "../core/serialize";
 import type { ExportConfig, Project, TimelineComposition } from "../core/schema";
 import type { FileSystem } from "../fs/FileSystem";
 import { applyBundleBake } from "./bundleBake";
-import { collectBundleDependencies } from "./bundleCollect";
+import { collectBundleDependencies, pruneProjectToBundleScope } from "./bundleCollect";
 import { injectBuiltinExpressionPresetScripts } from "./builtinExpressionPresetScripts";
 import {
   BUILTIN_FONT_DIR,
@@ -222,6 +222,12 @@ export async function exportBundle(
   }
 
   const collected = await collectTextAndBinary(fs, deps.textPaths, deps.binaryPaths, deps.livePluginIds);
+
+  // §11.7: 埋め込む project.json 自体は root comp から到達可能な comp/asset だけに削る（bake で
+  // rewrite された参照を正しく拾うため post-bake の project に対して再収集する）。FS 読み出し用の
+  // `deps`（pre-bake）は上ですでに使い終えているので、ここでの再収集は埋め込み用の pruning 専用。
+  const scope = collectBundleDependencies(bundleProject, compId);
+  bundleProject = pruneProjectToBundleScope(bundleProject, compId, scope);
   injectBuiltinExpressionPresetScripts(bundleProject, collected.textFiles);
 
   // §26.3.2 使用された built-in フォントを public/fonts から取得し zip 同梱する。

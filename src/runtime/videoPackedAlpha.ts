@@ -121,17 +121,28 @@ export function drawPackedAlphaComposite(
   const maskCtx = maskScratch.getContext("2d");
   if (!ctx || !maskCtx) return false;
 
-  ctx.clearRect(0, 0, w, h);
-  ctx.drawImage(video, rects.color.sx, rects.color.sy, rects.color.sw, rects.color.sh, 0, 0, w, h);
-  const colorData = ctx.getImageData(0, 0, w, h);
+  // 呼び出し側（updateComponentEl → rAF ループ）は draw 呼び出しの外側に try/catch を持たない。
+  // getImageData/putImageData は同期例外（例: file:// 経由の video を drawImage した canvas が
+  // "tainted" 扱いになる環境での SecurityError）を投げうるが、ここで拾わず投げると rAF ループの
+  // tick が己の requestAnimationFrame(tick) 再スケジュールに届く前に中断し、再生が二度と進まない
+  // 恒久フリーズになる（schedulePackedAlphaRedrawWhenReady の bounded retry も機能しなくなる）。
+  // false を返して「この 1 フレームは合成失敗」として扱えば、既存の再試行経路がそのまま効く。
+  try {
+    ctx.clearRect(0, 0, w, h);
+    ctx.drawImage(video, rects.color.sx, rects.color.sy, rects.color.sw, rects.color.sh, 0, 0, w, h);
+    const colorData = ctx.getImageData(0, 0, w, h);
 
-  maskCtx.clearRect(0, 0, w, h);
-  maskCtx.drawImage(video, rects.mask.sx, rects.mask.sy, rects.mask.sw, rects.mask.sh, 0, 0, w, h);
-  const maskData = maskCtx.getImageData(0, 0, w, h);
+    maskCtx.clearRect(0, 0, w, h);
+    maskCtx.drawImage(video, rects.mask.sx, rects.mask.sy, rects.mask.sw, rects.mask.sh, 0, 0, w, h);
+    const maskData = maskCtx.getImageData(0, 0, w, h);
 
-  applyGrayscaleMaskToAlphaChannel(colorData, maskData);
-  ctx.putImageData(colorData, 0, 0);
-  return true;
+    applyGrayscaleMaskToAlphaChannel(colorData, maskData);
+    ctx.putImageData(colorData, 0, 0);
+    return true;
+  } catch (err) {
+    console.error("drawPackedAlphaComposite: composite failed", err);
+    return false;
+  }
 }
 
 /** drawPackedAlphaComposite と同一契約の薄いラッパ。GL compositor が生きていればシェーダ合成。 */

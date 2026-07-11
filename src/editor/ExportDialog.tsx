@@ -9,6 +9,7 @@ import { diagnoseVideoSupport, exportComposition, type ExportProgress } from "..
 import { findBakeTargets } from "../runtime/bundleBake";
 import { collectBundleDependencies } from "../runtime/bundleCollect";
 import { collectExportProxyJobs } from "../runtime/footagePlayback";
+import { isPackedAlphaVideoMeta, isSplitAlphaVideoMeta } from "../runtime/imageAssetCache";
 import {
   DEFAULT_VIDEO_BITRATE,
   presetVideoBitrate,
@@ -66,6 +67,29 @@ export function ExportDialog({ project, compId, mode = "download", onClose }: Pr
         collectBundleDependencies(project, compId).timelineCompIds,
       ).length
     : 0;
+
+  // §11.7 file:// 直開きの既知の制約（doc/mafter-effect-spec.md §11.7 参照）: packed/split alpha
+  // 動画は file:// の fetch() ブロックで blob 化できず canvas が tainted になり、合成できない
+  // （再生ループ自体は継続する・alpha レイヤーのみ空白）。該当レイヤーがあるときだけ案内する。
+  const hasAlphaVideoInBundle = tl && isHtmlBundle
+    ? (() => {
+        const { timelineCompIds } = collectBundleDependencies(project, compId);
+        for (const cId of timelineCompIds) {
+          const c = project.compositions.find((comp) => comp.id === cId);
+          if (!c || c.kind !== "timeline") continue;
+          for (const obj of c.objects) {
+            for (const cmp of obj.components) {
+              if (cmp.type !== "video") continue;
+              const assetId = cmp.props["asset"];
+              if (typeof assetId !== "string") continue;
+              const asset = project.assets.find((a) => a.id === assetId);
+              if (asset && (isPackedAlphaVideoMeta(asset.meta) || isSplitAlphaVideoMeta(asset.meta))) return true;
+            }
+          }
+        }
+        return false;
+      })()
+    : false;
 
   const effectiveBitrate = useMemo(() => {
     if (videoQuality === "custom") return customBitrateKbps * 1000;
@@ -390,6 +414,13 @@ export function ExportDialog({ project, compId, mode = "download", onClose }: Pr
         {isHtmlBundle && (
           <div style={{ fontSize: 10, color: "#666", marginBottom: 10, lineHeight: 1.5 }}>
             ZIP を解凍し index.html を開くとブラウザで再生されます（§11.7 Folder bundle）。
+          </div>
+        )}
+
+        {isHtmlBundle && hasAlphaVideoInBundle && (
+          <div style={{ fontSize: 11, color: "#fc8", marginBottom: 10, background: "#2a2415", padding: "6px 8px", borderRadius: 3, lineHeight: 1.5 }}>
+            ⚠ 透過（alpha）動画を含みます。index.html を <b>file:// で直接開く</b>とブラウザの制約により透過レイヤーが表示されません（再生自体は止まりません）。
+            <b>ローカル HTTP サーバ経由</b>（例: <code>npx serve</code>）で開くことを推奨します。
           </div>
         )}
 

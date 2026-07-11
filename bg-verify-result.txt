@@ -1,0 +1,10 @@
+1) default comp.background = null (expect null = transparent)
+   stage style = {"backgroundColor":"rgb(42, 42, 42)","backgroundImage":"linear-gradient(45deg, rgb(51, 51, 51) 2"} (expect checker gradient, since ⬚ default ON)
+2) after ⬚ OFF, stage style = {"backgroundColor":"rgb(0, 0, 0)","backgroundImage":"none"} (expect solid black, no gradient)
+3) after ⬚ ON again, stage style = {"backgroundColor":"rgb(42, 42, 42)","backgroundImage":"linear-gradient(45deg, rgb(51, 51, 51) 2"} (expect checker gradient)
+4) after setCompBackground red, comp.background = {"r":1,"g":0,"b":0,"a":1}
+   DomRenderer root bg = rgb(255, 0, 0) (expect rgb(255, 0, 0) live, no remount)
+5) after 透明 button, comp.background = null (expect null)
+6) serialized contains "background" = false (expect false = omitted when transparent)
+ERRORS: none
+exit=0

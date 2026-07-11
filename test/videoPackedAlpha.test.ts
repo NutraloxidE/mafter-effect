@@ -1,10 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   computePackedAlphaRects,
+  drawPackedAlphaComposite,
   packedLayoutFitsSizeLimit,
   packedVideoHeight,
   PACKED_ALPHA_GUTTER_PX,
 } from "../src/runtime/videoPackedAlpha";
+
+// test env is node (no DOM); drawPackedAlphaComposite reads HTMLMediaElement.HAVE_CURRENT_DATA.
+if (typeof HTMLMediaElement === "undefined") {
+  (globalThis as unknown as { HTMLMediaElement: unknown }).HTMLMediaElement = { HAVE_CURRENT_DATA: 2 };
+}
 
 describe("packedVideoHeight", () => {
   it("computes 2*contentHeight + gutterPx", () => {
@@ -48,5 +54,61 @@ describe("packedLayoutFitsSizeLimit", () => {
   it("respects a custom maxHeight override", () => {
     expect(packedLayoutFitsSizeLimit({ contentHeight: 100, gutterPx: 8 }, 200)).toBe(false);
     expect(packedLayoutFitsSizeLimit({ contentHeight: 96, gutterPx: 8 }, 200)).toBe(true);
+  });
+});
+
+function fakeVideoReady(vw = 64, vh = 64): HTMLVideoElement {
+  return { readyState: 4 /* HAVE_ENOUGH_DATA */, videoWidth: vw, videoHeight: vh } as unknown as HTMLVideoElement;
+}
+
+function fakeCanvasWithCtx(ctx: unknown): HTMLCanvasElement {
+  return {
+    width: 0,
+    height: 0,
+    getContext: () => ctx,
+  } as unknown as HTMLCanvasElement;
+}
+
+describe("drawPackedAlphaComposite — bundle export packed-alpha freeze regression", () => {
+  it("returns false instead of throwing when getImageData throws (e.g. tainted-canvas SecurityError)", () => {
+    // This is the concrete throw site identified while investigating a permanent (non-recovering)
+    // playback freeze specific to the exported HTML bundle for packed-alpha video: an uncaught
+    // synchronous exception here used to escape all the way out of the shared rAF tick
+    // (previewPlaybackLoop.ts / BundleAudioClock.ts), which then never reached its own
+    // requestAnimationFrame(tick) reschedule — killing playback permanently. The composite
+    // function must fail closed (return false, letting the existing bounded-retry scheduler
+    // handle it) rather than throw.
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const ctx = {
+      clearRect: vi.fn(),
+      drawImage: vi.fn(),
+      getImageData: vi.fn(() => {
+        throw new DOMException("The canvas has been tainted by cross-origin data.", "SecurityError");
+      }),
+      putImageData: vi.fn(),
+    };
+    const canvas = fakeCanvasWithCtx(ctx);
+    const maskScratch = fakeCanvasWithCtx(ctx);
+    const video = fakeVideoReady();
+
+    expect(() =>
+      drawPackedAlphaComposite(video, canvas, maskScratch, { contentHeight: 32, gutterPx: 8 }),
+    ).not.toThrow();
+    expect(drawPackedAlphaComposite(video, canvas, maskScratch, { contentHeight: 32, gutterPx: 8 })).toBe(false);
+    errorSpy.mockRestore();
+  });
+
+  it("still returns true on the normal (non-throwing) path", () => {
+    const ctx = {
+      clearRect: vi.fn(),
+      drawImage: vi.fn(),
+      getImageData: vi.fn(() => ({ data: new Uint8ClampedArray(4 * 8 * 8) })),
+      putImageData: vi.fn(),
+    };
+    const canvas = fakeCanvasWithCtx(ctx);
+    const maskScratch = fakeCanvasWithCtx(ctx);
+    const video = fakeVideoReady(8, 8);
+
+    expect(drawPackedAlphaComposite(video, canvas, maskScratch, { contentHeight: 8, gutterPx: 0 })).toBe(true);
   });
 });

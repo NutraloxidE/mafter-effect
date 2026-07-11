@@ -4,6 +4,7 @@ import {
   BLUR_EFFECT_DEF,
   DITHER_DISSOLVE_EFFECT_DEF,
   LINEAR_WIPE_EFFECT_DEF,
+  MOSAIC_EFFECT_DEF,
   OPTICS_COMPENSATION_EFFECT_DEF,
   RIPPLE_EFFECT_DEF,
   TINT_EFFECT_DEF,
@@ -14,6 +15,7 @@ import {
   registerBuiltinEffects,
 } from "../src/runtime/builtinEffects";
 import {
+  MOSAIC_LITE_EFFECT_DEF,
   FAST_RIPPLE_EFFECT_DEF,
   FAST_TURBULENT_DISPLACE_EFFECT_DEF,
   FAST_WAVE_EFFECT_DEF,
@@ -36,6 +38,8 @@ describe("EffectDef previewBakeRequired (§27.2)", () => {
     expect(PIXEL_SORTER_EFFECT_DEF.previewBakeRequired).toBe(true);
     expect(BLUR_EFFECT_DEF.previewBakeRequired).toBe(false);
     expect(WAVE_EFFECT_DEF.previewBakeRequired).toBe(false);
+    expect(MOSAIC_EFFECT_DEF.previewBakeRequired).toBe(true);
+    expect(MOSAIC_LITE_EFFECT_DEF.previewBakeRequired).toBe(false);
     expect(FAST_WAVE_EFFECT_DEF.previewBakeRequired).toBe(false);
     expect(PIXEL_SORT_LITE_EFFECT_DEF.previewBakeRequired).toBe(false);
   });
@@ -45,14 +49,14 @@ describe("builtinEffects apply (§27.3)", () => {
   it("re-registers after pluginRegistry.clear() (loadPlugins 経路)", () => {
     registerBuiltinEffects();
     expect(globalPluginRegistry.listEffects().map((e) => e.type)).toEqual([
-      "blur", "tint", "wave", "turbulentDisplace", "ripple", "opticsCompensation", "linearWipe", "angularWipe", "ditherDissolve", "pixelSorter", "pixelSortLite",
-      "fastWave", "fastRipple", "fastTurbulentDisplace",
+      "blur", "tint", "wave", "turbulentDisplace", "ripple", "opticsCompensation", "linearWipe", "angularWipe", "ditherDissolve", "pixelSorter", "mosaic", "pixelSortLite",
+      "mosaicLite", "fastWave", "fastRipple", "fastTurbulentDisplace",
     ]);
     globalPluginRegistry.clear();
     registerBuiltinEffects();
     expect(globalPluginRegistry.listEffects().map((e) => e.type)).toEqual([
-      "blur", "tint", "wave", "turbulentDisplace", "ripple", "opticsCompensation", "linearWipe", "angularWipe", "ditherDissolve", "pixelSorter", "pixelSortLite",
-      "fastWave", "fastRipple", "fastTurbulentDisplace",
+      "blur", "tint", "wave", "turbulentDisplace", "ripple", "opticsCompensation", "linearWipe", "angularWipe", "ditherDissolve", "pixelSorter", "mosaic", "pixelSortLite",
+      "mosaicLite", "fastWave", "fastRipple", "fastTurbulentDisplace",
     ]);
   });
 
@@ -218,6 +222,23 @@ describe("builtinEffects apply (§27.3)", () => {
       expect(r.primitives).not.toContain("feImage");
       expect(r.primitives).not.toContain("data:image");
     }
+  });
+
+  it("mosaicLite returns a live block-center displacement map", () => {
+    const r = MOSAIC_LITE_EFFECT_DEF.apply({ blockSize: 16 }, ctx);
+    expect(MOSAIC_LITE_EFFECT_DEF.executionPath).toBe("live");
+    expect(MOSAIC_LITE_EFFECT_DEF.previewBakeRequired).toBe(false);
+    expect(r?.kind).toBe("svg");
+    if (r?.kind === "svg") {
+      expect(r.primitives).toContain("feDisplacementMap");
+      expect(r.primitives).toContain("feImage");
+      expect(r.primitives).toContain("data:image/svg+xml");
+      expect(r.primitives).toContain('scale="16"');
+    }
+  });
+
+  it("mosaicLite is inert at blockSize <= 1", () => {
+    expect(MOSAIC_LITE_EFFECT_DEF.apply({ blockSize: 1 }, ctx)).toBeNull();
   });
 
   it("fastWave は map smoothing を常時含み antiAlias で blur が増える（§27.5 改定5）", () => {
@@ -433,6 +454,23 @@ describe("builtinEffects apply (§27.3)", () => {
       { ...ctx, frame: 5 },
     );
     expect(Array.from(out.data)).not.toEqual(Array.from(input.data));
+  });
+
+  it("mosaic returns raster kind and averages blocks", () => {
+    expect(MOSAIC_EFFECT_DEF.executionPath).toBe("raster");
+    expect(MOSAIC_EFFECT_DEF.apply({ blockSize: 1 }, ctx)).toBeNull();
+    expect(MOSAIC_EFFECT_DEF.apply({ blockSize: 2 }, ctx)).toEqual({ kind: "raster" });
+    const data = new Uint8ClampedArray([
+      0, 0, 0, 255, 100, 0, 0, 255,
+      200, 0, 0, 255, 255, 0, 0, 255,
+    ]);
+    const out = MOSAIC_EFFECT_DEF.processPixels!(
+      { data, width: 2, height: 2 },
+      { blockSize: 2 },
+      ctx,
+    );
+    expect(Array.from(out.data.slice(0, 4))).toEqual([139, 0, 0, 255]);
+    expect(Array.from(out.data.slice(4, 8))).toEqual([139, 0, 0, 255]);
   });
 
   it("pixelSortLite returns null when streakLength or intensity is 0", () => {

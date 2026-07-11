@@ -10,9 +10,11 @@ import {
   type PlaybackSyncState,
   type VideoClockSample,
 } from "../runtime/playbackVideoSync";
+import { collectBundleFootageAudioSources, footageAudioMediaTimeSec } from "./bundleFootageAudio";
 
 /** §11.4 preview と同じ双方向同期を bundle にも配線するためのコールバック（省略可＝同期無効）。 */
 export interface BundleAudioClockSyncOptions {
+  audioMaster?: boolean;
   getVideoClockSamples?: () => VideoClockSample[];
   onPlaybackSyncState?: (state: PlaybackSyncState) => void;
   onPlaybackRate?: (rate: number) => void;
@@ -65,6 +67,7 @@ interface LayerGainInfo {
   gainProp: AnimatedProp<number>;
   inPoint: Frame;
   outPoint: Frame;
+  trimStart: Frame;
   autoFade: boolean;
   suppression: FadeSuppression;
 }
@@ -94,8 +97,15 @@ export class BundleAudioClock {
     private readonly sync?: BundleAudioClockSyncOptions,
   ) {}
 
+  /**
+   * fix-plan-v2plus: standalone audio レイヤーに加え、video 内蔵音声（collectFootageAudioSources
+   * の video 側）も別 <audio> 要素として鳴らす対象に含める（bundle 専用 collectBundleFootageAudioSources
+   * 経由。hasAudioLayers は変更しない — あちらは editor preview 共有で standalone audio のみ判定）。
+   * objectId は video レイヤーの obj.id をそのまま使う（DomRenderer の <video> 要素とは別 Map なので
+   * 衝突しない — BundlePlayer 側で「この objectId の video は音声抽出済み＝常時ミュート」に使う）。
+   */
   async prepare(project: Project, comp: TimelineComposition): Promise<boolean> {
-    const layers = collectAudioLayers(project, comp);
+    const layers = collectBundleFootageAudioSources(project, comp);
     if (layers.length === 0) return false;
 
     for (const layer of layers) {
@@ -107,6 +117,7 @@ export class BundleAudioClock {
         gainProp: layer.gainProp,
         inPoint: layer.inPoint,
         outPoint: layer.outPoint,
+        trimStart: layer.trimStart,
         autoFade: layer.autoFade,
         suppression: layer.suppression,
       });
@@ -114,7 +125,7 @@ export class BundleAudioClock {
       try {
         await audio.play();
         audio.pause();
-        audio.currentTime = 0;
+        audio.currentTime = footageAudioMediaTimeSec(this.rangeStart, layer.inPoint, layer.trimStart, this.fps);
       } catch {
         /* autoplay policy — unmute on user gesture if needed */
       }
@@ -137,9 +148,9 @@ export class BundleAudioClock {
     this.holdEnteredWallMs = null;
     this.startWallMs = performance.now() - (fromFrame - this.rangeStart) * (1000 / this.fps);
     for (const [id, el] of this.elements) {
-      void id;
+      const info = this.gainByObjectId.get(id);
       try {
-        el.currentTime = Math.max(0, (fromFrame - this.rangeStart) / this.fps);
+        el.currentTime = footageAudioMediaTimeSec(fromFrame, info?.inPoint ?? this.rangeStart, info?.trimStart ?? 0, this.fps);
         void el.play();
       } catch {
         /* ignore */
@@ -163,10 +174,12 @@ export class BundleAudioClock {
       this.startWallMs,
       performance.now(),
     );
-    for (const el of this.elements.values()) {
+    const transportFrame = this.rangeStart + elapsedSec * this.fps;
+    for (const [id, el] of this.elements) {
       if (!el.paused) continue;
+      const info = this.gainByObjectId.get(id);
       try {
-        el.currentTime = elapsedSec;
+        el.currentTime = footageAudioMediaTimeSec(transportFrame, info?.inPoint ?? this.rangeStart, info?.trimStart ?? 0, this.fps);
         void el.play();
       } catch {
         /* best-effort */
@@ -197,83 +210,93 @@ export class BundleAudioClock {
   private tick = (): void => {
     if (!this.playing) return;
 
-    // §11.4 双方向同期: 映像遅れ→timeline hold（音声も pause）/ 映像先行→pauseVideo。
-    // sync 未指定なら samples は常に [] → 常に非 hold（既存挙動と完全互換）。
-    const samples = this.sync?.getVideoClockSamples?.() ?? [];
-    this.syncState = computePlaybackSyncState(
-      this.syncState,
-      samples,
-      holdThresholdsForFps(this.fps),
-      performance.now(),
-    );
-    this.sync?.onPlaybackRate?.(
-      computePlaybackRateForSync(dominantVideoSyncErrorSec(samples), this.fps),
-    );
-    this.sync?.onPlaybackSyncState?.(this.syncState);
-    if (this.syncState.holdTimeline) {
-      if (this.frozenFrame === null) {
-        const elapsedSec = (performance.now() - this.startWallMs) / 1000;
-        this.frozenFrame = this.rangeStart + Math.floor(elapsedSec * this.fps);
-        this.holdEnteredWallMs = performance.now();
+    // §16.2/§16.2b フリーズ対策: onFrame/renderFrame 等が同期例外を投げると、catch が無ければ
+    // この tick が末尾の requestAnimationFrame(this.tick) 再スケジュールに届かず、再生が二度と
+    // 進まない恒久フリーズになる。try/finally で「例外が起きても playing なら必ず次 rAF を
+    // 予約する」を保証する（previewPlaybackLoop.ts と同型の自己修復）。
+    try {
+      // §11.4 双方向同期: 映像遅れ→timeline hold（音声も pause）/ 映像先行→pauseVideo。
+      // sync 未指定なら samples は常に [] → 常に非 hold（既存挙動と完全互換）。
+      const samples = this.sync?.getVideoClockSamples?.() ?? [];
+      this.syncState = computePlaybackSyncState(
+        this.syncState,
+        samples,
+        holdThresholdsForFps(this.fps),
+        performance.now(),
+      );
+      this.sync?.onPlaybackRate?.(
+        computePlaybackRateForSync(dominantVideoSyncErrorSec(samples), this.fps),
+      );
+      this.sync?.onPlaybackSyncState?.(this.syncState);
+      if (this.syncState.holdTimeline && this.sync?.audioMaster === false) {
+        if (this.frozenFrame === null) {
+          const elapsedSec = (performance.now() - this.startWallMs) / 1000;
+          this.frozenFrame = this.rangeStart + Math.floor(elapsedSec * this.fps);
+          this.holdEnteredWallMs = performance.now();
+          for (const el of this.elements.values()) {
+            try {
+              el.pause();
+            } catch {
+              /* best-effort */
+            }
+          }
+        }
+        // editor 同様、hold 中は onFrame を呼ばない（他レイヤーの DOM 更新も含め見た目上完全に静止する）。
+        return;
+      }
+      if (this.frozenFrame !== null) {
+        // hold 解除: held 分だけ起点を前進させる（frame 連続性を保つ。§11.4 previewAudioClock の
+        // originFrame/originCtxTime 再アンカーと同じ考え方を wall-clock で行う）。
+        if (this.holdEnteredWallMs !== null) {
+          this.startWallMs = reanchorStartWallMsAfterHold(
+            this.startWallMs,
+            this.holdEnteredWallMs,
+            performance.now(),
+          );
+        }
+        this.frozenFrame = null;
+        this.holdEnteredWallMs = null;
         for (const el of this.elements.values()) {
           try {
-            el.pause();
+            void el.play();
           } catch {
             /* best-effort */
           }
         }
       }
-      // editor 同様、hold 中は onFrame を呼ばない（他レイヤーの DOM 更新も含め見た目上完全に静止する）。
-      this.rafId = requestAnimationFrame(this.tick);
-      return;
-    }
-    if (this.frozenFrame !== null) {
-      // hold 解除: held 分だけ起点を前進させる（frame 連続性を保つ。§11.4 previewAudioClock の
-      // originFrame/originCtxTime 再アンカーと同じ考え方を wall-clock で行う）。
-      if (this.holdEnteredWallMs !== null) {
-        this.startWallMs = reanchorStartWallMsAfterHold(
-          this.startWallMs,
-          this.holdEnteredWallMs,
-          performance.now(),
-        );
-      }
-      this.frozenFrame = null;
-      this.holdEnteredWallMs = null;
-      for (const el of this.elements.values()) {
-        try {
-          void el.play();
-        } catch {
-          /* best-effort */
-        }
-      }
-    }
 
-    const elapsedSec = (performance.now() - this.startWallMs) / 1000;
-    const frame = this.rangeStart + Math.floor(elapsedSec * this.fps);
-    const lastFrame = this.rangeEnd - 1;
-    if (frame >= lastFrame) {
-      this.onFrame?.(lastFrame);
-      if (this.loop) {
-        this.startWallMs = performance.now();
-        for (const el of this.elements.values()) {
-          try {
-            el.currentTime = 0;
-            void el.play();
-          } catch {
-            /* ignore */
+      const elapsedSec = (performance.now() - this.startWallMs) / 1000;
+      const frame = this.rangeStart + Math.floor(elapsedSec * this.fps);
+      const lastFrame = this.rangeEnd - 1;
+      if (frame >= lastFrame) {
+        this.onFrame?.(lastFrame);
+        if (this.loop) {
+          this.startWallMs = performance.now();
+          for (const [id, el] of this.elements) {
+            const info = this.gainByObjectId.get(id);
+            try {
+              // fix-plan-v3: ループ wrap の seek 1 回のみ。継ぎ目 declick はしない（コンテンツ由来の
+              // 波形段差は素材側の責務・el.volume は sample 精度でなく隠蔽は逆効果と実測で判明）。
+              el.currentTime = footageAudioMediaTimeSec(this.rangeStart, info?.inPoint ?? this.rangeStart, info?.trimStart ?? 0, this.fps);
+              void el.play();
+            } catch {
+              /* ignore */
+            }
           }
+        } else {
+          this.playing = false;
+          for (const el of this.elements.values()) el.pause();
+          this.onEnded?.();
         }
-        this.rafId = requestAnimationFrame(this.tick);
-      } else {
-        this.playing = false;
-        for (const el of this.elements.values()) el.pause();
-        this.onEnded?.();
+        return;
       }
-      return;
+      this.applyGains(frame);
+      this.onFrame?.(frame);
+    } catch (err) {
+      console.error("BundleAudioClock: tick failed", err);
+    } finally {
+      if (this.playing) this.rafId = requestAnimationFrame(this.tick);
     }
-    this.applyGains(frame);
-    this.onFrame?.(frame);
-    this.rafId = requestAnimationFrame(this.tick);
   };
 
   /** §11.5 — keyframed gain を毎 tick で反映（bundle は previewOverride なし・comp 固定）。 */
@@ -284,6 +307,8 @@ export class BundleAudioClock {
       let v = sampleGain(info.gainProp, frame);
       // §11.5.2 declick: best-effort（volume 粒度）。video/preview と同一の長さ・抑制で乗算。
       if (info.autoFade) {
+        // fix-plan-v3: §11.5.2 標準カット端フェードのみ（素材自身の inPoint/outPoint 端）。
+        // ループ境界を疑似カット端扱いする v2-plus 拡張は撤去（継ぎ目で volume を動かさない）。
         v *= autoFadeMultiplierAtFrame(frame, {
           inPoint: info.inPoint,
           outPoint: info.outPoint,

@@ -1,0 +1,99 @@
+{
+  "assets": [
+    {
+      "id": "01KWV0C46CAPPY5RT4DEESS5SB",
+      "kind": "video",
+      "meta": {
+        "duration": 3,
+        "footageKind": "native",
+        "height": 720,
+        "mime": "video/mp4",
+        "width": 1280
+      },
+      "path": "assets/01KWV0C46CAPPY5RT4DEESS5SB.mp4"
+    }
+  ],
+  "compositions": [
+    {
+      "duration": 150,
+      "fps": 30,
+      "height": 1080,
+      "id": "01KWV0C45N17T1CXWQMDJZK64C",
+      "kind": "timeline",
+      "name": "Main",
+      "objects": [
+        {
+          "components": [
+            {
+              "props": {
+                "asset": "01KWV0C46CAPPY5RT4DEESS5SB",
+                "fit": "contain",
+                "gain": {
+                  "keyframes": [],
+                  "value": 1
+                },
+                "trimStart": 0
+              },
+              "type": "video"
+            }
+          ],
+          "enabled": true,
+          "id": "01KWV0C47QHJ9VKK4RQNVW47F5",
+          "inPoint": 0,
+          "labelIndex": 2,
+          "name": "video-2d",
+          "opacity": {
+            "keyframes": [],
+            "value": 1
+          },
+          "outPoint": 90,
+          "parent": null,
+          "transform": {
+            "anchor": {
+              "keyframes": [],
+              "value": {
+                "x": 0,
+                "y": 0,
+                "z": 0
+              }
+            },
+            "position": {
+              "keyframes": [],
+              "value": {
+                "x": 0,
+                "y": 0,
+                "z": 0
+              }
+            },
+            "rotation": {
+              "keyframes": [],
+              "value": {
+                "x": 0,
+                "y": 0,
+                "z": 0
+              }
+            },
+            "scale": {
+              "keyframes": [],
+              "value": {
+                "x": 1,
+                "y": 1,
+                "z": 1
+              }
+            }
+          },
+          "zOrder": 1
+        }
+      ],
+      "width": 1920
+    }
+  ],
+  "meta": {
+    "createdAt": "2026-07-06T06:03:14.997Z",
+    "name": "Untitled",
+    "updatedAt": "2026-07-06T06:03:14.997Z"
+  },
+  "pluginRefs": [],
+  "rootComposition": "01KWV0C45N17T1CXWQMDJZK64C",
+  "schemaVersion": 1
+}

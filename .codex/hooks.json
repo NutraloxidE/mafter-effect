@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node 'c:\\Workspace\\mafter-effect\\.codex\\hooks\\rebuild-player-if-needed.mjs'"
+          }
+        ]
+      }
+    ]
+  }
+}

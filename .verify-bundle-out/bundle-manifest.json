@@ -1,0 +1,133 @@
+{
+  "compId": "01KX09HH9W68NTVQ472XQVWVTS",
+  "fps": 30,
+  "range": [
+    0,
+    60
+  ],
+  "loop": true,
+  "textRenderMode": "draft",
+  "assetBase": ".",
+  "project": {
+    "schemaVersion": 1,
+    "meta": {
+      "name": "Untitled",
+      "createdAt": "2026-07-08T07:19:41.627Z",
+      "updatedAt": "2026-07-08T07:19:41.627Z"
+    },
+    "assets": [],
+    "compositions": [
+      {
+        "id": "01KX09HH9W68NTVQ472XQVWVTS",
+        "name": "Main",
+        "kind": "timeline",
+        "width": 1920,
+        "height": 1080,
+        "fps": 30,
+        "duration": 150,
+        "objects": [
+          {
+            "id": "01KX09HH9WQ2EMF6V52Z93KH3Z",
+            "name": "BundleSolid",
+            "parent": null,
+            "zOrder": 1,
+            "enabled": true,
+            "inPoint": 0,
+            "outPoint": 150,
+            "transform": {
+              "anchor": {
+                "value": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                },
+                "keyframes": []
+              },
+              "position": {
+                "value": {
+                  "x": 400,
+                  "y": 300,
+                  "z": 0
+                },
+                "keyframes": [
+                  {
+                    "frame": 0,
+                    "value": {
+                      "x": 100,
+                      "y": 300,
+                      "z": 0
+                    },
+                    "easing": {
+                      "type": "linear"
+                    }
+                  },
+                  {
+                    "frame": 60,
+                    "value": {
+                      "x": 1700,
+                      "y": 300,
+                      "z": 0
+                    },
+                    "easing": {
+                      "type": "linear"
+                    }
+                  }
+                ]
+              },
+              "rotation": {
+                "value": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                },
+                "keyframes": []
+              },
+              "scale": {
+                "value": {
+                  "x": 1,
+                  "y": 1,
+                  "z": 1
+                },
+                "keyframes": []
+              }
+            },
+            "opacity": {
+              "value": 1,
+              "keyframes": []
+            },
+            "components": [
+              {
+                "type": "solid",
+                "props": {
+                  "color": {
+                    "value": {
+                      "r": 0.5,
+                      "g": 0.5,
+                      "b": 0.9,
+                      "a": 1
+                    },
+                    "keyframes": []
+                  },
+                  "size": {
+                    "value": {
+                      "x": 400,
+                      "y": 300,
+                      "z": 0
+                    },
+                    "keyframes": []
+                  }
+                }
+              }
+            ],
+            "labelIndex": 0
+          }
+        ]
+      }
+    ],
+    "rootComposition": "01KX09HH9W68NTVQ472XQVWVTS",
+    "pluginRefs": []
+  },
+  "textFiles": {},
+  "blobs": {},
+  "builtinFonts": []
+}

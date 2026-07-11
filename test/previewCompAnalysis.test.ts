@@ -33,7 +33,7 @@ describe("previewCompAnalysis", () => {
     registerBuiltinEffects();
   });
 
-  it("compRequiresPreviewBake is true only for pixelSorter", () => {
+  it("compRequiresPreviewBake is true for raster pixel effects", () => {
     const bakeObj: SceneObject = {
       id: "O1",
       name: "s",
@@ -52,7 +52,13 @@ describe("previewCompAnalysis", () => {
       id: "O2",
       effects: [{ id: "FX2", type: "wave", enabled: true, props: { amplitude: 10 } }],
     };
+    const mosaicObj: SceneObject = {
+      ...bakeObj,
+      id: "O3",
+      effects: [{ id: "FX3", type: "mosaic", enabled: true, props: { blockSize: 16 } }],
+    };
     expect(compRequiresPreviewBake(makeComp([bakeObj]))).toBe(true);
+    expect(compRequiresPreviewBake(makeComp([mosaicObj]))).toBe(true);
     expect(compRequiresPreviewBake(makeComp([waveObj]))).toBe(false);
   });
 
@@ -74,6 +80,10 @@ describe("previewCompAnalysis", () => {
       ...fastObj,
       effects: [{ id: "FX2", type: "wave", enabled: true, props: { amplitude: 10 } }],
     };
+    const mosaicLiteObj: SceneObject = {
+      ...fastObj,
+      effects: [{ id: "FX4", type: "mosaicLite", enabled: true, props: { blockSize: 16 } }],
+    };
     // fast* も "displacement 系" ではある（full+fast）が…
     expect(compHasDisplacementEffect(makeComp([fastObj]))).toBe(true);
     // …full displacement のみ Auto Cache を起動する。
@@ -81,6 +91,9 @@ describe("previewCompAnalysis", () => {
     expect(compHasFullDisplacementEffect(makeComp([waveObj]))).toBe(true);
     expect(compNeedsAutoPreviewCache(makeComp([fastObj]))).toBe(false);
     expect(compNeedsAutoPreviewCache(makeComp([waveObj]))).toBe(true);
+    expect(compHasDisplacementEffect(makeComp([mosaicLiteObj]))).toBe(true);
+    expect(compHasFullDisplacementEffect(makeComp([mosaicLiteObj]))).toBe(false);
+    expect(compNeedsAutoPreviewCache(makeComp([mosaicLiteObj]))).toBe(false);
     const opticsObj: SceneObject = {
       ...fastObj,
       effects: [{ id: "FX3", type: "opticsCompensation", enabled: true, props: { fieldOfView: 50 } }],
@@ -94,6 +107,12 @@ describe("previewCompAnalysis", () => {
     expect(
       effectsAreFastDisplacementOnly(
         [{ type: "fastWave", enabled: true }],
+        false,
+      ),
+    ).toBe(true);
+    expect(
+      effectsAreFastDisplacementOnly(
+        [{ type: "mosaicLite", enabled: true }],
         false,
       ),
     ).toBe(true);

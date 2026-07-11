@@ -199,18 +199,20 @@ function sortHorizontalScanlines(buf: RasterBuffer, params: PixelSortParams, see
   }
 }
 
-function blockAverage(buf: RasterBuffer, blockSize: number): RasterBuffer {
+export function blockAverage(buf: RasterBuffer, blockSize: number): RasterBuffer {
+  const bs = Math.max(1, Math.round(blockSize));
+  if (buf.width === 0 || buf.height === 0 || bs <= 1) return cloneBuffer(buf);
   const { data, width: w, height: h } = buf;
   const out = cloneBuffer(buf);
-  for (let by = 0; by < h; by += blockSize) {
-    for (let bx = 0; bx < w; bx += blockSize) {
+  for (let by = 0; by < h; by += bs) {
+    for (let bx = 0; bx < w; bx += bs) {
       let sr = 0;
       let sg = 0;
       let sb = 0;
       let sa = 0;
       let count = 0;
-      for (let dy = 0; dy < blockSize && by + dy < h; dy++) {
-        for (let dx = 0; dx < blockSize && bx + dx < w; dx++) {
+      for (let dy = 0; dy < bs && by + dy < h; dy++) {
+        for (let dx = 0; dx < bs && bx + dx < w; dx++) {
           const rgba = getPixel(data, w, bx + dx, by + dy);
           sr += rgba[0];
           sg += rgba[1];
@@ -225,8 +227,8 @@ function blockAverage(buf: RasterBuffer, blockSize: number): RasterBuffer {
         Math.round(sb / count),
         Math.round(sa / count),
       ];
-      for (let dy = 0; dy < blockSize && by + dy < h; dy++) {
-        for (let dx = 0; dx < blockSize && bx + dx < w; dx++) {
+      for (let dy = 0; dy < bs && by + dy < h; dy++) {
+        for (let dx = 0; dx < bs && bx + dx < w; dx++) {
           setPixel(out.data, w, bx + dx, by + dy, avg);
         }
       }

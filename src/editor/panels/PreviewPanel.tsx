@@ -51,7 +51,7 @@ import { previewCacheService } from "../previewCacheService";
 import { precompRasterService } from "../precompRasterService";
 import { compNeedsAutoPreviewCache } from "../previewCompAnalysis";
 import { runPreviewFrameClock, runPreviewPlaybackLoop } from "../../runtime/previewPlaybackLoop";
-import { PreviewAudioClock } from "../previewAudioClock";
+import { PreviewAudioClock, hasPreviewAudioCandidates } from "../previewAudioClock";
 import {
   computePlaybackSyncState,
   computePlaybackRateForSync,
@@ -60,7 +60,6 @@ import {
   holdThresholdsForFps,
   initialPlaybackSyncState,
 } from "../../runtime/playbackVideoSync";
-import { hasAudioLayers } from "../../player/BundleAudioClock";
 import { loadAudioBuffer, peekAudioBuffer } from "../audioBufferCache";
 import { loadWorkArea } from "../workAreaStorage";
 import { currentTimelineComp, selectedObjects, useEditorStore } from "../store";
@@ -678,7 +677,11 @@ export function PreviewPanel() {
 
     const startClock = (): void => {
       if (cancelled) return;
-      if (!project || !hasAudioLayers(project, comp)) {
+      // Phase B（doc/issue/static-noise-problem/after-v3-implement-report.md §4）: standalone audio
+      // だけでなく video 内蔵音声「候補」があれば PreviewAudioClock を試す（実際に音声トラックが
+      // あるかは prepareAudioLayers の decode 側で判定・無ければ start() が false を返し rAF へ
+      // フォールバックする）。
+      if (!project || !hasPreviewAudioCandidates(comp)) {
         stop = startRafClock();
         return;
       }
@@ -704,11 +707,20 @@ export function PreviewPanel() {
       });
       void clock.start().then((ok) => {
         if (cancelled) { clock.stop(); return; }
-        if (!ok) fallbackStop = startRafClock();
+        if (ok) {
+          // Phase B: このクロックが音声を抽出済みの video は表示 <video> を持続ミュートし、
+          // ネイティブ A/V 再生（§11.4 playbackMode の unmute）との二重発音を防ぐ。
+          rendererRef.current?.setPreviewRenderOptions({
+            persistentlyMutedVideoIds: clock.getMutedVideoObjectIds(),
+          });
+        } else {
+          fallbackStop = startRafClock();
+        }
       });
       stop = () => {
         clock.stop();
         fallbackStop?.();
+        rendererRef.current?.setPreviewRenderOptions({ persistentlyMutedVideoIds: null });
       };
     };
 
@@ -1080,63 +1092,97 @@ export function PreviewPanel() {
             {timecode}
           </span>
         )}
-        <span style={{ fontSize: 10, color: "#666" }}>F{frame}</span>
+        <span
+          style={{
+            fontSize: 10,
+            color: "#666",
+            fontVariantNumeric: "tabular-nums",
+            display: "inline-block",
+            minWidth: (String(Math.max(0, (comp?.duration ?? 1) - 1)).length + 1) * 6,
+          }}
+        >
+          F{frame}
+        </span>
 
         <span style={{ color: "#444" }}>|</span>
 
-        <button
-          onClick={() => {
-            const next = viewerSettings.previewQuality === "draft" ? "precise" : "draft";
-            patchSettings({ previewQuality: next });
-          }}
-          style={{
-            ...btnStyle,
-            background: viewerSettings.previewQuality === "precise" ? "#2a3a4a" : "#333",
-            fontSize: 10,
-          }}
-          title="§26.4 テキスト品質: 軽量(DOM) / 厳密(SVGアウトライン)"
-        >
-          {viewerSettings.previewQuality === "precise" ? "Best" : "Draft"}
-        </button>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 2 }}>
+          <button
+            onClick={() => {
+              const next = viewerSettings.previewQuality === "draft" ? "precise" : "draft";
+              patchSettings({ previewQuality: next });
+            }}
+            style={{
+              ...btnStyle,
+              background: viewerSettings.previewQuality === "precise" ? "#2a3a4a" : "#333",
+              fontSize: 10,
+              padding: "2px 5px",
+            }}
+            title="§26.4 テキスト品質: 軽量(DOM) / 厳密(SVGアウトライン)"
+          >
+            {viewerSettings.previewQuality === "precise" ? "Best" : "Draft"}
+          </button>
 
-        <select
-          value={viewerSettings.zoomMode === "manual" ? `manual:${viewerSettings.viewZoom}` : viewerSettings.zoomMode}
-          onChange={(e) => {
-            const v = e.target.value;
-            if (v === "fit" || v === "fit100") patchSettings({ zoomMode: v });
-            else {
-              const zoom = Number(v.split(":")[1]);
-              patchSettings({ zoomMode: "manual", viewZoom: zoom });
-            }
-          }}
-          style={{ fontSize: 10, background: "#333", color: "#ccc", border: "1px solid #555", borderRadius: 3 }}
-          title="表示倍率"
-        >
-          {ZOOM_PRESETS.map((p) => (
-            <option
-              key={p.label}
-              value={p.mode === "manual" ? `manual:${p.zoom}` : p.mode}
-            >
-              {p.label}
-            </option>
-          ))}
-          <option value={`manual:${effectiveZoom}`}>{zoomPercent}%</option>
-        </select>
+          <select
+            value={viewerSettings.zoomMode === "manual" ? `manual:${viewerSettings.viewZoom}` : viewerSettings.zoomMode}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v === "fit" || v === "fit100") patchSettings({ zoomMode: v });
+              else {
+                const zoom = Number(v.split(":")[1]);
+                patchSettings({ zoomMode: "manual", viewZoom: zoom });
+              }
+            }}
+            style={{
+              fontSize: 10,
+              background: "#333",
+              color: "#ccc",
+              border: "1px solid #555",
+              borderRadius: 3,
+              width: 48,
+              fontVariantNumeric: "tabular-nums",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+            title="表示倍率"
+          >
+            {ZOOM_PRESETS.map((p) => (
+              <option
+                key={p.label}
+                value={p.mode === "manual" ? `manual:${p.zoom}` : p.mode}
+              >
+                {p.label}
+              </option>
+            ))}
+            <option value={`manual:${effectiveZoom}`}>{zoomPercent}%</option>
+          </select>
 
-        <select
-          value="full"
-          onChange={(e) => {
-            if (e.target.value === "full") patchSettings({ resolutionProxy: "full" });
-          }}
-          style={{ fontSize: 10, background: "#333", color: "#ccc", border: "1px solid #555", borderRadius: 3 }}
-          title="解像度プロキシ — Full のみ有効（Half/Quarter は将来実装予定）"
-        >
-          <option value="full">Full</option>
-          <option value="half" disabled style={{ color: "#666" }}>Half (将来)</option>
-          <option value="quarter" disabled style={{ color: "#666" }}>Quarter (将来)</option>
-        </select>
+          <select
+            value="full"
+            onChange={(e) => {
+              if (e.target.value === "full") patchSettings({ resolutionProxy: "full" });
+            }}
+            style={{
+              fontSize: 10,
+              background: "#333",
+              color: "#ccc",
+              border: "1px solid #555",
+              borderRadius: 3,
+              width: 44,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+            title="解像度プロキシ — Full のみ有効（Half/Quarter は将来実装予定）"
+          >
+            <option value="full">Full</option>
+            <option value="half" disabled style={{ color: "#666" }}>Half (将来)</option>
+            <option value="quarter" disabled style={{ color: "#666" }}>Quarter (将来)</option>
+          </select>
 
-        <OverlayToggles settings={viewerSettings} onChange={patchSettings} />
+          <OverlayToggles settings={viewerSettings} onChange={patchSettings} />
+        </span>
 
         <CacheStatusBadge status={cacheStatus} autoCache={autoCacheSession} />
 
@@ -1344,8 +1390,8 @@ function CacheStatusBadge({ status, autoCache }: { status: PreviewCacheDisplaySt
   }
   if (status.kind === "building") {
     return (
-      <span style={{ fontSize: 10, color: "#cc6" }}>
-        ◐ Caching {Math.round(status.progress * 100)}%
+      <span style={{ fontSize: 10, color: "#cc6", display: "inline-block", minWidth: 96 }}>
+        ◐ Caching <span style={{ fontVariantNumeric: "tabular-nums", display: "inline-block", minWidth: 24 }}>{Math.round(status.progress * 100)}%</span>
       </span>
     );
   }
