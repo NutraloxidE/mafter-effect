@@ -583,7 +583,51 @@ export function fastRippleDisplace(opts: {
   });
 }
 
-/** §27.5 Mosaic Lite — block center snap displacement map（live 近似）。 */
+/** mosaicGridSnapFilter の 1 タイル分ラスタ解像度（block×block・16..256 に clamp）。 */
+export const MOSAIC_TILE_MAX_DIM = 256;
+export const MOSAIC_TILE_MIN_DIM = 16;
+
+/**
+ * §27.5 改定6/7 — Mosaic Lite タイル 1 個分の block-center-snap 変位を RGBA バッファへ焼く。
+ *
+ * 旧実装（`<pattern>` 内で 2×`linearGradient` + `mix-blend-mode:screen` をブラウザに解決させる）
+ * は compositor の per-draw コストが極端に重いことが実測で判明（§6.5 mosaic-lite-phase-a-bench-report.md、
+ * `MainFrame.Draw` 208倍）。gradient の連続ランプを JS 側で事前計算し、`rippleDisplaceMap`/
+ * `opticsCompensationDisplaceMap` と同じ「PNG に焼いて feImage で参照する」方式に統一する。
+ * R = X 変位ランプ、G = Y 変位ランプ（どちらも tile 内で hi→lo の線形ランプ）、B は中立 128。
+ */
+function mosaicTileRgba(block: number, tile: number): Uint8Array {
+  const hi = (1 - 0.5 / block) * 255;
+  const lo = (0.5 / block) * 255;
+  const rgba = new Uint8Array(tile * tile * 4);
+  const rowR = new Uint8Array(tile);
+  for (let tx = 0; tx < tile; tx++) {
+    rowR[tx] = Math.round(hi + (lo - hi) * (tx / tile));
+  }
+  for (let ty = 0; ty < tile; ty++) {
+    const g = Math.round(hi + (lo - hi) * (ty / tile));
+    const rowOffset = ty * tile * 4;
+    for (let tx = 0; tx < tile; tx++) {
+      const o = rowOffset + tx * 4;
+      rgba[o] = rowR[tx]!;
+      rgba[o + 1] = g;
+      rgba[o + 2] = 128;
+      rgba[o + 3] = 255;
+    }
+  }
+  return rgba;
+}
+
+/**
+ * §27.5 Mosaic Lite — block center snap displacement map（live 近似）。
+ *
+ * 改定7（2026-07-12）: displacement map の全域タイリングを **native `feTile` プリミティブ**で行う。
+ * 改定6 では PNG タイルを `feImage`(ネスト SVG 文書内の `<pattern>`) で全域へ敷いていたが、
+ * backdrop-filter 下では Chrome がこのネスト SVG 文書を**毎フレーム再ラスタライズ**しており、
+ * それが `MainFrame.Draw` 残コスト（≈21ms/frame）の実体だった（実測: mosaic-lite-phase-a-bench-report.md §6.7）。
+ * `feImage`(block×block の生 PNG 1 枚) → `feTile`(フィルタグラフ内で全域反復) に変えると
+ * ネスト文書のパース/ラスタが消え、`MainFrame.Draw` はベースライン同等（≈0.6ms/frame・97%減）になる。
+ */
 export function mosaicGridSnapFilter(opts: {
   blockSize: number;
   w: number;
@@ -593,29 +637,15 @@ export function mosaicGridSnapFilter(opts: {
   if (block <= 1) return "";
   const w = Math.max(1, Math.round(opts.w));
   const h = Math.max(1, Math.round(opts.h));
-  const hi = Math.round((1 - 0.5 / block) * 255);
-  const lo = Math.round((0.5 / block) * 255);
-  const mapSvg = [
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">`,
-    `<defs>`,
-    `<linearGradient id="mx" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="${block}" y2="0">`,
-    `<stop offset="0%" stop-color="rgb(${hi},0,0)"/>`,
-    `<stop offset="100%" stop-color="rgb(${lo},0,0)"/>`,
-    `</linearGradient>`,
-    `<linearGradient id="my" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="${block}">`,
-    `<stop offset="0%" stop-color="rgb(0,${hi},0)"/>`,
-    `<stop offset="100%" stop-color="rgb(0,${lo},0)"/>`,
-    `</linearGradient>`,
-    `<pattern id="m" width="${block}" height="${block}" patternUnits="userSpaceOnUse">`,
-    `<rect width="${block}" height="${block}" fill="rgb(0,0,128)"/>`,
-    `<rect width="${block}" height="${block}" fill="url(#mx)" style="mix-blend-mode:screen"/>`,
-    `<rect width="${block}" height="${block}" fill="url(#my)" style="mix-blend-mode:screen"/>`,
-    `</pattern>`,
-    `</defs>`,
-    `<rect width="${w}" height="${h}" fill="url(#m)" shape-rendering="crispEdges"/>`,
-    `</svg>`,
-  ].join("");
-  return `${displaceWithMap(svgDataUri(mapSvg), block, w, h)}<!--mafter:mosaicLite-->`;
+  const tile = Math.min(MOSAIC_TILE_MAX_DIM, Math.max(MOSAIC_TILE_MIN_DIM, block));
+  const tileUri = rgbaToPngDataUri(mosaicTileRgba(block, tile), tile, tile);
+  // feImage は block×block の 1 タイルだけを原点に置き（`feTile` の反復単位になる）、
+  // feTile がフィルタ領域 (0,0,w,h) 全域へ敷き詰める。ネスト SVG `<pattern>` は使わない。
+  const primitives =
+    `<feImage href="${tileUri}" x="0" y="0" width="${block}" height="${block}" preserveAspectRatio="none" result="mtile"/>` +
+    `<feTile in="mtile" x="0" y="0" width="${w}" height="${h}" result="mmap"/>` +
+    `<feDisplacementMap in="SourceGraphic" in2="mmap" scale="${block}" xChannelSelector="R" yChannelSelector="G"/>`;
+  return `${primitives}<!--mafter:mosaicLite-->`;
 }
 
 /** §27.5 Fast Turbulent Displace — feTurbulence 直結（octaves cap 2・G bias）。 */

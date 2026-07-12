@@ -509,20 +509,38 @@ describe("§27.5 Fast distortion (approximate)", () => {
     expect(p).toContain('scale="40"');
   });
 
-  it("mosaicGridSnapFilter emits a tiled displacement map with layer-sized coverage", () => {
+  it("mosaicGridSnapFilter tiles a baked PNG via native feTile (改定7)", () => {
     const p = mosaicGridSnapFilter({ blockSize: 16, w: 320, h: 240 });
-    expect(p).toContain("feImage");
+    // §27.5 改定7: ネスト SVG `<pattern>`（backdrop-filter 下で毎フレーム再ラスタされ compositor を
+    // 律速していた）を捨て、feImage(block×block の生 PNG) + native feTile でフィルタグラフ内タイリング。
+    expect(p).toContain('<feImage href="data:image/png;base64,');
+    expect(p).toContain("feTile");
     expect(p).toContain("feDisplacementMap");
     expect(p).toContain('scale="16"');
-    const encoded = /href="(data:image\/svg\+xml,[^"]+)"/.exec(p)?.[1];
-    expect(encoded).toBeDefined();
-    const svg = decodeURIComponent(encoded!.split(",")[1]!);
-    expect(svg).toContain('width="320" height="240"');
-    expect(svg).toContain('patternUnits="userSpaceOnUse"');
-    expect(svg).toContain('width="16" height="16"');
-    expect(svg).toContain('id="mx"');
-    expect(svg).toContain('id="my"');
-    expect(svg).not.toContain("data:image/png;base64,");
+    // feTile はフィルタ領域全域 (0,0,w,h) を敷き詰める
+    expect(p).toContain('<feTile in="mtile" x="0" y="0" width="320" height="240"');
+    // feImage の 1 タイルは block×block
+    expect(p).toContain('width="16" height="16" preserveAspectRatio="none" result="mtile"');
+    // ネスト SVG 文書・pattern・blend-mode を一切含まない（改定6/旧実装の残骸がない）
+    expect(p).not.toContain("data:image/svg+xml");
+    expect(p).not.toContain("patternUnits");
+    expect(p).not.toContain("mix-blend-mode");
+    // effectRaster.ts が compFixed 判定に使うマーカーは維持
+    expect(p).toContain("mafter:mosaicLite");
+  });
+
+  it("mosaicGridSnapFilter PNG tile is clamped to [16,256] and independent of layer size", () => {
+    const small = mosaicGridSnapFilter({ blockSize: 4, w: 1920, h: 1080 });
+    // blockSize=4 の feImage 表示サイズは 4×4（feTile の反復単位）だが、内部 PNG ラスタは 16px まで底上げ
+    expect(small).toContain('width="4" height="4" preserveAspectRatio="none" result="mtile"');
+    expect(small).toContain('<feTile in="mtile" x="0" y="0" width="1920" height="1080"');
+
+    const large = mosaicGridSnapFilter({ blockSize: 256, w: 3840, h: 2160 });
+    // 大きい layer / block でも PNG は 1 タイル分のみ（layer 全域を PNG 化しない）
+    const pngMatch = /data:image\/png;base64,([A-Za-z0-9+/=]+)/.exec(large);
+    expect(pngMatch).toBeDefined();
+    // 256x256 RGBA を無圧縮 zlib stored で包んだ PNG の概算上限（十分小さい = layer 全域焼きではない証拠）
+    expect(pngMatch![1]!.length).toBeLessThan(400_000);
   });
 
   it("mosaicGridSnapFilter is inert when blockSize <= 1", () => {

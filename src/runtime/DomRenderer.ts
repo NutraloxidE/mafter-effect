@@ -121,6 +121,8 @@ interface ObjectEntry {
   contentRoot: HTMLDivElement;
   childSig: string; // component 型の連結。変化したら子を作り直す
   fxSig: string; // effect 型/順序/有効状態/props。変化したら svg defs を作り直す
+  /** §27.5.1 syncSvgFilters が最後に defs へ書いた primitives の signature（svgRoot 併存確認込みで比較）。一致時は <defs> 再構築をスキップ。 */
+  svgFiltersKey: string | null;
   children: HTMLElement[];
   svgRoot: SVGSVGElement | null;
   rasterCanvas: HTMLCanvasElement | null;
@@ -425,6 +427,7 @@ export class DomRenderer implements Renderer {
           contentRoot: div,
           childSig: "",
           fxSig: "",
+          svgFiltersKey: null,
           children: [],
           svgRoot: null,
           rasterCanvas: null,
@@ -1342,6 +1345,7 @@ export class DomRenderer implements Renderer {
         entry.svgRoot = null;
       }
       entry.fxSig = fxSig;
+      entry.svgFiltersKey = null;
       entry.rasterCompletedKey = null;
       entry.rasterInFlightKey = null;
     }
@@ -1455,16 +1459,22 @@ export class DomRenderer implements Renderer {
     svgFilters: { id: string; primitives: string }[],
   ): void {
     const filterStr = tokens.join(" ");
+    const isAdjustment = obj.isAdjustment === true;
+    const filterTarget = !isAdjustment && entry.hasTrackMatte ? entry.contentRoot : entry.div;
     // §5.4f: トラックマット塗りは mask を host に残し、effect filter は inner（contentRoot）へ。
+    // この style 代入は毎フレーム無条件で実行する — 非トラックマット時は毎フレーム走る
+    // clearMatteSourceStyle（トラックマット離脱後始末）が entry.div.style.filter を "" にリセットするため、
+    // ここをキャッシュでスキップすると filter が消えたまま戻らない（実機で確認済み）。
+    // 代入自体は安いので無条件実行のコストは無視できる。重い再構築（<defs>/feImage 再デコード）
+    // だけを syncSvgFilters 側でキャッシュする。
     entry.div.style.filter = "";
     if (entry.contentRoot !== entry.div) entry.contentRoot.style.filter = "";
-    if (obj.isAdjustment) {
+    if (isAdjustment) {
       entry.div.style.backdropFilter = filterStr;
       (entry.div.style as CSSStyleDeclaration & { webkitBackdropFilter?: string }).webkitBackdropFilter = filterStr;
     } else {
       entry.div.style.backdropFilter = "";
       (entry.div.style as CSSStyleDeclaration & { webkitBackdropFilter?: string }).webkitBackdropFilter = "";
-      const filterTarget = entry.hasTrackMatte ? entry.contentRoot : entry.div;
       filterTarget.style.filter = filterStr;
     }
     this.syncSvgFilters(entry, svgFilters);
@@ -1475,6 +1485,14 @@ export class DomRenderer implements Renderer {
     svgFilters: { id: string; primitives: string }[],
   ): void {
     if (svgFilters.length > 0) {
+      // defs の中身（primitives）は props/width/height のみに依存する純関数の出力。
+      // 前回と完全一致なら再構築しない — feImage 埋め込み SVG を持つ mosaicLite 等は
+      // ブラウザ側の再デコードコストが大きく、毎フレームの無条件再構築は無駄。
+      const svgKey = svgFilters.map((f) => f.id + " " + f.primitives).join("");
+      if (entry.svgRoot && entry.svgFiltersKey === svgKey) {
+        return;
+      }
+      entry.svgFiltersKey = svgKey;
       if (!entry.svgRoot) {
         const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
         svg.setAttribute("aria-hidden", "true");
@@ -1488,9 +1506,12 @@ export class DomRenderer implements Renderer {
       }
       entry.svgRoot.innerHTML = "";
       entry.svgRoot.appendChild(defs);
-    } else if (entry.svgRoot) {
-      entry.svgRoot.remove();
-      entry.svgRoot = null;
+    } else {
+      entry.svgFiltersKey = null;
+      if (entry.svgRoot) {
+        entry.svgRoot.remove();
+        entry.svgRoot = null;
+      }
     }
   }
 
