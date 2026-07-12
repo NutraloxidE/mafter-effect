@@ -111,6 +111,39 @@ const TINT_EFFECT_DEF: EffectDef = {
   },
 };
 
+/** Posterize discrete tableValues: levels equally spaced values in [0,1]. L<2 → clamp to 2. */
+export function posterizeTable(levels: number): string {
+  const L = Math.max(2, Math.round(levels));
+  const values: number[] = [];
+  for (let i = 0; i < L; i++) {
+    values.push(i / (L - 1));
+  }
+  return values.join(" ");
+}
+
+const POSTERIZE_EFFECT_DEF: EffectDef = {
+  type: "posterize",
+  label: "Posterize",
+  category: "カラー補正",
+  previewBakeRequired: false,
+  executionPath: "live",
+  params: [
+    { key: "levels", label: "Levels", kind: "scalar", default: 6, animatable: true, min: 2, max: 32, step: 1 },
+  ],
+  apply(props) {
+    const levels = Math.max(2, Math.round(num(props["levels"], 6)));
+    const t = posterizeTable(levels);
+    const primitives = [
+      `<feComponentTransfer in="SourceGraphic">`,
+      `<feFuncR type="discrete" tableValues="${t}"/>`,
+      `<feFuncG type="discrete" tableValues="${t}"/>`,
+      `<feFuncB type="discrete" tableValues="${t}"/>`,
+      `</feComponentTransfer>`,
+    ].join("");
+    return { kind: "svg", primitives };
+  },
+};
+
 const CHROMASPLIT_EFFECT_DEF: EffectDef = {
   type: "chromaSplit",
   label: "Chroma Split",
@@ -484,6 +517,7 @@ export function registerBuiltinEffects(): void {
   globalPluginRegistry.registerEffect(TINT_EFFECT_DEF);
   globalPluginRegistry.registerEffect(CHROMASPLIT_EFFECT_DEF);
   globalPluginRegistry.registerEffect(GRADIENT_MAP_EFFECT_DEF);
+  globalPluginRegistry.registerEffect(POSTERIZE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(WAVE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(TURBULENT_DISPLACE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(RIPPLE_EFFECT_DEF);
@@ -502,6 +536,7 @@ export {
   TINT_EFFECT_DEF,
   CHROMASPLIT_EFFECT_DEF,
   GRADIENT_MAP_EFFECT_DEF,
+  POSTERIZE_EFFECT_DEF,
   WAVE_EFFECT_DEF,
   TURBULENT_DISPLACE_EFFECT_DEF,
   RIPPLE_EFFECT_DEF,

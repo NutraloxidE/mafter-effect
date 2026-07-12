@@ -1,5 +1,17 @@
 # Progress
 
+### 2026-07-12（Grok）— Acid/Digi Ticket A-1 `posterize`
+
+- **Source**: `doc/cloudplan/acid-digi-hyper-live-effects-plan-Detailed.md` Ticket A-1（WP-A）。§5/INV 変更ゼロ。
+- **実装**:
+  - `src/runtime/builtinEffects.ts`: 純関数 `posterizeTable(levels)` + `POSTERIZE_EFFECT_DEF`（live / カラー補正）。`feComponentTransfer type="discrete"`、levels 2..32（既定 6）。identity なし（常時適用）。
+  - `test/posterize.test.ts` 新規 + `test/effects.test.ts` レジストリ一覧に `posterize`。
+  - spec §27.3 に `posterize` 散文追記。
+- **非変更**: `schema.ts` / DomRenderer / effectChain / displacement 3 Set / exporter。
+- **検証**: PASS `npm test -- posterize effects`（129 tests）; PASS `npm run typecheck`; `npm run build:player` 実行済み。
+- **WP-A 完了**: A-1 posterize / A-2 gradientMap / A-3 chromaSplit すべて実装済み。
+- **Next steps**: WP-B（B-3 hyperGlow → B-2 noiseGrain → B-1 scanlines §2.5）→ C-1 glitchSlice → D spike → E recipes。
+
 ### 2026-07-12（Grok）— Acid/Digi Ticket A-2 `gradientMap` + A-3 `chromaSplit` 整合
 
 - **Source**: `doc/cloudplan/acid-digi-hyper-live-effects-plan-Detailed.md` Ticket A-2 / A-3（WP-A カラー系）。§5/INV 変更ゼロ。

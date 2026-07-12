@@ -2580,6 +2580,18 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 - **経路**: live SVG（`executionPath: "live"`）。非 displacement・region 自動 150%。
 - **非目標**: AE Gradient Map の全プリセット一致。preset 追加はデータのみ。
 
+#### `posterize` — Posterize / 階調量子化
+
+| param key | label | kind | default | range | animatable |
+|---|---|---|---|---|---|
+| `levels` | Levels | scalar | `6` | 2..32, step 1 | ✅ |
+
+- `apply` → `{ kind: "svg", primitives }`（常時適用・identity なし。AE 準拠）。
+- **技法**: `feComponentTransfer` の R/G/B に `type="discrete"` と等間隔 `tableValues`（純関数 `posterizeTable(levels)`: `0, 1/(L-1), …, 1`、`L<2` は `L=2` にクランプ）。アルファは触らない。
+- **カテゴリ**: `"カラー補正"`。
+- **経路**: live SVG（`executionPath: "live"`）。非 displacement・region 自動 150%。
+- **非目標**: AE Posterize の gamma / チャンネル別 levels 一致。
+
 ### §27.4 調整レイヤー（Adjustment Layer・Live / Raster 2 モード・確定 2026-06-20）
 
 **意味（AE 準拠）**: 調整レイヤーは自身の content を描画せず、`effects[]` を**その下（背面・低 zOrder）に重なる全レイヤーの合成結果**に適用する。
