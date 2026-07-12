@@ -2,6 +2,7 @@ import type { RGBA } from "../core/schema";
 import type { EffectDef, EffectRenderCtx, RasterBuffer } from "./plugin";
 import { globalPluginRegistry } from "./pluginRegistry";
 import {
+  chromaSplitFilter,
   displaceWithMap,
   angularWipeMask,
   ditherDissolveMask,
@@ -105,6 +106,27 @@ const TINT_EFFECT_DEF: EffectDef = {
       `<feMergeNode in="tintedAlpha"/>`,
       `</feMerge>`,
     ].join("");
+    return { kind: "svg", primitives };
+  },
+};
+
+const CHROMASPLIT_EFFECT_DEF: EffectDef = {
+  type: "chromaSplit",
+  label: "Chroma Split",
+  category: "スタイライズ",
+  previewBakeRequired: false,
+  executionPath: "live",
+  params: [
+    { key: "amount", label: "Amount", kind: "scalar", default: 4, animatable: true, min: 0, max: 100, step: 0.1 },
+    { key: "angle", label: "Angle", kind: "scalar", default: 0, animatable: true, step: 1 },
+    { key: "mode", label: "Mode", kind: "enum", default: "rgb", animatable: false, options: ["rgb", "rb"] },
+  ],
+  apply(props, _ctx: EffectRenderCtx) {
+    const amount = Math.max(0, num(props["amount"], 4));
+    if (amount === 0) return null;
+    const angle = num(props["angle"], 0);
+    const mode = (props["mode"] as string) ?? "rgb";
+    const primitives = chromaSplitFilter(amount, angle, mode as "rgb" | "rb");
     return { kind: "svg", primitives };
   },
 };
@@ -416,6 +438,7 @@ const PIXEL_SORT_LITE_EFFECT_DEF: EffectDef = {
 export function registerBuiltinEffects(): void {
   globalPluginRegistry.registerEffect(BLUR_EFFECT_DEF);
   globalPluginRegistry.registerEffect(TINT_EFFECT_DEF);
+  globalPluginRegistry.registerEffect(CHROMASPLIT_EFFECT_DEF);
   globalPluginRegistry.registerEffect(WAVE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(TURBULENT_DISPLACE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(RIPPLE_EFFECT_DEF);
@@ -432,6 +455,7 @@ export function registerBuiltinEffects(): void {
 export {
   BLUR_EFFECT_DEF,
   TINT_EFFECT_DEF,
+  CHROMASPLIT_EFFECT_DEF,
   WAVE_EFFECT_DEF,
   TURBULENT_DISPLACE_EFFECT_DEF,
   RIPPLE_EFFECT_DEF,

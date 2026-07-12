@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ANGULAR_WIPE_EFFECT_DEF,
   BLUR_EFFECT_DEF,
+  CHROMASPLIT_EFFECT_DEF,
   DITHER_DISSOLVE_EFFECT_DEF,
   LINEAR_WIPE_EFFECT_DEF,
   MOSAIC_EFFECT_DEF,
@@ -49,13 +50,13 @@ describe("builtinEffects apply (§27.3)", () => {
   it("re-registers after pluginRegistry.clear() (loadPlugins 経路)", () => {
     registerBuiltinEffects();
     expect(globalPluginRegistry.listEffects().map((e) => e.type)).toEqual([
-      "blur", "tint", "wave", "turbulentDisplace", "ripple", "opticsCompensation", "linearWipe", "angularWipe", "ditherDissolve", "pixelSorter", "mosaic", "pixelSortLite",
+      "blur", "tint", "chromaSplit", "wave", "turbulentDisplace", "ripple", "opticsCompensation", "linearWipe", "angularWipe", "ditherDissolve", "pixelSorter", "mosaic", "pixelSortLite",
       "mosaicLite", "fastWave", "fastRipple", "fastTurbulentDisplace",
     ]);
     globalPluginRegistry.clear();
     registerBuiltinEffects();
     expect(globalPluginRegistry.listEffects().map((e) => e.type)).toEqual([
-      "blur", "tint", "wave", "turbulentDisplace", "ripple", "opticsCompensation", "linearWipe", "angularWipe", "ditherDissolve", "pixelSorter", "mosaic", "pixelSortLite",
+      "blur", "tint", "chromaSplit", "wave", "turbulentDisplace", "ripple", "opticsCompensation", "linearWipe", "angularWipe", "ditherDissolve", "pixelSorter", "mosaic", "pixelSortLite",
       "mosaicLite", "fastWave", "fastRipple", "fastTurbulentDisplace",
     ]);
   });
@@ -82,6 +83,40 @@ describe("builtinEffects apply (§27.3)", () => {
       expect(r.primitives).toContain("feColorMatrix");
       expect(r.primitives).toContain('slope="0.5"');
     }
+  });
+
+  it("chromaSplit returns null when amount is 0", () => {
+    expect(CHROMASPLIT_EFFECT_DEF.apply({ amount: 0, angle: 0, mode: "rgb" }, ctx)).toBeNull();
+  });
+
+  it("chromaSplit returns svg primitives with offset calculations (mode=rgb)", () => {
+    const r = CHROMASPLIT_EFFECT_DEF.apply({ amount: 4, angle: 0, mode: "rgb" }, ctx);
+    expect(r?.kind).toBe("svg");
+    if (r?.kind === "svg") {
+      expect(r.primitives).toContain("feComponentTransfer");
+      expect(r.primitives).toContain("feOffset");
+      expect(r.primitives).toContain("feBlend");
+      expect(r.primitives).toContain('mode="screen"');
+      // dx = 4·cos(0°) = 4, dy = 4·sin(0°) = 0
+      expect(r.primitives).toContain('dx="4"');
+      expect(r.primitives).toContain('dy="0"');
+    }
+  });
+
+  it("chromaSplit angle affects offset direction (45 degrees)", () => {
+    const r = CHROMASPLIT_EFFECT_DEF.apply({ amount: 4, angle: 45, mode: "rgb" }, ctx);
+    expect(r?.kind).toBe("svg");
+    if (r?.kind === "svg") {
+      // dx = 4·cos(45°) ≈ 2.828, dy = 4·sin(45°) ≈ 2.828
+      expect(r.primitives).toContain("feOffset");
+      expect(r.primitives).toMatch(/dx="2\.82\d+"/);
+    }
+  });
+
+  it("chromaSplit mode=rb affects offset composition", () => {
+    const a = CHROMASPLIT_EFFECT_DEF.apply({ amount: 4, angle: 0, mode: "rgb" }, ctx);
+    const b = CHROMASPLIT_EFFECT_DEF.apply({ amount: 4, angle: 0, mode: "rb" }, ctx);
+    expect(a?.kind === "svg" && b?.kind === "svg" && a.primitives !== b.primitives).toBe(true);
   });
 
   it("wave returns null when amplitude is 0", () => {

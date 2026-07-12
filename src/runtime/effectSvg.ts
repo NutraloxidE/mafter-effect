@@ -1015,3 +1015,82 @@ export function lightPixelSortFilter(
     `</feMerge>`,
   ].join("");
 }
+
+/**
+ * chromaSplit — RGB Split / Chromatic Aberration（§27.3）
+ * 指定角度方向へ R/B チャンネルをオフセットして色収差風の効果を出す。
+ * mode="rgb": R を +offset、B を -offset、G は固定（AE 標準）
+ * mode="rb": R/B のみ動き、G は SourceGraphic のまま
+ * @returns SVG primitives string
+ */
+export function chromaSplitFilter(
+  amount: number, // px
+  angleDeg: number, // deg
+  mode: "rgb" | "rb",
+): string {
+  if (amount === 0) return "";
+
+  const rad = (angleDeg * Math.PI) / 180;
+  const dx = amount * Math.cos(rad);
+  const dy = amount * Math.sin(rad);
+
+  const primitives: string[] = [];
+
+  if (mode === "rgb") {
+    // R/G/B を個別に抽出
+    // R チャンネル抽出（G/B=0、アルファ=1）
+    primitives.push(`<feComponentTransfer in="SourceGraphic" result="r">`);
+    primitives.push(`<feFuncR type="linear" slope="1"/><feFuncG type="linear" slope="0"/><feFuncB type="linear" slope="0"/><feFuncA type="linear" slope="1"/>`);
+    primitives.push(`</feComponentTransfer>`);
+
+    // G チャンネル抽出（R/B=0、アルファ=1）
+    primitives.push(`<feComponentTransfer in="SourceGraphic" result="g">`);
+    primitives.push(`<feFuncR type="linear" slope="0"/><feFuncG type="linear" slope="1"/><feFuncB type="linear" slope="0"/><feFuncA type="linear" slope="1"/>`);
+    primitives.push(`</feComponentTransfer>`);
+
+    // B チャンネル抽出（R/G=0、アルファ=1）
+    primitives.push(`<feComponentTransfer in="SourceGraphic" result="b">`);
+    primitives.push(`<feFuncR type="linear" slope="0"/><feFuncG type="linear" slope="0"/><feFuncB type="linear" slope="1"/><feFuncA type="linear" slope="1"/>`);
+    primitives.push(`</feComponentTransfer>`);
+
+    // R を +offset
+    primitives.push(`<feOffset in="r" dx="${dx}" dy="${dy}" result="rOff"/>`);
+
+    // B を -offset
+    primitives.push(`<feOffset in="b" dx="${-dx}" dy="${-dy}" result="bOff"/>`);
+
+    // 加算合成（screen mode）で RGB チャンネルを再合成
+    // R offset と G を screen で加算
+    primitives.push(`<feBlend in="rOff" in2="g" mode="screen" result="rg"/>`);
+    // RG と B offset を screen で加算
+    primitives.push(`<feBlend in="rg" in2="bOff" mode="screen" result="rgb"/>`);
+
+    // アルファを SourceGraphic から取る（透明レイヤー縁の色暴れ防止）
+    primitives.push(`<feComposite in="rgb" in2="SourceGraphic" operator="in"/>`);
+  } else {
+    // mode === "rb": G は SourceGraphic から取り、R/B のみオフセット
+    // R チャンネル抽出（アルファ透過）
+    primitives.push(`<feComponentTransfer in="SourceGraphic" result="r">`);
+    primitives.push(`<feFuncR type="linear" slope="1"/><feFuncG type="linear" slope="0"/><feFuncB type="linear" slope="0"/><feFuncA type="linear" slope="1"/>`);
+    primitives.push(`</feComponentTransfer>`);
+
+    // B チャンネル抽出（アルファ透過）
+    primitives.push(`<feComponentTransfer in="SourceGraphic" result="b">`);
+    primitives.push(`<feFuncR type="linear" slope="0"/><feFuncG type="linear" slope="0"/><feFuncB type="linear" slope="1"/><feFuncA type="linear" slope="1"/>`);
+    primitives.push(`</feComponentTransfer>`);
+
+    // オフセット
+    primitives.push(`<feOffset in="r" dx="${dx}" dy="${dy}" result="rOff"/>`);
+    primitives.push(`<feOffset in="b" dx="${-dx}" dy="${-dy}" result="bOff"/>`);
+
+    // R offset と SourceGraphic (G 含む) を screen で加算
+    primitives.push(`<feBlend in="rOff" in2="SourceGraphic" mode="screen" result="rg"/>`);
+    // RG と B offset を screen で加算
+    primitives.push(`<feBlend in="rg" in2="bOff" mode="screen" result="rgb"/>`);
+
+    // アルファを SourceGraphic から取る（screen ブレンドのエッジ色暴れ防止）
+    primitives.push(`<feComposite in="rgb" in2="SourceGraphic" operator="in"/>`);
+  }
+
+  return primitives.join("");
+}

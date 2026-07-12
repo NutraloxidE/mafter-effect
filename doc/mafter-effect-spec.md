@@ -2547,6 +2547,22 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 - **非目標**: 厳密 sort / Sort Blocks / highlights-shadows / `pixelSorter` とのピクセル一致。**AEPS2 100% 一致は非目標**。
 - **既知差**: 引き延ばしベース近似のため [`pixelSorter`](pixelSorter) と見た目・ピクセルは一致しない（許容）。
 
+#### `chromaSplit` — RGB Split / Chromatic Aberration
+
+| param key | label | kind | default | range | animatable |
+|---|---|---|---|---|---|
+| `amount` | Amount | scalar | `4` | 0..100 (px), step 0.1 | ✅ |
+| `angle` | Angle | scalar | `0` | 無制限（度）, step 1 | ✅ |
+| `mode` | Mode | enum | `"rgb"` | `rgb` / `rb`（Green 固定） | ❌ |
+
+- `apply` → `{ kind: "svg", primitives }`（`amount === 0` → `null`）。
+- **技法**: RGB チャンネル分離 → 指定角度方向へオフセット（G は原点固定・R/B を対称 ±amount でシフト）→ `feBlend mode="screen"` で再合成。アルファは SourceGraphic を保持（透明レイヤー縁の色暴れ防止）。
+- **angle と amount**: `angle` の方向ベクトル `(cos(angle°), sin(angle°))` へ `amount` px ぶんオフセット。モード `"rgb"` のとき R=+amount, G=原点, B=−amount（対称）。モード `"rb"` のとき R/B のみ ±amount、G は常に原点固定。
+- **offset 算出**: `dx = amount · cos(angle°)`、`dy = amount · sin(angle°)`。filter region クランプにより offset で矩形外へはみ出す分は欠け（AE 同挙動）。
+- **カテゴリ**: `"スタイライズ"`。
+- **非目標**: AE Lens Distortion との物理的色収差完全一致。**見た目的な RGB separation effect で十分**。
+- **リスク**: 低。全 primitive（`feColorMatrix` / `feOffset` / `feBlend` / `feComposite`）は既存 effect で使用実績あり。
+
 ### §27.4 調整レイヤー（Adjustment Layer・Live / Raster 2 モード・確定 2026-06-20）
 
 **意味（AE 準拠）**: 調整レイヤーは自身の content を描画せず、`effects[]` を**その下（背面・低 zOrder）に重なる全レイヤーの合成結果**に適用する。

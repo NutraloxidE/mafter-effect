@@ -1879,3 +1879,26 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
 - **検証**: `npm run typecheck` 緑。`node -e "require('./package.json')"` で JSON 構文確認。ローカル（Windows）では mac ターゲットの実ビルドは原理的に検証不可 — 次回 GitHub Actions を `workflow_dispatch` で手動実行し `release/*.dmg`/`*.zip` が生成されることを確認する必要あり（未実施）。
 - **対象外（今回やらない）**: コード署名・Notarization（Apple Developer Program 未登録）、カスタム mac アイコン（.icns 未用意、Electron デフォルトのまま）、自動アップデート（electron-updater）。
 - **Next steps**: ユーザーに GitHub Actions ワークフローを一度手動実行してもらい、生成された dmg/zip を実機 Mac で開けるか（Gatekeeper 警告の右クリック回避含め）確認してもらうこと。将来 Apple Developer 証明書を用意する場合は `mac.identity`/`CSC_LINK`/`CSC_KEY_PASSWORD` の配線を追加する。
+
+### 2026-07-12（Claude Haiku 4.5）— chromaSplit effect Phase A-1 実装（acid-digi-hyper-plan §3.1）✅
+
+**Acid/Digi/Hyper live effects plan Phase A-1**: `chromaSplit` (RGB Split / Chromatic Aberration) を実装・完了。
+
+- **実装内容**:
+  - `src/runtime/effectSvg.ts`: `chromaSplitFilter()` 関数追加（SVG primitive 生成・角度/量からオフセット dx/dy 算出・R/G/B チャンネル分離・feOffset + feMerge 再合成）。
+  - `src/runtime/builtinEffects.ts`: `CHROMASPLIT_EFFECT_DEF` 登録・exportに追加。params: `amount`(0..100px, ✅), `angle`(deg, ✅), `mode`(enum "rgb"/"rb", ❌)。
+  - `doc/mafter-effect-spec.md` §27.3: chromaSplit セクション追記済み（`pixelSortLite` の直後）。
+  - `test/effects.test.ts`: chromaSplit のテスト 5 個追加（null/identity、offset計算、angle依存、mode切り替え）。
+- **spec/INV**: §5/INV 変更ゼロ。EffectDef レジストリ登録のみ（既存型の open string type ≠ 型拡張）。
+- **経路**: live SVG filter（executionPath: "live"）。preview/browser export/web bundle 全経路を同じ primitives で通す（INV-2）。LIVE_DISPLACEMENT_EFFECT_TYPES 追加不要（非displacement、tint同様）。
+- **検証**: ✅ `npm run typecheck` / `npm test` 緑（54 tests）。✅ `npm run build:player`（runtime側触るため）。Playwright visual verify は次のステップ（ユーザーが npm run dev → Chromium で効果確認）。
+- **Opus 4.8 レビュー（第1回）**: feMerge vs feBlend 合成モード不一致を指摘。修正実施:
+  - feComponentTransfer 各チャンネル抽出に `feFuncA type="linear" slope="1"` を明示化。
+  - feMerge（source-over 合成）→ **feBlend mode="screen"**（加算合成）に変更。2 段階の chained blend。
+  - test/effects.test.ts: `feMerge` アサーション → `feBlend` + `mode="screen"` に更新。
+  - spec §27.3 との一貫性を確保（§27.3 2559行の `feBlend mode="screen"` 記載に準拠）。
+- **Opus 4.8 レビュー（第2回・修正版）**: `rb` モード側の alpha クリップ漏れを指摘。再修正実施:
+  - `rb` ブランチ末尾に `feComposite in="rgb" in2="SourceGraphic" operator="in"` を追加（screen ブレンドのエッジ色暴れ防止）。
+  - 両モード対称化完了。
+- **最終検証**: ✅ typecheck / test（54 tests）/ build:player すべて成功。commit 可能な状態。
+- **Next steps**: (1) commit (review 通過済み)、(2) Phase A 残り 2 種（posterize / gradientMap）の実装 → Phase B/C 着手。
