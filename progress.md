@@ -38,7 +38,18 @@
 - **実測（同一手法で before/after 比較・実 Chrome + 実マウスドラッグ scrub + CDP screencast/Tracing）**: `MainFrame.Draw` 60.32ms→54.37ms/回（-10%、**支配的コストのまま残存**）。一方 GPU 側は劇的改善: `SwapBuffers` 25.17ms→1.45ms（17倍）、`Present` 24.84ms→0.98ms（25倍）。screencast フレーム排出レート 8.27fps→10.43fps（+26%）、**最大停滞ギャップは600ms超（複数回）→124ms（mosaicLiteなしベースラインの572msより小さい）に大幅縮小**。体感上最も気になる「数百ms単位の完全停止」はほぼ解消されたが、`MainFrame.Draw` 自体はベースライン（0.29ms/回）比でまだ186倍——**部分的な改善であり完全解決ではない**。
 - **検証**: PASS `npm run typecheck`；PASS `npm test`（1077/1077、`test/effectSvg.test.ts` に新規/更新テスト2件追加＋既存 mosaicLite 関連145テスト全PASS）。`npm run build:player` 実行済み・`playerBuildFreshness` 緑。**実機 Playwright 検証**（使い捨て・削除済み）: (1) blockSize=4/16/64 でのテキストレイヤー export-composite 出力を新旧実装で比較 — ink画素数の差は最大1.4%（旧: 14892/16480/8192、新: 14892/16242/8192）、目視でも骨格が一致（b16の視認できる粗いブロック化・b64での大ブロック崩壊とも旧実装と同様）。(2) `forceMosaicLiteExportCapture`（export composite 迂回経路）は3つの blockSize すべてで非空白を確認（回帰なし）。
 - **詳細**: [doc/cloudplan/mosaic-lite-phase-a-bench-report.md](doc/cloudplan/mosaic-lite-phase-a-bench-report.md) §6.6 に実装内容・実測データ・不採用案の詳細を記録。
-- **Next steps**: `MainFrame.Draw` がなぜ54msもかかり続けるのか（`<pattern>` タイリング自体のmain-threadコスト／`backdrop-filter`のフィルタ領域再計算／`feImage`+`feDisplacementMap`組み合わせ自体のChrome内部コスト等）の追加切り分けは未着手・本セッションのスコープ外。ユーザーへ現状（部分改善・完全解決ではない）を報告し、追加投資するかは判断待ち。作業ブランチ `perf/mosaic-lite-lightweight` は未コミットのまま（Phase A + 今回のPNGタイル化どちらもコミット待ち、ユーザーの明示的な指示待ち）。
+- **Next steps**: `MainFrame.Draw` がなぜ54msもかかり続けるのか（`<pattern>` タイリング自体のmain-threadコスト／`backdrop-filter`のフィルタ領域再計算／`feImage`+`feDisplacementMap`組み合わせ自体のChrome内部コスト等）の追加切り分け。→ **下記の改定7で解決**。
+
+### 2026-07-12（Claude Opus 4.8）— mosaicLite 改定7: feImage(ネスト`<pattern>`) → native `feTile` で残る `MainFrame.Draw` 54ms を解消（実質解決）
+
+- **背景**: 改定6（PNGタイル化）後も `MainFrame.Draw` が 54ms/回で残存し「部分改善・完全解決ではない」状態だった。ユーザーの「これ以上最適化できる余地ある？」を受け、憶測せず隔離シーン（動く背景 + backdrop-filter オーバーレイ + rAF 再コンポジット強制）で displacement map 構築を A/B 実測。
+- **原因確定**: 残 54ms の実体は「**backdrop-filter 下で Chrome が `feImage` の参照先（`<pattern>` を含むネスト SVG 文書）を毎フレーム再ラスタライズしていた**」こと。隔離実測で `feImage`(ネスト SVG `<pattern>`) = 21.17ms/frame（30fps に律速）に対し、`feImage`(生 PNG) + native `feTile` = 0.58ms/frame（60fps 完走・ベースライン0.17ms 同等）と 97% 差を確認。
+- **実装**: `mosaicGridSnapFilter()`（[src/runtime/effectSvg.ts](src/runtime/effectSvg.ts)）の primitives を `feImage`(block×block 生 PNG) → `feTile`(x/y/width/height=0,0,w,h で全域反復) → `feDisplacementMap` に変更。ネスト SVG 文書・`<pattern>`・`svgDataUri`/`displaceWithMap` 経由を廃止。`<!--mafter:mosaicLite-->` マーカー（`effectRaster.ts` の compFixed 判定用）は維持。§5/INV/`project.json` 直列化変更なし。spec §27.5.1 に改定7として追記。
+- **実アプリ実ドラッグ scrub 再計測**（Adjustment+mosaicLite blockSize16 + Text・実 Chrome + CDP Tracing）: `MainFrame.Draw` 54.37ms→**0.39ms**、`SwapBuffers` 1.45ms→0.27ms、`Present` 0.98ms→0.18ms、`Graphics.Pipeline` 1.54ms→0.03ms。**全指標がベースライン（mosaicLite なし）同等**になり、mosaicLite の live プレビュー重さは実質解決。
+- **視覚回帰なし**: export-composite ink 数は改定6 と完全一致（blockSize 4/16/64 = 14892/16242/8192）、目視も同一。`forceMosaicLiteExportCapture` 経路も3 blockSize すべて非空白確認。
+- **検証**: PASS `npm run typecheck`；PASS `npm test`（1077/1077。フルスイート1回で `test/projectBins.test.ts` の既存順序依存 flake が1回出たが単体・再実行で常に PASS・本変更と無関係）。`npm run build:player` 実行済み・`playerBuildFreshness` 緑。
+- **詳細**: [doc/cloudplan/mosaic-lite-phase-a-bench-report.md](doc/cloudplan/mosaic-lite-phase-a-bench-report.md) §6.7。
+- **Next steps**: なし（mosaicLite 軽量化は完了）。作業ブランチ `perf/mosaic-lite-lightweight`。改定6 分は既にコミット済み（`45bc92e`）、改定7 分はコミット待ち。
 
 ---
 

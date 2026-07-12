@@ -10,10 +10,11 @@
 > 「PLAN 選択肢B の優先度を下げる」は**動画・音声・precomp を含む重量級コンプ（Comp 10）に
 > 限った結論**であり、シンプルなコンプでの実マウスドラッグ scrub には当てはまらないことが判明した。
 > root-cause pass（CDP Tracing）により **compositor の `MainFrame.Draw` が mosaicLite 有効時に
-> 平均60.32ms/回（無効時0.29ms/回・208倍）**であることを特定し、選択肢B（gradient+blend-mode →
-> 事前計算PNGタイル化）を実装した。**実測結果: GPU側コスト（SwapBuffers/Present）17〜25倍改善・
-> 停滞（最大ギャップ）600ms超→124msに縮小・screencast fps +26%。ただし `MainFrame.Draw` 自体は
-> 10%減にとどまり支配的コストのまま残っている（部分改善・完全解決ではない）**。詳細は §6 を参照。
+> 平均60.32ms/回（無効時0.29ms/回・208倍）**であることを特定し、2段階で最適化した:
+> **改定6** = gradient+blend-mode → 事前計算PNGタイル化（GPU側 SwapBuffers/Present を17〜25倍改善したが
+> `MainFrame.Draw` は54msで残存）。**改定7** = PNGタイルを敷く手段を `feImage`(ネスト SVG `<pattern>`) から
+> native `feTile` に置換 → **`MainFrame.Draw` が 54ms→0.39ms（97%減・ベースライン0.29ms同等）**。
+> mosaicLite の live プレビュー重さは改定7で**実質解決**（視覚回帰なし）。詳細は §6.6/§6.7 を参照。
 
 ---
 
@@ -258,11 +259,44 @@ JS 側の PNG 生成自体が **1073ms**（無圧縮 zlib stored + base64 化）
 たとえ compositor 側が速くなっても UX 上不採用。将来この方向を追うなら Web Worker 化・低解像度
 ダウンサンプル + タイル境界の周期整合という別課題が必要になる（未着手）。
 
-**Next steps（未着手）**: `MainFrame.Draw` がなぜ 54ms もかかり続けるのかの追加切り分け
-（`<pattern>` タイリング自体の main-thread コスト／`backdrop-filter` のフィルタ領域再計算／
-`feImage`+`feDisplacementMap` の組み合わせ自体の Chrome 内部コストなど）は本セッションのスコープ外。
-現状の改善（GPU側17〜25倍・停滞の大幅縮小・fps+26%）を実用上の前進として採用し、残る `MainFrame.Draw`
-コストは既知の限界として記録する。
+### 6.7 追加最適化（同セッション・改定7）— feTile 化で `MainFrame.Draw` の残コストも解消
+
+§6.6 で残った `MainFrame.Draw` 54ms の実体を切り分けるため、隔離シーン（動く gradient 背景 +
+静的オーバーレイに `backdrop-filter: url(#fx)`、rAF で背景を毎フレーム動かして再コンポジットを強制）で
+displacement map 構築を 2 通り比較・実測した:
+
+| 変種 | MainFrame.Draw 平均 | 5秒間の描画フレーム数 |
+|---|---:|---:|
+| A. 改定6（`feImage`(ネスト SVG 文書内 `<pattern>`) + `feDisplacementMap`） | **21.17ms** | 133〜148（≈30fps に律速） |
+| B. `feImage`(block×block 生 PNG 1枚) + native `feTile` + `feDisplacementMap` | **0.58ms** | 302（60fps 完走） |
+| C. ベースライン（フィルタ無し） | 0.17ms | 302 |
+
+→ **B は A 比 97% 減、ほぼベースライン同等**。原因が確定した: `MainFrame.Draw` 54ms の実体は
+**backdrop-filter 下で Chrome が `feImage` の参照先（`<pattern>` を含むネスト SVG 文書）を毎フレーム
+再ラスタライズしていた**こと。ネスト SVG 文書を捨て、SVG フィルタ native の `feTile` プリミティブ
+（フィルタグラフ内で block タイルを全域反復）に変えると、この再ラスタが消える。
+
+**実装（改定7）**: `mosaicGridSnapFilter()` の primitives を
+`feImage`(生 PNG タイル・block×block) → `feTile`(x/y/width/height = 0,0,w,h で全域反復) →
+`feDisplacementMap` に変更。ネスト SVG 文書・`<pattern>`・`svgDataUri`・`displaceWithMap` 経由を廃止。
+`<!--mafter:mosaicLite-->` マーカー（`effectRaster.ts` の `compFixed` 判定に使用）は維持。
+
+**実アプリ実ドラッグ scrub での再計測**（Adjustment+mosaicLite blockSize16 + Text・実 Chrome + CDP Tracing）:
+
+| 指標 | 改定5(gradient) | 改定6(PNG+pattern) | **改定7(feTile)** | ベースライン(no mosaic) |
+|---|---:|---:|---:|---:|
+| `MainFrame.Draw` 平均 | 60.32ms | 54.37ms | **0.39ms** | 0.29ms |
+| `SwapBuffers` 平均 | 25.17ms | 1.45ms | **0.27ms** | — |
+| `Present` 平均 | 24.84ms | 0.98ms | **0.18ms** | — |
+| `Graphics.Pipeline` 平均 | 2.02ms | 1.54ms | **0.03ms** | 0.03ms |
+
+**視覚回帰なし**: export-composite の ink 画素数は改定6 と完全一致（blockSize 4/16/64 = 14892/16242/8192）、
+目視でも同一。`forceMosaicLiteExportCapture` 経路も 3 つの blockSize すべてで非空白を確認。
+
+**結論**: mosaicLite の live プレビュー重さ（本レポートの主題）は改定7で**実質解決**した
+（`MainFrame.Draw` がベースライン同等になった）。§6.5 で「compositor 主描画が支配的で下げ切れないかも」と
+書いた懸念は、`feImage`(ネスト文書) → `feTile` の 1 点で解消できた。§7.5 で不採用にした「全域フラット PNG」
+案（1秒級の生成停止・11MB data URI）も、feTile なら**そもそも全域 PNG を作る必要がない**ため不要。
 
 ---
 

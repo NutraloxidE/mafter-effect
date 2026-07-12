@@ -232,7 +232,9 @@ describe("builtinEffects apply (§27.3)", () => {
     if (r?.kind === "svg") {
       expect(r.primitives).toContain("feDisplacementMap");
       expect(r.primitives).toContain("feImage");
-      expect(r.primitives).toContain("data:image/svg+xml");
+      // 改定7: feImage は生 PNG タイル + native feTile（ネスト SVG 文書は使わない）
+      expect(r.primitives).toContain("data:image/png;base64,");
+      expect(r.primitives).toContain("feTile");
       expect(r.primitives).toContain('scale="16"');
     }
   });

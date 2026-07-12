@@ -588,7 +588,7 @@ export const MOSAIC_TILE_MAX_DIM = 256;
 export const MOSAIC_TILE_MIN_DIM = 16;
 
 /**
- * §27.5 改定6 — Mosaic Lite タイル 1 個分の block-center-snap 変位を RGBA バッファへ焼く。
+ * §27.5 改定6/7 — Mosaic Lite タイル 1 個分の block-center-snap 変位を RGBA バッファへ焼く。
  *
  * 旧実装（`<pattern>` 内で 2×`linearGradient` + `mix-blend-mode:screen` をブラウザに解決させる）
  * は compositor の per-draw コストが極端に重いことが実測で判明（§6.5 mosaic-lite-phase-a-bench-report.md、
@@ -618,7 +618,16 @@ function mosaicTileRgba(block: number, tile: number): Uint8Array {
   return rgba;
 }
 
-/** §27.5 Mosaic Lite — block center snap displacement map（live 近似）。 */
+/**
+ * §27.5 Mosaic Lite — block center snap displacement map（live 近似）。
+ *
+ * 改定7（2026-07-12）: displacement map の全域タイリングを **native `feTile` プリミティブ**で行う。
+ * 改定6 では PNG タイルを `feImage`(ネスト SVG 文書内の `<pattern>`) で全域へ敷いていたが、
+ * backdrop-filter 下では Chrome がこのネスト SVG 文書を**毎フレーム再ラスタライズ**しており、
+ * それが `MainFrame.Draw` 残コスト（≈21ms/frame）の実体だった（実測: mosaic-lite-phase-a-bench-report.md §6.7）。
+ * `feImage`(block×block の生 PNG 1 枚) → `feTile`(フィルタグラフ内で全域反復) に変えると
+ * ネスト文書のパース/ラスタが消え、`MainFrame.Draw` はベースライン同等（≈0.6ms/frame・97%減）になる。
+ */
 export function mosaicGridSnapFilter(opts: {
   blockSize: number;
   w: number;
@@ -630,17 +639,13 @@ export function mosaicGridSnapFilter(opts: {
   const h = Math.max(1, Math.round(opts.h));
   const tile = Math.min(MOSAIC_TILE_MAX_DIM, Math.max(MOSAIC_TILE_MIN_DIM, block));
   const tileUri = rgbaToPngDataUri(mosaicTileRgba(block, tile), tile, tile);
-  const mapSvg = [
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">`,
-    `<defs>`,
-    `<pattern id="m" width="${block}" height="${block}" patternUnits="userSpaceOnUse">`,
-    `<image href="${tileUri}" x="0" y="0" width="${block}" height="${block}" preserveAspectRatio="none"/>`,
-    `</pattern>`,
-    `</defs>`,
-    `<rect width="${w}" height="${h}" fill="url(#m)" shape-rendering="crispEdges"/>`,
-    `</svg>`,
-  ].join("");
-  return `${displaceWithMap(svgDataUri(mapSvg), block, w, h)}<!--mafter:mosaicLite-->`;
+  // feImage は block×block の 1 タイルだけを原点に置き（`feTile` の反復単位になる）、
+  // feTile がフィルタ領域 (0,0,w,h) 全域へ敷き詰める。ネスト SVG `<pattern>` は使わない。
+  const primitives =
+    `<feImage href="${tileUri}" x="0" y="0" width="${block}" height="${block}" preserveAspectRatio="none" result="mtile"/>` +
+    `<feTile in="mtile" x="0" y="0" width="${w}" height="${h}" result="mmap"/>` +
+    `<feDisplacementMap in="SourceGraphic" in2="mmap" scale="${block}" xChannelSelector="R" yChannelSelector="G"/>`;
+  return `${primitives}<!--mafter:mosaicLite-->`;
 }
 
 /** §27.5 Fast Turbulent Displace — feTurbulence 直結（octaves cap 2・G bias）。 */
