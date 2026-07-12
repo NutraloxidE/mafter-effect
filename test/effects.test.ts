@@ -51,14 +51,14 @@ describe("builtinEffects apply (§27.3)", () => {
   it("re-registers after pluginRegistry.clear() (loadPlugins 経路)", () => {
     registerBuiltinEffects();
     expect(globalPluginRegistry.listEffects().map((e) => e.type)).toEqual([
-      "blur", "tint", "chromaSplit", "gradientMap", "posterize", "noiseGrain", "hyperGlow", "wave", "turbulentDisplace", "ripple", "opticsCompensation", "linearWipe", "angularWipe", "ditherDissolve", "pixelSorter", "mosaic", "pixelSortLite",
-      "mosaicLite", "fastWave", "fastRipple", "fastTurbulentDisplace",
+      "blur", "tint", "chromaSplit", "gradientMap", "posterize", "noiseGrain", "hyperGlow", "scanlines", "wave", "turbulentDisplace", "ripple", "opticsCompensation", "linearWipe", "angularWipe", "ditherDissolve", "pixelSorter", "mosaic", "pixelSortLite",
+      "mosaicLite", "fastWave", "fastRipple", "fastTurbulentDisplace", "glitchSlice",
     ]);
     globalPluginRegistry.clear();
     registerBuiltinEffects();
     expect(globalPluginRegistry.listEffects().map((e) => e.type)).toEqual([
-      "blur", "tint", "chromaSplit", "gradientMap", "posterize", "noiseGrain", "hyperGlow", "wave", "turbulentDisplace", "ripple", "opticsCompensation", "linearWipe", "angularWipe", "ditherDissolve", "pixelSorter", "mosaic", "pixelSortLite",
-      "mosaicLite", "fastWave", "fastRipple", "fastTurbulentDisplace",
+      "blur", "tint", "chromaSplit", "gradientMap", "posterize", "noiseGrain", "hyperGlow", "scanlines", "wave", "turbulentDisplace", "ripple", "opticsCompensation", "linearWipe", "angularWipe", "ditherDissolve", "pixelSorter", "mosaic", "pixelSortLite",
+      "mosaicLite", "fastWave", "fastRipple", "fastTurbulentDisplace", "glitchSlice",
     ]);
   });
 

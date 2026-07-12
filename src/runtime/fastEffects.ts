@@ -1,9 +1,11 @@
 import type { EffectDef, EffectRenderCtx } from "./plugin";
 import { globalPluginRegistry } from "./pluginRegistry";
 import {
+  displaceWithMap,
   fastRippleDisplace,
   fastTurbulentDisplace,
   fastWaveDisplace,
+  glitchSliceDisplaceMapPng,
   mosaicGridSnapFilter,
 } from "./effectSvg";
 
@@ -152,11 +154,47 @@ const FAST_TURBULENT_DISPLACE_EFFECT_DEF: EffectDef = {
   },
 };
 
+const GLITCH_SLICE_EFFECT_DEF: EffectDef = {
+  type: "glitchSlice",
+  label: "Glitch Slice",
+  category: "ディストーション（軽量）",
+  previewBakeRequired: false,
+  executionPath: "live",
+  params: [
+    { key: "intensity", label: "Intensity", kind: "scalar", default: 0.5, animatable: true, min: 0, max: 1, step: 0.01 },
+    { key: "maxShift", label: "Max Shift", kind: "scalar", default: 60, animatable: true, min: 0, max: 500, step: 1 },
+    { key: "sliceHeight", label: "Slice Height", kind: "scalar", default: 24, animatable: true, min: 2, max: 256, step: 1 },
+    { key: "evolution", label: "Evolution", kind: "scalar", default: 0, animatable: true, step: 1 },
+    { key: "seed", label: "Seed", kind: "scalar", default: 0, animatable: false, min: 0, max: 9999, step: 1 },
+  ],
+  apply(props, ctx: EffectRenderCtx) {
+    const intensity = Math.min(1, Math.max(0, num(props["intensity"], 0.5)));
+    const maxShift = Math.max(0, num(props["maxShift"], 60));
+    if (intensity === 0 || maxShift === 0) return null;
+    const w = Math.max(1, ctx.width);
+    const h = Math.max(1, ctx.height);
+    const sliceHeight = Math.max(2, Math.round(num(props["sliceHeight"], 24)));
+    const evolution = num(props["evolution"], 0);
+    const seed = Math.max(0, Math.floor(num(props["seed"], 0)));
+    const { uri, scale } = glitchSliceDisplaceMapPng({
+      w,
+      h,
+      sliceHeight,
+      maxShift,
+      density: intensity,
+      seed,
+      evolution,
+    });
+    return { kind: "svg", primitives: displaceWithMap(uri, scale, w, h) };
+  },
+};
+
 export function registerFastEffects(): void {
   globalPluginRegistry.registerEffect(MOSAIC_LITE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(FAST_WAVE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(FAST_RIPPLE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(FAST_TURBULENT_DISPLACE_EFFECT_DEF);
+  globalPluginRegistry.registerEffect(GLITCH_SLICE_EFFECT_DEF);
 }
 
 export {
@@ -164,4 +202,5 @@ export {
   FAST_WAVE_EFFECT_DEF,
   FAST_RIPPLE_EFFECT_DEF,
   FAST_TURBULENT_DISPLACE_EFFECT_DEF,
+  GLITCH_SLICE_EFFECT_DEF,
 };

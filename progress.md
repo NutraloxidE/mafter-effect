@@ -1,5 +1,26 @@
 # Progress
 
+### 2026-07-13（Claude Sonnet 5）— Acid/Digi Ticket B-1 `scanlines` + C-1 `glitchSlice`
+
+- **Source**: `doc/cloudplan/acid-digi-hyper-live-effects-plan-Detailed.md` Ticket B-1（WP-B）/ C-1（WP-C）。§5/INV 変更ゼロ。
+- **B-1 `scanlines`（新規・§2.5 生 PNG + `feTile`）**:
+  - `src/runtime/effectSvg.ts`: 純関数 `scanlineTilePng(lineHeight, duty, opacity, direction)` — 1 タイル分の明暗バンドを生 PNG に焼く（horizontal は `1×lineHeight`、vertical は転置）。`<pattern>` は使わない（§2.5 の教訓どおり）。
+  - `src/runtime/builtinEffects.ts`: `SCANLINES_EFFECT_DEF`（live / スタイライズ）。`feImage`(生 PNG) → native `feTile` → `feBlend mode="multiply"` → `feComposite operator="in"`。`phase` はタイル周期を法にロールオフセット。`opacity===0` → null。
+  - `test/scanlines.test.ts` 新規（tile 寸法・決定論・`feTile`/`<pattern>` 非含有の §2.5 回帰）。
+- **C-1 `glitchSlice`（新規・§2.2 4 配線点 + §2.5 生 PNG マップ）**:
+  - `src/runtime/effectSvg.ts`: `glitchSliceDisplaceMapPng()` — レイヤー実寸 `w×h` の変位マップを 1 枚の生 PNG に焼く（スライスごとに値が違うため `feTile` は不使用）。`seededRandom((seed·1000003 + k·97 + phaseToSeed(evolution))>>>0)` で INV-1 決定論。`DISPLACEMENT_EFFECT_TYPES` / `FAST_DISPLACEMENT_EFFECT_TYPES` / `LIVE_DISPLACEMENT_EFFECT_TYPES`（`effectSvg.ts`）すべてに `"glitchSlice"` を追加。
+  - `src/runtime/effectChain.ts`: scale 分岐に `glitchSlice → maxShift` を追加（`fxMaxDisplaceScale` へ反映）。
+  - `src/runtime/fastEffects.ts`: `GLITCH_SLICE_EFFECT_DEF`（live / ディストーション（軽量））を新規登録。map smoothing は掛けない（グリッチは離散が正）。`intensity===0 || maxShift===0` → null。
+  - `test/glitchSlice.test.ts` 新規（map 決定論・生 PNG 判定・3 Set すべてに `glitchSlice` が入っている配線漏れ回帰・`intensity`/`maxShift` 恒等）。
+  - `test/effects.test.ts` レジストリ一覧に `scanlines` / `glitchSlice` を追加。
+  - spec §27.3 に `scanlines`（Ticket B-1）/ `glitchSlice`（Ticket C-1、fastTurbulentDisplace の直後）散文追記。
+- **非変更**: `schema.ts` / `DomRenderer.ts` / `exporter.ts` / raster pipeline。`effectChain.ts` は scale 分岐 1 か所のみの追記。
+- **検証**: PASS `npm run typecheck`; PASS `npm test`（1131 tests）; `npm run build:player` 実行済み・`public/player.js` 更新（`playerBuildFreshness` PASS）。
+- **未実施（human 受け入れ・票の完了条件から自動宣言除外）**:
+  - `scanlines`: 実 Chrome + CDP Tracing で `MainFrame.Draw` がエフェクト無しベースライン同等であることの実測。
+  - `glitchSlice`: ① preview/export の 1 フレーム画素一致（INV-2）、② amount 大での重心ドリフトが raster 版と小数2桁一致、③ 同上の重さ実測。
+- **Next steps**: `pixelStretch`（D-1）/ `liquidChrome`（D-2）は feasibility spike が先（委任不可・Claude+human・headed browser 実ピクセル判定）。spike 完了後に票化してから実装。WP-E（プリセットレシピ散文）は残作業として着手可（コード変更ゼロ）。上記 human 受け入れ項目（scanlines/glitchSlice の重さ・INV-2）はユーザー/実機での確認待ち。
+
 ### 2026-07-12（Claude Sonnet 5）— Acid/Digi Ticket B-2 `noiseGrain` + B-3 `hyperGlow`
 
 - **Source**: `doc/cloudplan/acid-digi-hyper-live-effects-plan-Detailed.md` Ticket B-2 / B-3（WP-B、非 displacement）。§5/INV 変更ゼロ。

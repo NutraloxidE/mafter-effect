@@ -79,7 +79,9 @@ export function resolveEffectChain(
               typeof p["centerX"] === "number" ? p["centerX"] : 0.5,
               typeof p["centerY"] === "number" ? p["centerY"] : 0.5,
             )
-          : Math.max(0, typeof p["amount"] === "number" ? p["amount"] : 0);
+          : effect.type === "glitchSlice"
+            ? Math.max(0, typeof p["maxShift"] === "number" ? p["maxShift"] : 0)
+            : Math.max(0, typeof p["amount"] === "number" ? p["amount"] : 0);
     fxMaxDisplaceScale = Math.max(fxMaxDisplaceScale, scale);
   }
 

@@ -2448,6 +2448,24 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 - preview/bundle 直適用 path の受け入れ条件: amount 5/20/50/100 スイープで ink centroid delta **≤ 2px**（comp 座標）。
 - `amount === 0` は `null`。
 
+##### `glitchSlice` — Glitch Slice（§2.2 4 配線点 + §2.5 生 PNG マップ）
+
+| param key | label | kind | default | range | animatable |
+|---|---|---|---|---|---|
+| `intensity` | Intensity | scalar | `0.5` | 0..1, step 0.01（= slice ごとの jump 発生密度） | ✅ |
+| `maxShift` | Max Shift | scalar | `60` | 0..500 (px), step 1 | ✅ |
+| `sliceHeight` | Slice Height | scalar | `24` | 2..256 (px), step 1 | ✅ |
+| `evolution` | Evolution | scalar | `0` | 無制限（度）, step 1 | ✅ |
+| `seed` | Seed | scalar | `0` | 0..9999, step 1 | ❌ |
+
+- `apply` → `{ kind: "svg", primitives }`（`intensity === 0` または `maxShift === 0` → `null`）。
+- **技法（§2.5・SVG `<rect>` マップは使わない）**: `glitchSliceDisplaceMapPng()` がレイヤー実寸 `w×h` の変位マップを**生 PNG に焼く**（スライスごとに値が異なりタイル化不可のため `feTile` は使わない・1 枚を `feImage` に渡す）。スライス `y∈[k·sliceHeight,(k+1)·sliceHeight)` ごとに `seededRandom((seed·1000003 + k·97 + phaseToSeed(evolution)) >>> 0)` から jump 判定（`< intensity`）と変位量（R チャンネル `0.5 + shift/2`、未変位帯は R=0.5）を決定。G は中立 0.5 固定（水平スライスのため Y 変位なし）。`displaceWithMap(uri, maxShift, w, h)` で `feDisplacementMap` に接続。
+- **§2.2 の 4 配線点（すべて対応済み）**: `effectSvg.ts` の `DISPLACEMENT_EFFECT_TYPES` / `FAST_DISPLACEMENT_EFFECT_TYPES` / `LIVE_DISPLACEMENT_EFFECT_TYPES` に `"glitchSlice"` 追加済み（region クランプ + Draft Preview Fast Path + live 判定）、`effectChain.ts` の scale 分岐に `glitchSlice` → `maxShift` 追加済み（`fxMaxDisplaceScale` へ反映）。
+- **カテゴリ**: `"ディストーション（軽量）"`（`fastEffects.ts` に登録）。
+- **経路**: live SVG（`executionPath: "live"`）。map smoothing（`fastSmoothPx`）は**掛けない**（グリッチは離散が正）。`chromaOffset` 連結は初版で未実装。
+- **human 受け入れ**: ① preview/export の 1 フレーム画素一致（INV-2）、② amount 大での重心ドリフトが raster 版と小数2桁一致、③ §2.5 の重さ（実 Chrome + CDP Tracing で `MainFrame.Draw` がベースライン同等）— いずれも本セッション未実施（票の完了条件から自動宣言は除外）。
+- **非目標**: raster 版の並行提供。真のピクセル並び替え（引き延ばし/オフセット近似のみ）。
+
 #### `linearWipe` — Linear Wipe
 
 | param key | label | kind | default | range | animatable |
@@ -2626,6 +2644,24 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 - **カテゴリ**: `"スタイライズ"`。
 - **経路**: live SVG（`executionPath: "live"`）。
 - **非目標**: 2 層ハロー（コア+外側ハロー分離）は初版で省略。AE Glow の全モード（Add/Screen/Composite 選択等）一致。
+
+#### `scanlines` — Scanlines / CRT 走査線（§2.5: 生 PNG タイル + `feTile`）
+
+| param key | label | kind | default | range | animatable |
+|---|---|---|---|---|---|
+| `lineHeight` | Line Height | scalar | `3` | 1..64 (px), step 1 | ✅ |
+| `duty` | Duty | scalar | `0.5` | 0.05..0.95, step 0.01 | ✅ |
+| `opacity` | Opacity | scalar | `0.35` | 0..1, step 0.01 | ✅ |
+| `direction` | Direction | enum | `"horizontal"` | `horizontal` / `vertical` | ❌ |
+| `phase` | Phase | scalar | `0` | 0..360, step 1 | ✅ |
+
+- `apply` → `{ kind: "svg", primitives }`（`opacity === 0` → `null`）。
+- **技法（§2.5・`<pattern>` は使わない）**: 1 タイル分の明暗バンドを `scanlineTilePng()` で**生 PNG に焼き**（horizontal は `1×lineHeight`、vertical はその転置）、`feImage`(生 PNG) → native `feTile` でフィルタグラフ内でネイティブに全域反復 → `feBlend mode="multiply"` で暗バンドを乗算 → `feComposite operator="in"` でソースアルファへクリップ。`phase` はタイル周期 `lineHeight` を法にロール方向（horizontal は y、vertical は x）へオフセット。
+- **既知の罠（implement-visual-effect §7c）**: `<pattern>`/`<linearGradient>` 等を含むネスト SVG 文書を `feImage` に渡すと `backdrop-filter` 下で毎フレーム再ラスタライズされ致命的に重い（mosaicLite 実測 ~200 倍）。生 PNG を渡す `feImage` はこの罠に該当しない。
+- **カテゴリ**: `"スタイライズ"`。
+- **経路**: live SVG（`executionPath: "live"`）。非 displacement・region 自動 150%。
+- **human 受け入れ**: 実 Chrome + CDP Tracing で `MainFrame.Draw` がエフェクト無しベースライン同等であることの確認は本セッション未実施（票の完了条件から Codex/Claude 自動宣言は除外）。
+- **非目標**: 走査線の彩度分離（NTSC/PAL 色収差）・インターレース疑似。
 
 ### §27.4 調整レイヤー（Adjustment Layer・Live / Raster 2 モード・確定 2026-06-20）
 

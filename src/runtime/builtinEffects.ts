@@ -14,6 +14,7 @@ import {
   opticsCompensationDisplaceMap,
   phaseToSeed,
   rippleDisplaceMap,
+  scanlineTilePng,
   sizeToFrequency,
   turbulenceDisplace,
   waveDisplaceMapSvg,
@@ -287,6 +288,43 @@ const HYPER_GLOW_EFFECT_DEF: EffectDef = {
         ? ``
         : `<feColorMatrix in="glow" type="matrix" values="${tint.r} 0 0 0 0  0 ${tint.g} 0 0 0  0 0 ${tint.b} 0 0  0 0 0 1 0" result="glow"/>`,
       `<feBlend in="SourceGraphic" in2="glow" mode="screen"/>`,
+    ].join("");
+    return { kind: "svg", primitives };
+  },
+};
+
+const SCANLINES_EFFECT_DEF: EffectDef = {
+  type: "scanlines",
+  label: "Scanlines",
+  category: "スタイライズ",
+  previewBakeRequired: false,
+  executionPath: "live",
+  params: [
+    { key: "lineHeight", label: "Line Height", kind: "scalar", default: 3, animatable: true, min: 1, max: 64, step: 1 },
+    { key: "duty", label: "Duty", kind: "scalar", default: 0.5, animatable: true, min: 0.05, max: 0.95, step: 0.01 },
+    { key: "opacity", label: "Opacity", kind: "scalar", default: 0.35, animatable: true, min: 0, max: 1, step: 0.01 },
+    { key: "direction", label: "Direction", kind: "enum", default: "horizontal", animatable: false, options: ["horizontal", "vertical"] },
+    { key: "phase", label: "Phase", kind: "scalar", default: 0, animatable: true, min: 0, max: 360, step: 1 },
+  ],
+  apply(props, ctx: EffectRenderCtx) {
+    const opacity = Math.min(1, Math.max(0, num(props["opacity"], 0.35)));
+    if (opacity === 0) return null;
+    const lineHeight = Math.min(64, Math.max(1, Math.round(num(props["lineHeight"], 3))));
+    const duty = Math.min(0.95, Math.max(0.05, num(props["duty"], 0.5)));
+    const direction = str(props["direction"], "horizontal") === "vertical" ? "vertical" : "horizontal";
+    const phase = num(props["phase"], 0);
+    const w = Math.max(1, ctx.width);
+    const h = Math.max(1, ctx.height);
+    const { uri, w: tw, h: th } = scanlineTilePng(lineHeight, duty, opacity, direction);
+    const period = lineHeight;
+    const phaseOffset = (((phase / 360) * period) % period + period) % period;
+    const offX = direction === "vertical" ? -phaseOffset : 0;
+    const offY = direction === "horizontal" ? -phaseOffset : 0;
+    const primitives = [
+      `<feImage href="${uri}" x="${offX}" y="${offY}" width="${tw}" height="${th}" preserveAspectRatio="none" result="tile"/>`,
+      `<feTile in="tile" x="0" y="0" width="${w}" height="${h}" result="lines"/>`,
+      `<feBlend in="SourceGraphic" in2="lines" mode="multiply" result="mult"/>`,
+      `<feComposite in="mult" in2="SourceGraphic" operator="in"/>`,
     ].join("");
     return { kind: "svg", primitives };
   },
@@ -604,6 +642,7 @@ export function registerBuiltinEffects(): void {
   globalPluginRegistry.registerEffect(POSTERIZE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(NOISE_GRAIN_EFFECT_DEF);
   globalPluginRegistry.registerEffect(HYPER_GLOW_EFFECT_DEF);
+  globalPluginRegistry.registerEffect(SCANLINES_EFFECT_DEF);
   globalPluginRegistry.registerEffect(WAVE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(TURBULENT_DISPLACE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(RIPPLE_EFFECT_DEF);
@@ -625,6 +664,7 @@ export {
   POSTERIZE_EFFECT_DEF,
   NOISE_GRAIN_EFFECT_DEF,
   HYPER_GLOW_EFFECT_DEF,
+  SCANLINES_EFFECT_DEF,
   WAVE_EFFECT_DEF,
   TURBULENT_DISPLACE_EFFECT_DEF,
   RIPPLE_EFFECT_DEF,

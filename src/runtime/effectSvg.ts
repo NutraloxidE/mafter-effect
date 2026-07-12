@@ -25,6 +25,92 @@ export function displacementPadFromScale(scale: number): number {
   return Math.ceil(Math.max(0, scale) * 0.5) + 2;
 }
 
+/**
+ * §27.3 Scanlines — 1 タイル分の明暗バンドを RGBA バッファへ焼く（§2.5: 生 PNG + native feTile）。
+ *
+ * `<pattern>` を `feImage` に渡すネスト SVG 文書構成は毎フレーム再ラスタライズされ致命的に重い
+ * （implement-visual-effect §7c 実測）。ここでは 1 本の帯だけを生 PNG に焼き、呼び出し側で
+ * `feTile` によりフィルタグラフ内でネイティブに全域反復する。
+ * horizontal は縦方向（Y）に周期を持つため tile は 1×lineHeight、vertical はその転置。
+ */
+export function scanlineTilePng(
+  lineHeight: number,
+  duty: number,
+  opacity: number,
+  direction: "horizontal" | "vertical",
+): { uri: string; w: number; h: number } {
+  const lh = Math.max(1, Math.round(lineHeight));
+  const d = Math.min(0.95, Math.max(0.05, duty));
+  const op = Math.min(1, Math.max(0, opacity));
+  const darkLen = Math.min(lh, Math.max(0, Math.round(lh * d)));
+  const darkGray = Math.round(255 * (1 - op));
+  const horizontal = direction !== "vertical";
+  const tw = horizontal ? 1 : lh;
+  const th = horizontal ? lh : 1;
+  const rgba = new Uint8Array(tw * th * 4);
+  for (let y = 0; y < th; y++) {
+    for (let x = 0; x < tw; x++) {
+      const bandIdx = horizontal ? y : x;
+      const gray = bandIdx < darkLen ? darkGray : 255;
+      const o = (y * tw + x) * 4;
+      rgba[o] = gray;
+      rgba[o + 1] = gray;
+      rgba[o + 2] = gray;
+      rgba[o + 3] = 255;
+    }
+  }
+  return { uri: rgbaToPngDataUri(rgba, tw, th), w: tw, h: th };
+}
+
+/**
+ * §27.3 Glitch Slice — 水平スライスの変位マップを生 PNG に焼く（§2.2/§2.5）。
+ *
+ * スライスごとに変位が異なるためタイル化不可（`feTile` は使わず、レイヤー実寸 1 枚を
+ * `feImage` で渡す）。R チャンネルに正規化変位（0.5=無変位）、G は中立 0.5 固定
+ * （水平スライスなので Y 変位は使わない）。`seededRandom` + `phaseToSeed(evolution)` で
+ * INV-1 決定論。
+ */
+export function glitchSliceDisplaceMapPng(opts: {
+  w: number;
+  h: number;
+  sliceHeight: number;
+  maxShift: number;
+  density: number;
+  seed: number;
+  evolution: number;
+}): { uri: string; scale: number } {
+  const w = Math.max(1, Math.round(opts.w));
+  const h = Math.max(1, Math.round(opts.h));
+  const sliceHeight = Math.max(2, Math.round(opts.sliceHeight));
+  const maxShift = Math.max(0, opts.maxShift);
+  const density = Math.min(1, Math.max(0, opts.density));
+  const baseSeed = Math.max(0, Math.floor(opts.seed)) % 100000;
+  const evoSeed = phaseToSeed(opts.evolution);
+  const rgba = new Uint8Array(w * h * 4);
+  const numSlices = Math.ceil(h / sliceHeight);
+  for (let k = 0; k < numSlices; k++) {
+    const rng = seededRandom((baseSeed * 1000003 + k * 97 + evoSeed) >>> 0);
+    const jumpRoll = rng();
+    const shiftRoll = rng();
+    const jumps = jumpRoll < density;
+    const shiftNorm = jumps ? shiftRoll * 2 - 1 : 0; // -1..1、未変位帯は 0
+    const rVal = Math.min(255, Math.max(0, Math.round(255 * (0.5 + shiftNorm * 0.5))));
+    const y0 = k * sliceHeight;
+    const y1 = Math.min(h, y0 + sliceHeight);
+    for (let y = y0; y < y1; y++) {
+      const rowOffset = y * w * 4;
+      for (let x = 0; x < w; x++) {
+        const o = rowOffset + x * 4;
+        rgba[o] = rVal;
+        rgba[o + 1] = 128;
+        rgba[o + 2] = 0;
+        rgba[o + 3] = 255;
+      }
+    }
+  }
+  return { uri: rgbaToPngDataUri(rgba, w, h), scale: maxShift };
+}
+
 /** displacement filter region 属性（userSpaceOnUse）。 */
 export function svgDisplaceFilterMarkup(
   id: string,
@@ -53,6 +139,7 @@ export const DISPLACEMENT_EFFECT_TYPES = new Set([
   "fastWave",
   "fastRipple",
   "fastTurbulentDisplace",
+  "glitchSlice",
 ]);
 
 /** §27.12 Draft Preview Fast Path 対象。 */
@@ -61,9 +148,10 @@ export const FAST_DISPLACEMENT_EFFECT_TYPES = new Set([
   "fastWave",
   "fastRipple",
   "fastTurbulentDisplace",
+  "glitchSlice",
 ]);
 
-/** §27.3 — live CSS filter 完結 displacement（raster capture 対象外）。Fast* + opticsCompensation。 */
+/** §27.3 — live CSS filter 完結 displacement（raster capture 対象外）。Fast* + opticsCompensation + glitchSlice。 */
 export const LIVE_DISPLACEMENT_EFFECT_TYPES = new Set([
   ...FAST_DISPLACEMENT_EFFECT_TYPES,
   "opticsCompensation",
