@@ -1,5 +1,20 @@
 # Progress
 
+### 2026-07-12（Grok）— Acid/Digi Ticket A-2 `gradientMap` + A-3 `chromaSplit` 整合
+
+- **Source**: `doc/cloudplan/acid-digi-hyper-live-effects-plan-Detailed.md` Ticket A-2 / A-3（WP-A カラー系）。§5/INV 変更ゼロ。
+- **A-2 `gradientMap`（新規）**:
+  - `src/runtime/effectSvg.ts`: `GRADIENT_MAP_PRESETS`（thermal/acid/cyber/chrome）+ `sampleGradientStops` + `gradientMapTable`（N=17 点・`phase` 巡回シフト・duotone は colorA→colorB）。
+  - `src/runtime/builtinEffects.ts`: `GRADIENT_MAP_EFFECT_DEF`（live / カラー補正）。saturate(0) → table transfer → arithmetic mix（amount）。`amount===0` → null。
+  - `test/gradientMap.test.ts` 新規 + `test/effects.test.ts` レジストリ一覧に `gradientMap` を追加。
+  - spec §27.3 に `gradientMap` 散文追記。
+- **A-3 `chromaSplit`（既存実装のチケット整合）**:
+  - 本体は前セッション実装済み（`CHROMASPLIT_EFFECT_DEF` + `chromaSplitFilter`）。
+  - 本セッションで純関数 `chromaOffsetPx` を抽出（`chromaSplitFilter` から利用）し `test/chromaSplit.test.ts` でオフセット算出を固定。
+- **非変更**: `schema.ts` / DomRenderer / effectChain / displacement 3 Set / exporter。
+- **検証**: PASS `npm run typecheck`；PASS `gradientMap` / `chromaSplit` / `effects`（69 tests）/ `playerBuildFreshness`；`npm run build:player` 実行済み・`public/player.js` 更新。
+- **Next steps**: Ticket A-1 `posterize`（未着手）→ WP-B（scanlines / noiseGrain / hyperGlow）。実機での gradientMap 見た目確認はユーザー任意。
+
 ### 2026-07-11（Claude Sonnet 5）— mosaicLite（Mosaic Live）軽量化 Phase A: 毎フレーム無条件の filter DOM 再構築を解消
 
 - **背景**: ユーザー依頼「mosaicLiteエフェクトを解析して軽量化の余地がないか」。調査 PLAN（`C:\Users\resis\.claude\plans\mosaic-live-plan-encapsulated-spring.md`）で、`mosaicLite` が `fastWave`/`fastRipple`/`fastTurbulentDisplace`（改定4で `feImage` 廃止・`feTurbulence` 直結に統一済み・spec:2376）と違い唯一 `feImage`（埋め込み SVG data URI）方式のまま実装されていること、かつ `DomRenderer.applyEffects`→`applyFilterTokens`→`syncSvgFilters` が `fxSig` 比較を計算していながら実際には**毎フレーム無条件で `<defs>`/`<filter>` を再構築**していること（`blockSize` が静的でも feImage を毎フレーム再デコード）を特定。

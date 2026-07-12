@@ -2558,10 +2558,27 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 - `apply` → `{ kind: "svg", primitives }`（`amount === 0` → `null`）。
 - **技法**: RGB チャンネル分離 → 指定角度方向へオフセット（G は原点固定・R/B を対称 ±amount でシフト）→ `feBlend mode="screen"` で再合成。アルファは SourceGraphic を保持（透明レイヤー縁の色暴れ防止）。
 - **angle と amount**: `angle` の方向ベクトル `(cos(angle°), sin(angle°))` へ `amount` px ぶんオフセット。モード `"rgb"` のとき R=+amount, G=原点, B=−amount（対称）。モード `"rb"` のとき R/B のみ ±amount、G は常に原点固定。
-- **offset 算出**: `dx = amount · cos(angle°)`、`dy = amount · sin(angle°)`。filter region クランプにより offset で矩形外へはみ出す分は欠け（AE 同挙動）。
+- **offset 算出**: `dx = amount · cos(angle°)`、`dy = amount · sin(angle°)`（純関数 `chromaOffsetPx`）。filter region クランプにより offset で矩形外へはみ出す分は欠け（AE 同挙動）。
 - **カテゴリ**: `"スタイライズ"`。
 - **非目標**: AE Lens Distortion との物理的色収差完全一致。**見た目的な RGB separation effect で十分**。
 - **リスク**: 低。全 primitive（`feColorMatrix` / `feOffset` / `feBlend` / `feComposite`）は既存 effect で使用実績あり。
+
+#### `gradientMap` — Gradient Map / Acid Colorize
+
+| param key | label | kind | default | range | animatable |
+|---|---|---|---|---|---|
+| `preset` | Preset | enum | `"thermal"` | `thermal` / `acid` / `cyber` / `chrome` / `duotone` | ❌ |
+| `colorA` | Color A | color | 黒 | — | ✅（duotone 暗部） |
+| `colorB` | Color B | color | 白 | — | ✅（duotone 明部） |
+| `phase` | Phase | scalar | `0` | 0..360, step 1 | ✅ |
+| `amount` | Amount | scalar | `1` | 0..1, step 0.01 | ✅ |
+
+- `apply` → `{ kind: "svg", primitives }`（`amount === 0` → `null`）。
+- **技法**: `feColorMatrix type="saturate" values="0"` で輝度化 → `feComponentTransfer type="table"` の R/G/B `tableValues`（N=17 点サンプル）でグラデーション写像 → `feComposite operator="arithmetic"`（k2=`amount`, k3=`1-amount`）で原色とミックス。
+- **preset**: `thermal` / `acid` / `cyber` / `chrome` は固定 stop 配列（`GRADIENT_MAP_PRESETS`）。`duotone` のみ `colorA`→`colorB` 線形。`phase` はサンプル位置を `phase/360` 分巡回シフト（ヒュー・サイクル）。
+- **カテゴリ**: `"カラー補正"`。
+- **経路**: live SVG（`executionPath: "live"`）。非 displacement・region 自動 150%。
+- **非目標**: AE Gradient Map の全プリセット一致。preset 追加はデータのみ。
 
 ### §27.4 調整レイヤー（Adjustment Layer・Live / Raster 2 モード・確定 2026-06-20）
 

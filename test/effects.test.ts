@@ -4,6 +4,7 @@ import {
   BLUR_EFFECT_DEF,
   CHROMASPLIT_EFFECT_DEF,
   DITHER_DISSOLVE_EFFECT_DEF,
+  GRADIENT_MAP_EFFECT_DEF,
   LINEAR_WIPE_EFFECT_DEF,
   MOSAIC_EFFECT_DEF,
   OPTICS_COMPENSATION_EFFECT_DEF,
@@ -50,13 +51,13 @@ describe("builtinEffects apply (§27.3)", () => {
   it("re-registers after pluginRegistry.clear() (loadPlugins 経路)", () => {
     registerBuiltinEffects();
     expect(globalPluginRegistry.listEffects().map((e) => e.type)).toEqual([
-      "blur", "tint", "chromaSplit", "wave", "turbulentDisplace", "ripple", "opticsCompensation", "linearWipe", "angularWipe", "ditherDissolve", "pixelSorter", "mosaic", "pixelSortLite",
+      "blur", "tint", "chromaSplit", "gradientMap", "wave", "turbulentDisplace", "ripple", "opticsCompensation", "linearWipe", "angularWipe", "ditherDissolve", "pixelSorter", "mosaic", "pixelSortLite",
       "mosaicLite", "fastWave", "fastRipple", "fastTurbulentDisplace",
     ]);
     globalPluginRegistry.clear();
     registerBuiltinEffects();
     expect(globalPluginRegistry.listEffects().map((e) => e.type)).toEqual([
-      "blur", "tint", "chromaSplit", "wave", "turbulentDisplace", "ripple", "opticsCompensation", "linearWipe", "angularWipe", "ditherDissolve", "pixelSorter", "mosaic", "pixelSortLite",
+      "blur", "tint", "chromaSplit", "gradientMap", "wave", "turbulentDisplace", "ripple", "opticsCompensation", "linearWipe", "angularWipe", "ditherDissolve", "pixelSorter", "mosaic", "pixelSortLite",
       "mosaicLite", "fastWave", "fastRipple", "fastTurbulentDisplace",
     ]);
   });
@@ -117,6 +118,28 @@ describe("builtinEffects apply (§27.3)", () => {
     const a = CHROMASPLIT_EFFECT_DEF.apply({ amount: 4, angle: 0, mode: "rgb" }, ctx);
     const b = CHROMASPLIT_EFFECT_DEF.apply({ amount: 4, angle: 0, mode: "rb" }, ctx);
     expect(a?.kind === "svg" && b?.kind === "svg" && a.primitives !== b.primitives).toBe(true);
+  });
+
+  it("gradientMap returns null when amount is 0", () => {
+    expect(
+      GRADIENT_MAP_EFFECT_DEF.apply(
+        { preset: "thermal", amount: 0, phase: 0, colorA: { r: 0, g: 0, b: 0, a: 1 }, colorB: { r: 1, g: 1, b: 1, a: 1 } },
+        ctx,
+      ),
+    ).toBeNull();
+  });
+
+  it("gradientMap returns svg table transfer when amount > 0", () => {
+    const r = GRADIENT_MAP_EFFECT_DEF.apply(
+      { preset: "thermal", amount: 1, phase: 0, colorA: { r: 0, g: 0, b: 0, a: 1 }, colorB: { r: 1, g: 1, b: 1, a: 1 } },
+      ctx,
+    );
+    expect(r?.kind).toBe("svg");
+    if (r?.kind === "svg") {
+      expect(r.primitives).toContain("feComponentTransfer");
+      expect(r.primitives).toContain('type="table"');
+      expect(r.primitives).toContain("feComposite");
+    }
   });
 
   it("wave returns null when amplitude is 0", () => {

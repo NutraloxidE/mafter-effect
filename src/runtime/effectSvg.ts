@@ -1016,6 +1016,12 @@ export function lightPixelSortFilter(
   ].join("");
 }
 
+/** chromaSplit のオフセット（px）。INV-1 純関数。 */
+export function chromaOffsetPx(amount: number, angleDeg: number): { dx: number; dy: number } {
+  const rad = (angleDeg * Math.PI) / 180;
+  return { dx: amount * Math.cos(rad), dy: amount * Math.sin(rad) };
+}
+
 /**
  * chromaSplit — RGB Split / Chromatic Aberration（§27.3）
  * 指定角度方向へ R/B チャンネルをオフセットして色収差風の効果を出す。
@@ -1030,9 +1036,7 @@ export function chromaSplitFilter(
 ): string {
   if (amount === 0) return "";
 
-  const rad = (angleDeg * Math.PI) / 180;
-  const dx = amount * Math.cos(rad);
-  const dy = amount * Math.sin(rad);
+  const { dx, dy } = chromaOffsetPx(amount, angleDeg);
 
   const primitives: string[] = [];
 
@@ -1093,4 +1097,125 @@ export function chromaSplitFilter(
   }
 
   return primitives.join("");
+}
+
+// ---------------------------------------------------------------------------
+// gradientMap — 輝度 → グラデーション写像（§27.3 / acid-digi Ticket A-2）
+// ---------------------------------------------------------------------------
+
+export type GradientMapStop = { stop: number; r: number; g: number; b: number };
+
+/** thermal / acid / cyber / chrome の stop 定義（値 0..1）。duotone は colorA/B から動的生成。 */
+export const GRADIENT_MAP_PRESETS: Record<string, GradientMapStop[]> = {
+  // サーモグラフィ: 黒 → 紫 → 赤 → 黄 → 白
+  thermal: [
+    { stop: 0, r: 0, g: 0, b: 0 },
+    { stop: 0.25, r: 0.45, g: 0, b: 0.55 },
+    { stop: 0.5, r: 1, g: 0.05, b: 0 },
+    { stop: 0.75, r: 1, g: 0.9, b: 0 },
+    { stop: 1, r: 1, g: 1, b: 1 },
+  ],
+  // Acid green
+  acid: [
+    { stop: 0, r: 0, g: 0, b: 0 },
+    { stop: 0.3, r: 0.05, g: 0.35, b: 0 },
+    { stop: 0.55, r: 0.15, g: 0.95, b: 0.1 },
+    { stop: 0.8, r: 0.75, g: 1, b: 0.15 },
+    { stop: 1, r: 0.95, g: 1, b: 0.7 },
+  ],
+  // Cyberpunk: 暗青 → マゼンタ → シアン → ホットピンク
+  cyber: [
+    { stop: 0, r: 0.02, g: 0, b: 0.12 },
+    { stop: 0.35, r: 0.55, g: 0, b: 0.85 },
+    { stop: 0.65, r: 0, g: 0.9, b: 1 },
+    { stop: 1, r: 1, g: 0.15, b: 0.85 },
+  ],
+  // 金属クローム: 暗→明→暗→明の非単調
+  chrome: [
+    { stop: 0, r: 0.08, g: 0.08, b: 0.1 },
+    { stop: 0.22, r: 0.88, g: 0.9, b: 0.95 },
+    { stop: 0.48, r: 0.18, g: 0.2, b: 0.22 },
+    { stop: 0.72, r: 0.96, g: 0.97, b: 1 },
+    { stop: 1, r: 0.35, g: 0.37, b: 0.4 },
+  ],
+};
+
+const GRADIENT_MAP_SAMPLE_COUNT = 17;
+
+function lerpChannel(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
+/** stop 配列上で t∈[0,1] を線形補間サンプル。 */
+export function sampleGradientStops(
+  stops: GradientMapStop[],
+  t: number,
+): { r: number; g: number; b: number } {
+  if (stops.length === 0) return { r: 0, g: 0, b: 0 };
+  if (stops.length === 1) return { r: stops[0]!.r, g: stops[0]!.g, b: stops[0]!.b };
+  const u = clamp01(t);
+  if (u <= stops[0]!.stop) return { r: stops[0]!.r, g: stops[0]!.g, b: stops[0]!.b };
+  const last = stops[stops.length - 1]!;
+  if (u >= last.stop) return { r: last.r, g: last.g, b: last.b };
+  for (let i = 0; i < stops.length - 1; i++) {
+    const a = stops[i]!;
+    const b = stops[i + 1]!;
+    if (u >= a.stop && u <= b.stop) {
+      const span = b.stop - a.stop;
+      const local = span <= 1e-12 ? 0 : (u - a.stop) / span;
+      return {
+        r: lerpChannel(a.r, b.r, local),
+        g: lerpChannel(a.g, b.g, local),
+        b: lerpChannel(a.b, b.b, local),
+      };
+    }
+  }
+  return { r: last.r, g: last.g, b: last.b };
+}
+
+/**
+ * 輝度→RGB の feComponentTransfer table 値（各 17 点・スペース区切り）。
+ * phaseDeg/360 分だけサンプル位置を巡回シフト。duotone のみ colorA→colorB。
+ */
+export function gradientMapTable(
+  preset: string,
+  phaseDeg: number,
+  colorA: { r: number; g: number; b: number },
+  colorB: { r: number; g: number; b: number },
+): { r: string; g: string; b: string } {
+  const stops: GradientMapStop[] =
+    preset === "duotone"
+      ? [
+          { stop: 0, r: colorA.r, g: colorA.g, b: colorA.b },
+          { stop: 1, r: colorB.r, g: colorB.g, b: colorB.b },
+        ]
+      : (GRADIENT_MAP_PRESETS[preset] ?? GRADIENT_MAP_PRESETS["thermal"]!);
+
+  // 負の phase も正規化（mod 1）。phase=0 のときは端点 t=1 を保持（1%1→0 を避ける）。
+  const phaseFrac = ((phaseDeg / 360) % 1 + 1) % 1;
+  const n = GRADIENT_MAP_SAMPLE_COUNT;
+  const rs: number[] = [];
+  const gs: number[] = [];
+  const bs: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const base = i / (n - 1);
+    // phase=0: base をそのまま（最終サンプル = 1.0 → 末尾 stop）。
+    // phase>0: [0,1) へ wrap（s===1 → 0。hue cycle の巡回）。
+    let sampleT: number;
+    if (phaseFrac === 0) {
+      sampleT = base;
+    } else {
+      const s = base + phaseFrac;
+      sampleT = s >= 1 ? s - Math.floor(s) : s;
+    }
+    const c = sampleGradientStops(stops, sampleT);
+    rs.push(c.r);
+    gs.push(c.g);
+    bs.push(c.b);
+  }
+  return {
+    r: rs.join(" "),
+    g: gs.join(" "),
+    b: bs.join(" "),
+  };
 }

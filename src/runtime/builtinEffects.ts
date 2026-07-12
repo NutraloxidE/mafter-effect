@@ -8,6 +8,7 @@ import {
   ditherDissolveMask,
   ditherEffectiveReveal,
   evolutionToOffsetPx,
+  gradientMapTable,
   lightPixelSortFilter,
   linearWipeMask,
   opticsCompensationDisplaceMap,
@@ -127,6 +128,49 @@ const CHROMASPLIT_EFFECT_DEF: EffectDef = {
     const angle = num(props["angle"], 0);
     const mode = (props["mode"] as string) ?? "rgb";
     const primitives = chromaSplitFilter(amount, angle, mode as "rgb" | "rb");
+    return { kind: "svg", primitives };
+  },
+};
+
+const GRADIENT_MAP_EFFECT_DEF: EffectDef = {
+  type: "gradientMap",
+  label: "Gradient Map",
+  category: "カラー補正",
+  previewBakeRequired: false,
+  executionPath: "live",
+  params: [
+    {
+      key: "preset",
+      label: "Preset",
+      kind: "enum",
+      default: "thermal",
+      animatable: false,
+      options: ["thermal", "acid", "cyber", "chrome", "duotone"],
+    },
+    { key: "colorA", label: "Color A", kind: "color", default: { r: 0, g: 0, b: 0, a: 1 }, animatable: true },
+    { key: "colorB", label: "Color B", kind: "color", default: { r: 1, g: 1, b: 1, a: 1 }, animatable: true },
+    { key: "phase", label: "Phase", kind: "scalar", default: 0, animatable: true, min: 0, max: 360, step: 1 },
+    { key: "amount", label: "Amount", kind: "scalar", default: 1, animatable: true, min: 0, max: 1, step: 0.01 },
+  ],
+  apply(props, _ctx: EffectRenderCtx) {
+    const amount = Math.min(1, Math.max(0, num(props["amount"], 1)));
+    if (amount === 0) return null;
+    const preset = str(props["preset"], "thermal");
+    const phase = num(props["phase"], 0);
+    const colorA = rgba(props["colorA"], { r: 0, g: 0, b: 0, a: 1 });
+    const colorB = rgba(props["colorB"], { r: 1, g: 1, b: 1, a: 1 });
+    const { r, g, b } = gradientMapTable(preset, phase, colorA, colorB);
+    const k2 = amount;
+    const k3 = 1 - amount;
+    const primitives = [
+      `<feColorMatrix in="SourceGraphic" type="saturate" values="0" result="gray"/>`,
+      `<feComponentTransfer in="gray" result="mapped">`,
+      `<feFuncR type="table" tableValues="${r}"/>`,
+      `<feFuncG type="table" tableValues="${g}"/>`,
+      `<feFuncB type="table" tableValues="${b}"/>`,
+      `</feComponentTransfer>`,
+      `<feComposite in="mapped" in2="SourceGraphic" operator="arithmetic" k1="0" k2="${k2}" k3="${k3}" k4="0"/>`,
+    ].join("");
     return { kind: "svg", primitives };
   },
 };
@@ -439,6 +483,7 @@ export function registerBuiltinEffects(): void {
   globalPluginRegistry.registerEffect(BLUR_EFFECT_DEF);
   globalPluginRegistry.registerEffect(TINT_EFFECT_DEF);
   globalPluginRegistry.registerEffect(CHROMASPLIT_EFFECT_DEF);
+  globalPluginRegistry.registerEffect(GRADIENT_MAP_EFFECT_DEF);
   globalPluginRegistry.registerEffect(WAVE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(TURBULENT_DISPLACE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(RIPPLE_EFFECT_DEF);
@@ -456,6 +501,7 @@ export {
   BLUR_EFFECT_DEF,
   TINT_EFFECT_DEF,
   CHROMASPLIT_EFFECT_DEF,
+  GRADIENT_MAP_EFFECT_DEF,
   WAVE_EFFECT_DEF,
   TURBULENT_DISPLACE_EFFECT_DEF,
   RIPPLE_EFFECT_DEF,
