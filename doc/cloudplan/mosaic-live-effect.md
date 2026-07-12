@@ -6,6 +6,10 @@
 >
 > **続報（2026-07-11）**: 本 PLAN の Phase A（毎フレーム無条件 `<defs>` 再構築の解消）を実装・実プロジェクトでベンチ済み。
 > 結果と選択肢Bへの判断は [mosaic-lite-phase-a-bench-report.md](mosaic-lite-phase-a-bench-report.md) を参照。
+>
+> **続報2（2026-07-12）**: シンプルなコンプでの実マウスドラッグ scrub では、Phase A 適用後も
+> mosaicLite が canvas 更新レートを大幅に落とすことを実 Chrome + CDP screencast で確認（レポート §6）。
+> 2026-07-11 時点の「選択肢Bは低優先度」という結論は重量級コンプに限った話だったと訂正。
 
 ---
 

@@ -520,9 +520,32 @@ describe("§27.5 Fast distortion (approximate)", () => {
     expect(svg).toContain('width="320" height="240"');
     expect(svg).toContain('patternUnits="userSpaceOnUse"');
     expect(svg).toContain('width="16" height="16"');
-    expect(svg).toContain('id="mx"');
-    expect(svg).toContain('id="my"');
-    expect(svg).not.toContain("data:image/png;base64,");
+    // §27.5 改定6: gradient+blend-mode ではなく 1 タイル分の事前計算 PNG を feImage で参照する
+    // （compositor の per-draw コストが実測で極端に重かったため、rippleDisplaceMap 等と
+    // 同じ「PNG に焼く」方式へ統一。mosaic-lite-phase-a-bench-report.md §6.5 参照）。
+    expect(svg).toContain("data:image/png;base64,");
+    expect(svg).not.toContain('style="mix-blend-mode:screen"');
+    expect(svg).not.toContain("id=\"mx\"");
+    expect(svg).not.toContain("id=\"my\"");
+  });
+
+  it("mosaicGridSnapFilter tile raster is clamped to [16,256] and independent of layer size", () => {
+    const small = mosaicGridSnapFilter({ blockSize: 4, w: 1920, h: 1080 });
+    const smallSvg = decodeURIComponent(/href="(data:image\/svg\+xml,[^"]+)"/.exec(small)![1]!.split(",")[1]!);
+    expect(smallSvg).toContain('<image href="data:image/png;base64,');
+    // blockSize=4 の pattern タイルは 4x4 のままだが、内部 PNG ラスタは可読性のため 16px まで底上げする
+    const imgTag = /<image href="[^"]+" x="0" y="0" width="(\d+)" height="(\d+)"/.exec(smallSvg);
+    expect(imgTag).toBeDefined();
+    expect(imgTag![1]).toBe("4");
+
+    const large = mosaicGridSnapFilter({ blockSize: 256, w: 3840, h: 2160 });
+    expect(large).toContain("feImage");
+    // 大きい layer / block でも feImage の href は 1 タイル分の小さい PNG のみ（layer 全域を PNG 化しない）
+    const encoded = /href="(data:image\/svg\+xml,[^"]+)"/.exec(large)![1]!;
+    const pngMatch = /data:image\/png;base64,([A-Za-z0-9+/=]+)/.exec(decodeURIComponent(encoded));
+    expect(pngMatch).toBeDefined();
+    // 256x256 RGBA を無圧縮 zlib stored blocks で包んだ PNG の概算上限（十分小さい = layer 全域焼きではない証拠）
+    expect(pngMatch![1]!.length).toBeLessThan(400_000);
   });
 
   it("mosaicGridSnapFilter is inert when blockSize <= 1", () => {

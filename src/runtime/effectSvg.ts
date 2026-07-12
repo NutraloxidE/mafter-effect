@@ -583,6 +583,41 @@ export function fastRippleDisplace(opts: {
   });
 }
 
+/** mosaicGridSnapFilter の 1 タイル分ラスタ解像度（block×block・16..256 に clamp）。 */
+export const MOSAIC_TILE_MAX_DIM = 256;
+export const MOSAIC_TILE_MIN_DIM = 16;
+
+/**
+ * §27.5 改定6 — Mosaic Lite タイル 1 個分の block-center-snap 変位を RGBA バッファへ焼く。
+ *
+ * 旧実装（`<pattern>` 内で 2×`linearGradient` + `mix-blend-mode:screen` をブラウザに解決させる）
+ * は compositor の per-draw コストが極端に重いことが実測で判明（§6.5 mosaic-lite-phase-a-bench-report.md、
+ * `MainFrame.Draw` 208倍）。gradient の連続ランプを JS 側で事前計算し、`rippleDisplaceMap`/
+ * `opticsCompensationDisplaceMap` と同じ「PNG に焼いて feImage で参照する」方式に統一する。
+ * R = X 変位ランプ、G = Y 変位ランプ（どちらも tile 内で hi→lo の線形ランプ）、B は中立 128。
+ */
+function mosaicTileRgba(block: number, tile: number): Uint8Array {
+  const hi = (1 - 0.5 / block) * 255;
+  const lo = (0.5 / block) * 255;
+  const rgba = new Uint8Array(tile * tile * 4);
+  const rowR = new Uint8Array(tile);
+  for (let tx = 0; tx < tile; tx++) {
+    rowR[tx] = Math.round(hi + (lo - hi) * (tx / tile));
+  }
+  for (let ty = 0; ty < tile; ty++) {
+    const g = Math.round(hi + (lo - hi) * (ty / tile));
+    const rowOffset = ty * tile * 4;
+    for (let tx = 0; tx < tile; tx++) {
+      const o = rowOffset + tx * 4;
+      rgba[o] = rowR[tx]!;
+      rgba[o + 1] = g;
+      rgba[o + 2] = 128;
+      rgba[o + 3] = 255;
+    }
+  }
+  return rgba;
+}
+
 /** §27.5 Mosaic Lite — block center snap displacement map（live 近似）。 */
 export function mosaicGridSnapFilter(opts: {
   blockSize: number;
@@ -593,23 +628,13 @@ export function mosaicGridSnapFilter(opts: {
   if (block <= 1) return "";
   const w = Math.max(1, Math.round(opts.w));
   const h = Math.max(1, Math.round(opts.h));
-  const hi = Math.round((1 - 0.5 / block) * 255);
-  const lo = Math.round((0.5 / block) * 255);
+  const tile = Math.min(MOSAIC_TILE_MAX_DIM, Math.max(MOSAIC_TILE_MIN_DIM, block));
+  const tileUri = rgbaToPngDataUri(mosaicTileRgba(block, tile), tile, tile);
   const mapSvg = [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">`,
     `<defs>`,
-    `<linearGradient id="mx" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="${block}" y2="0">`,
-    `<stop offset="0%" stop-color="rgb(${hi},0,0)"/>`,
-    `<stop offset="100%" stop-color="rgb(${lo},0,0)"/>`,
-    `</linearGradient>`,
-    `<linearGradient id="my" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="${block}">`,
-    `<stop offset="0%" stop-color="rgb(0,${hi},0)"/>`,
-    `<stop offset="100%" stop-color="rgb(0,${lo},0)"/>`,
-    `</linearGradient>`,
     `<pattern id="m" width="${block}" height="${block}" patternUnits="userSpaceOnUse">`,
-    `<rect width="${block}" height="${block}" fill="rgb(0,0,128)"/>`,
-    `<rect width="${block}" height="${block}" fill="url(#mx)" style="mix-blend-mode:screen"/>`,
-    `<rect width="${block}" height="${block}" fill="url(#my)" style="mix-blend-mode:screen"/>`,
+    `<image href="${tileUri}" x="0" y="0" width="${block}" height="${block}" preserveAspectRatio="none"/>`,
     `</pattern>`,
     `</defs>`,
     `<rect width="${w}" height="${h}" fill="url(#m)" shape-rendering="crispEdges"/>`,

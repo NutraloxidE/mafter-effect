@@ -2397,7 +2397,7 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 | `blockSize` | Block Size | scalar | `16` | `2..256`, step 1 | ✅ |
 
 - **目的**: 真のブロック平均化ではなく、各出力ピクセルのサンプリング位置を `blockSize` グリッドのブロック中心へスナップする軽量近似ピクセレート。多くの pixelate shader と同じ「代表点サンプル」方式で、`mosaic`（下記）の正確な平均化とは見た目が一致しないことを許容する。
-- **描画**: `apply` → `{ kind: "svg", primitives }`。`feImage` に layer 全域の SVG pattern map を渡し、R/G チャンネルで X/Y の中心スナップ変位をエンコードして `feDisplacementMap` へ入力する。map は `patternUnits="userSpaceOnUse"` の tile で layer 全域に定義し、filter region は既存 Fast* と同じく layer bounds `(0,0,w,h)` にクランプする。
+- **描画**: `apply` → `{ kind: "svg", primitives }`。`feImage` に layer 全域の SVG pattern map を渡し、R/G チャンネルで X/Y の中心スナップ変位をエンコードして `feDisplacementMap` へ入力する。map は `patternUnits="userSpaceOnUse"` の tile で layer 全域に定義し、filter region は既存 Fast* と同じく layer bounds `(0,0,w,h)` にクランプする。**改定6（2026-07-12）**: `<pattern>` タイル内部は当初 2×`linearGradient` + `mix-blend-mode:screen` で実装していたが、compositor の per-draw コストが実測で極端に重い（`MainFrame.Draw` が feTurbulence 系 Fast* 比で約200倍）ことが判明したため、`rippleDisplaceMap`/`opticsCompensationDisplaceMap` と同じ「JS側で block×block（16..256 に clamp）分の RGBA を事前計算し `rgbaToPngDataUri()` で焼く」方式に変更した（`<pattern>` によるレイヤー全域タイリングの外枠自体は維持）。実測で compositor の GPU 側コスト（`SwapBuffers`/`Present`）は大幅減（約17〜25倍）、`MainFrame.Draw` 自体も軽減はしたが完全解消はしていない（詳細: `doc/cloudplan/mosaic-lite-phase-a-bench-report.md` §6）。視覚的な近似の意味・見た目は変更なし。
 - **経路**: `executionPath: "live"` / `previewBakeRequired: false` / `LIVE_DISPLACEMENT_EFFECT_TYPES`。通常レイヤーは `filter: url(#fx)`、Live調整レイヤーは `backdrop-filter: url(#fx)` に同期適用する。Auto Preview Cache 対象外。
 - **恒等**: `blockSize <= 1` は `null`（filter なし）。
 - **既知差**: 端の半端なブロックは full block tile の中心スナップ近似になる。厳密な端ブロック平均が必要な場合は raster 版 `mosaic` を使う。

@@ -16,6 +16,30 @@
 - **詳細レポート**: [doc/cloudplan/mosaic-lite-phase-a-bench-report.md](doc/cloudplan/mosaic-lite-phase-a-bench-report.md)（生データ: `doc/cloudplan/mosaic-lite-phase-a-bench/`）。
 - **Next steps**: PLAN 選択肢 B（PNG タイル化）は優先度を下げる（今回の実測では効果が薄いと予想されるため）。着手するなら「動画/音声なし・エフェクト多数」という別ワークロードでの再検証が前提（未実施）。`waveform.ts` のキャッシュ有無調査は別セッションで。
 
+### 2026-07-12（Claude Sonnet 5）— mosaicLite: シンプルなコンプでの scrub/再生プレビュー重さを実 Chrome で再現・確定（前回「低優先度」結論の訂正）
+
+- **背景**: ユーザーから「mosaicLite があるとテキスト単体等のシンプルなコンプでもプレビューのフレームレートが著しく落ちる」と報告。前セッションの Comp 10 実プロジェクトベンチ（2026-07-11、動画・音声・precomp を含む重量級コンプ）では defs 再構築削減（Phase A）の効果が薄いと結論したが、これは**別ワークロード**（シンプルなコンプ・実際のマウスドラッグ scrub）には当てはまらない可能性を見落としていた。Playwright での repro 試行（headless/実 Chrome 問わず、`setPlaying(true)`/合成フレームステップ＋`requestAnimationFrame` 計測）はすべて非再現（60fps 一定）だった。
+- **ユーザー提供の実キャプチャ解析**: `C:\Users\resis\Videos\Captures` の 2 本（Adjustment+mosaicLite ON でのスクラブ/再生）を ffmpeg (`mpdecimate`/`freezedetect`) で解析。**プレビュー canvas 領域のみ**（タイムライン UI・カーソルを除外したクロップ — フルフレーム比較だと UI 側の変化で「同一フレーム」判定が隠れるため）で見ると、canvas のユニーク更新レートは平均 4.2〜7.8fps（60fps 目標に対し大幅低下）、最大停滞 2.2〜4.1 秒。capture1 内で mosaicLite ON/OFF の切替が録画されており、同一セッション内 A/B で OFF区間 10.4fps → ON区間 6.9fps（-34%）。
+- **プログラムでの再現に成功**（過去の非再現の原因を特定）: 従来の repro 失敗は (a) 合成的なフレーム送り（`setFrame`/`setPlaying`）を使っていたこと、(b) JS の `requestAnimationFrame` タイミングだけを計測していたことが原因。**実際のマウスドラッグでのタイムライン scrub**（`page.mouse.down/move/up` で ruler 上を継続ドラッグ）＋ **CDP `Page.startScreencast`**（Chrome が実際にペイント内容の変化を検知した時だけフレームを送る、外部ヒューリスティックでない内部シグナル）を使うことで、実 Chrome 上で明確に再現:
+  - mosaicLite（Adjustment layer, blockSize 16）＋ Text レイヤーのみのシンプルなコンプで実ドラッグ scrub → screencast フレーム排出レート **平均 8.27fps**、600ms 超の停滞が頻発。
+  - 同一条件・同一操作パターンで mosaicLite なし（Text レイヤーのみ）→ **平均 18.52fps**（2.2倍）、500ms 超の停滞はほぼ無し。
+  - 同一ブランチ（Phase A の defs 再構築スキップ適用済み・未コミット）で計測 — **Phase A 適用後もこの重さは解消されない**ことを確認。ボトルネックは DOM `<defs>` 再構築ではなく、GPU 側のフィルタ適用（`backdrop-filter` + `feImage`/`mix-blend-mode:screen` のラスタライズ）自体である可能性が高い。CPU プロファイル（2026-07-11）で `DomRenderer` の寄与が CPU 全体の 2.5〜5% だったことと矛盾しない（GPU/コンポジタ側のコストは CPU プロファイラに写らない）。
+- **結論の訂正**: 前回の「PLAN 選択肢 B は低優先度」は**動画/音声/precomp を含む重量級コンプに限った結論**であり、シンプルなコンプでの実ドラッグ scrub には当てはまらないと判明。ユーザー報告は実測で裏付けられた実在のバグ。PLAN 選択肢 B（`mosaicGridSnapFilter` の pattern+gradient+blend-mode を事前計算 RGBA PNG タイルへ置換）、または C（blend-mode 自体のコスト切り分け）の優先度を上げるべき。
+- **教訓（[[perf-testing-real-chrome-not-headless]] を補強）**: プレビュー重さの repro は「実 Chrome」だけでは不十分で、**実際のユーザー操作（マウスドラッグ）** と **CDP screencast（真のコンポジタ出力シグナル）** の両方が必要だった。`requestAnimationFrame` ベースの計測は JS スレッドのスケジューリングしか見ておらず、GPU ペイント/コンポジット段階の遅延を検知できない。
+- **root-cause pass（同セッション内で追加実施）**: CDP `Tracing.start`（`devtools.timeline`/`toplevel`/`gpu`/`cc`/`viz` カテゴリ）で同シナリオ（実ドラッグ scrub 6秒）を計測し、mosaicLite あり/なしでイベント名ごとの合計 duration を比較。**`MainFrame.Draw`/`ProxyImpl::ScheduledActionDraw`（compositor のフレーム描画主処理）が mosaicLite あり: 115回・平均60.32ms/回 → なし: 115回・平均0.29ms/回（208倍）**。`Paint`/`RasterDecoderImpl::DoEndRasterCHROMIUM`（ラスタライズ自体）はほぼ差がなく、ボトルネックは「ラスタライズの実行時間」ではなく「compositor がフレームを構築する main draw 処理」側にあると特定。`Graphics.Pipeline`（GPU パイプライン全体）も平均6倍、`SwapBuffers`/`Present` も1.8倍重い。
+- **結論**: PLAN 選択肢 B（`mosaicGridSnapFilter` の pattern+gradient+mix-blend-mode を事前計算 RGBA PNG タイル化）の優先度を上げるべきと確定。`feImage` の参照先を「nested SVG document（gradient/pattern/blend-mode）」から「フラット PNG」に変えることで compositor 側コストが下がるかを検証してから実装着手する。
+- **詳細**: [doc/cloudplan/mosaic-lite-phase-a-bench-report.md](doc/cloudplan/mosaic-lite-phase-a-bench-report.md) §6（追記セクション）に全データ（表・再現手順）を記録。
+- **Next steps**: PLAN 選択肢 B（PNG タイル化）の実装（spec への直接の影響は無し・§5/INV 変更ゼロ、実装ループ Phase 通りに進める）。まだコード変更なし（解析のみ、Phase A の変更は既存のまま未コミット）。作業ブランチ: `perf/mosaic-lite-lightweight`。
+
+### 2026-07-12（Claude Sonnet 5）— mosaicLite PLAN 選択肢B 実装（gradient+blend-mode → 事前計算PNGタイル化）・部分的改善を確認
+
+- **実装**: `mosaicGridSnapFilter()`（[src/runtime/effectSvg.ts](src/runtime/effectSvg.ts)）の `<pattern>` タイル内部（2×`linearGradient` + `mix-blend-mode:screen`）を、JS 側で block×block（16..256 に clamp）の RGBA を事前計算し `rgbaToPngDataUri()` で焼いた `<image>` に置換。`rippleDisplaceMap`/`opticsCompensationDisplaceMap` と同じ「PNG に焼いて feImage で参照する」パターンを踏襲。`<pattern>` によるレイヤー全域タイリングの外枠自体は維持（PLAN の設計どおり、データ URI が w×h 全域に肥大するのを回避）。§5/INV/`project.json` 直列化への変更なし。spec §27.5.1（mosaicLite `描画`）に改定6として追記。
+- **不採用にした代案**: root-cause pass（前セッション）の仮説「feImage が参照する document 自体のコストが dominant では」を検証するため、`<pattern>` を廃し layer 全域を 1 枚のフラット PNG として `feImage` に直接渡す案も試作。**JS 側の PNG 生成が 1073ms・data URI が 11MB に達し、`blockSize` 変更のたびにエディタが 1 秒級で固まる**ため、compositor 側の効果を計測する前に UX 上不採用と判断。
+- **実測（同一手法で before/after 比較・実 Chrome + 実マウスドラッグ scrub + CDP screencast/Tracing）**: `MainFrame.Draw` 60.32ms→54.37ms/回（-10%、**支配的コストのまま残存**）。一方 GPU 側は劇的改善: `SwapBuffers` 25.17ms→1.45ms（17倍）、`Present` 24.84ms→0.98ms（25倍）。screencast フレーム排出レート 8.27fps→10.43fps（+26%）、**最大停滞ギャップは600ms超（複数回）→124ms（mosaicLiteなしベースラインの572msより小さい）に大幅縮小**。体感上最も気になる「数百ms単位の完全停止」はほぼ解消されたが、`MainFrame.Draw` 自体はベースライン（0.29ms/回）比でまだ186倍——**部分的な改善であり完全解決ではない**。
+- **検証**: PASS `npm run typecheck`；PASS `npm test`（1077/1077、`test/effectSvg.test.ts` に新規/更新テスト2件追加＋既存 mosaicLite 関連145テスト全PASS）。`npm run build:player` 実行済み・`playerBuildFreshness` 緑。**実機 Playwright 検証**（使い捨て・削除済み）: (1) blockSize=4/16/64 でのテキストレイヤー export-composite 出力を新旧実装で比較 — ink画素数の差は最大1.4%（旧: 14892/16480/8192、新: 14892/16242/8192）、目視でも骨格が一致（b16の視認できる粗いブロック化・b64での大ブロック崩壊とも旧実装と同様）。(2) `forceMosaicLiteExportCapture`（export composite 迂回経路）は3つの blockSize すべてで非空白を確認（回帰なし）。
+- **詳細**: [doc/cloudplan/mosaic-lite-phase-a-bench-report.md](doc/cloudplan/mosaic-lite-phase-a-bench-report.md) §6.6 に実装内容・実測データ・不採用案の詳細を記録。
+- **Next steps**: `MainFrame.Draw` がなぜ54msもかかり続けるのか（`<pattern>` タイリング自体のmain-threadコスト／`backdrop-filter`のフィルタ領域再計算／`feImage`+`feDisplacementMap`組み合わせ自体のChrome内部コスト等）の追加切り分けは未着手・本セッションのスコープ外。ユーザーへ現状（部分改善・完全解決ではない）を報告し、追加投資するかは判断待ち。作業ブランチ `perf/mosaic-lite-lightweight` は未コミットのまま（Phase A + 今回のPNGタイル化どちらもコミット待ち、ユーザーの明示的な指示待ち）。
+
 ---
 
 ### 2026-07-11（Claude Sonnet 5）— HTML bundle export に無関係な全プロジェクトが埋め込まれ 404 が出る不具合を修正
