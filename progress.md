@@ -1,5 +1,15 @@
 # Progress
 
+### 2026-07-12（Claude Code）— Pixel Sorter 高速化（bitonic 型）実現可能性調査 + 実装プラン作成（コード変更なし）
+
+- **依頼**: 「現状の Pixel sorter を bitonic pixel sorter のように高速な処理にする事は原理的に可能か。可能なら cloudplan に実装プランを」。
+- **結論: 原理的に可能**。参照実装 [ruccho/BitonicPixelSorter](https://github.com/ruccho/BitonicPixelSorter)（Unity compute shader、FHD 340µs）の速さの源泉は (1) GPU 並列 + shared memory、(2) RGBA を動かさず「index+輝度」パックキーだけソートして gather、(3) スパン検出の並列 scan、の 3 点で、ブラウザ対応物は WebGPU compute（WGSL、shared memory 16KiB 上限も本家と同一）。
+- **実測**（Node 22、`processPixelSort` 単体）: 現行は 1080p simple/angle0 で **270ms/frame**、angle45 で **1299ms**（`rotateBuffer` が支配的）。(2) の発想を CPU に移植した typed array + キーパックの素朴なプロトタイプだけで **78ms（3.5x）** を確認。radix sort・回転最適化・worker 行バンド並列で 10〜20x が現実的。
+- **最大の設計論点は INV-2**: GPU float は device 依存のため、ソートを「整数キー（`K = 2126R+7152G+722B`）による決定論的 permutation」として仕様化して CPU/GPU の出力を一致させる。ただし整数キー化は近傍同輝度のタイブレークが現行 float と変わりうる = **§27.3 散文変更 + ユーザー承認事項**。random モードは Fisher–Yates が逐次なので CPU 据え置き推奨、GPU 経路は angle 90° 刻み限定を推奨。
+- **プラン**: [doc/cloudplan/bitonic-pixel-sorter-plan.md](doc/cloudplan/bitonic-pixel-sorter-plan.md)。Phase 0（ベンチ/golden 固定）→ Phase 1（CPU コア typed array + radix 化、全経路共通・低リスク・単独で preview 実用域見込み）→ Phase 2（WebGPU compute、オプトイン+CPU フォールバック、Phase 1 実測後に着手判断）→ Phase 3（export/bundle 横断回帰 + `npm run build:player`）。
+- **今回のコード変更・spec 変更: なし**（調査・計測・プラン文書のみ）。ベンチはコンテナ内 scratchpad で実施（リポジトリ未追加、Phase 0 で verify スクリプトとして固定予定）。
+- **Next steps**: プラン §6 の承認 4 点（輝度キー整数化 / random 据え置き / GPU angle 制約 / Phase 2 着手判断）をユーザーに確認 → 承認後 Phase 0-1 から着手。
+
 ### 2026-07-11（Claude Sonnet 5）— mosaicLite（Mosaic Live）軽量化 Phase A: 毎フレーム無条件の filter DOM 再構築を解消
 
 - **背景**: ユーザー依頼「mosaicLiteエフェクトを解析して軽量化の余地がないか」。調査 PLAN（`C:\Users\resis\.claude\plans\mosaic-live-plan-encapsulated-spring.md`）で、`mosaicLite` が `fastWave`/`fastRipple`/`fastTurbulentDisplace`（改定4で `feImage` 廃止・`feTurbulence` 直結に統一済み・spec:2376）と違い唯一 `feImage`（埋め込み SVG data URI）方式のまま実装されていること、かつ `DomRenderer.applyEffects`→`applyFilterTokens`→`syncSvgFilters` が `fxSig` 比較を計算していながら実際には**毎フレーム無条件で `<defs>`/`<filter>` を再構築**していること（`blockSize` が静的でも feImage を毎フレーム再デコード）を特定。
