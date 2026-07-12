@@ -2592,6 +2592,41 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 - **経路**: live SVG（`executionPath: "live"`）。非 displacement・region 自動 150%。
 - **非目標**: AE Posterize の gamma / チャンネル別 levels 一致。
 
+#### `noiseGrain` — Noise Grain / ゼロ平均フィルムグレイン
+
+| param key | label | kind | default | range | animatable |
+|---|---|---|---|---|---|
+| `amount` | Amount | scalar | `0.15` | 0..1, step 0.01 | ✅ |
+| `size` | Size | scalar | `1` | 0.5..8, step 0.1 | ✅ |
+| `animated` | Animated | bool | `false` | — | ❌ |
+| `monochrome` | Monochrome | bool | `true` | — | ❌ |
+| `seed` | Seed | scalar | `0` | 0..9999, step 1 | ❌ |
+
+- `apply` → `{ kind: "svg", primitives }`（`amount === 0` → `null`）。
+- **技法**: `feTurbulence type="fractalNoise" numOctaves="1"`（`baseFrequency = 1/max(0.5, size)`）→（`monochrome` のとき輝度平均化 `feColorMatrix`）→ `feComposite operator="arithmetic"`（`k2=amount, k3=1, k4=-0.5*amount`）で `SourceGraphic + amount*(noise-0.5)` を float 演算後にクランプ合成（ゼロ平均加算。`feComponentTransfer` での -0.5 オフセットは負値クランプで平均が狂うため不使用）。
+- **決定論（INV-1）**: `seed = animated ? (baseSeed + frame) % 65536 : baseSeed`。`Math.random` 不使用。
+- **カテゴリ**: `"スタイライズ"`。
+- **経路**: live SVG（`executionPath: "live"`）。非 displacement・region 自動 150%。
+- **既知の受け入れ条件**: `amount` を振っても平均輝度・重心が不動（ゼロ平均性）。実 Chrome での目視確認を推奨。
+- **非目標**: フィルム粒子の彩度分布・感光乳剤シミュレーション一致。
+
+#### `hyperGlow` — Hyper Glow / 閾値グロウ
+
+| param key | label | kind | default | range | animatable |
+|---|---|---|---|---|---|
+| `threshold` | Threshold | scalar | `0.7` | 0..1, step 0.01 | ✅ |
+| `radius` | Radius | scalar | `24` | 0..200, step 0.1 | ✅ |
+| `intensity` | Intensity | scalar | `1.5` | 0..8, step 0.01 | ✅ |
+| `tint` | Tint | color | 白 | — | ✅ |
+| `quality` | Quality | scalar | `1` | 0.1..1, step 0.05 | ✅ |
+
+- `apply` → `{ kind: "svg", primitives }`（`radius === 0` または `intensity === 0` → `null`）。
+- **技法**: `feComponentTransfer type="linear"`（純関数 `thresholdTransfer(t)`: `slope=1/(1-t), intercept=-t/(1-t)`）で `threshold` 未満を 0 にクランプしつつ明部を強調 → `feGaussianBlur stdDeviation="radius*quality"` → `feComponentTransfer type="linear" slope="intensity"` で強度調整 →（`tint` が白以外のとき `feColorMatrix` でチャンネル別乗算）→ `feBlend mode="screen"` で元画像に加算合成。
+- **滲み範囲**: 非 displacement のため filter region は矩形の自動 150%（§2.1 訂正）。グロウはレイヤー矩形の外へ ~25% まで滲む（150% を超える分のみクリップ）。
+- **カテゴリ**: `"スタイライズ"`。
+- **経路**: live SVG（`executionPath: "live"`）。
+- **非目標**: 2 層ハロー（コア+外側ハロー分離）は初版で省略。AE Glow の全モード（Add/Screen/Composite 選択等）一致。
+
 ### §27.4 調整レイヤー（Adjustment Layer・Live / Raster 2 モード・確定 2026-06-20）
 
 **意味（AE 準拠）**: 調整レイヤーは自身の content を描画せず、`effects[]` を**その下（背面・低 zOrder）に重なる全レイヤーの合成結果**に適用する。

@@ -208,6 +208,90 @@ const GRADIENT_MAP_EFFECT_DEF: EffectDef = {
   },
 };
 
+const NOISE_GRAIN_EFFECT_DEF: EffectDef = {
+  type: "noiseGrain",
+  label: "Noise Grain",
+  category: "スタイライズ",
+  previewBakeRequired: false,
+  executionPath: "live",
+  params: [
+    { key: "amount", label: "Amount", kind: "scalar", default: 0.15, animatable: true, min: 0, max: 1, step: 0.01 },
+    { key: "size", label: "Size", kind: "scalar", default: 1, animatable: true, min: 0.5, max: 8, step: 0.1 },
+    { key: "animated", label: "Animated", kind: "bool", default: false, animatable: false },
+    { key: "monochrome", label: "Monochrome", kind: "bool", default: true, animatable: false },
+    { key: "seed", label: "Seed", kind: "scalar", default: 0, animatable: false, min: 0, max: 9999, step: 1 },
+  ],
+  apply(props, ctx: EffectRenderCtx) {
+    const amount = Math.min(1, Math.max(0, num(props["amount"], 0.15)));
+    if (amount === 0) return null;
+    const size = Math.min(8, Math.max(0.5, num(props["size"], 1)));
+    const animated = bool(props["animated"], false);
+    const monochrome = bool(props["monochrome"], true);
+    const baseSeed = Math.max(0, Math.floor(num(props["seed"], 0))) % 10000;
+    const seed = animated ? (baseSeed + Math.floor(ctx.frame)) % 65536 : baseSeed;
+    const bf = 1 / Math.max(0.5, size);
+    const primitives = [
+      `<feTurbulence type="fractalNoise" baseFrequency="${bf}" numOctaves="1" seed="${seed}" stitchTiles="stitch" result="noise"/>`,
+      monochrome
+        ? `<feColorMatrix in="noise" type="matrix" values="0.33 0.33 0.33 0 0  0.33 0.33 0.33 0 0  0.33 0.33 0.33 0 0  0 0 0 0 1" result="mono"/>`
+        : `<feColorMatrix in="noise" type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 0 1" result="mono"/>`,
+      `<feComposite in="mono" in2="SourceGraphic" operator="arithmetic" k1="0" k2="${amount}" k3="1" k4="${-0.5 * amount}" result="grained"/>`,
+      `<feComposite in="grained" in2="SourceGraphic" operator="in"/>`,
+    ].join("");
+    return { kind: "svg", primitives };
+  },
+};
+
+/** Threshold linear transfer: t→0, 1→1 output; clamps to 0 below t. t>=1 guarded by epsilon. */
+export function thresholdTransfer(t: number): { slope: number; intercept: number } {
+  const clamped = Math.min(1 - 1e-6, Math.max(0, t));
+  const slope = 1 / (1 - clamped);
+  const intercept = -clamped / (1 - clamped);
+  return { slope, intercept };
+}
+
+const HYPER_GLOW_EFFECT_DEF: EffectDef = {
+  type: "hyperGlow",
+  label: "Hyper Glow",
+  category: "スタイライズ",
+  previewBakeRequired: false,
+  executionPath: "live",
+  params: [
+    { key: "threshold", label: "Threshold", kind: "scalar", default: 0.7, animatable: true, min: 0, max: 1, step: 0.01 },
+    { key: "radius", label: "Radius", kind: "scalar", default: 24, animatable: true, min: 0, max: 200, step: 0.1 },
+    { key: "intensity", label: "Intensity", kind: "scalar", default: 1.5, animatable: true, min: 0, max: 8, step: 0.01 },
+    { key: "tint", label: "Tint", kind: "color", default: { r: 1, g: 1, b: 1, a: 1 }, animatable: true },
+    { key: "quality", label: "Quality", kind: "scalar", default: 1, animatable: true, min: 0.1, max: 1, step: 0.05 },
+  ],
+  apply(props) {
+    const radius = Math.max(0, num(props["radius"], 24));
+    const intensity = Math.max(0, num(props["intensity"], 1.5));
+    if (radius === 0 || intensity === 0) return null;
+    const threshold = Math.min(1, Math.max(0, num(props["threshold"], 0.7)));
+    const { slope, intercept } = thresholdTransfer(threshold);
+    const stdDeviation = radius * quality(props);
+    const tint = rgba(props["tint"], { r: 1, g: 1, b: 1, a: 1 });
+    const primitives = [
+      `<feComponentTransfer in="SourceGraphic" result="bright">`,
+      `<feFuncR type="linear" slope="${slope}" intercept="${intercept}"/>`,
+      `<feFuncG type="linear" slope="${slope}" intercept="${intercept}"/>`,
+      `<feFuncB type="linear" slope="${slope}" intercept="${intercept}"/>`,
+      `</feComponentTransfer>`,
+      `<feGaussianBlur in="bright" stdDeviation="${stdDeviation}" result="blur"/>`,
+      `<feComponentTransfer in="blur" result="glow">`,
+      `<feFuncR type="linear" slope="${intensity}"/>`,
+      `<feFuncG type="linear" slope="${intensity}"/>`,
+      `<feFuncB type="linear" slope="${intensity}"/>`,
+      `</feComponentTransfer>`,
+      tint.r === 1 && tint.g === 1 && tint.b === 1
+        ? ``
+        : `<feColorMatrix in="glow" type="matrix" values="${tint.r} 0 0 0 0  0 ${tint.g} 0 0 0  0 0 ${tint.b} 0 0  0 0 0 1 0" result="glow"/>`,
+      `<feBlend in="SourceGraphic" in2="glow" mode="screen"/>`,
+    ].join("");
+    return { kind: "svg", primitives };
+  },
+};
+
 const WAVE_EFFECT_DEF: EffectDef = {
   type: "wave",
   label: "Wave",
@@ -518,6 +602,8 @@ export function registerBuiltinEffects(): void {
   globalPluginRegistry.registerEffect(CHROMASPLIT_EFFECT_DEF);
   globalPluginRegistry.registerEffect(GRADIENT_MAP_EFFECT_DEF);
   globalPluginRegistry.registerEffect(POSTERIZE_EFFECT_DEF);
+  globalPluginRegistry.registerEffect(NOISE_GRAIN_EFFECT_DEF);
+  globalPluginRegistry.registerEffect(HYPER_GLOW_EFFECT_DEF);
   globalPluginRegistry.registerEffect(WAVE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(TURBULENT_DISPLACE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(RIPPLE_EFFECT_DEF);
@@ -537,6 +623,8 @@ export {
   CHROMASPLIT_EFFECT_DEF,
   GRADIENT_MAP_EFFECT_DEF,
   POSTERIZE_EFFECT_DEF,
+  NOISE_GRAIN_EFFECT_DEF,
+  HYPER_GLOW_EFFECT_DEF,
   WAVE_EFFECT_DEF,
   TURBULENT_DISPLACE_EFFECT_DEF,
   RIPPLE_EFFECT_DEF,

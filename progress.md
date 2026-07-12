@@ -1,5 +1,21 @@
 # Progress
 
+### 2026-07-12（Claude Sonnet 5）— Acid/Digi Ticket B-2 `noiseGrain` + B-3 `hyperGlow`
+
+- **Source**: `doc/cloudplan/acid-digi-hyper-live-effects-plan-Detailed.md` Ticket B-2 / B-3（WP-B、非 displacement）。§5/INV 変更ゼロ。
+- **B-3 `hyperGlow`（新規）**:
+  - `src/runtime/builtinEffects.ts`: 純関数 `thresholdTransfer(t)`（`slope=1/(1-t), intercept=-t/(1-t)`、`t>=1` はε ガード）+ `HYPER_GLOW_EFFECT_DEF`（live / スタイライズ）。threshold linear transfer → `feGaussianBlur` → intensity linear transfer → 任意 tint `feColorMatrix` → `feBlend mode="screen"`。`radius===0 || intensity===0` → null。2 層ハロー・tint 以外の合成モードは非目標のまま。
+  - `test/hyperGlow.test.ts` 新規。
+- **B-2 `noiseGrain`（新規）**:
+  - `src/runtime/builtinEffects.ts`: `NOISE_GRAIN_EFFECT_DEF`（live / スタイライズ）。`feTurbulence`(numOctaves=1) → monochrome 平均化 → `feComposite operator="arithmetic" k4=-0.5*amount` によるゼロ平均加算（`feComponentTransfer` の -0.5 オフセットはクランプで平均が狂うため不使用、票の指示通り）。`animated` は `seed = baseSeed + frame` で INV-1 決定論。`amount===0` → null。
+  - `test/noiseGrain.test.ts` 新規（決定論・zero-mean primitive 形状・animated/static seed 分岐・monochrome 分岐を固定。ゼロ平均性の実ピクセル確認は human 受け入れ対象のため本セッションでは未実施）。
+  - `test/effects.test.ts` レジストリ一覧に `noiseGrain` / `hyperGlow` を追加（既存回帰テストの期待値更新）。
+  - spec §27.3 に `noiseGrain` / `hyperGlow` 散文追記。
+- **非変更**: `schema.ts` / `DomRenderer.ts` / `effectChain.ts` / displacement 3 Set（両 Ticket とも非 displacement）/ `exporter.ts`。
+- **検証**: PASS `npm run typecheck`; PASS `npm test`（1115 tests, 1 registry 一覧更新込み）; `npm run build:player` 実行済み・`public/player.js` 更新（`playerBuildFreshness` PASS）。
+- **未実施（human 受け入れ）**: `noiseGrain` のゼロ平均性の実 Chrome 目視確認（票の完了条件から Codex/Claude 自動宣言は除外されている）。
+- **Next steps**: B-1 `scanlines`（§2.5 生 PNG + `feTile`・Claude diff レビュー + human 重さ verify 必須）→ C-1 `glitchSlice`（§2.2 4 配線点 + §2.5・Claude レビュー必須）→ D-1/D-2 spike（委任不可・Claude+human）→ E recipes（散文のみ）。
+
 ### 2026-07-12（Grok）— Acid/Digi Ticket A-1 `posterize`
 
 - **Source**: `doc/cloudplan/acid-digi-hyper-live-effects-plan-Detailed.md` Ticket A-1（WP-A）。§5/INV 変更ゼロ。
