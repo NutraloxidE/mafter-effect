@@ -23,14 +23,16 @@
 | `posterize` | ✅ 可 | Codex medium | 本票 Ticket A-1 を単体で渡す |
 | `gradientMap` | ✅ 可 | Codex medium | Ticket A-2（pure table 関数を先に分離） |
 | `chromaSplit` | ✅ 可 | Codex medium | Ticket A-3 |
-| `scanlines` | ✅ 可 | Codex medium | Ticket B-1 |
+| `scanlines` | ⚠️ 条件付き | Codex medium | Ticket B-1（**§2.5 生 PNG + `feTile` 必須**・Claude が §2.5 diff レビュー + human 重さ verify） |
 | `noiseGrain` | ⚠️ 可（要ゲート） | Codex medium | Ticket B-2 + ゼロ平均 verify を完了条件から除外し Claude 側で受け入れ |
 | `hyperGlow` | ✅ 可 | Codex medium | Ticket B-3 |
-| `glitchSlice` | ⚠️ 条件付き | Codex medium | Ticket C-1（4 配線点を prompt に列挙・Claude が diff レビュー必須） |
+| `glitchSlice` | ⚠️ 条件付き | Codex medium | Ticket C-1（4 配線点 + **§2.5 生 PNG マップ**を prompt に列挙・Claude が diff レビュー必須） |
 | `pixelStretch` | ❌ 不可（先に spike） | Claude + human | Ticket D-1 spike の go/no-go 後に票化 |
 | `liquidChrome` | ❌ 不可（先に spike） | Claude + human | Ticket D-2 spike（INV-2）後に票化 |
 
-**要するに**: Ticket A-1〜B-3 の 6 本は「本票を 1 枚ずつ渡せば」Codex/Sonnet に丸投げ可。displacement 1 本（C-1）は配線列挙付きで委任可だが Claude レビュー必須。spike 2 本は委任不可。
+**要するに**: 純 primitive チェーンの 5 本（`posterize`/`gradientMap`/`chromaSplit`/`hyperGlow`/`noiseGrain`）は本票を 1 枚ずつ渡せば Codex/Sonnet に丸投げ可（`noiseGrain` のみゼロ平均を Claude 受け入れ）。**`feImage` を使う 2 本（`scanlines`/`glitchSlice`）は §2.5（生 PNG + `feTile` / 生 PNG マップ）を prompt に明記し Claude の diff レビュー + human 重さ verify 必須**。spike 2 本は委任不可。
+
+> **§2.5 の由来**: 本詳細版は初版で `scanlines` を「`<pattern>` の feImage 化」、`glitchSlice` を「SVG `<rect>` マップ」で設計していたが、mosaic ブランチから取り込んだ implement-visual-effect §7c（`feImage`(ネスト SVG 文書) は毎フレーム再ラスタ・実測 200 倍）に該当するため、両 Ticket を生 PNG ベースへ訂正した（§2.5）。純 primitive の 5 本は §7c 非該当。
 
 ---
 
@@ -46,7 +48,7 @@
 - **Allowed file policy**: 1 Ticket = 原則 1〜3 ファイル。pure function を先に分離。
 - **Required commands**: `npm run typecheck` / `npm test -- <name>` / `npm run build:player`（runtime 変更後・全 Ticket 共通）。
 - **Required generated artifacts**: `public/player.js`（`build:player` の出力・commit 対象）。
-- **Human verification required**: `noiseGrain` ゼロ平均目視 / `pixelStretch` 量子化アーティファクト / `liquidChrome` INV-2 経路一致。
+- **Human verification required**: `noiseGrain` ゼロ平均目視 / `pixelStretch` 量子化アーティファクト / `liquidChrome` INV-2 経路一致 / **`scanlines`・`glitchSlice` の §2.5 重さ（実 Chrome + CDP Tracing で `MainFrame.Draw` ベースライン同等）**。
 - **Ambiguities**: 親 §9 の 4 未決事項（preset ラインナップ・hyperGlow の滲み範囲・spike 並行可否）。
 - **First safe action**: Ticket A-1（`posterize`・最小・純 CSS/SVG・displacement 非該当）。
 
@@ -90,9 +92,22 @@ Codex/Sonnet が「どこを触れば動くか」を推測しないための地�
 |---|---|---|
 | `svgDataUri(svg)` | `effectSvg.ts:10` | SVG 文字列 → data URI |
 | `feImageLayer`（内部） | `effectSvg.ts:19` | map/mask を `(0,0,w,h)` 固定で feImage 化 |
-| `ditherPatternMaskSvg`（内部・参考） | `effectSvg.ts:697` | `<pattern patternUnits="userSpaceOnUse">` タイル生成の様式 |
+| `rgbaToPngDataUri` | `pngDataUri.ts`（`effectSvg.ts:6` で import 済み） | **Uint8 バッファ → 生 PNG data URI（§2.5 の feTile/マップ焼きに使う）** |
+| `ditherPatternMaskSvg`（内部・参考） | `effectSvg.ts:697` | `<pattern>` タイル様式（**§2.5 の理由で feImage には渡さない**・様式参照のみ） |
 | `seededRandom` | `exprHelpers.ts` | 決定論乱数 |
 | `num` / `str` / `bool` / `rgba` | `builtinEffects.ts:28-52` | props パース（コピーして使う既存パターン） |
+
+### 2.5 `feImage` は「ネスト SVG 文書」を渡さない — 生 PNG + `feTile`（重さ・implement-visual-effect §7c）
+
+**本プラン策定後に mosaic ブランチから取り込んだ確定知見**（`.claude/skills/implement-visual-effect/SKILL.md` §7c、[mosaic-lite-phase-a-bench-report.md](mosaic-lite-phase-a-bench-report.md) §6.7）。**scanlines / glitchSlice の当初設計はこの罠に該当していたため、下記 Ticket で訂正済み。**
+
+- **罠**: `feImage` の参照先が `<pattern>` / `<linearGradient>` / `mix-blend-mode` / `<rect>` 群等を含む**ネスト SVG 文書**だと、`filter:` / `backdrop-filter:` の下で Chrome がそのネスト文書を**毎フレーム再ラスタライズ**し、`MainFrame.Draw` が桁で膨らむ（mosaicLite 実測 54ms、ベースライン比 ~200 倍）。map が静的でも起きる。
+- **正**:
+  - **タイル可能な模様（scanlines）** → タイル 1 個を `rgbaToPngDataUri()` で**生 PNG に焼き**、`feImage`(生 PNG) → native **`feTile`** で全域に敷く。
+  - **タイル不可の全域マップ（glitchSlice：スライスごとに値が違う）** → レイヤー実寸の**生 PNG を 1 枚**作り `feImage` に渡す（`feTile` なし）。
+  - どちらも **`<pattern>` / SVG `<rect>` 群を `feImage` に渡さない**。
+- **教訓の正確な形**: 「`feImage`=重い」ではなく「`feImage`(**ネスト SVG 文書**)=重い」。**生 PNG を渡す `feImage` は軽い**。
+- **verify（human/headed browser・Codex 自己宣言不可）**: 実 Chrome（`channel:"chrome", headless:false`）+ 実マウスドラッグ scrub + CDP `Tracing`（`MainFrame.Draw` を**エフェクト無しベースライン対照付き**で合算）。`requestAnimationFrame` / headless / `page.screenshot()` は不可（GPU/compositor コストを隠す）。CPU プロファイラでは支配コストが見えない。
 
 ---
 
@@ -203,15 +218,25 @@ Codex/Sonnet が「どこを触れば動くか」を推測しないための地�
 
 共通 Allowed/Forbidden/コマンドは WP-A と同じ（displacement セットに触らない）。
 
-### Ticket B-1 — `scanlines`
+### Ticket B-1 — `scanlines`（⚠️ §2.5 必須・生 PNG タイル + `feTile`）
 
-- **Model / Size**: Codex medium / 20 分。
-- **Allowed files**: `src/runtime/effectSvg.ts`（pattern SVG helper）、`src/runtime/builtinEffects.ts`、`test/scanlines.test.ts`。
-- **Implementation scope**:
-  - 純関数 `scanlinePatternSvg(w, h, lineHeight, duty, opacity, direction, phaseDeg): string` — `<pattern patternUnits="userSpaceOnUse">`（`ditherPatternMaskSvg` の様式）で 1 タイル = `lineHeight` 高（horizontal）、暗バンド高 = `lineHeight*duty`・明度 `1-opacity`、明部 = 白。`phaseDeg/360*lineHeight` を `patternTransform="translate(0,{off})"` でロール。`vertical` は x/y 入替。
-  - `apply`: `feImageLayer(svgDataUri(...))` → `<feBlend in="SourceGraphic" in2="lines" mode="multiply" result="mult"/>` → `<feComposite in="mult" in2="SourceGraphic" operator="in"/>`。`opacity===0` → `return null`。
-  - params: `lineHeight`(1..64,既定3) / `duty`(0.05..0.95,既定0.5) / `opacity`(0..1,既定0.35) / `direction`(enum,❌) / `phase`(0..360)。
-- **Tests**: `scanlinePatternSvg` が `<pattern` と 2 種の fill を含む、tile 寸法が lineHeight、direction 切替で幅高が入替。
+- **Model / Size**: Codex medium（**Claude が §2.5 diff レビュー + human が重さ verify**）/ 25 分。
+- **Pre-read**: **本票 §2.5 全文**、`effectSvg.ts:6`（`rgbaToPngDataUri` import）。
+- **Allowed files**: `src/runtime/effectSvg.ts`（PNG タイル焼き helper）、`src/runtime/builtinEffects.ts`、`test/scanlines.test.ts`。
+- **Implementation scope**（§2.5 反映・**`<pattern>` を使わない**）:
+  - 純関数 `scanlineTilePng(lineHeight, duty, opacity, direction): { uri, w, h }` — `lineHeight × lineHeight`（horizontal）の **Uint8ClampedArray を組み `rgbaToPngDataUri()` で生 PNG data URI に焼く**。暗バンド高 = `round(lineHeight*duty)`・グレー値 `255*(1-opacity)`（multiply 用）、残り行 = 白 255。`vertical` は x/y 入替（幅方向に暗バンド）。
+  - `apply`（`feImage`(生 PNG) → `feTile` → multiply → source alpha clip。ロールは phase を y オフセットに）:
+    ```
+    <feImage href="{tileUri}" x="0" y="{-phaseOffset}" width="{tileW}" height="{tileH}" preserveAspectRatio="none" result="tile"/>
+    <feTile in="tile" x="0" y="0" width="{w}" height="{h}" result="lines"/>
+    <feBlend in="SourceGraphic" in2="lines" mode="multiply" result="mult"/>
+    <feComposite in="mult" in2="SourceGraphic" operator="in"/>
+    ```
+    `phaseOffset = (phaseDeg/360)*tileH` を法 `tileH` で。**`<pattern patternUnits="userSpaceOnUse">` を feImage 化する構成は §2.5（毎フレーム再ラスタ）で不可。**
+  - params: `lineHeight`(1..64,既定3) / `duty`(0.05..0.95,既定0.5) / `opacity`(0..1,既定0.35) / `direction`(enum,❌) / `phase`(0..360)。`opacity===0` → `return null`。
+- **Explicit non-goals**: `<pattern>` / SVG rect map を使わない（§2.5）。
+- **Tests**: `scanlineTilePng` が `data:image/png` を返す・tile 寸法が lineHeight・`duty` で暗バンド行数が変わる・`opacity=1` で暗値が 0 に近づく・direction で w/h 入替。primitives に `feTile` が含まれ `<pattern` を含まないこと（§2.5 回帰テスト）。
+- **Human 受け入れ（Codex 完了条件から除外）**: §2.5 の実 Chrome + CDP Tracing で `MainFrame.Draw` がエフェクト無しベースライン同等。
 
 ### Ticket B-2 — `noiseGrain`（⚠️ ゼロ平均 verify は Claude/human が受け入れ）
 
@@ -268,21 +293,22 @@ Codex/Sonnet が「どこを触れば動くか」を推測しないための地�
 - **Purpose**: 水平スライスグリッチ。**§2.2 の 4 配線点すべてに触る。**
 - **Allowed files**: `src/runtime/effectSvg.ts`（map helper + 3 Set）、`src/runtime/effectChain.ts`（scale 分岐）、`src/runtime/fastEffects.ts`（EffectDef 登録）、`test/glitchSlice.test.ts`。
 - **Forbidden**: `DomRenderer.ts`（触らず Set 経由で経路が決まる）/ `schema.ts` / `exporter.ts` / raster pipeline。
-- **Pre-read**: **本票 §2.2 全文**（4 配線点）、`fastEffects.ts` の `FAST_WAVE_EFFECT_DEF`、`effectSvg.ts` の `lightPixelSortDisplaceMapSvg`（行ストリップ map の前例）。
+- **Pre-read**: **本票 §2.2 全文**（4 配線点）+ **§2.5**（生 PNG マップ・重さ）、`fastEffects.ts` の `FAST_WAVE_EFFECT_DEF`、`effectSvg.ts:6`（`rgbaToPngDataUri`）。
 - **Implementation scope**（順序厳守）:
-  1. **pure map helper** `glitchSliceDisplaceMapSvg({ w, h, sliceHeight, maxShift, density, seed, evolution }): { uri, scale }` を `effectSvg.ts` に追加。各スライス帯 `y∈[k*sliceHeight,(k+1)*sliceHeight)` について `seededRandom(seed, k, evolution)` で「飛ぶか（`< density`）」と変位量（`±maxShift` 正規化 → R チャンネル `0.5 + shift/(2*maxShift)`）を決め、未変位帯は R=0.5・G=0.5 の中間グレーで**レイヤー全域を埋める**。`scale = maxShift`。`svgDataUri` + `feImageLayer` 様式。
+  1. **pure map helper** `glitchSliceDisplaceMapPng({ w, h, sliceHeight, maxShift, density, seed, evolution }): { uri, scale }` を `effectSvg.ts` に追加。**レイヤー実寸 `w×h` の Uint8ClampedArray を組み `rgbaToPngDataUri()` で生 PNG に焼く**（§2.5：`lightPixelSortDisplaceMapSvg` 系の SVG `<rect>` マップは**踏襲しない** — ネスト文書の毎フレーム再ラスタになる）。各スライス帯 `y∈[k*sliceHeight,(k+1)*sliceHeight)` について `seededRandom(seed, k, evolution)` で「飛ぶか（`< density`）」と変位量（`±maxShift` 正規化 → R チャンネル `0.5 + shift/(2*maxShift)`、G=0.5）を決め、未変位帯は R=G=0.5 の中間グレーで**全域を埋める**。`scale = maxShift`。`feImageLayer`(生 PNG) 様式。各スライスで値が違い tile 化できないため `feTile` は使わず 1 枚を渡す。
   2. `EffectDef`（`executionPath:"live"`、`apply` は `displaceWithMap(uri, scale, w, h)` を返す・`intensity===0||maxShift===0` → null）を `fastEffects.ts` に定義し `registerFastEffects()` に登録。
   3. **§2.2 の 3 Set 追記**: `effectSvg.ts` の `DISPLACEMENT_EFFECT_TYPES` / `FAST_DISPLACEMENT_EFFECT_TYPES` / `LIVE_DISPLACEMENT_EFFECT_TYPES` すべてに `"glitchSlice"` を追加。
   4. **`effectChain.ts:65-82` の scale 分岐**に `glitchSlice` の `maxShift` を追加（`fxMaxDisplaceScale` へ反映）。
   - params: `intensity`(0..1,既定0.5=density) / `maxShift`(0..500,既定60) / `sliceHeight`(2..256,既定24) / `evolution`(deg) / `seed`(0..9999,❌) / `chromaOffset`(0..50,既定0)。`chromaOffset>0` は後段に chromaSplit 型 primitive を連結（初版は省略し TODO でも可）。
 - **Explicit non-goals**: raster 版は作らない。`chromaOffset` 連結は任意。map 平滑化（`fastSmoothPx`）は**掛けない**（グリッチは離散が正）。
 - **Tests**（`test/glitchSlice.test.ts`）:
-  - map helper が決定論（同 seed+evolution → 同 SVG 文字列）。
+  - map helper が決定論（同 seed+evolution → 同 PNG data URI 文字列）。
+  - map helper が **生 PNG（`data:image/png`）を返す**こと・SVG `<rect>` / `<pattern>` を含まないこと（§2.5 回帰テスト）。
   - 3 Set すべてに `glitchSlice` が含まれる（`DISPLACEMENT_EFFECT_TYPES.has("glitchSlice")` 等）— **配線漏れ回帰テスト**。
   - `intensity=0` → `apply` が null。
 - **Stop conditions**: `DomRenderer.ts` を編集する必要が出たら停止（設計上不要 = 触る必要が出た時点で設計誤り）。
-- **Human 受け入れ（Codex 完了条件から除外）**: preview と export の 1 フレーム画素一致（INV-2）、および amount 大での重心ドリフトが raster と小数2桁一致（§2.2）。headed browser 実測は Claude/human。
-- **Claude レビュー観点**（make-plan-for-codex §G）: 4 配線点すべて入ったか / `DomRenderer.ts` に触っていないか / 既存 fast 系 verify が無回帰か / `public/player.js` 再ビルド済みか。
+- **Human 受け入れ（Codex 完了条件から除外）**: ① preview と export の 1 フレーム画素一致（INV-2）、② amount 大での重心ドリフトが raster と小数2桁一致（§2.2）、③ **§2.5 の重さ verify — 実 Chrome + CDP Tracing で `MainFrame.Draw` がエフェクト無しベースライン同等**（生 PNG マップの効果確認）。headed browser 実測は Claude/human。
+- **Claude レビュー観点**（make-plan-for-codex §G）: 4 配線点すべて入ったか / **map が生 PNG で SVG rect でないか（§2.5）** / `DomRenderer.ts` に触っていないか / 既存 fast 系 verify が無回帰か / `public/player.js` 再ビルド済みか。
 
 ---
 
@@ -323,10 +349,10 @@ Codex/Sonnet が「どこを触れば動くか」を推測しないための地�
 1. A-1 posterize        → Codex medium 単体委任 → Claude review → build:player 確認
 2. A-2 gradientMap      → 同上（pure table 関数を先に）
 3. A-3 chromaSplit      → 同上
-4. B-1 scanlines        → 同上
+4. B-1 scanlines        → Codex 実装（§2.5 生 PNG + feTile）+ Claude §2.5 review + human 重さ verify
 5. B-2 noiseGrain       → Codex 実装 + Claude/human ゼロ平均受け入れ
-6. B-3 hyperGlow        → 同上
-7. C-1 glitchSlice      → Codex 実装（4 配線点列挙）+ Claude diff review 必須 + human INV-2
+6. B-3 hyperGlow        → Codex medium 単体委任 → Claude review → build:player 確認
+7. C-1 glitchSlice      → Codex 実装（4 配線点 + §2.5 生 PNG マップ列挙）+ Claude diff review 必須 + human INV-2 + human 重さ verify
 8. D-1 / D-2 spike      → Claude + human（委任不可）
 9. E   recipes          → Codex small（散文）
 10. progress.md 追記     → 各 WP 完了時
@@ -337,7 +363,8 @@ Codex/Sonnet が「どこを触れば動くか」を推測しないための地�
 - allowed / forbidden files を明記。
 - `npm run build:player` を明記（runtime 変更のため）。
 - 既存テスト期待値の改変禁止。
-- human 受け入れ項目（ゼロ平均 / INV-2 / 量子化）を **Codex 完了条件にしない**。
+- human 受け入れ項目（ゼロ平均 / INV-2 / 量子化 / **§2.5 の重さ**）を **Codex 完了条件にしない**。
+- **`feImage` を使う型（scanlines/glitchSlice）は §2.5 を prompt に明記**（生 PNG + `feTile` / 生 PNG マップ・`<pattern>`/SVG rect 禁止）。
 - 次 Ticket へ勝手に進まない。
 
 ---
@@ -345,5 +372,5 @@ Codex/Sonnet が「どこを触れば動くか」を推測しないための地�
 ## 9. まとめ（ユーザー向け 3 行）
 
 - **設計プラン丸投げは不可**（設計レベル・displacement 4 配線・spike の human 検証・9 本一括で焼ける、が理由）。
-- 本詳細版なら **A-1〜B-3 の 6 本は Ticket を 1 枚ずつ渡せば Codex/Sonnet に丸投げ可**（正確な primitive・identity・test・stop condition を各票に明記済み）。
-- `glitchSlice` は配線列挙付きで委任可だが **Claude の diff レビュー必須**、spike 2 本は **委任不可**。
+- 本詳細版なら **純 primitive の 5 本（posterize/gradientMap/chromaSplit/hyperGlow/noiseGrain）は Ticket を 1 枚ずつ渡せば Codex/Sonnet に丸投げ可**（正確な primitive・identity・test・stop condition を各票に明記済み）。
+- **`feImage` を使う 2 本（scanlines/glitchSlice）は §2.5（生 PNG + `feTile` / 生 PNG マップ）を明記し Claude の diff レビュー + human 重さ verify 必須**、spike 2 本は **委任不可**。§2.5 は mosaic ブランチの implement-visual-effect §7c 知見を取り込んで訂正した。

@@ -1,6 +1,6 @@
 ---
 name: implement-visual-effect
-description: 視覚エフェクト（displacement / noise / filter / 合成系）を新規実装・チューニング・ドリフト修正するときの計測駆動フレームワーク。Amount/Amplitude を上げると中身がずれる・歪みの強さで重心が動く・preview と export が一致しない・パラメータをいくら振っても収束しない、といった「効くが正しくない」エフェクト挙動を直すときに使う。正しい計測プロキシの選択、パラメータ vs 経路（アーキテクチャ）の分岐判定、CSS filter とラスタ経路の選択、プロシージャルノイズのゼロ平均性、残差の閉じ方を扱う。debug-visual-render-bug を土台に、エフェクト特有の罠を上乗せする。
+description: 視覚エフェクト（displacement / noise / filter / 合成系）を新規実装・チューニング・ドリフト修正・軽量化するときの計測駆動フレームワーク。Amount/Amplitude を上げると中身がずれる・歪みの強さで重心が動く・preview と export が一致しない・パラメータをいくら振っても収束しない、といった「効くが正しくない」挙動に加え、「効くが重い」＝ live エフェクトで scrub/再生の preview FPS が落ちる問題も扱う。正しい計測プロキシの選択、パラメータ vs 経路（アーキテクチャ）の分岐判定、CSS filter とラスタ経路の選択、プロシージャルノイズのゼロ平均性、残差の閉じ方、および live effect の重さ切り分け（実 Chrome + 実操作 + CDP screencast/Tracing、feImage ネスト文書 → feTile 化）を扱う。debug-visual-render-bug を土台に、エフェクト特有の罠を上乗せする。
 ---
 
 # 視覚エフェクトの実装・チューニング
@@ -66,8 +66,52 @@ description: 視覚エフェクト（displacement / noise / filter / 合成系�
 - 効いた定数・region 生成を**純関数として export** し、DOM 不要の unit test で固定
   （SVG 文字列に `intercept`/`userSpaceOnUse`/`width` が乗ることを検証）。罠を再導入させない。
 
+## 7. ライブエフェクトの「重さ」— 正しさとは別軸（preview FPS）
+
+§1〜6 は**正しさ**（ドリフト・parity）の軸。エフェクトが正しくても **live プレビューが重い**
+（scrub / 再生で FPS が落ちる）のは別問題で、計測方法も原因も違う。「効くが遅い」を直すときの型:
+
+### 7a. 重さは実 Chrome + 実操作 + コンポジタ信号で測る（rAF は当てにならない）
+`requestAnimationFrame` の間隔や `setFrame` の合成フレーム送りは **JS スレッドしか見ない**。
+GPU ペイント / コンポジット段の遅延はここに現れず、headless では 60fps の非再現になる。
+- 実 Chrome（`chromium.launch({ channel:"chrome", headless:false })`）＋ **実マウスドラッグ scrub**
+  （`page.mouse.down/move/up` でルーラーを連続ドラッグ）で駆動する。
+- 出力の真の更新レートは **CDP `Page.startScreencast`**（Chrome が実際にペイント変化を検知したときだけ
+  フレームを送る内部信号）で測る。`page.screenshot()` は同期ペイントを強制し停滞を隠すので不可。
+- 詳細な前提は memory [[perf-testing-real-chrome-not-headless]]。
+
+### 7b. 支配コストは CDP Tracing のイベント名で切り分ける（CPU プロファイラでは見えない）
+`client.send("Tracing.start", { categories:"devtools.timeline,toplevel,gpu,cc,viz,...", transferMode:"ReportEvents" })`
+→ `Tracing.dataCollected` 蓄積 → `Tracing.end` → **イベント名ごとに `dur` 合算**。見るべき名前:
+- `MainFrame.Draw` / `ProxyImpl::ScheduledActionDraw` — compositor のフレーム構築主処理。
+- `SkiaOutputSurfaceImplOnGpu::SwapBuffers` / `DXGISwapChainImageBacking::Present` — GPU 提示。
+- `Paint` / `RasterDecoderImpl::DoEndRasterCHROMIUM` — ラスタライズ実行。
+- 対照として **エフェクト無しのベースライン**を必ず並べて撮る（差分がエフェクト由来コスト）。
+- CPU プロファイラ（`Profiler` ドメイン）に `DomRenderer` が数%しか出なくても、GPU/compositor 側の
+  重さは別。**壁時計が縮まない理由の切り分けは Tracing、CPU profile ではない。**
+
+### 7c. `feImage`(ネスト SVG 文書) は `filter`/`backdrop-filter` 下で毎フレーム再ラスタされる — `feTile` へ
+このコードベースの確定知見（2026-07-12・mosaicLite）：**`feImage` の参照先が `<pattern>` /
+`<linearGradient>` / `mix-blend-mode` 等を含むネスト SVG 文書だと、backdrop-filter の下で
+Chrome がそのネスト文書を毎フレーム再ラスタライズし、`MainFrame.Draw` が桁で膨らむ**
+（実測 21ms/frame vs baseline 0.17ms、約120倍）。map の中身が静的でもフレーム単位で再解決される。
+- **直し方**: map を **フラットなラスタ（`rgbaToPngDataUri` の生 PNG）に焼き**、全域タイリングは
+  ネスト `<pattern>` ではなく **SVG フィルタ native の `feTile`** で行う。タイリングがフィルタグラフ内
+  （GPU/raster パイプライン）で閉じ、文書パース/ラスタが消える → `MainFrame.Draw` はベースライン同等へ。
+  ```
+  <feImage href="{block×block の生PNG}" x="0" y="0" width="{block}" height="{block}" result="t"/>
+  <feTile in="t" x="0" y="0" width="{w}" height="{h}" result="map"/>
+  <feDisplacementMap in="SourceGraphic" in2="map" .../>
+  ```
+- **全域を 1 枚の PNG に焼くのは不可**（1920×1080 で生成 1s 級・data URI 11MB でエディタが固まる）。
+  タイル 1 個だけ焼いて `feTile` で敷くのが正解。
+- 歴史的経緯: fastWave/fastRipple は `feImage` を捨て `feTurbulence` 直結に移行済み（改定4）。
+  mosaic はグリッドの視覚的アイデンティティ上ノイズ化できないが、**feTile なら feImage を保ったまま
+  同等に軽くできる**。「feImage=重い」ではなく「feImage(**ネスト文書**)=重い」が正確な教訓。
+
 ## チェックリスト（コピーして進捗管理）
 ```
+正しさ（§1–6）
 - [ ] 計測量を ink centroid（comp 座標）にした。host rect は併記のみ
 - [ ] 強さ 5/20/50/100 をスイープし、誤差の縮み方を記録した
 - [ ] パラメータで収束しない → 経路を疑った（沼回避）
@@ -77,6 +121,12 @@ description: 視覚エフェクト（displacement / noise / filter / 合成系�
 - [ ] noise を fractalNoise 化し、残差軸だけ intercept で中心化
 - [ ] 1 変数ずつ・毎段再計測。centroid delta ≤ 2px で収束
 - [ ] 定数/region を純関数 export し unit test で固定
+重さ（§7・live effect の FPS が問題のとき）
+- [ ] 実 Chrome + 実マウスドラッグ + CDP screencast で重さを再現（rAF/headless で終えない）
+- [ ] CDP Tracing で MainFrame.Draw 等をベースライン対照付きで切り分けた
+- [ ] feImage がネスト SVG 文書を参照していないか確認 → feTile + 生 PNG に置換
+- [ ] 修正後、実操作 scrub で MainFrame.Draw がベースライン同等まで下がったか再計測
+共通
 - [ ] 一時 Playwright スクリプト・console.log を削除。doc/progress 更新
 ```
 
@@ -87,6 +137,9 @@ description: 視覚エフェクト（displacement / noise / filter / 合成系�
 - 位置の決定性が要る合成を CSS filter/backdrop の合成器に委ねる。
 - noise の平均を確認せず scale だけ調整する（平均≠0.5 なら強さ比例で必ずずれる）。
 - 一時計測スクリプトや log をコミットに残す。
+- **preview の重さを rAF / headless / `setFrame` 合成送りで「測って」非再現だと結論する**（§7a：実操作 + screencast でしか出ない）。
+- **壁時計が縮まない理由を CPU プロファイルだけで判断する**（§7b：GPU/compositor コストは Tracing でしか見えない）。
+- **`feImage` を見て「重いから全部 feTurbulence 化」と早合点する**（§7c：重いのは feImage(**ネスト文書**)。feTile + 生 PNG なら feImage のまま軽い）。
 
 ## この repo の worked example（Turbulent Displace ドリフト Phase 2）
 症状: 調整/通常レイヤーとも Amount を上げると右下へドリフト。Phase 1 は host rect=0 で誤って解決判定。
@@ -98,6 +151,21 @@ description: 視覚エフェクト（displacement / noise / filter / 合成系�
 5. `turbulence → fractalNoise`（中心化 5）→ Y 軸残差を `FRACTAL_NOISE_G_BIAS_INTERCEPT` で
    -0.025→-0.032 と詰め、**全条件 centroid ≤ 2px**（収束 6）。
 6. `svgDisplaceFilterMarkup` / 各 intercept 定数を export し `test/effectSvg.test.ts` で固定。
+
+## worked example 2（mosaicLite の live プレビュー重さ・§7）
+症状: mosaicLite があるとテキスト単体のシンプルなコンプでも scrub/再生の FPS が激落ち。
+1. rAF / headless / `setFrame` 合成送りでの repro は全て非再現（60fps）→ **実 Chrome + 実マウスドラッグ scrub
+   + CDP screencast** で再現（canvas 更新 8fps・600ms 超の停滞）。ユーザー提供の画面録画も ffmpeg
+   `mpdecimate` で canvas 領域だけ切り出すと同じ低更新レートを確認（§7a）。
+2. CDP Tracing で切り分け → **`MainFrame.Draw` が mosaic 有効時 60ms/回・無効時 0.29ms（208倍）**。
+   `Paint`/`RasterDecoderImpl` は差なし＝ラスタ実行ではなく compositor 主描画が支配的（§7b）。
+3. 第1手: `<pattern>` 内 gradient+`mix-blend-mode` → 事前計算 PNG タイル化。GPU 側（SwapBuffers/Present）は
+   17〜25倍改善したが `MainFrame.Draw` は 54ms で残存（部分改善）。
+4. 隔離シーン（動く背景 + backdrop-filter オーバーレイ）で A/B 実測 → 残 54ms の実体は
+   **`feImage` が参照するネスト SVG 文書（PNG を敷く `<pattern>`）の毎フレーム再ラスタ**と確定。
+5. `feImage`(生 PNG タイル) + **native `feTile`** に置換（§7c）→ `MainFrame.Draw` 54ms→**0.39ms**
+   （ベースライン 0.29ms 同等・97%減）。視覚出力は PNG タイル版と ink 数完全一致・回帰なし。
+6. `mosaicGridSnapFilter` を `test/effectSvg.test.ts` で「feTile + 生 PNG・ネスト文書/pattern なし」で固定。
 
 ## ハーネス注意（Mafter Effect）
 [implementation-loop](../implementation-loop/SKILL.md) Phase 4b（Playwright 実機検証）に従う。追加で:

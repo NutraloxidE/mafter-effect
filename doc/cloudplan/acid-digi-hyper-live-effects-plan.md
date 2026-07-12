@@ -16,9 +16,9 @@
 | **1** | `posterize` — 階調量子化 | **live** | feComponentTransfer discrete | 極小 |
 | **1** | `gradientMap` — サーマル/Acid カラーマップ | **live** | saturate(0) + feComponentTransfer table | 極小 |
 | **1** | `hyperGlow` — しきい値ブルーム | **live** | threshold + feGaussianBlur + screen | 小〜中 |
-| **1** | `scanlines` — CRT/VHS 走査線 | **live** | feImage タイルパターン + blend | 極小 |
+| **1** | `scanlines` — CRT/VHS 走査線 | **live** | **生 PNG タイル + `feTile`**（`<pattern>` 不可・§2.5） + blend | 極小 |
 | **2** | `noiseGrain` — 動的フィルムグレイン | **live** | feTurbulence + seeded per-frame | 小 |
-| **2** | `glitchSlice` — 水平スライスグリッチ | **live** | 行ストリップ変位マップ（fast* 方式） | 小 |
+| **2** | `glitchSlice` — 水平スライスグリッチ | **live** | **生 PNG 変位マップ**（SVG rects 不可・§2.5） + feDisplacementMap | 小〜中 |
 | **2** | `pixelStretch` — ピクセル引き伸ばし | **live**（要スパイク） | ランプ変位マップ | 中 |
 | **3** | `liquidChrome` — Y2K 液体クローム | **live**（要スパイク） | feTurbulence + feSpecularLighting + gradientMap | 中 |
 | — | 「VHS」等の**ルックプリセット** | — | 既存エフェクトのスタック定型 | — |
@@ -27,6 +27,7 @@
 - 根拠は mosaic プラン（[mosaic-live-effect.md](mosaic-live-effect.md) §1.5）で確立済みの知見: **「フィルタ領域を `(0,0,w,h)` にクランプし、変位マップをレイヤー全域で定義すれば、live CSS filter の displacement は raster と小数2桁一致でドリフトしない」**（`fastWave` / `fastRipple` / `fastTurbulentDisplace` / `mosaicLite` の実績、spec:2271, 2719, 2738）。
 - **§5 スキーマ変更ゼロ / INV 変更ゼロ**。`EffectInstance.type` は open string（`src/core/schema.ts:101-106`）で、`EffectDef` 登録（`builtinEffects.ts` / `fastEffects.ts`）だけで完結する。
 - 時間履歴が必要な **datamosh / slit-scan / echo 系は却下**（§8）。`resolve()` 純関数（INV-1）と両立しないため、フレーム履歴アーキテクチャの導入という別議論になる。
+- **「正しさ」と「重さ」は別軸**（implement-visual-effect §7・mosaicLite の実証）。live で正しく描けても preview FPS が落ちれば実用不可。本プランで `feImage` を使う 2 本（`scanlines` / `glitchSlice`）は **§7c の「`feImage`(ネスト SVG 文書＝`<pattern>`/`<rect>` 群) は filter/backdrop-filter 下で毎フレーム再ラスタされ激重（実測 200 倍）」に該当する設計だったため、最初から生 PNG + `feTile`（scanlines）/ 生 PNG 変位マップ（glitchSlice）で設計する**（§2.5）。残り 7 本は `feImage` を使わない純 primitive チェーンなので §7c 非該当。
 
 ---
 
@@ -47,11 +48,25 @@
 
 - **`EffectDef` 契約**（`src/runtime/plugin.ts:56-70`）: `executionPath: "live" | "raster"` 必須明示。`apply(props, ctx)` は純関数で `{kind:"css"} | {kind:"svg", primitives} | {kind:"raster"}` を返す。
 - **live displacement の正準構成**（mosaic プラン §1.5 で確定）:
-  1. 変位マップは**レイヤー全域 `(0,0,w,h)` で常に定義される**こと（`<pattern patternUnits="userSpaceOnUse">` タイル or `feTurbulence stitchTiles` 相当）。
+  1. 変位マップは**レイヤー全域 `(0,0,w,h)` で常に定義される**こと（`feTurbulence stitchTiles` 相当、または **生 PNG タイル + `feTile`**。**`<pattern>` によるタイリングは §2.5 の重さ問題で不可**）。
   2. フィルタ領域を `(0,0,w,h)` にクランプ（`svgDisplaceFilterMarkup(..., compFixed)` 系）。パディング帯を作らない。
   3. これで raster capture ゼロ・ドリフトゼロ。`LIVE_DISPLACEMENT_EFFECT_TYPES`（`effectSvg.ts:67`）への登録を忘れない。
 - **乱数**: `Math.random` 禁止（INV-1）。`phaseToSeed()`（`effectSvg.ts:230`）の系譜で **`seed` パラメータ + `ctx.frame` から決定論的に導出**する。
 - **再ビルド**: 本プランのコードはすべて `src/runtime/` 配下 → **実装セッションでは `npm run build:player` 必須**（CLAUDE.md「bundle player の再ビルド」）。
+
+### 2.5 live preview の「重さ」— 正しさとは別軸（implement-visual-effect §7 準拠）
+
+> mosaicLite の実証（[mosaic-lite-phase-a-bench-report.md](mosaic-lite-phase-a-bench-report.md) §6.7、implement-visual-effect スキル §7）で確定した知見。本プラン策定後に mosaic ブランチから取り込み、**scanlines / glitchSlice の設計をここで訂正した**。
+
+エフェクトが座標的に正しくても、**live プレビューが重い（scrub / 再生で FPS 落ち）のは別問題**で、計測方法も原因も違う。本プランに効く具体点:
+
+- **§7c 直撃 — `feImage`(ネスト SVG 文書) は毎フレーム再ラスタされる**。`feImage` の参照先が `<pattern>` / `<linearGradient>` / `mix-blend-mode` / `<rect>` 群等を含むネスト SVG 文書だと、`filter:` / `backdrop-filter:` の下で Chrome がそのネスト文書を**毎フレーム再ラスタライズ**し、`MainFrame.Draw` が桁で膨らむ（mosaicLite 実測 54ms、ベースライン比 ~200 倍）。map の中身が静的でも起きる。
+  - **直し方（本プラン適用）**:
+    - `scanlines`: タイル 1 個を **`rgbaToPngDataUri()` で生 PNG に焼き**、全域タイリングは `<pattern>` ではなく SVG フィルタ native の **`feTile`** で行う（§3.5 で反映）。
+    - `glitchSlice`: 変位マップを **SVG の `<rect>` 群ではなく生 PNG（`rgbaToPngDataUri` の Uint8 バッファ）**として作る（§4.2 で反映）。各スライスで値が違い tile 化できないため `feTile` は使わず、レイヤー実寸の生 PNG を 1 枚 `feImage` に渡す。
+  - **教訓の正確な形**: 「`feImage`=重い」ではなく「`feImage`(**ネスト SVG 文書**)=重い」。**生 PNG を渡す `feImage` は軽い**（ネスト文書のパース/再ラスタが無いため）。fastWave/fastRipple が `feImage` を捨て `feTurbulence` 直結にしたのは別事情（改定4）で、mosaic は feTile で feImage を保ったまま軽量化した。
+- **純 primitive チェーンの 7 本（posterize / gradientMap / chromaSplit / hyperGlow / noiseGrain）は §7c 非該当**。`feComponentTransfer` / `feColorMatrix` / `feGaussianBlur` / `feTurbulence` はネスト文書を持たずフィルタグラフ内で閉じる。ただし `hyperGlow` の `feGaussianBlur` は大 radius で GPU コストが乗るため `quality` ノブ（§3.4）で stdDeviation を粗化できる設計を維持する。
+- **計測は実 Chrome + 実マウスドラッグ scrub + CDP `Page.startScreencast` / `Tracing`**（§7a/§7b）。`requestAnimationFrame` / headless / `page.screenshot()` は GPU/compositor コストを隠す（60fps の非再現）。**支配コストは CDP Tracing の `MainFrame.Draw` 等をベースライン対照付きで見る**（CPU プロファイラでは見えない）。→ 本プランの verify（特に scanlines / glitchSlice）はこの手順を必須とし、**Codex に自己完了宣言させない**（詳細版 §2.5 / verify 節）。
 
 ---
 
@@ -124,7 +139,7 @@
 ### 3.5 `scanlines` — CRT / VHS 走査線
 
 - **executionPath**: `live` / **previewBakeRequired**: `false` / **category**: スタイライズ
-- **技法**: `ditherPatternMaskSvg()`（`effectSvg.ts:660-684`）と同型の `<pattern patternUnits="userSpaceOnUse">` で「暗ラインタイル」を feImage 化 → `feBlend mode="multiply"`（または `feComposite arithmetic` で `opacity` 制御）。`phase` でパターンの y オフセットを動かすと**ロール（縦流れ）**になる。`direction` enum で縦線（LED 格子風）も。
+- **技法（§2.5 反映・重要）**: 暗ラインの 1 タイル（`lineHeight × lineHeight` px 相当）を **`rgbaToPngDataUri()` で生 PNG に焼き**、`feImage`(生 PNG) → **native `feTile`** で全域に敷いてから `feBlend mode="multiply"`（または `feComposite arithmetic` で `opacity` 制御）。**`<pattern patternUnits="userSpaceOnUse">` を feImage 化する当初案は §7c（毎フレーム再ラスタ）に該当するため不可**。`phase` はタイルの y オフセット（`feTile` の入力 `feImage` の `y` or map 焼き時の shift）で**ロール（縦流れ）**にする。`direction` enum で縦線（LED 格子風）も。
 - **params**:
 
 | key | kind | default | range | animatable |
@@ -136,7 +151,7 @@
 | `phase` | scalar | 0 | 0..360（1周=1タイル分ロール） | ✅ |
 
 - **identity**: `opacity === 0` → `return null`。
-- **リスク**: 極小。既存 dither パターン機構の直系。
+- **リスク**: 低。ロジックは単純だが **§2.5 の生 PNG + `feTile` 構成が必須**（`<pattern>` feImage 化は重さで不可）。実装後は §2.5 の実 Chrome + CDP Tracing で `MainFrame.Draw` がベースライン同等まで下がることを確認する。
 
 ---
 
@@ -155,7 +170,7 @@
 デジタルグリッチの本丸。画面を水平帯に分割し、一部の帯だけ横に飛ばす。
 
 - **executionPath**: `live` / **previewBakeRequired**: `false` / **category**: ディストーション（軽量）
-- **技法**: `lightPixelSortDisplaceMapSvg()`（`effectSvg.ts:894`）が既に確立している「行ストリップ単位の水平変位マップ」の直系。`sliceHeight` ごとの帯それぞれに、seeded 乱数（`seed` + `evolution` 由来）で「変位するか否か（`density`）」と「変位量（±`maxShift` 内）」を決め、R チャンネル一定値の帯として SVG マップに焼く → `feDisplacementMap`。マップはレイヤー全域で定義（未変位帯は 0.5 グレー）＋ region `(0,0,w,h)` クランプ = **fast* と同じ正真正銘 live**。`chromaOffset > 0` なら chromaSplit と同型の primitive を後段に連結し「ずれた帯だけ色収差」風の一体ルックに。
+- **技法（§2.5 反映・重要）**: `sliceHeight` ごとの帯それぞれに、seeded 乱数（`seed` + `evolution` 由来）で「変位するか否か（`density`）」と「変位量（±`maxShift` 内）」を決め、R チャンネル一定値の帯として **レイヤー実寸の生 PNG（`rgbaToPngDataUri` の Uint8 バッファ）** に焼く → `feImage`(生 PNG) → `feDisplacementMap`。**`lightPixelSortDisplaceMapSvg()` 系の SVG `<rect>` マップは §7c（ネスト文書の毎フレーム再ラスタ）に該当するため踏襲しない**。各スライスで値が異なり tile 化できないので `feTile` は使わず 1 枚の生 PNG を渡す。マップはレイヤー全域で定義（未変位帯は 0.5 グレー）＋ region `(0,0,w,h)` クランプ = **fast* と同じ正真正銘 live**。`chromaOffset > 0` なら chromaSplit と同型の primitive を後段に連結し「ずれた帯だけ色収差」風の一体ルックに。
 - **params**:
 
 | key | kind | default | range | animatable |
@@ -229,8 +244,8 @@ implementation-loop スキル準拠（spec 先行 → 実装 → verify → prog
 | Phase | 内容 | 完了条件 |
 |---|---|---|
 | **A** | カラー3種: `posterize` / `gradientMap` / `chromaSplit` | 純関数テスト（テーブル生成・オフセット算出）+ verify スクリーンショット + `npm run build:player` |
-| **B** | 発光・質感: `hyperGlow` / `scanlines` / `noiseGrain` | 同上 + noiseGrain ゼロ平均計測 + glow の quality ノブ動作 |
-| **C** | グリッチ: `glitchSlice` | seeded 決定論テスト（同 seed+frame → 同マップ）+ INV-2 verify（preview vs export 1フレーム画素一致）|
+| **B** | 発光・質感: `hyperGlow` / `scanlines` / `noiseGrain` | 同上 + noiseGrain ゼロ平均計測 + glow の quality ノブ動作 + **`scanlines` の §2.5 重さ verify（実 Chrome + CDP Tracing で `MainFrame.Draw` ベースライン同等）** |
+| **C** | グリッチ: `glitchSlice` | seeded 決定論テスト（同 seed+frame → 同マップ）+ INV-2 verify（preview vs export 1フレーム画素一致）+ **§2.5 重さ verify（生 PNG マップで `MainFrame.Draw` がベースライン同等）** |
 | **D** | スパイク→確定: `pixelStretch`（半日スパイク→go/no-go）/ `liquidChrome`（feSpecularLighting INV-2 スパイク→go/後退） | スパイク記録を本ファイルに追記し、確定仕様を spec へ |
 | **E** | ルックプリセットレシピを spec §27 に併記 | 散文のみ |
 
@@ -240,6 +255,7 @@ implementation-loop スキル準拠（spec 先行 → 実装 → verify → prog
 2. 既存 verify（`verify-*-export*.mjs`・fast 系 displacement・blend/調整系）の**無回帰確認**。共有ファイル（`effectSvg.ts` / `fastEffects.ts` / `builtinEffects.ts`）への変更は新型追加のみ・既存関数の挙動変更なしを原則とする。
 3. displacement 系（glitchSlice / pixelStretch）は `LIVE_DISPLACEMENT_EFFECT_TYPES` 更新 + region `(0,0,w,h)` クランプの実測（重心ドリフトゼロ）。
 4. InspectorPanel のエフェクト追加メニューはレジストリ駆動（既存機構）なので個別 UI 作業は原則不要 — category 文字列の新設（「スタイライズ」等は既存を再利用）だけ確認。
+5. **`feImage` を使う型（scanlines / glitchSlice）は §2.5 の重さゲート必須** — 実 Chrome + 実マウスドラッグ scrub + CDP Tracing で `MainFrame.Draw` がエフェクト無しベースライン同等であることを確認する。ネスト SVG 文書（`<pattern>` / `<rect>` 群）を `feImage` に渡していないこと（生 PNG + `feTile` / 生 PNG マップになっていること）を diff で確認。この重さ受け入れは **human/headed browser 側で行い、Codex に自己完了宣言させない**。
 
 ---
 
