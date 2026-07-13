@@ -1,5 +1,19 @@
 # Progress
 
+### 2026-07-13（Claude Sonnet 5）— Acid/Digi Ticket D-1 `pixelStretch` spike をエディタに登録（判定待ち）
+
+- **Source**: `doc/cloudplan/acid-digi-hyper-live-effects-plan-Detailed.md` Ticket D-1（WP-D spike）。
+- **経緯**: 最初は静的 HTML（file://・app 外）でプロトタイプを検証したところ「pivot 付近で描画が途切れる」ように見えたため一旦 Chrome の描画バグを疑ったが、`feDisplacementMap` が **pull 型**（出力行 y は入力行 `y + dy(y)` をサンプル）であることを踏まえて式を追うと、`dy(y) = -(y-pivot)` では pivot 近傍で `y+dy(y) = pivot`（定数）に収束し**同一行が引き伸ばされてスミアになる**のが正しい挙動と判明（Chrome バグではなく票の式どおりの意図した見た目）。誤読を訂正。
+- **ユーザーから「エフェクトリストに出てこない」指摘**: 静的 HTML 検証のみで実際のアプリには未登録だったため。**C-1 (`glitchSlice`) と同型で正式に `EffectDef` 登録**し、実機（`npm run dev`）でユーザー自身が操作して go/no-go を判断できるようにした。
+- **実装**（`pixelStretch` — ラベルに `(spike)` を明記し WIP 扱い。`PIXEL_SORTER_EFFECT_DEF` の `(WIP)` 表記と同じ規約）:
+  - `src/runtime/effectSvg.ts`: `pixelStretchDisplaceMapPng({ h, amount, pivot })` — `dy(y)=-(y-pivot)` を R チャンネル（8-bit・`0.5+dy/(2*amount)` にクランプ）へ焼く。x 方向は値が変化しないため 1 列に圧縮（`feTile` を使わない plain `feImage` stretch のため §2.5 系のスケール罠には非該当）。
+  - `src/runtime/fastEffects.ts`: `PIXEL_STRETCH_EFFECT_DEF`（live / ディストーション（軽量）、params: `amount`(0..2000,既定300) / `pivot`(0..1,既定0.5)）を新規登録。
+  - `effectSvg.ts` の `DISPLACEMENT_EFFECT_TYPES` / `FAST_DISPLACEMENT_EFFECT_TYPES` に `"pixelStretch"` を追加（`LIVE_DISPLACEMENT_EFFECT_TYPES` は spread で自動追従）。`effectChain.ts` の scale 分岐は既存の汎用 `amount` フォールバックがそのまま適用されるため追記不要。
+  - `test/pixelStretch.test.ts` 新規（決定論・生 PNG 判定・3 Set 配線漏れ回帰・`amount=0` 恒等）。`test/effects.test.ts` レジストリ一覧に `pixelStretch` を追加。
+- **検証**: PASS `npm run typecheck`; PASS `npm test`（1141 tests）; `npm run build:player` 実行済み・`public/player.js` 更新。
+- **未確定（ユーザー判断待ち）**: 「pivot 付近が単色スミア・離れた領域は量子化されたコピーが帯ごとにズレる」見た目が pixelStretch の意図したグリッチ感として受け入れ可能か。go なら正式エフェクトへ昇格（ラベルから `(spike)` を外す・spec §27.3 に正式追記）、no-go なら票の代替案（① `sliceHeight` を持つ階段状ストレッチ ② raster 版へ降格）を検討。
+- **Next steps**: ユーザーがエディタ（`npm run dev`）で `pixelStretch` を実際にレイヤーへ追加し `amount`/`pivot` を操作して見た目を判断 → 結果を本ファイルに追記 → go なら D-2 `liquidChrome` spike へ。
+
 ### 2026-07-13（Claude Sonnet 5）— Acid/Digi WP-E ルックプリセットレシピ（散文のみ）完了
 
 - **Source**: `doc/cloudplan/acid-digi-hyper-live-effects-plan-Detailed.md` §7 WP-E。コード変更ゼロ（要求どおり）。

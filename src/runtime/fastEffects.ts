@@ -7,6 +7,7 @@ import {
   fastWaveDisplace,
   glitchSliceDisplaceMapPng,
   mosaicGridSnapFilter,
+  pixelStretchDisplaceMapPng,
 } from "./effectSvg";
 
 function num(v: unknown, fallback: number): number {
@@ -189,12 +190,34 @@ const GLITCH_SLICE_EFFECT_DEF: EffectDef = {
   },
 };
 
+const PIXEL_STRETCH_EFFECT_DEF: EffectDef = {
+  type: "pixelStretch",
+  label: "Pixel Stretch (spike)",
+  category: "ディストーション（軽量）",
+  previewBakeRequired: false,
+  executionPath: "live",
+  params: [
+    { key: "amount", label: "Amount", kind: "scalar", default: 300, animatable: true, min: 0, max: 2000, step: 1 },
+    { key: "pivot", label: "Pivot Y", kind: "scalar", default: 0.5, animatable: true, min: 0, max: 1, step: 0.01 },
+  ],
+  apply(props, ctx: EffectRenderCtx) {
+    const amount = Math.max(0, num(props["amount"], 300));
+    if (amount === 0) return null;
+    const w = Math.max(1, ctx.width);
+    const h = Math.max(1, ctx.height);
+    const pivot = Math.min(1, Math.max(0, num(props["pivot"], 0.5)));
+    const { uri, scale } = pixelStretchDisplaceMapPng({ h, amount, pivot });
+    return { kind: "svg", primitives: displaceWithMap(uri, scale, w, h) };
+  },
+};
+
 export function registerFastEffects(): void {
   globalPluginRegistry.registerEffect(MOSAIC_LITE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(FAST_WAVE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(FAST_RIPPLE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(FAST_TURBULENT_DISPLACE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(GLITCH_SLICE_EFFECT_DEF);
+  globalPluginRegistry.registerEffect(PIXEL_STRETCH_EFFECT_DEF);
 }
 
 export {
@@ -203,4 +226,5 @@ export {
   FAST_RIPPLE_EFFECT_DEF,
   FAST_TURBULENT_DISPLACE_EFFECT_DEF,
   GLITCH_SLICE_EFFECT_DEF,
+  PIXEL_STRETCH_EFFECT_DEF,
 };
