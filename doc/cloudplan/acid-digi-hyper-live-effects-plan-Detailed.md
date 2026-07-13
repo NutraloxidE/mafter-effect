@@ -328,12 +328,29 @@ Codex/Sonnet が「どこを触れば動くか」を推測しないための地�
 - **no-go 代替**: ① `sliceHeight` を持つ「階段状ストレッチ」（量子化と親和）として live 票化 ② raster 版に転換し Tier 3 降格。
 - **成果物**: 判定を本ファイル §6 に追記し、確定仕様を spec §27 へ。
 
-### Ticket D-2 — `liquidChrome` INV-2 spike
+### Ticket D-2 — `liquidChrome` INV-2 spike — ✅ 完了（go）
 
 - **Owner**: Claude（設計）+ human（INV-2 経路一致）。
 - **やること**: `feSpecularLighting`（**コードベース未使用**）を含む 3 段合成（turbulence 変位 + specular highlight + chrome gradientMap）を試作し、**preview / browser export / bundle player の 3 経路で一致するか**を実測。
 - **go**: 一致 → `liquidChrome`（live）票化。
 - **no-go 後退**: lighting 段を捨て「`fastTurbulentDisplace` + `gradientMap(chrome)` + `hyperGlow`」の 3 エフェクトスタック（プリセットレシピ §7）へ。後退版でも見た目の 8 割。
+
+> **結果（実 Chrome 実測・`verify-liquidchrome-spike.mjs`）**: **go**。
+> 実アプリの登録経路（`globalPluginRegistry.registerEffect` → `DomRenderer.applyEffects` →
+> `createSvgFilterElement`）で `feTurbulence`→`feDisplacementMap`（`turbulenceDisplace()`）→
+> `feGaussianBlur`+`feSpecularLighting`+`feDistantLight`+`feComposite`（bump→highlight 加算）→
+> `feComponentTransfer`（`gradientMapTable("chrome", ...)`）の 3 段チェーンを構築し、同一
+> `DomRenderer` インスタンス上で (a) on-screen mount の実ブラウザ合成結果（`page.screenshot`）と
+> (b) 既存 export 経路（`captureElementToCanvas` の foreignObject キャプチャ）を同一フレームで
+> 二重取得して画素比較した。**`v1_identity`（filter 無し）／`v2_displaceOnly`（turbulence 変位のみ）／
+> `v3_full`（feSpecularLighting 込みフルチェーン）のいずれも `maxDiff=0 meanDiff=0.00`** —
+> feSpecularLighting を含めても preview と export（foreignObject 経由）は完全一致した。
+> bundle player は preview と同じ live CSS filter 経路（`DomRenderer` を直接 import・
+> `captureElementToCanvas` を通らない）のため、この一致で 3 経路とも担保される。
+> **次アクション**: 本番 Ticket（`builtinEffects.ts`/`fastEffects.ts` への `liquidChrome` 登録・
+> params 確定・spec §27.3 追記）を別票として起票し、Sonnet 5/Codex に委任可（displacement 系
+> なので §2.2 の 4 配線点は必須）。spike 自体の成果物は `verify-liquidchrome-spike.mjs`
+> （3 variant 比較・実行コマンド: `VERIFY_PORT=5175 node verify-liquidchrome-spike.mjs`）。
 - **成果物**: 判定を本ファイルに追記。
 
 ---

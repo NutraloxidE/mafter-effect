@@ -1,5 +1,14 @@
 # Progress
 
+### 2026-07-13（Claude Sonnet 5）— acid-digi Ticket D-2 `liquidChrome` INV-2 spike 完了（go）
+
+- **やること**: `doc/cloudplan/acid-digi-hyper-live-effects-plan-Detailed.md` Ticket D-2。`feSpecularLighting`（コードベース未使用）を含む liquidChrome 3 段合成（`turbulenceDisplace` → `feSpecularLighting`/`feDistantLight` bump ハイライト → `gradientMapTable("chrome")`）が preview / export で経路差なく描画されるかの spike。
+- **手法**: `verify-liquidchrome-spike.mjs`（新規）。実アプリの登録経路（`globalPluginRegistry.registerEffect` → `DomRenderer.applyEffects` → `createSvgFilterElement`）で filter を構築し、同一 `DomRenderer` インスタンスの同一フレームを (a) on-screen mount の実ブラウザ合成（`page.screenshot`）と (b) 既存 export 経路（`captureElementToCanvas` の foreignObject キャプチャ）の両方で取得して画素比較。`v1_identity`（filter無し）/`v2_displaceOnly`（turbulence 変位のみ）/`v3_full`（feSpecularLighting 込みフルチェーン）の 3 variant を切り分け。
+- **結果**: 3 variant すべて `maxDiff=0 meanDiff=0.00`（実行: `VERIFY_PORT=5175 node verify-liquidchrome-spike.mjs`）。feSpecularLighting を含めても preview/export（foreignObject 経由）は完全一致 → **go**。bundle player は preview と同じ live CSS filter 経路（`captureElementToCanvas` を通らない）なので、この一致で INV-2 の 3 経路とも担保される。
+- **試行錯誤の教訓**: 初回スパイクは手組み DOM（`document.body` 直下に filter defs、`captureElementToCanvas` は別ツリーの `container` のみキャプチャ）で `export` 側が常に真っ黒になり NO-GO 誤判定しかけた。原因は spike ハーネスのバグ（filter defs を対象要素の外に置いたため foreignObject シリアライズが参照を解決できなかった）で、製品コードの不具合ではなかった。`DomRenderer.ts:2148` の実配置（`div.insertBefore(svg, div.firstChild)` — filter defs は対象要素自身の子）に合わせて再構築し、かつ実アプリの登録経路（store 越しではなく直接 `resolve()`+`DomRenderer` に流し込む最小 in-memory composition）を使うことで解消。**spike で経路差を測るときは、手組みの DOM 構造ではなく実アプリの配線をなぞること**（さもないと spike ハーネス自身のバグを製品の経路差と誤判定する）。
+- **決定記録**: `doc/cloudplan/acid-digi-hyper-live-effects-plan-Detailed.md` Ticket D-2 に go 判定と根拠を追記済み。
+- **Next steps**: 本番 Ticket（`liquidChrome` を `builtinEffects.ts`/`fastEffects.ts` に正式登録・params 確定・spec §27.3 追記・displacement 系 §2.2 の 4 配線点対応）は未着手。Sonnet 5/Codex へ委任可能な粒度で別途起票する。
+
 ### 2026-07-13（Claude Fable 5）— `pixelStretch` に `density` 追加（スライス反復 ⇄ 完全ストレッチ・2 段残差補正）
 
 - **ユーザーフィードバック**: 実装直後の pixelStretch は「滅茶苦茶良い感じ」だが「スライス引き伸ばし」に見える（pic1: 帯内で細かいコピーが反復）。**密度を弄れるようにして、密度を上げると完全なピクセルストレッチ（pic2: 帯全域がライン 1 列の色）も可能に**、との要望。
