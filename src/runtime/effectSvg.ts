@@ -26,12 +26,30 @@ export function displacementPadFromScale(scale: number): number {
 }
 
 /**
+ * `feImage`+`feTile` タイルの縮退方向（変化しない軸）の最小ピクセル数。
+ *
+ * §27.3 改定1（2026-07-13・重大バグ修正）: `scanlineTilePng` は当初、変化しない軸を
+ * 1px に切り詰めていた（`glitchSlice` の「冗長軸は 1px に潰して軽量化」と同じ発想）。
+ * しかし実 Chrome で検証したところ、**1px 幅の `feImage` を `feTile` で反復し、さらに
+ * その要素が祖先の CSS `transform: scale(...)` で縮小表示される**（Preview パネルの
+ * "Fit" ズームは常にこの状態）と、GPU のテクスチャ縮小サンプリングが破綻し、縞が
+ * 一切描画されない（多重化/モアレの上、実質透明になり `feBlend multiply` が no-op と
+ * 化して原色がそのまま透過する）。`mosaicGridSnapFilter` が同じ `feImage`+`feTile` 構成で
+ * `MOSAIC_TILE_MIN_DIM = 16` を最小タイル寸法として使っているのは同じ理由（この定数は
+ * 既存の対策を再利用の発想）。1px 幅と比べデータ量はわずかに増えるが 16×64 でも数十 KB
+ * 程度に収まり、§2.5 の「生 PNG + feTile」自体の軽さは変わらない。
+ * （`MOSAIC_TILE_MIN_DIM` はこのファイル後方で定義されるため値を直接複製する。同じ規約。）
+ */
+const SCANLINE_TILE_MIN_STATIC_DIM = 16;
+
+/**
  * §27.3 Scanlines — 1 タイル分の明暗バンドを RGBA バッファへ焼く（§2.5: 生 PNG + native feTile）。
  *
  * `<pattern>` を `feImage` に渡すネスト SVG 文書構成は毎フレーム再ラスタライズされ致命的に重い
  * （implement-visual-effect §7c 実測）。ここでは 1 本の帯だけを生 PNG に焼き、呼び出し側で
  * `feTile` によりフィルタグラフ内でネイティブに全域反復する。
- * horizontal は縦方向（Y）に周期を持つため tile は 1×lineHeight、vertical はその転置。
+ * horizontal は縦方向（Y）に周期を持つため tile は `SCANLINE_TILE_MIN_STATIC_DIM`×lineHeight、
+ * vertical はその転置（変化しない軸を 1px にはしない・改定1参照）。
  */
 export function scanlineTilePng(
   lineHeight: number,
@@ -45,8 +63,8 @@ export function scanlineTilePng(
   const darkLen = Math.min(lh, Math.max(0, Math.round(lh * d)));
   const darkGray = Math.round(255 * (1 - op));
   const horizontal = direction !== "vertical";
-  const tw = horizontal ? 1 : lh;
-  const th = horizontal ? lh : 1;
+  const tw = horizontal ? SCANLINE_TILE_MIN_STATIC_DIM : lh;
+  const th = horizontal ? lh : SCANLINE_TILE_MIN_STATIC_DIM;
   const rgba = new Uint8Array(tw * th * 4);
   for (let y = 0; y < th; y++) {
     for (let x = 0; x < tw; x++) {

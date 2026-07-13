@@ -1,5 +1,17 @@
 # Progress
 
+### 2026-07-13（Claude Sonnet 5）— `scanlines`（B-1）描画されないバグを実 Chrome で特定・修正 → 完了
+
+- **報告**: ユーザーから「scanlines が動作していないっぽい」。実 Chrome（Playwright、`channel:"chrome"`）でエディタを直接操作して調査（`window.__mafterEditorStore` 経由で solid + `scanlines` を追加し screenshot）。
+- **症状**: `lineHeight`/`opacity` をどう振っても完全に無効果（元の単色のまま）。DOM 上は `filter:url(#fx-...)` が正しく適用され、`<defs><filter>` の中身（`feImage`/`feTile`/`feBlend`/`feComposite`）も正しい内容で存在し、埋め込み PNG も単体では正常デコードできる — 一見「配線は全部正しいのに効かない」という難しいバグだった。
+- **切り分け**: 単体の静的 HTML（1:1 スケール）では同一 primitives が正常に描画される一方、アプリ内では常に無効。DOM 構造（host 0×0 + 絶対配置 child）・祖先の `isolation`/`transform-style` 等を模した再現でも単体では再現せず、最終的に **Preview パネルの "Fit" ズームによる祖先の CSS `transform: scale(0.4136...)`（端数スケール）を模した wrapper を足したところ再現に成功**。
+- **原因**: `feImage`(生 PNG) を `feTile` で反復する際、**参照元の生 PNG が 1px 幅/高**（`scanlineTilePng` が変化しない軸を 1px に切り詰めていた・`glitchSlice` と同じ「冗長軸の圧縮」最適化を踏襲した設計）だと、その要素が端数の `transform:scale()` 配下でラスタライズされるときに GPU のテクスチャ縮小サンプリングが破綻し、タイル結果が実質透明になる。`feBlend mode="multiply"` は透明な `in2` に対して no-op になるため、原色がそのまま透過して見える（エラーも警告も出ない）。
+- **修正**（`src/runtime/effectSvg.ts` の `scanlineTilePng`）: タイルの静的軸（horizontal なら x、vertical なら y）を 1px → **16px**（`SCANLINE_TILE_MIN_STATIC_DIM = 16`）に拡張。これは `mosaicGridSnapFilter` が同じ `feImage`+`feTile` 構成で既に採用している `MOSAIC_TILE_MIN_DIM = 16` と同じ規約（同じ理由で導入されていたと判明）。実 Chrome + 端数スケール wrapper で再テストし、縞が正常描画されることを確認。
+- **教訓を memory に記録**: `svg-fetile-1px-source-vanishes-under-css-scale`（新規）— 「`glitchSlice` の冗長軸圧縮」とは別軸のバグクラス（feTile 特有・スケール依存）であることを明記。
+- **検証**: PASS `npm run typecheck`; PASS `npm test`（1132 tests、`test/scanlines.test.ts` の寸法アサーションを 1px→16px 以上の期待値に更新）; `npm run build:player` 実行済み・`public/player.js` 更新。実 Chrome（Playwright, headed, `channel:"chrome"`）で `lineHeight=3`（既定）・`lineHeight=40`＋端数スケール wrapper の両方で目視確認済み。
+- **ステータス変更**: `scanlines`（B-1）は**完了**（実描画バグ修正・実機確認済み）。`glitchSlice`（C-1）は前セッションでユーザー確認済みのまま**完了**。
+- **Next steps**: `pixelStretch`（D-1）/ `liquidChrome`（D-2）は feasibility spike が先（委任不可・headed browser 実ピクセル判定）。WP-E（プリセットレシピ散文）は残作業。`scanlines` の §2.5 重さ実測（`MainFrame.Draw` ベースライン同等の確認）はまだ未実施 — 描画バグ修正後にあらためて実施を推奨。
+
 ### 2026-07-13（Claude Sonnet 5）— `glitchSlice`（C-1）完了マーク / `scanlines`（B-1）は未完了のまま調査中
 
 - **ステータス変更**: ユーザー確認により `glitchSlice`（C-1）は重さ最適化後の体感で**完了**とする。`scanlines`（B-1）は「動作していないっぽい」報告あり、**未完了**のまま調査・修正中（続報は本ファイル先頭の新規エントリに記載）。

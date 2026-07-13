@@ -10,16 +10,20 @@ describe("scanlineTilePng (pure)", () => {
     expect(uri.startsWith("data:image/png;base64,")).toBe(true);
   });
 
-  it("horizontal tile has tile dims 1 x lineHeight", () => {
+  it("horizontal tile keeps the static (x) axis >= 16px — regression for the fractional-scale bug", () => {
+    // 実 Chrome 実測: feImage が 1px 幅だと feTile タイル結果が祖先の CSS
+    // transform:scale(...)（Preview の Fit ズーム）下で GPU テクスチャ縮小サンプリングが
+    // 破綻し、縞が一切描画されない（feBlend multiply が事実上 no-op になり原色が透過する）。
+    // mosaicGridSnapFilter の MOSAIC_TILE_MIN_DIM=16 と同じ最小タイル寸法規約をここでも守る。
     const { w, h } = scanlineTilePng(6, 0.5, 0.35, "horizontal");
-    expect(w).toBe(1);
+    expect(w).toBeGreaterThanOrEqual(16);
     expect(h).toBe(6);
   });
 
-  it("vertical tile has tile dims lineHeight x 1 (swap)", () => {
+  it("vertical tile keeps the static (y) axis >= 16px (swap)", () => {
     const { w, h } = scanlineTilePng(6, 0.5, 0.35, "vertical");
     expect(w).toBe(6);
-    expect(h).toBe(1);
+    expect(h).toBeGreaterThanOrEqual(16);
   });
 
   it("is deterministic for same inputs", () => {

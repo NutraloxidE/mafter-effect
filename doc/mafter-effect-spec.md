@@ -2657,11 +2657,12 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 | `phase` | Phase | scalar | `0` | 0..360, step 1 | ✅ |
 
 - `apply` → `{ kind: "svg", primitives }`（`opacity === 0` → `null`）。
-- **技法（§2.5・`<pattern>` は使わない）**: 1 タイル分の明暗バンドを `scanlineTilePng()` で**生 PNG に焼き**（horizontal は `1×lineHeight`、vertical はその転置）、`feImage`(生 PNG) → native `feTile` でフィルタグラフ内でネイティブに全域反復 → `feBlend mode="multiply"` で暗バンドを乗算 → `feComposite operator="in"` でソースアルファへクリップ。`phase` はタイル周期 `lineHeight` を法にロール方向（horizontal は y、vertical は x）へオフセット。
+- **技法（§2.5・`<pattern>` は使わない）**: 1 タイル分の明暗バンドを `scanlineTilePng()` で**生 PNG に焼き**（horizontal は `16×lineHeight`、vertical はその転置。改定1参照）、`feImage`(生 PNG) → native `feTile` でフィルタグラフ内でネイティブに全域反復 → `feBlend mode="multiply"` で暗バンドを乗算 → `feComposite operator="in"` でソースアルファへクリップ。`phase` はタイル周期 `lineHeight` を法にロール方向（horizontal は y、vertical は x）へオフセット。
 - **既知の罠（implement-visual-effect §7c）**: `<pattern>`/`<linearGradient>` 等を含むネスト SVG 文書を `feImage` に渡すと `backdrop-filter` 下で毎フレーム再ラスタライズされ致命的に重い（mosaicLite 実測 ~200 倍）。生 PNG を渡す `feImage` はこの罠に該当しない。
+- **改定1（描画されないバグの修正・2026-07-13）**: 初版は変化しない軸（horizontal なら x）を **1px** に切り詰めていたが、実 Chrome で「エフェクトを追加しても何も起きない」ことが判明。原因は **1px 幅の `feImage` を `feTile` で反復し、さらにその要素が祖先の CSS `transform: scale(...)`（Preview パネルの "Fit" ズームは常時これ）で縮小表示される**と、GPU のテクスチャ縮小サンプリングが破綻し縞が一切描画されない（`feBlend mode="multiply"` が事実上 no-op 化し原色がそのまま透過して見える）こと。`mosaicGridSnapFilter` が同じ `feImage`+`feTile` 構成で `MOSAIC_TILE_MIN_DIM = 16` を最小タイル寸法にしているのと同じ理由でタイルの静的軸を **最低 16px** に拡張して解消（`SCANLINE_TILE_MIN_STATIC_DIM = 16`）。データ量はわずかに増えるが §2.5 の「生 PNG + feTile」自体の軽さは変わらない。
 - **カテゴリ**: `"スタイライズ"`。
 - **経路**: live SVG（`executionPath: "live"`）。非 displacement・region 自動 150%。
-- **human 受け入れ**: 実 Chrome + CDP Tracing で `MainFrame.Draw` がエフェクト無しベースライン同等であることの確認は本セッション未実施（票の完了条件から Codex/Claude 自動宣言は除外）。
+- **human 受け入れ**: 実 Chrome + CDP Tracing で `MainFrame.Draw` がエフェクト無しベースライン同等であることの確認は未実施（票の完了条件から Codex/Claude 自動宣言は除外）。改定1修正後の実際の描画は Playwright + 実 Chrome（`channel:"chrome"`）で確認済み（Preview の Fit ズーム相当の `transform:scale(0.4136)` 下で再現・修正）。
 - **非目標**: 走査線の彩度分離（NTSC/PAL 色収差）・インターレース疑似。
 
 ### §27.4 調整レイヤー（Adjustment Layer・Live / Raster 2 モード・確定 2026-06-20）
