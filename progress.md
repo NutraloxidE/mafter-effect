@@ -1,5 +1,35 @@
 # Progress
 
+### 2026-07-13（Claude Sonnet 5）— 3D テキスト拡張 P1 実装（text 押し出し・depth+bevel+lambert・非破壊トグル）
+
+- **背景**: 前セッションで作成した設計プラン（[3d-text-extrusion-plan.md](doc/cloudplan/3d-text-extrusion-plan.md)）と実装分解（[3d-text-extrusion-implementation.md](doc/cloudplan/3d-text-extrusion-implementation.md)）を受け、ユーザーから「エフェクト系（他ブランチ `feature/acid-digi-hyper-phase-a-posterize-gradientmap` が触っている領域）と衝突していないか確認した上で、可能な範囲で実装して」と依頼。事前確認: hyper ブランチは `builtinEffects.ts`/`effectSvg.ts`（posterize/gradientMap/chromaSplit）と `DomRenderer.ts` の **effect フィルタ適用経路**（`applyFilterTokens`/`syncSvgFilters`/`ObjectEntry.svgFiltersKey`）のみを触っており、本実装が触る **コンポーネント内容分岐**（`case "text"`）とは意味的に無衝突と確認（共有ファイルの通常のテキストマージ調整のみ発生）。
+- **スコープ合意**: ユーザー承認により **text のみ・P1 コア（depth 押し出し + bevel + lambert 陰影 + 3D⇄2D トグル）を実装**。twist/bend/taper・GradientFill・shape 対応（P2〜P4）は次フェーズ。bend=円弧モデル・単色=GradientFill 2-stop は設計方針として記録のみ（未配線）。
+- **実装**（新規 `src/runtime/geom3d/**` に隔離、既存 export/resolve/effect パイプラインは無変更）:
+  - `geom3dTypes.ts`/`geom3dParams.ts`: `Geom3DParams` 型 + `GEOM3D_PARAM_DESCRIPTORS`（7 個: geomEnabled/geomDepth/geomBevelSize/geomBevelSegments/geomCurveQuality/geomShading/geomAmbient）+ `parseGeom3DParams`（防御的パース、§26.4 の `parseTextProps` と同型）。
+  - `outlineProvider.ts`: opentype.js の Path commands（M/L/C/Q/Z）→ 閉じたポリゴンリング列への flatten（`flattenPathCommandsToRings`）+ `textToOutlineGlyphs`（テキストレイアウト → per-glyph リング。system フォント/アウトライン不可時は null を返し呼び出し側が 2D フォールバック）。
+  - `extrudeMesh.ts`: earcut ベースの押し出しメッシュ生成。**設計簡略化（重要・既知）**: 当初プランの「depth は uniform のみで焼かずアニメ中再生成ゼロ」を断念し、**depth/bevelSize を実座標としてメッシュに焼き込む**方式に変更（ベベルの XY オフセット px と Z 比率を正しく釣り合わせるため、depth 未確定のまま単位メッシュを作る設計は幾何的に破綻すると判断）。front cap=ローカル z=0 固定（depth=0 で既存 2D と完全一致）・back cap=z=-depth。穴あきグリフ（O/A/8）・複数輪郭グリフ（i の幹+点、% の 2 円）は点包含の入れ子深度アルゴリズム（`groupRingsByNesting`、巻き方向に非依存）で正しく分解。ベベルは四半円プロファイル（`bevelSegments` 段）。法線は面ごとにフラット（3D cross product、縮退三角形は (0,0,1) へ安全側フォールバック — 実フォントグリフでの縮退三角形をテストで検出・修正済み）。
+  - `geom3dGl.ts`: per-layer 素の WebGL canvas（three.js 不使用、`videoAlphaGl.ts` と同じ `WeakMap<canvas,State>` パターンを踏襲）。**カメラの簡略化（既知の設計判断）**: comp のアクティブカメラ・`Transform.rotation` は GL 側で適用しない。固定の既定パースペクティブのみを使い、front cap（z=0）をピクセル等倍・無歪みで投影するよう校正（§6.5b の `translate(cx,cy,P)` 中立化と同じ考え方を独自導出）。`Transform.rotation` は既存の CSS `matrix3d` 経路がそのまま担う（＝押し出し画像を平面カードとして傾ける近似。真の per-object 3D 回転応答は次フェーズ・spec §6.5c に記載）。lambert 陰影は local-space 固定光源（`geomLightDir` 既定値、Inspector 未配線）による NdotL。
+  - `geom3dMeshCache.ts`: 簡易 LRU（64 件）。
+  - `geom3dDomApply.ts`: `applyGeom3DText`/`clearGeom3DCanvas`。既存 `applyDraftText`/`renderPreciseText` と同じ「left/top/width/height/overflow を毎回全上書き」規約に従い、2D⇄3D 切替時に残留 DOM が出ないことを検証済み。
+  - `DomRenderer.ts`: `case "text"` に **1 分岐だけ追加**（`geomEnabled` かつメッシュ生成成功なら `applyGeom3DText`、それ以外は既存 `applyTextEl` を無変更で通す）。`ObjectEntry` 型・`applyObject`・export/rasterCapture 等の共有関数は**無変更**。`releaseAlphaGlCompositorsUnder`（既存のオブジェクト削除時 GL 解放フック）に geom3d canvas 用の解放行を 1 行追加（既存の split/packed alpha 解放と同じパターン）。
+  - `builtinComponents.ts`: `TEXT_COMPONENT_DEF.params` に `GEOM3D_PARAM_DESCRIPTORS` を concat（既存 Timeline KF 行が自動対応）。
+  - `store.ts` `addText`: geom* の既定値を明示的に積む（既存 `weight`/`italic` 等と同じ「常に全キー明示」規約。旧プロジェクト（キー欠落）は `parseGeom3DParams` の既定補完で非破壊）。
+  - `InspectorPanel.tsx`: text の Content フォールドアウト内に `Geom3DFields`（3D Extrude トグル + ON 時 Depth/Bevel Size/Bevel Segments/Curve Quality/Shading/Ambient の既存 `AnimScalarRow`/`Row`/`Stopwatch` 再利用行）を追加。**注**: 既存の "3D" フォールドアウト（§5.4b per-layer 3D レイヤースイッチ）とは別概念のため独立フォールドアウトを作らず名称衝突を回避。
+  - `mafter-effect-spec.md`: §5.5f（3D 押し出しスキーマ・P1 スコープ明示）、§6.5c（カメラ簡略化と次フェーズの設計課題）、§26.4.1 末尾（system フォント制約の継承）を追記。
+- **依存追加**: `earcut@^3.2.3`（MIT・~2KB、type 同梱のため `@types/earcut` 不要）。`npm install --ignore-scripts` で追加（この環境では electron postinstall が 403 で失敗するため）。
+- **検証**:
+  - PASS `npm run typecheck`（プロジェクト全体）。
+  - PASS `npm test`（1121/1122。唯一の失敗 `test/projectBins.test.ts` の1件は単体実行で PASS する既知の順序依存 flake — 過去複数セッションで記録済み・本変更と無関係と再確認）。新規 `test/geom3d/*.test.ts` 45 件全 PASS（params/outline/extrude/meshCache）。extrude.test.ts は実フォント（Noto Sans）での統合スモークテストを含み、穴あき/複数輪郭グリフの縮退三角形バグ（法線ゼロベクトル）を実際に検出・修正した。
+  - `npm run build:player` 実行・`playerBuildFreshness` 緑（Claude Code hook `.claude/hooks/rebuild-player-if-needed.mjs` が編集の都度バックグラウンドで再ビルド済みだったが、明示的にも再実行し `git diff public/player.js` で確認）。
+  - **実機 Playwright 検証**（使い捨てスクリプト・削除済み、headless Chrome + `--use-angle=swiftshader`）: (1) 実フォント（Noto Sans asset 相当）での "3D" 押し出しレンダリングをスクリーンショットで確認 — depth+bevel+lambert 陰影が正しく視認できる立体表現（オレンジ系の前面+側面陰影）。(2) `geomEnabled` の ON→OFF→ON 往復で DOM が正しく切り替わり、2D スパン/canvas の残留なしを確認。(3) `depth=0` で例外なく描画・全頂点 z=0 に潰れることを確認。(4) 実アプリ経由（store→Inspector UI クリック）で `geomEnabled` トグル・Depth/Bevel/Curve Quality/Shading/Ambient 行の表示・編集が正しく反映されることをスクリーンショットで確認。(5) 既存 `verify-export-adjustment.mjs`（調整レイヤー blur の export parity）を実行し PASS — DomRenderer の共有経路（effect/export）に回帰がないことを確認。
+- **既知のギャップ・次にやるべきこと（Next steps）**:
+  1. **mp4/webm/PNG 連番/bundle export の geom3d 実 parity 検証が未実施**（`preserveDrawingBuffer: true` は設定済みで理論上は既存 canvas インライン化経路に乗るはずだが、実機確認はまだ）。実装分解 doc の Ticket 08-a/b に相当。
+  2. **Inspector の system フォント警告が未実装**（`geomEnabled=true` でもアウトライン抽出不可なら無音で 2D フォールバックする — 動作は正しいが UI 上「なぜ 3D にならないか」が分からない）。
+  3. **P2（twist/bend/taper）・P3（GradientFill 面塗り）・P4（shape 対応）は未着手**。特に P2 は「アニメ中メッシュ再生成ゼロ」という当初の性能目標を depth/bevel 側で断念した経緯があるため、着手前に uniform 化できる範囲を再設計する必要がある。
+  4. **真の per-object 3D 回転応答が未実装**（spec §6.5c に設計課題として明記。`DomRenderer.applyObject` の transform 分離が必要で、共有 transform 計算に触れるため着手前にユーザー確認要）。
+  5. GL コンテキストの予算/kill-switch（`videoAlphaGl.ts` の `MAX_GL_ALPHA_CONTEXTS` 相当）は未実装。3D テキストを大量に使うプロジェクトでの WebGL context 上限は未検証。
+- **ブランチ**: `claude/3d-text-extension-k040dx`。
+
 ### 2026-07-13（Claude Code）— 3D テキスト拡張（非破壊・ライブ・shape 再利用）の設計プランを作成（実装なし）
 
 - **やったこと**: ユーザー依頼「テキストを非破壊に 3D 化（押し出し厚・ねじ曲げ・キーフレーム可・多形式グラデーション・3D⇄2D トグル・shape にも再利用可能な機構）する仕様を cloudplan に md として記述」を受け、[doc/cloudplan/3d-text-extrusion-plan.md](doc/cloudplan/3d-text-extrusion-plan.md) を新規作成。コード・spec（SSoT）変更は一切なし。

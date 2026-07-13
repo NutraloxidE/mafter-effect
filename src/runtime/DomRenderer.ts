@@ -14,6 +14,9 @@ import type { NestedCompRasterizer } from "./compFrameCapture";
 import { resolve, type ExpressionEvaluator } from "./resolve";
 import { resolveVideoGainForFrame } from "./videoGainOnly";
 import { applyTextEl, rgbaCss } from "./textRender";
+import { parseGeom3DParams } from "./geom3d/geom3dParams";
+import { applyGeom3DText, clearGeom3DCanvas, GEOM3D_CANVAS_CLASS } from "./geom3d/geom3dDomApply";
+import { releaseGeom3DGl } from "./geom3d/geom3dGl";
 import { buildMultiRingPathD, buildShapePathD, type ResolvedShapeVertex } from "./shapePath";
 import { composeRings, multiPolygonToPathD } from "./shapePathBoolean";
 import type { Ring } from "polygon-clipping";
@@ -492,6 +495,10 @@ export class DomRenderer implements Renderer {
     }
     for (const canvas of root.querySelectorAll(`canvas.${PACKED_ALPHA_CANVAS_CLASS}`)) {
       if (canvas instanceof HTMLCanvasElement) releasePackedAlphaGlCompositor(canvas);
+    }
+    // §5.5f geom3d — オブジェクト削除時に per-layer WebGL context を明示解放（リーク防止）。
+    for (const canvas of root.querySelectorAll(`canvas.${GEOM3D_CANVAS_CLASS}`)) {
+      if (canvas instanceof HTMLCanvasElement) releaseGeom3DGl(canvas);
     }
   }
 
@@ -2291,7 +2298,14 @@ function updateComponentEl(
     case "text": {
       const fontFamily = typeof props["font"] === "string" ? props["font"] : "sans-serif";
       const font = fontCache?.getFont(fontFamily) ?? null;
-      applyTextEl(el, props, textQuality, font);
+      // §5.5f 3D 押し出し（P1: depth+bevel+lambert、非破壊トグル）。system フォント（アウトライン
+      // 抽出不可）またはメッシュ生成失敗時は既存 2D 描画へフォールバックする（§26.4.1 と同じ制約）。
+      const geom3d = parseGeom3DParams(props);
+      const usedGeom3D = geom3d.enabled && applyGeom3DText(el, props, font, geom3d);
+      if (!usedGeom3D) {
+        clearGeom3DCanvas(el);
+        applyTextEl(el, props, textQuality, font);
+      }
       break;
     }
     case "image": {

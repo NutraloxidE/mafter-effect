@@ -2005,6 +2005,16 @@ function TextComponentFields({
           {italic ? "On" : "Off"}
         </button>
       </Row>
+      <Geom3DFields
+        props={props}
+        frame={frame}
+        writeStatic={writeStatic}
+        writeAnim={writeAnim}
+        previewAnim={previewAnim}
+        toggleKf={toggleKf}
+        onFocus={onEditFocus}
+        onBlur={onEditBlur}
+      />
       <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 4 }}>
         <button
           onClick={onDecomposeNull}
@@ -2021,6 +2031,112 @@ function TextComponentFields({
           Decompose with keyframes on child
         </button>
       </div>
+    </>
+  );
+}
+
+/**
+ * §5.5f 3D 押し出し（P1: depth/bevel/shading のみ・非破壊トグル）。
+ * text の Content フォールドアウト内に直接ぶら下げる（既存 "3D" フォールドアウト＝§5.4b per-layer
+ * 3D レイヤースイッチとは別概念のため独立フォールドアウトは作らず、混同を避ける）。
+ * twist/bend/taper・グラデーション面塗りは未実装（doc/cloudplan/3d-text-extrusion-plan.md 次フェーズ）。
+ */
+function Geom3DFields({
+  props, frame, writeStatic, writeAnim, previewAnim, toggleKf, onFocus, onBlur,
+}: {
+  props: Component["props"];
+  frame: number;
+  writeStatic: (key: string, value: unknown, label: string) => void;
+  writeAnim: (key: string, next: AnimatedProp<number>, label: string) => void;
+  previewAnim: (key: string, next: AnimatedProp<number>) => void;
+  toggleKf: (key: string, prop: AnimatedProp<unknown>) => void;
+  onFocus: () => void;
+  onBlur: () => void;
+}) {
+  const enabled = props["geomEnabled"] === true;
+  const depthProp = props["geomDepth"];
+  const bevelSizeProp = props["geomBevelSize"];
+  const ambientProp = props["geomAmbient"];
+  const bevelSegments = typeof props["geomBevelSegments"] === "number" ? props["geomBevelSegments"] : 2;
+  const curveQuality = props["geomCurveQuality"] === "low" || props["geomCurveQuality"] === "high" ? props["geomCurveQuality"] : "medium";
+  const shading = props["geomShading"] === "none" ? "none" : "lambert";
+
+  const numRow = (key: string, label: string, prop: unknown, min?: number, max?: number): ReactNode => {
+    if (!isAnimated(prop)) return null;
+    const value = typeof sampleAny(prop, frame) === "number" ? (sampleAny(prop, frame) as number) : 0;
+    return (
+      <AnimScalarRow
+        label={label}
+        prop={prop as AnimatedProp<number>}
+        value={value}
+        frame={frame}
+        onToggle={() => toggleKf(key, prop)}
+        onCommit={(v) => {
+          if (prop.keyframes.length > 0) writeAnim(key, setKeyframe(prop as AnimatedProp<number>, frame, v), `Edit ${key}`);
+          else writeAnim(key, { ...(prop as AnimatedProp<number>), value: v }, `Edit ${key}`);
+        }}
+        onLiveChange={(v) => {
+          if (prop.keyframes.length > 0) previewAnim(key, setKeyframe(prop as AnimatedProp<number>, frame, v));
+          else previewAnim(key, { ...(prop as AnimatedProp<number>), value: v });
+        }}
+        onFocus={onFocus}
+        onBlur={onBlur}
+        min={min}
+        max={max}
+      />
+    );
+  };
+
+  return (
+    <>
+      <Row label="3D Extrude">
+        <button
+          type="button"
+          onClick={() => writeStatic("geomEnabled", !enabled, "Toggle 3D extrude")}
+          style={{ ...btnStyle, background: enabled ? "#2f5a44" : "#2a2a2a", color: enabled ? "#9fe8c4" : "#ccc" }}
+          title="押し出し・ベベルで立体化する（テキストは編集可能なまま・非破壊。フォントが asset として取り込まれていない場合は 2D のまま — §26.4.1 と同じ制約）"
+        >
+          {enabled ? "ON" : "OFF"}
+        </button>
+      </Row>
+      {enabled && (
+        <>
+          {numRow("geomDepth", "Depth", depthProp, 0)}
+          {numRow("geomBevelSize", "Bevel Size", bevelSizeProp, 0)}
+          <Row label="Bevel Segs">
+            <ScrubNumber
+              value={bevelSegments}
+              onCommit={(v) => writeStatic("geomBevelSegments", Math.round(Math.min(8, Math.max(1, v))), "Edit bevel segments")}
+              min={1}
+              max={8}
+              step={1}
+              style={numInputStyle}
+            />
+          </Row>
+          <Row label="Curve Quality">
+            <select
+              value={curveQuality}
+              onChange={(e) => writeStatic("geomCurveQuality", e.target.value, "Edit curve quality")}
+              style={selectStyle}
+            >
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+            </select>
+          </Row>
+          <Row label="Shading">
+            <select
+              value={shading}
+              onChange={(e) => writeStatic("geomShading", e.target.value, "Edit shading")}
+              style={selectStyle}
+            >
+              <option value="lambert">Lambert</option>
+              <option value="none">None</option>
+            </select>
+          </Row>
+          {shading === "lambert" && numRow("geomAmbient", "Ambient", ambientProp, 0, 1)}
+        </>
+      )}
     </>
   );
 }

@@ -361,12 +361,43 @@ type ShapeRings = ShapeVertex[][];
 - Bake 後は `mergeInputs` が無くなるため、参照されていた他レイヤーは自動的に再表示される（§5.5d の自動非表示は `mergeInputs` の存在に基づく構造的判定のため、自然に解除される）。
 - rings も Inspector で編集可能（既存 `ShapeVertexRow` をリングごとに再利用。リング単位の削除、または「Rings を破棄して単一パスに戻す」で `vertices: []` の単一図形へ戻せる）。
 
+#### §5.5f text 3D 押し出し（geom3d・非破壊・additive・確定・P1 実装済み 2026-07-13）
+
+> 設計の正は [doc/cloudplan/3d-text-extrusion-plan.md](../doc/cloudplan/3d-text-extrusion-plan.md)（アーキテクチャ・比較検討）/ [doc/cloudplan/3d-text-extrusion-implementation.md](../doc/cloudplan/3d-text-extrusion-implementation.md)（作業票）。Illustrator の 3D 効果（押し出し・ベベル）相当をライブ（ベイク不要）に実現する。**P1 実装スコープ = depth + bevel + lambert 陰影 + 3D⇄2D トグルのみ**。twist/bend/taper（ねじり・曲げ・テーパー）とグラデーション面塗り（`GradientFill`）は本リビジョンでは**未実装**（次フェーズ）。
+
+```ts
+// text（将来 shape も同じ配列を concat する・P4 未着手）の Component.props に additive-optional で乗る。
+// flat prop のため既存 ParamDescriptor 駆動の Timeline KF 行・Inspector PropRow・undo 配線をそのまま使う
+// （§26.2 と同じ契約）。全キー省略時は従来の 2D 描画のまま・byte 等価（INV-4）。
+interface Geom3DTextProps {
+  geomEnabled:       boolean;                          // 既定 false。animatable: false（構造トグル）
+  geomDepth:         AnimatedProp<number>;              // px, >=0。既定 50
+  geomBevelSize:      AnimatedProp<number>;              // px, >=0。既定 0（ベベルなし）
+  geomBevelSegments: number;                            // 1..8。既定 2。animatable: false
+  geomCurveQuality:  "low" | "medium" | "high";          // ベジェ flatten 分割数。既定 "medium"
+  geomShading:       "none" | "lambert";                 // 既定 "lambert"
+  geomAmbient:       AnimatedProp<number>;               // 0..1。既定 0.35（lambert 時のみ意味を持つ）
+}
+```
+
+- **3D⇄2D トグル（非破壊）**: `geomEnabled=false`（既定・省略）は既存 2D 描画経路（draft DOM / precise SVG、§26.4）を**そのまま**通る。ON にしても既存 `text`/`color`/`strokeColor` 等の 2D 用 props は変更されない。トグルは非アニメータブル（AE の 3D レイヤースイッチと同じ理由 — フレーム間で DOM 構造が切り替わるとキャッシュ・export 分岐が毎フレーム変わるため）。
+- **色の継承**: 前面/背面/側面/ベベルはすべて既存 `color` を継承し lambert 陰影を掛けるのみ（面ごとの色/グラデーション上書きは次フェーズ §5.5g 予定・未実装）。
+- **フォント制約（§26.4.1 と同じ）**: アウトライン抽出できるのは asset フォント（`.ttf/.otf/.woff` を assets として取り込んだもの）のみ。system フォント（`sans-serif` 等、ビルトイン Noto を含む — Noto は `@font-face` 実ロードのみで opentype パース未登録・§26.3.2）では `geomEnabled=true` でも**アウトライン抽出不可のため自動的に 2D 描画へフォールバックする**（無音・非破壊。Inspector 警告表示は未実装・既知のギャップ）。
+- **カメラ（簡略化・既知の設計判断）**: 本リビジョンは comp のアクティブカメラ（§6.5）・`Transform.rotation` を GL 側の押し出しメッシュに適用**しない**。GL は固定の既定パースペクティブのみを使い、front cap（ローカル z=0）を常にピクセル等倍・無歪みで投影する（`depth=0` は既存 2D 描画とピクセル一致）。`Transform.rotation` は既存の CSS `matrix3d` 経路でオブジェクト全体（＝GL が描いたラスタ）を平面カードとして傾けるのみで、真の per-object 3D 回転応答（per-pixel parallax）ではない。真のカメラ/回転応答は次フェーズ（§6.5c 参照）。
+- **描画経路（案 B・確定）**: per-layer の**素の WebGL canvas**（three.js 不使用）。`entry.contentRoot`（= `el`）内の 1 DOM 要素として座り、blend/filter/matte/export のレイヤー列挙には一切関与しない（[webgl-video-layer-plan.md](../doc/cloudplan/webgl-video-layer-plan.md) §1 の確立原則を踏襲）。実装: `src/runtime/geom3d/`（`geom3dTypes.ts`/`geom3dParams.ts`/`outlineProvider.ts`/`extrudeMesh.ts`（earcut 使用）/`geom3dGl.ts`/`geom3dMeshCache.ts`/`geom3dDomApply.ts`）、配線は `DomRenderer.ts` の `case "text"` 内のみ（型別オプトイン）。
+- **メッシュ生成の設計簡略化（既知）**: `depth`/`bevelSize` は uniform ではなく**メッシュ生成時に実座標として焼き込む**（front cap z=0 固定・back cap z=-depth。ベベルの XY オフセット px と Z 比率を正しく釣り合わせるため）。そのため depth/bevel の変更はメッシュキャッシュ（`geom3dMeshCache.ts`、決定論キー）のミス＝再生成を伴う。twist/bend/taper 用に想定していた「アニメ中 uniform のみで再生成ゼロ」は本パスでは未達成（次フェーズの性能最適化課題）。
+- **export（INV-2）**: GL canvas は `preserveDrawingBuffer: true`。mp4/webm/PNG 連番・bundle は既存の canvas インライン化 export 経路に乗る想定（本リビジョンで詳細な export parity verify は未実施・次フェーズで実施）。`exportStrategy` の既定は他の text と同じ `live`（§5.5、GL 描画はブラウザでライブ実行可能なため bake 不要）。
+- **依存追加**: `earcut`（MIT・~2KB、三角形分割）。
+- **INV 影響**: なし（既存 INV-1〜6 の枠内。§5 追加は additive-optional・INV-4 準拠）。
+
+**受け入れ確認（実機 Playwright・本リビジョンで実施済み）**: 実フォント（Noto Sans asset）でのグリフ押し出し（depth/bevel/lambert）が実 Chrome で正しく描画されること、`geomEnabled` トグルの ON→OFF→ON 往復で 2D/3D 双方の DOM 構造が正しく切り替わり残留ノードが無いこと、`depth=0` で例外なく描画できること、Inspector から `geomEnabled`/`geomDepth`/`geomBevelSize`/`geomBevelSegments`/`geomCurveQuality`/`geomShading`/`geomAmbient` を編集できることを確認。**mp4/webm/bundle export の実 parity verify、shape への適用（P4）、Inspector の system フォント警告表示は未実施・次フェーズ**。
+
 **MVP built-in component types:**
 
 | type        | 役割                              | 主な params                          |
 |-------------|-----------------------------------|--------------------------------------|
 | `solid`     | 単色塗り（AE Solid 相当）          | `color: RGBA`, `size: vec2`          |
-| `text`      | テキスト（DOM/SVG レンダリング, §26） | `text`, `font`, `size`, `color`, `align`, `tracking`, `leading`, `weight`, `italic`, `strokeColor`, `strokeWidth` |
+| `text`      | テキスト（DOM/SVG レンダリング, §26） | `text`, `font`, `size`, `color`, `align`, `tracking`, `leading`, `weight`, `italic`, `strokeColor`, `strokeWidth`, `geom*`（3D 押し出し・任意, §5.5f） |
 | `image`     | 画像アセット表示                   | `asset: AssetId`, `fit`              |
 | `shape`     | rect / ellipse / path（頂点編集, §5.5c）/ merge（他レイヤー Boolean 合成, §5.5d） | `kind: "rect"\|"ellipse"\|"path"\|"merge"`, `fill: RGBA`, `radiusTL/TR/BR/BL`（rect のみ）, `size: vec2`（rect/ellipse のみ）, `vertices?: ShapeVertex[]`（path のみ）, `rings?: ShapeRings`（path のみ、Bake 出力・存在すれば最優先, §5.5e）, `mergeInputs?: BooleanMergeInput[]`（merge のみ） |
 | `html`      | HTML Composition（Model A, §7）     | `compId: CompId`, + comp が宣言した params |
@@ -571,6 +602,13 @@ L = T(position) · R(rotation) · S(scale) · T(-anchor)
 - **境界制約**: 共有 WebGL シーンは 1 枚の `<canvas>`（= z スタック上の 1 要素）。dom 層 ↔ GL 層の交差はペインター級のまま、GL 層（raster3d）同士・GL 内メッシュは per-pixel で真の交差（§5.4b）。
 - **2D 免除（確定・実装済み）**: per-object 方式により、3D レイヤー（`threeD=true`）のみカメラ/dolly/zoom に応答し、2D レイヤーは画面に固定（AE 準拠）。Phase 1.1 で実測確定（dolly 半距離→2.0倍/倍距離→0.5倍、zoom 望遠2倍/広角0.5倍、2D 不動）。two-stratum 分離は不要だった（per-object 焼き込みで特異点が出ないため）。
 - **被写界深度**（Phase 3）: `focusDistance`/`aperture`(F値)/`blurLevel`。GL bokeh パスが主、dom 経路は per-layer blur 近似。
+
+#### §6.5c geom3d（text 3D 押し出し）のカメラ整合（P1 実装済み・簡略化・確定 2026-07-13）
+
+> §5.5f の押し出しメッシュは per-layer 素の WebGL canvas で描画され、本節で言う comp のアクティブカメラ（§6.5 冒頭）や `raster3d` 共有シーン（§6.5b）とは**別系統**。
+
+- **本リビジョンのスコープ**: geom3d の押し出しメッシュは comp のアクティブカメラ・`Transform.rotation` を GL 側で**適用しない**。GL は固定の既定パースペクティブのみを使い、front cap（ローカル z=0）をピクセル等倍・無歪みで投影する（`depth=0` は既存 2D 描画とピクセル一致・§5.5f）。`Transform.rotation` は既存の CSS `matrix3d` 経路（`entry.div`）でオブジェクト全体（＝GL が描いたラスタ）を平面カードとして傾けるのみ。
+- **次フェーズで検討すべきこと**（未着手）: 真の per-object 3D 回転応答（Transform.rotation に応じて押し出しメッシュ自体が GL 内で回転し per-pixel parallax が出る）には、`DomRenderer.applyObject` の `worldTransform` を「位置+スケール」と「回転」に分離し（`mat4.decomposeTrs`/`rotationEuler` で可能）、回転を CSS ではなく GL の `uWorld`（または同等の uniform）へ渡す設計変更が要る。これは §5.4b/§6.5 の共有 transform 計算に触れるため、着手前に影響評価とユーザー確認が必要（CLAUDE.md 運用体制）。
 
 ---
 
@@ -2032,6 +2070,7 @@ registerComponent({
   - **assets として取り込んだフォント**（§11.6, `.ttf/.otf/.woff`）: フォントパーサ（推奨 `opentype.js`、差し替え可）でグリフ path を取得 → 正確なアウトライン。**これが厳密モードの正路**。
   - **system フォント**（アセット実体なし）: ブラウザは外形 path を公開しないため正確なアウトライン化は不可。**SVG `<text>`（ベクタだが font 依存）にフォールバック**し、ストロークは `paint-order` で近似する。→ 「厳密モードを正確に使うにはフォントを asset として取り込む」を UX 上の前提とする（Inspector / export ダイアログに注記）。
 - 文字レイアウト（advance/改行/align/tracking/leading）の算出は**決定論**であること（INV-1）。パーサのメトリクスのみを用い、`Math.random`/`Date.now`/DOM measureText を resolve 経路に持ち込まない。アウトライン生成はレンダラ層（`ResolvedScene` 受領後）で行い、`resolve()` 自体は不変。
+- **§5.5f（3D 押し出し）も同じ制約を継承する**: `geomEnabled=true` でも asset フォント以外（system フォント・ビルトイン Noto 含む）はアウトライン抽出不可のため 2D 描画へ自動フォールバックする。
 
 #### §26.4.2 レンダーキャッシュ（将来・IF のみ今回確保）
 
