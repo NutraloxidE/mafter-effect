@@ -4,8 +4,9 @@
 
 - **やったこと**: ユーザー依頼「テキストを非破壊に 3D 化（押し出し厚・ねじ曲げ・キーフレーム可・多形式グラデーション・3D⇄2D トグル・shape にも再利用可能な機構）する仕様を cloudplan に md として記述」を受け、[doc/cloudplan/3d-text-extrusion-plan.md](doc/cloudplan/3d-text-extrusion-plan.md) を新規作成。コード・spec（SSoT）変更は一切なし。
 - **設計の核**: 3 案比較（CSS スライス積層 / per-layer 素 WebGL 実押し出しメッシュ / three.js 共有シーン）から **案 B（per-layer 素 WebGL・three.js 不使用）を推奨**。webgl-video-layer-plan v2 の「canvas はピクセルを作る手段」原則と v1 post-mortem の罠リストを踏襲。アウトラインは既存資産（opentype.js グリフ path / shape vertices・rings）を `OutlineProvider` 抽象で共通化し text/shape 再利用を担保。単位厚メッシュ生成をキャッシュ、depth/twist/bend/taper は頂点シェーダの純関数（KF アニメ中は再生成ゼロ）。グラデーションは再利用可能な `GradientFill`（linear/radial/conic/depth・stop 色/位置 KF 可）スキーマ案。
-- **未着手・次にやるべきこと（Next steps）**: プラン §9 の承認事項（§5 スキーマ追加 2 件・直列化規則・earcut 依存追加）と §11 のオープン質問 5 点を**ユーザーに確認**するのが最初の一歩（CLAUDE.md 運用体制上、§5 変更は承認必須）。承認後は spec 更新 → P0 スパイク（実 Chrome perf 実測）→ P1 押し出しコア、の順（プラン §8）。
-- **ブランチ**: `claude/3d-text-extension-k040dx`（プラン md + 本記録のみ）。
+- **追加（同セッション・下位モデル向け詳細化）**: ユーザー依頼「下位モデルが実装できるように詳細化」を受け、[doc/cloudplan/3d-text-extrusion-implementation.md](doc/cloudplan/3d-text-extrusion-implementation.md) を新規作成。make-plan-for-codex スキルに従い Phase→WP→Ticket へ分解（Ticket 00 = 承認 gate 確認 / P1 = spec 追記〜押し出しコア〜export parity を WP-01〜08・各 Ticket に allowed/forbidden files・tests・stop conditions・貼れる Codex prompt 付き / P2 変形 / P3 グラデ / P4 shape 統合）。新設ファイルは `src/runtime/geom3d/**` と `test/geom3d/**` に隔離し既存経路差分を最小化。コード実装は未着手（設計 + 作業票のみ）。
+- **未着手・次にやるべきこと（Next steps）**: プラン §9 の承認事項（§5 スキーマ追加 2 件・直列化規則・earcut 依存追加）と §11 のオープン質問 5 点を**ユーザーに確認**するのが最初の一歩（= 実装 doc の Ticket 00 gate・CLAUDE.md 運用体制上 §5 変更は承認必須）。承認後は WP-01（spec 追記）→ WP-02〜04（型/params/outline・純関数）→ WP-05/06（GL/DomRenderer 配線）→ WP-07/08（store・Inspector・export parity）の順。
+- **ブランチ**: `claude/3d-text-extension-k040dx`（設計プラン + 実装分解 md + 本記録のみ）。
 
 ### 2026-07-11（Claude Sonnet 5）— mosaicLite（Mosaic Live）軽量化 Phase A: 毎フレーム無条件の filter DOM 再構築を解消
 

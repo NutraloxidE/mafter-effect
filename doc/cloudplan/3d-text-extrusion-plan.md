@@ -2,6 +2,7 @@
 
 > **ステータス**: ドラフト（2026-07-13・Claude Code）。本ファイルは spec（SSoT）を置き換えない。
 > **§5 スキーマ追加を含むため、実装着手前に §9 の承認事項をユーザーと確定してから spec → 実装の順で進める**（CLAUDE.md 運用体制の必須手順）。
+> **実装の作業票（下位モデル/Codex 用に Phase→WP→Ticket へ分解したもの）は [3d-text-extrusion-implementation.md](3d-text-extrusion-implementation.md) を参照**（本ファイルは設計の「なぜ」、あちらは「どのファイルを・どうテストして・どこで止まるか」）。
 > 参照ブランチ: `claude/3d-text-extension-k040dx`。
 
 ---
