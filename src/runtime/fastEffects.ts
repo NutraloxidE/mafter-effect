@@ -7,7 +7,7 @@ import {
   fastWaveDisplace,
   glitchSliceDisplaceMapPng,
   mosaicGridSnapFilter,
-  pixelStretchDisplaceMapPng,
+  pixelStretchPrimitives,
 } from "./effectSvg";
 
 function num(v: unknown, fallback: number): number {
@@ -202,6 +202,7 @@ const PIXEL_STRETCH_EFFECT_DEF: EffectDef = {
     { key: "direction", label: "Direction", kind: "enum", default: "right", animatable: false, options: [...PIXEL_STRETCH_DIRECTIONS] },
     { key: "linePos", label: "Line Pos", kind: "scalar", default: 0.5, animatable: true, min: 0, max: 1, step: 0.01 },
     { key: "length", label: "Length", kind: "scalar", default: 300, animatable: true, min: 0, max: 2000, step: 1 },
+    { key: "density", label: "Density", kind: "scalar", default: 1, animatable: true, min: 0, max: 1, step: 0.01 },
   ],
   apply(props, ctx: EffectRenderCtx) {
     const length = Math.max(0, num(props["length"], 300));
@@ -213,8 +214,11 @@ const PIXEL_STRETCH_EFFECT_DEF: EffectDef = {
       ? (dir as (typeof PIXEL_STRETCH_DIRECTIONS)[number])
       : "right";
     const linePos = Math.min(1, Math.max(0, num(props["linePos"], 0.5)));
-    const { uri, scale } = pixelStretchDisplaceMapPng({ w, h, direction, linePos, length });
-    return { kind: "svg", primitives: displaceWithMap(uri, scale, w, h) };
+    const density = Math.min(1, Math.max(0, num(props["density"], 1)));
+    return {
+      kind: "svg",
+      primitives: pixelStretchPrimitives({ w, h, direction, linePos, length, density }),
+    };
   },
 };
 

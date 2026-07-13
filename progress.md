@@ -1,5 +1,18 @@
 # Progress
 
+### 2026-07-13（Claude Fable 5）— `pixelStretch` に `density` 追加（スライス反復 ⇄ 完全ストレッチ・2 段残差補正）
+
+- **ユーザーフィードバック**: 実装直後の pixelStretch は「滅茶苦茶良い感じ」だが「スライス引き伸ばし」に見える（pic1: 帯内で細かいコピーが反復）。**密度を弄れるようにして、密度を上げると完全なピクセルストレッチ（pic2: 帯全域がライン 1 列の色）も可能に**、との要望。
+- **スライス感の真因**: 8-bit 変位マップの量子化。`scale1 = 2·length > 255` だと約 `2·length/255` px 幅の**プラトー**（同一コード連続域）ができ、プラトー内は変位一定＝**剛体コピーの反復**になる（length=300 で 2.35px、600 で 4.7px…）。1 枚の 8-bit マップでは原理的に回避不能。
+- **実装**（spec §27.3 改定3 を先行追記）:
+  - `density`（0..1・既定 **1**・animatable）: スライス幅 `sliceW = max(1, round((1−density)·64))`。帯内ターゲット `t(i) = line ± (|i−line| mod sliceW)`（ライン起点 `sliceW` 幅ストリップの反復コピー）。`density=1 → sliceW=1 →` 全ピクセルが line を狙う完全ストレッチ。
+  - **2 段残差補正**: stage1（従来同型の 8-bit マップ）の**実到達位置** `achieved(y) = y + scale1·(c1(y)/255−0.5)` を JS で厳密計算し、各出力 `i` に対し `|achieved(y) − t(i)|` 最小の**整数** y（探索窓 ±(⌈scale1/255⌉+2)）への小変位 `δ2 = y−i` を第 2 マップ（`scale2 = 2·(max|δ2|+1)`）に焼き、feDisplacementMap を 2 連結。**整数着地**にすることで stage2 の線形補間が異種ソース由来ピクセルをブレンドする滲みを回避。`scale1 ≤ 255`（length ≤ 127）or 全 δ2=0 は stage2 省略。
+  - API 変更: `pixelStretchDisplaceMapPng` → `pixelStretchDisplaceMaps`（stage1/stage2 を返す純関数）+ `pixelStretchPrimitives`（1〜2 段チェーン組立）。`fastEffects.ts` は後者を呼ぶ。`effectChain.ts` は `length` 参照のまま（stage2 は帯内の数 px 補正で最大変位を増やさない）。
+- **テスト**: `test/pixelStretch.test.ts` を 2 段シミュレータ（stage2 → round → stage1 の合成）で書き換え。density=1・length=300 で帯内全ピクセルの到達誤差 ≤0.75px（旧実装は ±1.2px+プラトー反復）、length=100 は stage2 なしで ≤0.6px、density=0.5 は sliceW=32 のストリップ反復ターゲットに一致、left/down・帯外中立・h 非依存・primitives 段数・density 既定値=明示 1 と同一、を固定。
+- **検証**: typecheck ✅ / `test/pixelStretch.test.ts`（19 tests）✅ / 全テスト（1151 tests, playerBuildFreshness 含む）✅ / `npm run build:player` ✅。
+- **バグ修正（残差補正の探索窓漏れ）**: low-density（`sliceW>1`）ケースで `test/pixelStretch.test.ts` の「band repeats a sliceW-wide strip」が失敗（誤差 1.176px > 許容 0.75px）。原因は stage2 の探索窓が `⌈scale1/255⌉+2`（量子化プラトー幅のみ想定）で固定されており、スライス境界で `target` が `sliceW` 分ジャンプするケースをカバーできていなかった。`window = max(⌈scale1/255⌉+2, sliceW)` に修正（`src/runtime/effectSvg.ts`）して解消。
+- **Next steps**: 実 Chrome verify（`verify-pixel-stretch.mjs`）と、ユーザーがエディタで `density` を操作して見た目を確認（pic1⇄pic2 の連続変化）はまだ未実施。③ `pixelSmear`（datamosh 系）は引き続き別票・保留。
+
 ### 2026-07-13（Claude Sonnet 5）— `pixelStretch`（Directional Line Stretch）実装完了（独立票 §2）
 
 - **実装**: 独立票 `doc/cloudplan/pixel-stretch-directional-line-stretch.md` §2 に従い、`pixelStretch` を pivot 対称ランプ（旧 D-1 spike）から **Directional Line Stretch**（あるラインを境にライン上の色を一方向へ塗り延ばす有限帯ストレッチ）へ全面再設計。

@@ -149,44 +149,126 @@ export function glitchSliceDisplaceMapPng(opts: {
  * feTile-1px 縮小罠には非該当（[[svg-fetile-1px-source-vanishes-under-css-scale]] 非該当・
  * [[svg-displacement-map-collapse-redundant-axis]]）。
  *
- * 精度: 1 階調あたり `scale/255 = 2·length/255` px。`length ≤ 128` はほぼ厳密（≤1px）、`length=300` で
- * ±1.2px 程度のゆらぎ。帯端（ch=0/255）は変位ちょうど `±length` で line に厳密到達。無変位域を厳密 0.5 に
- * 固定するため方向ごとに ch レンジの半分（right/down=[0.5,0], left/up=[0.5,1]）だけ使う。
+ * 精度と改定3（`density` + 2 段残差補正）: 1 階調あたりの変位 = `scale1/255 = 2·length/255` px。
+ * `length > 128` では量子化プラトー（同一コード連続域）がプラトー内剛体コピー＝スライス反復に見える。
+ * `density` はこれを逆手に取り、`sliceW = max(1, round((1−density)·64))` 幅のストリップ反復をターゲット
+ * `t(i) = line ± (|i−line| mod sliceW)` として明示的に焼く（density=1 → sliceW=1 → 全ピクセルが line
+ * を狙う完全ストレッチ）。8-bit 1 枚では `t(i)` に届かないため、stage1 の実 8-bit 到達位置
+ * `achieved(y) = y + scale1·(c1(y)/255 − 0.5)` を JS で厳密計算し、`|achieved(y) − t(i)|` 最小の**整数** y
+ * への小変位 `δ2(i) = y − i` を第 2 マップに焼いて連結する（整数着地＝stage2 の線形補間が異なるソース
+ * 由来のピクセルをブレンドするのを回避）。`scale1 ≤ 255` または全 δ2=0 なら stage2 省略。
  *
  * 前回フィードバックの「ランダム長・複数ライン・残像/前フレーム混合＝datamosh 系」は別エフェクト
  * （`pixelSmear` 候補・保留）へ分離。独立票 doc/cloudplan/pixel-stretch-directional-line-stretch.md 参照。
  */
-export function pixelStretchDisplaceMapPng(opts: {
+export const PIXEL_STRETCH_MAX_SLICE = 64;
+
+export interface PixelStretchOpts {
   w: number;
   h: number;
   direction: "right" | "left" | "down" | "up";
   linePos: number;
   length: number;
-}): { uri: string; scale: number } {
+  /** 1=完全ストレッチ（帯全域がライン 1 列）/ 下げるとスライス反復（0 → 64px スライス）。 */
+  density: number;
+}
+
+export function pixelStretchDisplaceMaps(opts: PixelStretchOpts): {
+  stage1: { uri: string; scale: number };
+  stage2: { uri: string; scale: number } | null;
+} {
   const horiz = opts.direction === "right" || opts.direction === "left";
   const len = Math.max(1, Math.round(opts.length));
   const n = Math.max(1, Math.round(horiz ? opts.w : opts.h));
   const line = Math.round(clamp01(opts.linePos) * n);
   // right/down は line の後方（index 増加側）へ、left/up は前方（index 減少側）へ帯を張る。
   const forward = opts.direction === "right" || opts.direction === "down";
-  const scale = 2 * len; // feDisplacementMap の変位量 = scale·(C−0.5) ∈ [−len, +len]
-  const rgba = new Uint8Array(n * 4);
+  const sliceW = Math.max(1, Math.round((1 - clamp01(opts.density)) * PIXEL_STRETCH_MAX_SLICE));
+  const scale1 = 2 * len; // feDisplacementMap の変位量 = scale·(C−0.5) ∈ [−len, +len]
+
+  // ターゲット: 帯内の各ピクセルはライン起点の sliceW 幅ストリップを反復サンプルする。
+  const target = new Float64Array(n);
+  const inBand = new Uint8Array(n);
   for (let i = 0; i < n; i++) {
-    // pull-model: sampled = i + scale·(C−0.5) を line にするには C = 0.5 + (line−i)/scale。
-    const lineMinusP = line - i;
-    const inBand = forward
-      ? lineMinusP <= 0 && lineMinusP >= -len
-      : lineMinusP >= 0 && lineMinusP <= len;
-    const c = 0.5 + lineMinusP / scale; // 帯内は [0,1]、帯端で 0/1 に到達
-    const ch = inBand ? Math.round(clamp01(c) * 255) : 128; // 帯外は中立 0.5(=128)
-    const o = i * 4;
-    rgba[o] = horiz ? ch : 128; // R = X 変位
-    rgba[o + 1] = horiz ? 128 : ch; // G = Y 変位
-    rgba[o + 2] = 0;
-    rgba[o + 3] = 255;
+    const signedD = forward ? i - line : line - i;
+    if (signedD >= 0 && signedD <= len) {
+      inBand[i] = 1;
+      const offset = signedD % sliceW;
+      target[i] = forward ? line + offset : line - offset;
+    } else {
+      target[i] = i; // 帯外は無変位
+    }
   }
-  const [pw, ph] = horiz ? [n, 1] : [1, n];
-  return { uri: rgbaToPngDataUri(rgba, pw, ph), scale };
+
+  // stage1: 8-bit 量子化マップ（従来と同型）。achieved は実 8-bit 値での到達位置。
+  const c1 = new Uint8Array(n);
+  const achieved = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    c1[i] = inBand[i] ? Math.round(clamp01(0.5 + (target[i]! - i) / scale1) * 255) : 128;
+    achieved[i] = i + scale1 * (c1[i]! / 255 - 0.5);
+  }
+
+  const encode = (codes: Uint8Array): string => {
+    const rgba = new Uint8Array(n * 4);
+    for (let i = 0; i < n; i++) {
+      const o = i * 4;
+      rgba[o] = horiz ? codes[i]! : 128; // R = X 変位
+      rgba[o + 1] = horiz ? 128 : codes[i]!; // G = Y 変位
+      rgba[o + 2] = 0;
+      rgba[o + 3] = 255;
+    }
+    return horiz ? rgbaToPngDataUri(rgba, n, 1) : rgbaToPngDataUri(rgba, 1, n);
+  };
+
+  const stage1 = { uri: encode(c1), scale: scale1 };
+
+  // stage2（残差補正）: scale1 ≤ 255 なら量子化誤差 ≤0.5px で不要。
+  if (scale1 <= 255) return { stage1, stage2: null };
+  const window = Math.max(Math.ceil(scale1 / 255) + 2, sliceW);
+  const d2 = new Int32Array(n);
+  let maxAbs = 0;
+  for (let i = 0; i < n; i++) {
+    if (!inBand[i]) continue;
+    let best = 0;
+    let bestErr = Math.abs(achieved[i]! - target[i]!);
+    for (let dy = -window; dy <= window; dy++) {
+      const y = i + dy;
+      if (y < 0 || y >= n || !inBand[y]) continue;
+      const err = Math.abs(achieved[y]! - target[i]!);
+      if (err < bestErr - 1e-9 || (err < bestErr + 1e-9 && Math.abs(dy) < Math.abs(best))) {
+        best = dy;
+        bestErr = err;
+      }
+    }
+    d2[i] = best;
+    const a = Math.abs(best);
+    if (a > maxAbs) maxAbs = a;
+  }
+  if (maxAbs === 0) return { stage1, stage2: null };
+  const scale2 = 2 * (maxAbs + 1);
+  const c2 = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    c2[i] = Math.round(clamp01(0.5 + d2[i]! / scale2) * 255);
+  }
+  return { stage1, stage2: { uri: encode(c2), scale: scale2 } };
+}
+
+/** pixelStretch の SVG primitives（feImage+feDisplacementMap の 1〜2 段チェーン）。 */
+export function pixelStretchPrimitives(opts: PixelStretchOpts): string {
+  const { stage1, stage2 } = pixelStretchDisplaceMaps(opts);
+  const w = Math.max(1, Math.round(opts.w));
+  const h = Math.max(1, Math.round(opts.h));
+  const parts = [
+    feImageLayer(stage1.uri, w, h, "psA"),
+    `<feDisplacementMap in="SourceGraphic" in2="psA" scale="${stage1.scale}" xChannelSelector="R" yChannelSelector="G"${stage2 ? ' result="ps1"' : ""}/>`,
+  ];
+  if (stage2) {
+    parts.push(
+      feImageLayer(stage2.uri, w, h, "psB"),
+      `<feDisplacementMap in="ps1" in2="psB" scale="${stage2.scale}" xChannelSelector="R" yChannelSelector="G"/>`,
+    );
+  }
+  return parts.join("");
 }
 
 /** displacement filter region 属性（userSpaceOnUse）。 */

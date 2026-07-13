@@ -316,7 +316,11 @@ Codex/Sonnet が「どこを触れば動くか」を推測しないための地�
 
 **Codex に丸投げしない。** go/no-go を human 実ピクセルで決めてから本票に票を追加する。
 
-### Ticket D-1 — `pixelStretch` feasibility spike（半日）
+### Ticket D-1 — `pixelStretch` feasibility spike（半日）— ✅ 完了（独立票へ supersede）
+
+> **結果**: no-go（線形ランプ・pivot 対称スミアはユーザー実機判断で「意図と別物」）。
+> 代替 ② の「Directional Line Stretch」で置換・確定。設計・実装・確定仕様は
+> `doc/cloudplan/pixel-stretch-directional-line-stretch.md` を正とする（本チケットからは分離）。
 
 - **Owner**: Claude（設計）+ human（実ピクセル受け入れ）。
 - **やること**: 高さ 1080px 相当で線形ランプ変位マップ（`dy=-(y-y0)`、8-bit 量子化 `h/127` px 刻み）を試作し、階段アーティファクトが「味」か破綻かを headed browser で判定。

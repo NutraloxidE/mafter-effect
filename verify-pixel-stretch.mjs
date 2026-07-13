@@ -1,14 +1,15 @@
 // pixelStretch (Directional Line Stretch) の実機検証（本番コード無変更）。
-// 検証内容: ソースライン上の色が帯全域へ塗り延ばされるか、を Chrome の実 feDisplacementMap で確認する。
-//   content = 暗背景 + ソース列(line)に細いシアン縦バー。right/length で右へストレッチ。
-//   期待: 帯 [line, line+length] がシアンで満たされ、line 左側は暗いまま（不変）。
-// 単体テストは「変位マップの値」を固定するが、本 verify は Chrome が実際にその見た目を出すことを確認する。
+// 検証内容: Chrome の実 feDisplacementMap（1〜2 段チェーン）で
+//   (A) density=1 … 帯全域がソースライン 1 列の色で塗り延ばされる（完全ストレッチ・pic2）
+//   (B) density=0 … ライン起点の 64px ストリップが反復コピーされる（スライス反復・pic1 系）
+// を確認する。content は 8px 幅のカラー縦ストライプ（列ごとに色が変わる）で、
+// 「ライン列の色と一致する帯内ピクセルの割合」が density=1 で ~1、density=0 で低くなることを見る。
 import { chromium } from "playwright";
 
 const PORT = process.env.VERIFY_PORT ?? "5173";
 const URL = `https://localhost:${PORT}/`;
 const browser = await chromium.launch();
-const page = await browser.newPage({ viewport: { width: 700, height: 400 }, deviceScaleFactor: 1, ignoreHTTPSErrors: true });
+const page = await browser.newPage({ viewport: { width: 900, height: 500 }, deviceScaleFactor: 1, ignoreHTTPSErrors: true });
 const errors = [];
 page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
 page.on("pageerror", (e) => errors.push(String(e)));
@@ -19,53 +20,65 @@ const out = await page.evaluate(async () => {
   const esvg = await import("/src/runtime/effectSvg.ts");
   const rcap = await import("/src/runtime/rasterCapture.ts");
 
-  const W = 300, H = 120;
-  const linePos = 0.3, length = 120, direction = "right";
-  const line = Math.round(linePos * W); // 90
-  const BAR = 6; // シアン縦バー幅
+  const W = 500, H = 120;
+  const linePos = 0.3, length = 300, direction = "right";
+  const line = Math.round(linePos * W); // 150
 
-  // content: 暗背景 + line 中心のシアン縦バー
+  // content: 8px 幅のカラー縦ストライプ（パレット4色）— 列位置で色が識別できる
+  const PALETTE = ["#e74c3c", "#2ecc71", "#3498db", "#f1c40f"];
   const cv = document.createElement("canvas");
   cv.width = W; cv.height = H;
   const c = cv.getContext("2d");
-  c.fillStyle = "#101018"; c.fillRect(0, 0, W, H);
-  c.fillStyle = "#00ffff"; c.fillRect(line - BAR / 2, 0, BAR, H);
+  for (let x = 0; x < W; x += 8) {
+    c.fillStyle = PALETTE[Math.floor(x / 8) % PALETTE.length];
+    c.fillRect(x, 0, 8, H);
+  }
   const contentUrl = cv.toDataURL("image/png");
+  const lineColor = c.getImageData(line, Math.floor(H / 2), 1, 1).data;
 
-  // pixelStretch filter を組む
-  const { uri, scale } = esvg.pixelStretchDisplaceMapPng({ w: W, h: H, direction, linePos, length });
-  const primitives = esvg.displaceWithMap(uri, scale, W, H, false);
-  const markup = esvg.svgDisplaceFilterMarkup("ps", primitives, W, H, length, true);
-  const canvas = await rcap.rasterizeFilteredImage(contentUrl, W, H, markup, "url(#ps)");
-  const d = canvas.getContext("2d").getImageData(0, 0, W, H).data;
+  async function run(density) {
+    const primitives = esvg.pixelStretchPrimitives({ w: W, h: H, direction, linePos, length, density });
+    const markup = esvg.svgDisplaceFilterMarkup("ps", primitives, W, H, length, true);
+    const canvas = await rcap.rasterizeFilteredImage(contentUrl, W, H, markup, "url(#ps)");
+    const d = canvas.getContext("2d").getImageData(0, 0, W, H).data;
+    const y = Math.floor(H / 2);
+    const near = (i, ref) =>
+      Math.abs(d[i] - ref[0]) < 40 && Math.abs(d[i + 1] - ref[1]) < 40 && Math.abs(d[i + 2] - ref[2]) < 40;
+    let matchLine = 0, total = 0, leftIntact = 0, leftTotal = 0;
+    for (let x = line + 4; x < Math.min(line + length - 4, W); x++) {
+      total++;
+      if (near((y * W + x) * 4, lineColor)) matchLine++;
+    }
+    // ライン手前は元のストライプのまま（元 content の同座標色と一致するか）
+    const src = c.getImageData(0, y, W, 1).data;
+    for (let x = 4; x < line - 4; x++) {
+      leftTotal++;
+      if (near((y * W + x) * 4, [src[x * 4], src[x * 4 + 1], src[x * 4 + 2]])) leftIntact++;
+    }
+    return {
+      density,
+      lineColorRatio: total ? matchLine / total : 0,
+      leftIntactRatio: leftTotal ? leftIntact / leftTotal : 0,
+      png: canvas.toDataURL("image/png"),
+    };
+  }
 
-  // 行中央でサンプルし、各列がシアンか判定
-  const isCyan = (x, y) => {
-    const i = (y * W + x) * 4;
-    return d[i] < 120 && d[i + 1] > 140 && d[i + 2] > 140; // low R, high G, high B
-  };
-  const y = Math.floor(H / 2);
-  let bandCyan = 0, bandTotal = 0, leftCyan = 0, leftTotal = 0;
-  for (let x = line + BAR; x < Math.min(line + length, W); x++) { bandTotal++; if (isCyan(x, y)) bandCyan++; }
-  for (let x = 0; x < line - BAR; x++) { leftTotal++; if (isCyan(x, y)) leftCyan++; }
-
-  return {
-    W, H, line, length,
-    bandFillRatio: bandTotal ? bandCyan / bandTotal : 0, // 期待: ~1（帯がシアンで満たされる）
-    leftCyanRatio: leftTotal ? leftCyan / leftTotal : 0, // 期待: ~0（左側は不変・暗い）
-    png: canvas.toDataURL("image/png"),
-  };
+  return { line, length, full: await run(1), slice: await run(0) };
 });
 
 const fs = await import("node:fs");
-fs.writeFileSync("verify-pixel-stretch.png", Buffer.from(out.png.split(",")[1], "base64"));
+fs.writeFileSync("verify-pixel-stretch-full.png", Buffer.from(out.full.png.split(",")[1], "base64"));
+fs.writeFileSync("verify-pixel-stretch-slice.png", Buffer.from(out.slice.png.split(",")[1], "base64"));
 
-const pass = out.bandFillRatio > 0.9 && out.leftCyanRatio < 0.05;
+// density=1: 帯はライン 1 列の色一色（>0.9）。density=0: 64px ストリップ反復なので
+// ライン色と一致するのはストリップ内の該当ストライプ分だけ（<0.6）。左側はどちらも不変。
+const passFull = out.full.lineColorRatio > 0.9 && out.full.leftIntactRatio > 0.9;
+const passSlice = out.slice.lineColorRatio < 0.6 && out.slice.leftIntactRatio > 0.9;
 console.log(`line=${out.line} length=${out.length}`);
-console.log(`band fill (cyan) ratio = ${out.bandFillRatio.toFixed(3)}  (expect >0.9 : 帯がソース色で塗り延ばされる)`);
-console.log(`left  cyan     ratio = ${out.leftCyanRatio.toFixed(3)}  (expect <0.05 : ライン手前は不変)`);
-console.log(`\n${pass ? "PASS" : "FAIL"}  — pixelStretch directional line stretch`);
-console.log("artifact: verify-pixel-stretch.png");
+console.log(`density=1  band==lineColor ratio = ${out.full.lineColorRatio.toFixed(3)}  (expect >0.9)  left intact = ${out.full.leftIntactRatio.toFixed(3)}`);
+console.log(`density=0  band==lineColor ratio = ${out.slice.lineColorRatio.toFixed(3)}  (expect <0.6)  left intact = ${out.slice.leftIntactRatio.toFixed(3)}`);
+console.log(`\n${passFull && passSlice ? "PASS" : "FAIL"}  — pixelStretch density (full smear vs slice repeat)`);
+console.log("artifacts: verify-pixel-stretch-full.png / verify-pixel-stretch-slice.png");
 console.log("errors:", errors.length ? errors.slice(0, 6) : "none");
 await browser.close();
-process.exit(pass ? 0 : 1);
+process.exit(passFull && passSlice ? 0 : 1);

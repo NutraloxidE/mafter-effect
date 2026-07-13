@@ -40,6 +40,8 @@ Set 追記は不要（type 文字列 `"pixelStretch"` は据え置き）。
 
 ---
 
+> **改定1（2026-07-13・実装完了後の拡張）**: ユーザーフィードバック「現状はスライス引き伸ばしに見える。密度を弄れるようにして、密度を上げると完全なピクセルストレッチも可能に」を受け、`density` パラメータ（0..1・既定1）と **2 段残差補正**を追加した。スライス感の正体は 8-bit 量子化プラトー（`2·length/255` px 幅）で、`density` はスライス幅 `sliceW = max(1, round((1−density)·64))` として明示制御し、`density=1`（`sliceW=1`）の完全ストレッチは第 2 の feDisplacementMap（stage1 の実 8-bit 到達位置への整数着地補正）で実現する。確定仕様は spec §27.3 `pixelStretch` 改定3 を正とする（本票 §2 の `scale=length` は実装時に `scale=2·length` へ修正済み — feDisplacementMap の変位量は `scale·(C−0.5)∈[−scale/2,+scale/2]` のため）。
+
 ## 2. `pixelStretch`（Directional Line Stretch）実装チケット — Sonnet 5 委任可
 
 ### 2.1 中核の数学
