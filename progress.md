@@ -1,5 +1,16 @@
 # Progress
 
+### 2026-07-13（Claude Sonnet 5）— `pixelStretch` チャンネル取り違えバグ修正 + ユーザーからの見た目フィードバック（設計再検討中）
+
+- **バグ修正**: `pixelStretchDisplaceMapPng` が縦方向変位 `dy` を **R チャンネル**に書いていたが、`displaceWithMap` は `xChannelSelector="R" yChannelSelector="G"` 固定のため、実際には**横方向のスライスシフト**として解釈されていた（意図は縦方向ストレッチだったのに）。G チャンネルへ書くよう修正。
+- **ユーザー実機フィードバック（登録直後・修正前の見た目に対して）**: 「文字が細かい横帯に分割され左右にズレる」＝水平スライスグリッチに見え、意図した「ピクセルが引き伸ばされて尾を引く」感じにならない、との指摘。上記チャンネルバグが主因の可能性が高い（未検証・チャンネル修正後の再確認が必要）。
+- **ユーザーが本当に欲しい見た目（フィードバック原文より）**: 「文字を横帯に切ってずらす」ではなく「文字の一部を掴んでその色や形を横方向に引きずる」。要件: ①スライス全体移動でなく元ピクセルを横方向に長く伸ばす ②伸びの始点を輪郭/明るい部分に限定 ③伸びの長さをランダムに混ぜる（短尺+長尺） ④元の文字位置は保持し伸びた部分だけ残像として残す ⑤前フレーム情報を少し混ぜて有機的なスミア感を出す ⑥スライス数を減らし一本ごとの伸びを長く。
+- **既存コードとの近さ**: `src/runtime/fastEffects.ts` の `pixelSortLite`（`Light Pixel Sort (WIP)`、`lightPixelSortFilter`/`lightPixelSortDisplaceMapSvg` 実装）が「輝度しきい値ゲート＋displacement streak＋元画像を lumInv でマージして保持」という、ユーザーの要件①②④にかなり近い構造を既に持つ。ただし `lightPixelSortDisplaceMapSvg` は **SVG `<rect>` 群を `feImage` に渡すネスト SVG 文書**（§2.5/§7c の重さの罠に該当しうる・`(WIP)` ラベルの理由と推測）で、ストリークの長さもランダムではなく `streakLength` 一定 + 強度のみ per-strip ランダム。
+- **前フレームブレンド（要件⑤）の architecture 上の注意**: `resolve()` は純関数（INV-1）で実フレームの前フレーム画素にはアクセスできない。本物の temporal feedback ではなく、時間差オフセットコピーの重ね合わせ等の近似で「有機的なスミア」を疑似する必要がある（設計要検討）。
+- **ステータス**: pixelStretch は D-1 の元の設計（線形ランプ・グローバル縦ストレッチ）のままでは**ユーザーの意図と別物**と判明。**設計をやり直すか、既存 `pixelSortLite` を土台に拡張するかをユーザーと相談中**。次のセッション/ターンで方針を確定してから実装する（CLAUDE.md の「先に spec → 次に実装」を厳守）。
+- **検証**: チャンネル修正後 PASS `npm run typecheck` / `npm test`（1141 tests）/ `npm run build:player`。見た目の再確認（チャンネル修正でユーザー指摘の「横スライス」感が緩和されるか）は未実施。
+- **Next steps**: ユーザーに (a) `pixelSortLite` を土台にした拡張 (b) 新規 "Pixel Smear" 効果としてゼロから設計、どちらの方向で進めるか確認 → 方針確定後、実装前に spec 追記（新 effect 型なら §27.3 に相当節を用意）。
+
 ### 2026-07-13（Claude Sonnet 5）— Acid/Digi Ticket D-1 `pixelStretch` spike をエディタに登録（判定待ち）
 
 - **Source**: `doc/cloudplan/acid-digi-hyper-live-effects-plan-Detailed.md` Ticket D-1（WP-D spike）。

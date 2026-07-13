@@ -136,12 +136,15 @@ export function glitchSliceDisplaceMapPng(opts: {
 /**
  * §27.3 Pixel Stretch（WP-D Ticket D-1 spike・go/no-go はユーザー確認待ち）— 線形ランプ変位マップ。
  *
- * `dy(y) = -(y - pivot)` を R チャンネル（8-bit・`0.5 + dy/(2*amount)` にクランプ）へ焼く。
+ * `dy(y) = -(y - pivot)` を **G チャンネル**（8-bit・`0.5 + dy/(2*amount)` にクランプ）へ焼く。
+ * `displaceWithMap` は `xChannelSelector="R" yChannelSelector="G"` 固定のため、縦方向の変位は
+ * **G チャンネルに書く必要がある**（初版は誤って R に書いており、横方向のスライスシフトに
+ * なっていた — バグ。修正済み）。R は中立 128 固定。
  * `feDisplacementMap` は pull 型（出力行 y は入力行 `y + dy(y)` をサンプルする）ため、
  * pivot 近傍（`|y-pivot| < amount` の非クランプ域）は `y + dy(y) = pivot` に収束し
  * **同一入力行が全域に引き伸ばされる**（AE Pixel Stretch のスミア）。pivot から離れた
  * クランプ域は `dy = ±amount`（一定）となり**元の内容が剛体シフトしたコピー**になる。
- * 8-bit R チャンネル由来の階段量子化がスミア/シフト境界に段差として現れるのが本エフェクトの
+ * 8-bit G チャンネル由来の階段量子化がスミア/シフト境界に段差として現れるのが本エフェクトの
  * 見た目の実体（D-1 spike・味として受け入れるか実機で判断中・§6 参照）。x 方向は値が変化
  * しないため 1 列に圧縮する（`feTile` を使わない plain `feImage` stretch なので §2.5 系の
  * feTile 縮小サンプリング罠には該当しない・[[svg-fetile-1px-source-vanishes-under-css-scale]] 非該当）。
@@ -158,10 +161,10 @@ export function pixelStretchDisplaceMapPng(opts: {
   for (let y = 0; y < h; y++) {
     const dy = pivot - y;
     const norm = 0.5 + dy / (2 * amount);
-    const r = Math.min(255, Math.max(0, Math.round(norm * 255)));
+    const g = Math.min(255, Math.max(0, Math.round(norm * 255)));
     const o = y * 4;
-    rgba[o] = r;
-    rgba[o + 1] = 128;
+    rgba[o] = 128;
+    rgba[o + 1] = g;
     rgba[o + 2] = 0;
     rgba[o + 3] = 255;
   }
