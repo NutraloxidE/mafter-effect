@@ -1506,23 +1506,21 @@ export function liquidChromePrimitives(opts: {
   const s = Math.max(0, Math.floor(seed)) % 4096;
   const lw = Math.max(1, w);
   const lh = Math.max(1, h);
-  // fastWave/fastRipple と同じ対策: feTurbulence の生成域を |pan| 分だけ対称拡張してから
-  // feOffset でパンする（生成域を (0,0,w,h) 固定のままパンすると、露出した端に生成域の
-  // 矩形の縁がそのまま見えてしまう）。
-  const padX = Math.abs(evoDx) + 2;
-  const padY = Math.abs(evoDy) + 2;
-  const tx = -padX;
-  const ty = -padY;
-  const tw = lw + 2 * padX;
-  const th = lh + 2 * padY;
 
+  // evolution パンの「動く四角枠」対策（padding は生成域が毎フレーム変わり boiling するため不採用）:
+  // 生成域は (0,0,w,h) 固定のまま stitchTiles で (w,h) 周期にし、feTile でシームレスに 3×3 展開する。
+  // これで displacement のパン先も specular の端法線も常に実ノイズで覆われ、矩形の縁が露出しない。
+  // オフセットは周期 (w,h) で畳んでも同一像になるため mod で [0,w)/[0,h) に収め、3×3 タイル内に必ず収まる。
+  const panX = ((evoDx % lw) + lw) % lw;
+  const panY = ((evoDy % lh) + lh) % lh;
   const parts: string[] = [
-    `<feTurbulence type="fractalNoise" baseFrequency="${freq} ${freq}" numOctaves="${octaves}" seed="${s}" stitchTiles="stitch" x="${tx}" y="${ty}" width="${tw}" height="${th}" result="noiseRaw"/>`,
+    `<feTurbulence type="fractalNoise" baseFrequency="${freq} ${freq}" numOctaves="${octaves}" seed="${s}" stitchTiles="stitch" x="0" y="0" width="${lw}" height="${lh}" result="noiseRaw"/>`,
     feTurbulenceCenterNoise("noiseRaw", "noiseBalanced", 0, FRACTAL_NOISE_G_BIAS_INTERCEPT),
+    `<feTile in="noiseBalanced" x="${-lw}" y="${-lh}" width="${3 * lw}" height="${3 * lh}" result="noiseField"/>`,
   ];
-  let noiseIn = "noiseBalanced";
-  if (evoDx !== 0 || evoDy !== 0) {
-    parts.push(`<feOffset in="${noiseIn}" dx="${evoDx}" dy="${evoDy}" result="noiseOffset"/>`);
+  let noiseIn = "noiseField";
+  if (panX !== 0 || panY !== 0) {
+    parts.push(`<feOffset in="${noiseIn}" dx="${panX}" dy="${panY}" result="noiseOffset"/>`);
     noiseIn = "noiseOffset";
   }
   const smoothPx = fastSmoothPx(size);
@@ -1535,7 +1533,10 @@ export function liquidChromePrimitives(opts: {
   );
   const specBlur = Math.max(1, smoothPx || 1);
   parts.push(
-    `<feGaussianBlur in="noiseRaw" stdDeviation="${specBlur}" result="bump"/>`,
+    // bump も seamless タイル (noiseRaw を 3×3) にし、端の法線が実ノイズを参照するようにして
+    // evolution=0 でも specular の静的な矩形リムが出ないようにする。
+    `<feTile in="noiseRaw" x="${-lw}" y="${-lh}" width="${3 * lw}" height="${3 * lh}" result="bumpField"/>`,
+    `<feGaussianBlur in="bumpField" stdDeviation="${specBlur}" result="bump"/>`,
     `<feSpecularLighting in="bump" surfaceScale="${depth}" specularConstant="${highlight}" specularExponent="12" lighting-color="#ffffff" result="spec">` +
       `<feDistantLight azimuth="235" elevation="55"/>` +
       `</feSpecularLighting>`,

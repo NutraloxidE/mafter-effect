@@ -55,22 +55,34 @@ describe("liquidChromePrimitives (pure)", () => {
     expect(lo).toContain('numOctaves="1"');
   });
 
-  it("pads the feTurbulence generation region so an evolution pan doesn't expose its edge", () => {
-    // evolution=90deg with size=100 → dist=25px along +y (dx=cos(90)*25≈0, dy=sin(90)*25=25)。
-    // feTurbulence の x/y/width/height は (0,0,w,h) 固定ではなく |pan|+2 分だけ対称拡張されている必要がある。
-    const s = liquidChromePrimitives({ ...baseOpts, evolution: 90 });
-    const m = s.match(/<feTurbulence[^>]*\bx="(-?[\d.]+)"[^>]*\by="(-?[\d.]+)"[^>]*\bwidth="([\d.]+)"[^>]*\bheight="([\d.]+)"/);
-    expect(m).not.toBeNull();
-    const [, x, y, width, height] = m!;
-    expect(Number(x)).toBeLessThan(0);
-    expect(Number(y)).toBeLessThan(0);
-    expect(Number(width)).toBeGreaterThan(baseOpts.w);
-    expect(Number(height)).toBeGreaterThan(baseOpts.h);
+  // evolution パンの「動く四角枠」回帰防止（padding では boiling するため feTile 方式で対策）。
+  it("keeps the feTurbulence generation region fixed at (0,0,w,h) regardless of evolution (no boiling)", () => {
+    const a = liquidChromePrimitives({ ...baseOpts, evolution: 0 });
+    const b = liquidChromePrimitives({ ...baseOpts, evolution: 270 });
+    const region = `<feTurbulence type="fractalNoise" baseFrequency="${1 / baseOpts.size} ${1 / baseOpts.size}" numOctaves="2" seed="7" stitchTiles="stitch" x="0" y="0" width="${baseOpts.w}" height="${baseOpts.h}"`;
+    expect(a).toContain(region);
+    expect(b).toContain(region);
   });
 
-  it("evolution=0 still pads by the minimum margin (no unpadded (0,0,w,h) region)", () => {
-    const s = liquidChromePrimitives({ ...baseOpts, evolution: 0 });
-    expect(s).toContain(`x="-2" y="-2" width="${baseOpts.w + 4}" height="${baseOpts.h + 4}"`);
+  it("tiles the noise (feTile) so an evolution pan and the specular edge normals stay covered (no rectangular frame)", () => {
+    const s = liquidChromePrimitives({ ...baseOpts, evolution: 90 });
+    // displacement 用 (noiseField) と specular bump 用 (bumpField) の 2 枚の seamless タイル。
+    expect(s).toContain('result="noiseField"');
+    expect(s).toContain('result="bumpField"');
+    expect((s.match(/<feTile\b/g) ?? []).length).toBe(2);
+  });
+
+  it("reduces the evolution offset modulo the tile size so it never runs past the tiled field", () => {
+    // evolution=3600 (10 revolutions) with size=100 → 生の dist=1000px だが、mod 100 で [0,100) に収まる。
+    const s = liquidChromePrimitives({ ...baseOpts, evolution: 3600 });
+    const m = s.match(/<feOffset[^>]*\bdx="(-?[\d.]+)"[^>]*\bdy="(-?[\d.]+)"/);
+    if (m) {
+      expect(Math.abs(Number(m[1]))).toBeLessThan(baseOpts.w);
+      expect(Math.abs(Number(m[2]))).toBeLessThan(baseOpts.h);
+    }
+    // evolution=3600 は cos/sin が整数 revolution なので dx=dist,dy≈0 → mod 100 = 0 で feOffset 省略もあり得る。
+    // その場合でも feTile は必ず存在する（生成域固定＋タイル被覆）。
+    expect(s).toContain("<feTile");
   });
 });
 

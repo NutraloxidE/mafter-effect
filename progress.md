@@ -1,13 +1,14 @@
 # Progress
 
-### 2026-07-13（Claude Sonnet 5）— `liquidChrome`: Evolution で四角枠が動いて見えるバグを修正
+### 2026-07-14（Claude Opus 4.8）— `liquidChrome` evolution の「動く四角枠」を feTile 方式で解消
 
-- **ユーザー報告**: `liquidChrome` の `Evolution` を変化させると、四角い枠（矩形の縁）が動いて見える。
-- **原因**: `liquidChromePrimitives()`（`src/runtime/effectSvg.ts`）の `feTurbulence` が生成域を `x=0 y=0 width=w height=h`（レイヤー実寸ぴったり）に固定したまま、`evolution` 由来の `feOffset`（`evolutionToOffsetPx()`）でノイズ場をパンしていた。生成域は固定サイズなのでパンすると片側の縁が露出し、**生成域そのものの矩形の境界線が動く縞として見えてしまう**。同じ問題は `fastWave`（位相パン）・`fastRipple`（center パン）で既に踏んだことがあり、両方とも生成域を `|pan|` 分だけ対称拡張する対策（`regionPadX`/`regionPadY`）で解消済みだった。`liquidChrome` は `turbulenceDisplace()` を再利用せず bump 用に `noiseRaw` を手動で result 管理する自前実装だったため、この対策が抜けていた。
-- **修正**: `feTurbulence` の `x/y/width/height` を `-pad..w+pad / -pad..h+pad`（`pad = |evoDx or evoDy| + 2`）へ対称拡張してからパンするよう変更（`fastWave`/`fastRipple` と同じ対策パターン）。外側の filter region 自体は §2.2 の規約どおり `(0,0,w,h)` にクランプされたまま（レイヤー矩形からのはみ出しは無い）。
-- **テスト**: `test/liquidChrome.test.ts` に「evolution=90° で生成域が対称拡張される」「evolution=0 でも最小マージン `pad=2` が入る（無パディングの `(0,0,w,h)` に戻らない）」の 2 ケースを追加（回帰防止）。
-- **検証**: typecheck ✅ / 新規含む `liquidChrome` テスト（13 tests）✅ / 全テスト ✅ / `npm run build:player` ✅。実 Chrome で `evolution=0/45/90/135/180/270` の 6 フレームを目視比較（`verify-liquidchrome-evolution-seam.mjs`）— パン量に応じて内部生成域の縁が動く様子は解消（レイヤー最外周に見える薄い縁取りは feSpecularLighting のエッジ効果で evolution に依らず静的・別件）。
-- **Next steps**: レイヤー最外周の薄い縁取り（feSpecularLighting のエッジ処理起因と推測）が気になる場合は別途エッジフェザー等の対策を検討。ユーザーへ実際の見た目の確認を依頼中。
+- **ユーザー報告**: `evolution` を動かすと四角い枠が動いて見える。基本挙動はそのままに枠を消したい。padding 方式（前コミット ab6729f）は「変な挙動」だったのでユーザーが自分で revert 済み → **別アプローチが必要**。
+- **枠の正体（実領域で再現して特定）**: 既存 verify（`verify-liquidchrome-evolution-seam.mjs`）はフィルタ領域を `-25%/150%` で描画していて**実アプリと不一致**だった（`liquidChrome` は displacement 系なので `createSvgFilterElement` が `(0,0,w,h)` にクランプ）。実領域＋グリッド content で再現すると、① `feOffset` パンで露出した逆側に**変位マップの透明帯**ができ「変位ゼロの矩形帯」が evolution 角度に応じ動く（＝動く枠）、② `feSpecularLighting` が `(0,0,w,h)` 境界で端法線を計算するため evolution=0 でも静的な矩形リムが出る、の 2 つが原因。
+- **padding が「変な挙動」だった理由**: `fastWave`/`fastRipple` と同型に生成域を `|pan|+2` 拡張したが、pan 量が `dist=(deg/360)·size` で evolution 角度により毎フレーム変わる → 生成域サイズが変化 → `stitchTiles` の周波数調整が変わってノイズ全体が沸き立つ（boiling）。
+- **採用した別アプローチ（feTile 方式・`liquidChromePrimitives()`）**: 生成域は `(0,0,w,h)` 固定（`stitchTiles` で `(w,h)` 周期）にしたまま `feTile` でシームレスに 3×3（`-w,-h,3w,3h`）展開し、displacement のパン先も specular の端法線も常に実ノイズで被覆する。`evolution` の生オフセットは無限に増えるが、場は周期 `(w,h)` なのでオフセットを **`mod (w,h)`** で `[0,w)/[0,h)` に畳んでも同一像（連続・シームレス）→ 3×3 タイル内に必ず収まる。bump も `noiseRaw` を同じく 3×3 タイル化（`bumpField`）して静的リムも解消。生成域固定なので boiling なし。
+- **検証**: `verify-liquidchrome-box-diag.mjs`（実領域 `(0,0,w,h)`＋グリッド content で evo 0/90/180/270 を目視 → 動く枠・静的リムとも消失を確認）。`verify-liquidchrome-parity.mjs`（**実 DomRenderer 経路**で on-screen 合成 vs export capture を比較 → 全 evo `maxDiff=0`・export 非黒 ~98%＝INV-2 維持）。※手組み container + `captureElementToCanvas` は foreignObject シリアライズが黒落ちする既知のハーネス制約があり信頼できない（D-2 spike と同じ教訓）ので、必ず実 DomRenderer 経路で測ること。
+- **テスト**: `test/liquidChrome.test.ts` に回帰テスト追加（生成域が evolution によらず `(0,0,w,h)` 固定＝boiling 防止 / feTile 2 枚存在 / オフセットが `mod` で `<w,<h` に収まる）。typecheck ✅ / 全テスト（1165）✅ / `npm run build:player` ✅。
+- **Next steps**: エディタでの最終目視（実際に evolution をアニメートして枠が出ないこと）はユーザー確認待ち。
 
 ### 2026-07-13（Claude Sonnet 5）— `liquidChrome` 本実装（D-2 spike go を受けての正式登録）
 
