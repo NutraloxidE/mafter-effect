@@ -51,6 +51,7 @@
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^0.10.18",
+    "earcut": "^3.2.3",
     "jszip": "^3.10.1",
     "mp4-muxer": "^5.2.2",
     "mp4box": "^2.4.1",

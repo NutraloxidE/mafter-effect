@@ -1,6 +1,7 @@
 import type { ComponentDef } from "./plugin";
 import { globalPluginRegistry } from "./pluginRegistry";
 import { FOOTAGE_QUALITY_TIERS } from "./footageQuality";
+import { GEOM3D_PARAM_DESCRIPTORS } from "./geom3d/geom3dParams";
 
 /** §26.2 builtin ComponentDef 登録（text）。ParamDescriptor で Timeline/Inspector の kind を正す。 */
 const TEXT_COMPONENT_DEF: ComponentDef = {
@@ -21,6 +22,8 @@ const TEXT_COMPONENT_DEF: ComponentDef = {
     { key: "italic", label: "Italic", kind: "bool", default: false, animatable: false },
     { key: "strokeColor", label: "Stroke", kind: "color", default: { r: 0, g: 0, b: 0, a: 1 }, animatable: true },
     { key: "strokeWidth", label: "Stroke Width", kind: "scalar", default: 0, animatable: true, min: 0 },
+    // §5.5f 3D 押し出し（P1: depth+bevel+lambert のみ。twist/bend/taper/gradient は次フェーズ）。
+    ...GEOM3D_PARAM_DESCRIPTORS,
   ],
   // 描画は DomRenderer（§26.4）。ParamDescriptor 登録が主目的。
   render() { /* DomRenderer */ },
