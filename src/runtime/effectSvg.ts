@@ -1473,83 +1473,110 @@ export function gradientMapTable(
 }
 
 // ---------------------------------------------------------------------------
-// liquidChrome — turbulence displace + feSpecularLighting + gradientMap(chrome)
-// (§27.3 / acid-digi Ticket D-2 spike go → 本実装)
+// liquidChrome — 金属環境の縞グラデを流体 turbulence で歪ませる「fill 方式」
+// (§27.3 / acid-digi Ticket D-2。旧「コンテンツ displace + feSpecularLighting +
+//  gradientMap」は下地が主役のパステル雲になり pic1 の液体クロームにならなかったため作り直し。)
 // ---------------------------------------------------------------------------
 
 /**
- * liquidChrome の 3 段合成 primitives（`{kind:"svg"}` の中身）。
- * 1) feTurbulence → feDisplacementMap で面を波打たせる（`turbulenceDisplace` と同型だが、
- *    bump map として `noiseRaw` を後段へ再利用するため result 名を自前で管理する）。
- * 2) 同じ noise を bump map として feSpecularLighting（feDistantLight）でハイライト生成し、
- *    displaced 済みアルファでクランプしてから加算合成。
- * 3) gradientMapTable("chrome") で金属レンジへ写像。
- *
- * D-2 spike（`verify-liquidchrome-spike.mjs`）で feSpecularLighting 込みの本チェーンが
- * preview / export（foreignObject capture）で画素一致（INV-2）することを実測済み。
+ * 金属環境の 1 周期グラデ stop（0..1）。黒(青み) → スチール → 鋭い白ハイライト →
+ * ピンク(イリデッセンス) → 暗紫 → 黒。両端が同色で縦タイル seam レス。
+ */
+const CHROME_STRIP_STOPS: { t: number; r: number; g: number; b: number }[] = [
+  { t: 0.0, r: 0x0a, g: 0x0c, b: 0x14 },
+  { t: 0.28, r: 0x4a, g: 0x55, b: 0x70 },
+  { t: 0.45, r: 0xe6, g: 0xec, b: 0xff },
+  { t: 0.5, r: 0xff, g: 0xff, b: 0xff },
+  { t: 0.57, r: 0xd8, g: 0xc2, b: 0xd8 },
+  { t: 0.72, r: 0x2a, g: 0x26, b: 0x36 },
+  { t: 1.0, r: 0x0a, g: 0x0c, b: 0x14 },
+];
+
+const CHROME_STRIP_HEIGHT = 512;
+
+/** liquidChrome の金属縞グラデ縦ストリップを生 PNG data URI に焼く（純関数・DOM 非依存）。 */
+export function chromeStripPng(periods: number): string {
+  const bands = Math.max(1, Math.round(periods));
+  const H = CHROME_STRIP_HEIGHT;
+  const W = 2;
+  const rgba = new Uint8Array(W * H * 4);
+  const periodH = H / bands;
+  for (let y = 0; y < H; y++) {
+    const local = (y % periodH) / periodH; // [0,1) 周期内位置
+    // stop 区間を線形補間
+    let a = CHROME_STRIP_STOPS[0]!;
+    let b = CHROME_STRIP_STOPS[CHROME_STRIP_STOPS.length - 1]!;
+    for (let i = 0; i < CHROME_STRIP_STOPS.length - 1; i++) {
+      if (local >= CHROME_STRIP_STOPS[i]!.t && local <= CHROME_STRIP_STOPS[i + 1]!.t) {
+        a = CHROME_STRIP_STOPS[i]!;
+        b = CHROME_STRIP_STOPS[i + 1]!;
+        break;
+      }
+    }
+    const span = b.t - a.t;
+    const u = span <= 1e-9 ? 0 : (local - a.t) / span;
+    const r = Math.round(a.r + (b.r - a.r) * u);
+    const g = Math.round(a.g + (b.g - a.g) * u);
+    const bl = Math.round(a.b + (b.b - a.b) * u);
+    for (let x = 0; x < W; x++) {
+      const o = (y * W + x) * 4;
+      rgba[o] = r;
+      rgba[o + 1] = g;
+      rgba[o + 2] = bl;
+      rgba[o + 3] = 255;
+    }
+  }
+  return rgbaToPngDataUri(rgba, W, H);
+}
+
+/**
+ * liquidChrome primitives（`{kind:"svg"}` の中身・fill 方式）。
+ * 1) feTurbulence（生成域 (0,0,w,h) 固定・stitch）→ feTile 3×3 → feOffset で evolution パン
+ *    （動く四角枠対策の tile+mod 方式を踏襲）。
+ * 2) `chromeStripPng(bands)` の金属縞グラデを feImage で敷き、seamless に 3×3 タイル展開。
+ * 3) 縞を 2 段 feDisplacementMap で歪ませる（warp=大きく折る骨格 + detail=細かい turbulence で
+ *    渦/eddy を作る）→ 鋭い反射線が流れる液体クローム。
+ * 4) feComposite operator="in" で SourceAlpha（レイヤー形状）に閉じ込め、下地の色は捨てる。
  */
 export function liquidChromePrimitives(opts: {
-  amount: number;
   size: number;
+  warp: number;
+  detail: number;
+  bands: number;
   evolution: number;
-  highlight: number;
-  depth: number;
   seed: number;
   quality: number;
   w: number;
   h: number;
 }): string {
-  const { amount, size, evolution, highlight, depth, seed, quality, w, h } = opts;
+  const { size, warp, detail, bands, evolution, seed, quality, w, h } = opts;
   const freq = sizeToFrequency(size);
-  const octaves = quality >= 0.5 ? 2 : 1;
+  const freq2 = sizeToFrequency(Math.max(1, size * 0.45)); // curl 用の細かい turbulence
+  const octaves = quality >= 0.5 ? 3 : 2;
   const { dx: evoDx, dy: evoDy } = evolutionToOffsetPx(evolution, size);
   const s = Math.max(0, Math.floor(seed)) % 4096;
+  const s2 = (s + 977) % 4096;
   const lw = Math.max(1, w);
   const lh = Math.max(1, h);
-
-  // evolution パンの「動く四角枠」対策（padding は生成域が毎フレーム変わり boiling するため不採用）:
-  // 生成域は (0,0,w,h) 固定のまま stitchTiles で (w,h) 周期にし、feTile でシームレスに 3×3 展開する。
-  // これで displacement のパン先も specular の端法線も常に実ノイズで覆われ、矩形の縁が露出しない。
-  // オフセットは周期 (w,h) で畳んでも同一像になるため mod で [0,w)/[0,h) に収め、3×3 タイル内に必ず収まる。
+  // 動く四角枠対策（tile+mod 方式）: 生成域固定＋seamless タイル、パンは周期で畳む。
   const panX = ((evoDx % lw) + lw) % lw;
   const panY = ((evoDy % lh) + lh) % lh;
+  const strip = chromeStripPng(bands);
+
   const parts: string[] = [
     `<feTurbulence type="fractalNoise" baseFrequency="${freq} ${freq}" numOctaves="${octaves}" seed="${s}" stitchTiles="stitch" x="0" y="0" width="${lw}" height="${lh}" result="noiseRaw"/>`,
-    feTurbulenceCenterNoise("noiseRaw", "noiseBalanced", 0, FRACTAL_NOISE_G_BIAS_INTERCEPT),
-    `<feTile in="noiseBalanced" x="${-lw}" y="${-lh}" width="${3 * lw}" height="${3 * lh}" result="noiseField"/>`,
+    `<feTile in="noiseRaw" x="${-lw}" y="${-lh}" width="${3 * lw}" height="${3 * lh}" result="noiseTiled"/>`,
+    `<feOffset in="noiseTiled" dx="${panX}" dy="${panY}" result="noise"/>`,
+    // 金属縞グラデ（(0,0,w,h) に敷いて seamless 3×3 タイル → displacement が端で透明を引かない）
+    `<feImage href="${strip}" x="0" y="0" width="${lw}" height="${lh}" preserveAspectRatio="none" result="stripOne"/>`,
+    `<feTile in="stripOne" x="${-lw}" y="${-lh}" width="${3 * lw}" height="${3 * lh}" result="stripField"/>`,
+    // 1 段目: 大きく折る（渦の骨格）
+    `<feDisplacementMap in="stripField" in2="noise" scale="${warp}" xChannelSelector="R" yChannelSelector="G" result="warp1"/>`,
+    // 2 段目: 細かい turbulence で更に curl させ閉ループ/eddy を作る
+    `<feTurbulence type="turbulence" baseFrequency="${freq2} ${freq2}" numOctaves="2" seed="${s2}" stitchTiles="stitch" x="0" y="0" width="${lw}" height="${lh}" result="noise2"/>`,
+    `<feDisplacementMap in="warp1" in2="noise2" scale="${detail}" xChannelSelector="R" yChannelSelector="G" result="warped"/>`,
+    // レイヤー形状に閉じ込め（下地の色は捨てる）
+    `<feComposite in="warped" in2="SourceAlpha" operator="in"/>`,
   ];
-  let noiseIn = "noiseField";
-  if (panX !== 0 || panY !== 0) {
-    parts.push(`<feOffset in="${noiseIn}" dx="${panX}" dy="${panY}" result="noiseOffset"/>`);
-    noiseIn = "noiseOffset";
-  }
-  const smoothPx = fastSmoothPx(size);
-  if (smoothPx > 0) {
-    parts.push(displaceMapBlur(noiseIn, "noiseSmooth", smoothPx));
-    noiseIn = "noiseSmooth";
-  }
-  parts.push(
-    `<feDisplacementMap in="SourceGraphic" in2="${noiseIn}" scale="${amount}" xChannelSelector="R" yChannelSelector="G" result="displaced"/>`,
-  );
-  const specBlur = Math.max(1, smoothPx || 1);
-  parts.push(
-    // bump も seamless タイル (noiseRaw を 3×3) にし、端の法線が実ノイズを参照するようにして
-    // evolution=0 でも specular の静的な矩形リムが出ないようにする。
-    `<feTile in="noiseRaw" x="${-lw}" y="${-lh}" width="${3 * lw}" height="${3 * lh}" result="bumpField"/>`,
-    `<feGaussianBlur in="bumpField" stdDeviation="${specBlur}" result="bump"/>`,
-    `<feSpecularLighting in="bump" surfaceScale="${depth}" specularConstant="${highlight}" specularExponent="12" lighting-color="#ffffff" result="spec">` +
-      `<feDistantLight azimuth="235" elevation="55"/>` +
-      `</feSpecularLighting>`,
-    `<feComposite in="spec" in2="displaced" operator="in" result="specClamped"/>`,
-    `<feComposite in="displaced" in2="specClamped" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="lit"/>`,
-  );
-  const { r, g, b } = gradientMapTable("chrome", 0, { r: 0, g: 0, b: 0 }, { r: 1, g: 1, b: 1 });
-  parts.push(
-    `<feComponentTransfer in="lit">` +
-      `<feFuncR type="table" tableValues="${r}"/>` +
-      `<feFuncG type="table" tableValues="${g}"/>` +
-      `<feFuncB type="table" tableValues="${b}"/>` +
-      `</feComponentTransfer>`,
-  );
   return parts.join("");
 }

@@ -1,5 +1,24 @@
 # Progress
 
+### 2026-07-14（Claude Opus 4.8）— `liquidChrome` を fill 方式へ全面作り直し（pic1 の液体クロームに）
+
+- **ユーザー指摘**: 「これってそもそも Liquid Chrome なのか？」リファレンス（pic1・研磨金属が流れる）に対し、実装（pic2）は低コントラストのパステル雲。→ 正しい。旧実装は設計レベルでズレていた。
+- **旧実装の問題**: D-2 spike 経由の「コンテンツを turbulence で displace + feSpecularLighting + gradientMap(chrome)」3 段合成は、① 下地（テキスト/背景）が主役のまま歪むだけ、② ノイズがボケ blob で反射リッジにならない、③ chrome グラデが実質2バンド＋低コントラストでパステル、の 3 点で pic1 にならない。パラメータでは埋まらない技法のズレ。
+- **設計判断（ユーザーに確認・AskUserQuestion）**: 下地の扱いは「**形状をクロームで塗る（fill 方式・pic1 志向）**」を選択。テキスト/shape/solid のアルファ形状を、ノイズ由来の金属で塗りつぶす（下地の色は捨てる）。
+- **正しい技法（計測駆動でプロトタイプ→確定）**: pic1 の正体 =「**シャープな金属環境の縞グラデを流体 turbulence で歪ませたもの**」。`verify-liquidchrome-proto.mjs` で実 Chrome に候補チェーンを描画して反復:
+  - v1（滑らかなノイズ値をバンド化）→ 大理石/雲で不可。
+  - v2（縞グラデを feImage で敷き turbulence で 1 段 displace）→ 鋭い反射線が出て液体クロームに。
+  - v3（**2 段 displace**: warp で大きく折る＋細かい turbulence で curl）→ pic1 の渦/閉ループ eddy を再現。これを採用。
+- **本実装**（`effectSvg.ts` / `fastEffects.ts` / `effectChain.ts`）:
+  - `chromeStripPng(bands)`（純関数・DOM 非依存・`rgbaToPngDataUri`）: 金属縞グラデ縦ストリップ（黒→スチール→鋭い白→ピンク(イリデ)→暗紫→黒・両端同色で縦タイル seam レス）を生 PNG に焼く。
+  - `liquidChromePrimitives()` 全面差し替え: feTurbulence(生成域固定+tile+mod pan) → feImage(strip)+feTile → 2 段 feDisplacementMap(warp/detail) → feComposite in SourceAlpha。旧 feSpecularLighting/gradientMapTable 依存は撤去。
+  - `LIQUID_CHROME_EFFECT_DEF` の params を fill 方式に一新: `size`(140) / `warp`(160) / `detail`(45) / `bands`(6) / `evolution` / `seed`(7) / `quality`。旧 `amount`/`highlight`/`depth` 廃止。null ガード撤去（常時 fill）。
+  - `effectChain.ts` の scale 分岐に `liquidChrome` → `p["warp"]` を明示追加（旧 `amount` generic フォールバックが効かなくなったため）。displacement 系のまま（内部 feDisplacementMap・出力は SourceAlpha 閉じ）。
+  - 「動く四角枠」対策の tile+mod 方式は踏襲（前エントリ参照）。
+- **検証**: typecheck ✅ / `test/liquidChrome.test.ts` 全面書き換え（15 tests・chromeStripPng 決定論 / fill 構造 / 旧 feSpecularLighting 非残存 / 2 displacement scale 反映 / tile+mod 枠対策 / §2.2 3 Set / param キー）✅ / 全テスト（1166）✅ / `npm run build:player` ✅ / `verify-liquidchrome-parity.mjs`（実 DomRenderer 経路で evo 0/90/270 とも INV-2 `maxDiff=0`・実登録エフェクトの見た目も pic1 系を確認）✅。
+- **spec**: §27.3 `liquidChrome` を fill 方式へ全面書き換え。
+- **Next steps**: エディタ実機でユーザー最終目視（テキスト/shape に適用して pic1 の質感か）。将来課題: パレット/preset 選択、`fill=false`（下地を歪ませる金属ガラス風）モード。
+
 ### 2026-07-14（Claude Opus 4.8）— `liquidChrome` evolution の「動く四角枠」を feTile 方式で解消
 
 - **ユーザー報告**: `evolution` を動かすと四角い枠が動いて見える。基本挙動はそのままに枠を消したい。padding 方式（前コミット ab6729f）は「変な挙動」だったのでユーザーが自分で revert 済み → **別アプローチが必要**。

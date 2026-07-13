@@ -2491,31 +2491,36 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 - **human 受け入れ**: ① 実機で参照画像の見た目（ラインから色が一方向へ引き伸ばされる）、② preview/export の 1 フレーム画素一致（INV-2）、③ ライブ性（実 Chrome + CDP Tracing で `MainFrame.Draw` がベースライン同等）。
 - **非目標**: ランダム長・複数ライン・残像/前フレーム混合（＝別エフェクト `pixelSmear`）。raster 版。
 
-##### `liquidChrome` — Liquid Chrome（Y2K 液体クローム・§2.2 4 配線点・D-2 spike go）
+##### `liquidChrome` — Liquid Chrome（Y2K 液体クローム・fill 方式・§2.2 配線点）
 
-> **由来**: acid-digi プラン Tier 3（`doc/cloudplan/acid-digi-hyper-live-effects-plan.md` §5.1）。`feSpecularLighting`（本実装まで**コードベース未使用**）を含む合成のため、実装前に Ticket D-2（INV-2 spike）を必須としていた。`verify-liquidchrome-spike.mjs` で実アプリの登録経路（`globalPluginRegistry.registerEffect` → `DomRenderer.applyEffects` → `createSvgFilterElement`）を使い、feSpecularLighting 込みのフルチェーンが live 実ブラウザ合成（on-screen 実測）と既存 export 経路（`captureElementToCanvas` の foreignObject キャプチャ）とで **画素完全一致（`maxDiff=0`）** することを実測済み（go）。bundle player は preview と同じ live CSS filter 経路（`captureElementToCanvas` を通らない）のため、この一致で 3 経路（preview / export / bundle player）とも担保される。
+> **作り直し（2026-07-14）**: 初版は D-2 spike（`feSpecularLighting`）を経て「**コンテンツを turbulence で displace + specular + gradientMap(chrome)**」の 3 段合成で実装したが、下地（テキスト/背景）が主役のまま歪むだけの**低コントラストなパステル雲**にしかならず、リファレンス（研磨金属が流れる pic1）の液体クロームにならなかった（ユーザー実機判断）。技法を **fill 方式**へ全面作り直し。旧実装の feSpecularLighting / gradientMapTable(chrome) 依存は撤去。
+>
+> **正しい技法の要点**: pic1 の質感 =「**シャープな金属環境の縞グラデ**を流体 turbulence で歪ませたもの」。縞がシャープなので歪めても鋭い反射線が残る。滑らかなノイズ値をバンド化する方式（旧案）は「バンド自体がボケて大理石/雲」になり不可。
 
 | param key | label | kind | default | range | animatable |
 |---|---|---|---|---|---|
-| `amount` | Amount | scalar | `18` | 0..200, step 0.1（displacement scale） | ✅ |
-| `size` | Size | scalar | `100` | 1..2000, step 0.1（turbulence 特徴サイズ） | ✅ |
+| `size` | Size | scalar | `140` | 1..2000, step 0.1（turbulence 特徴サイズ＝流れの大きさ） | ✅ |
+| `warp` | Warp | scalar | `160` | 0..500, step 1（1 段目 displacement scale＝渦の骨格） | ✅ |
+| `detail` | Detail | scalar | `45` | 0..200, step 1（2 段目 curl displacement scale＝eddy/閉ループ） | ✅ |
+| `bands` | Bands | scalar | `6` | 1..24, step 1（金属縞グラデの周期数＝反射線の密度） | ✅ |
 | `evolution` | Evolution | scalar | `0` | 無制限 (deg), step 1 | ✅ |
-| `highlight` | Highlight | scalar | `1` | 0..2, step 0.01（`specularConstant`） | ✅ |
-| `depth` | Depth | scalar | `6` | 0..20, step 0.1（`surfaceScale`） | ✅ |
 | `seed` | Seed | scalar | `7` | 0..9999, step 1 | ❌ |
-| `quality` | Quality | scalar | `1` | 0.1..1, step 0.05（0.5 未満で `numOctaves=1` に低下） | ✅ |
+| `quality` | Quality | scalar | `1` | 0.1..1, step 0.05（0.5 未満で base turbulence を 2 octaves に低下） | ✅ |
 
-- `apply` → `{ kind: "svg", primitives }`（`amount === 0` → `null`）。純関数 `liquidChromePrimitives()`（`effectSvg.ts`）が 3 段チェーンを生成。
-- **技法（3 段合成）**:
-  1. `feTurbulence type="fractalNoise" stitchTiles="stitch"`（`baseFrequency = sizeToFrequency(size)`・`numOctaves`=quality依存・**生成域は `(0,0,w,h)` 固定**）→ `feComponentTransfer`（fractalNoise の G バイアス補正 `FRACTAL_NOISE_G_BIAS_INTERCEPT`）→ **`feTile`（`(w,h)` 周期ノイズを `(−w,−h,3w,3h)` にシームレス展開）** →（`evolution` パンを周期 `(w,h)` で畳んだ `feOffset`）→（`fastSmoothPx(size)` 分だけ `feGaussianBlur`）→ `feDisplacementMap`（`scale=amount`・`xChannelSelector="R" yChannelSelector="G"`）で面を波打たせる。
-  2. `noiseRaw` を **同様に `feTile` で 3×3 展開した bump（`bumpField`）** を bump map として再利用し、`feGaussianBlur`（軽い平滑化）→ `feSpecularLighting surfaceScale="{depth}" specularConstant="{highlight}" specularExponent="12"`（`feDistantLight azimuth="235" elevation="55"` 固定）でハイライトを生成 → `feComposite operator="in"` で displaced 済みアルファへクランプ → `feComposite operator="arithmetic" k3="1" k4="0"`（実質 A+B の透過安全な加算）で displaced 画像へ加算。
-  3. `gradientMapTable("chrome", 0, ...)` の固定テーブル（`feComponentTransfer type="table"`）で金属レンジ（暗→明→暗→明の非単調）へ写像。preset 選択 UI は持たない（`liquidChrome` = chrome 固定。他 preset が欲しい場合は `gradientMap` エフェクトを別途スタック）。
-- **evolution パンの「動く四角枠」対策（`feTile` 方式・2026-07-14）**: 初版は生成域 `(0,0,w,h)` 固定のノイズを `feOffset` で直接パンしていたため、パンで露出した逆側に**変位マップの透明帯**ができ、そこが「変位ゼロ/一定変位の矩形帯」として残って evolution 角度に応じ動く枠に見えた。加えて `feSpecularLighting` が `(0,0,w,h)` 境界で端法線を計算するため evolution=0 でも静的な矩形リムが出ていた。**対策**: 生成域は `(0,0,w,h)` 固定（`stitchTiles` で `(w,h)` 周期）にしたまま `feTile` でシームレスに 3×3 展開し、displacement のパン先も specular の端法線も常に実ノイズで被覆する。`evolution` の生オフセットは `dist=(deg/360)·size` で無限に増えるが、場は周期 `(w,h)` なのでオフセットを **`mod (w,h)`** で `[0,w)/[0,h)` に畳んでも同一像になり（連続・シームレス）、3×3 タイル内に必ず収まる。**却下した padding 方式**（`fastWave`/`fastRipple` と同型に生成域を `|pan|+2` 拡張）は、pan 量が evolution 角度で変わり生成域サイズが毎フレーム変化 → `stitchTiles` の周波数調整が変わってノイズ全体が沸き立つ（boiling）ため不採用。verify: `verify-liquidchrome-box-diag.mjs`（実領域 `(0,0,w,h)` + グリッド content で枠消失を目視）/ `verify-liquidchrome-parity.mjs`（実 DomRenderer 経路で INV-2 `maxDiff=0`）。
-- **§2.2 の 4 配線点（すべて対応済み）**: `DISPLACEMENT_EFFECT_TYPES` / `FAST_DISPLACEMENT_EFFECT_TYPES`（→ `LIVE_DISPLACEMENT_EFFECT_TYPES` に自動伝播）に `"liquidChrome"` 登録済み。`effectChain.ts` の scale 分岐は `fastTurbulentDisplace` 等と同じく明示分岐を追加せず、generic フォールバック（`p["amount"]`）にそのまま乗る（param key を `amount` に揃えたため）。
+- `apply` → `{ kind: "svg", primitives }`（常時適用・下地の色は捨てレイヤーのアルファ形状をクロームで塗る fill）。純関数 `liquidChromePrimitives()`（`effectSvg.ts`）が生成。
+- **技法（fill 方式）**:
+  1. `feTurbulence type="fractalNoise" stitchTiles="stitch"`（`baseFrequency = sizeToFrequency(size)`・`numOctaves`=quality依存・**生成域 `(0,0,w,h)` 固定**）→ `feTile` で `(−w,−h,3w,3h)` にシームレス展開 → `evolution` パンを周期 `(w,h)` で畳んだ `feOffset`（下記「動く四角枠対策」）。
+  2. **金属縞グラデ**を `chromeStripPng(bands)`（純関数・生 PNG・縦 `bands` 周期のグラデ: 黒(青み)→スチール→鋭い白ハイライト→ピンク(イリデッセンス)→暗紫→黒。両端同色で縦タイル seam レス）で焼き、`feImage` で `(0,0,w,h)` に敷いて `feTile` で 3×3 展開（displacement が端で透明を引かない）。
+  3. 縞を **2 段 `feDisplacementMap`** で歪ませる: 1 段目 `scale=warp`（大きく折る＝渦の骨格）→ 2 段目は `size·0.45` の細かい `feTurbulence type="turbulence"` を map に `scale=detail`（curl させ閉ループ/eddy を作る）。→ 鋭い反射線が流れる液体クローム。
+  4. `feComposite operator="in" in2="SourceAlpha"` でレイヤー形状に閉じ込め（テキスト/shape/solid の中身がクローム化・下地の色は捨てる）。
+- **evolution パンの「動く四角枠」対策（tile+mod 方式）**: 生成域 `(0,0,w,h)` 固定（`stitchTiles` で `(w,h)` 周期）のまま `feTile` でシームレス 3×3 展開し、パン先も縞も常に実データで被覆。`evolution` 生オフセットは `dist=(deg/360)·size` で無限に増えるが、場は周期 `(w,h)` なのでオフセットを **`mod (w,h)`** で `[0,w)/[0,h)` に畳んでも同一像（連続・シームレス）。**却下した padding 方式**は pan 量が毎フレーム変わり生成域サイズ変化 → `stitchTiles` の周波数が変わってノイズが沸き立つ（boiling）ため不採用。
+- **§2.2 の配線点**: 内部で `feDisplacementMap` を使うため displacement 系として `DISPLACEMENT_EFFECT_TYPES` / `FAST_DISPLACEMENT_EFFECT_TYPES`（→ `LIVE_DISPLACEMENT_EFFECT_TYPES` に自動伝播）に `"liquidChrome"` 登録。`effectChain.ts` の scale 分岐は `liquidChrome` → `p["warp"]` を明示追加（region クランプ参照スケール）。出力は `SourceAlpha` に閉じるためレイヤー矩形を超えない。
 - **カテゴリ**: `"スタイライズ"`（`fastEffects.ts` に登録）。**経路**: live SVG（`executionPath: "live"`）。
-- **決定論（INV-1）**: `Math.random` 不使用。`seed` は attribute として `feTurbulence` に直接渡す（既存 displacement 系と同じ規約）。
-- **テスト**: `test/liquidChrome.test.ts`（`liquidChromePrimitives()` の決定論・3段チェーン含有・param 反映・§2.2 3 Set 登録・`apply()` の null/非 null）。
-- **非目標**: gradientMap preset 選択（chrome 固定）。2 段ハイライト（コア+外側ハロー分離）。AE 相当のフォトリアルな金属シェーダ一致。
+- **決定論（INV-1）**: `Math.random` 不使用。`seed` は `feTurbulence` に直接渡す。strip は純関数 `chromeStripPng` で deterministic。
+- **INV-2**: `verify-liquidchrome-parity.mjs`（**実 DomRenderer 経路**で on-screen 合成 vs export capture）で evo 0/90/270 とも `maxDiff=0`。bundle player は preview と同じ live CSS filter 経路のため 3 経路担保。※手組み container + `captureElementToCanvas` は foreignObject シリアライズが黒落ちする既知のハーネス制約があり信頼できない。
+- **テスト**: `test/liquidChrome.test.ts`（`chromeStripPng`/`liquidChromePrimitives` の決定論・fill 構造＝feImage strip + 2 displacement + SourceAlpha 閉じ込め・旧 feSpecularLighting 非残存・param 反映・tile+mod 枠対策・§2.2 3 Set 登録・EffectDef param キー）。
+- **既知の制約**: 2 段目 displacement は warp1 出力を `(0,0,w,h)` クランプ後に detail(≤200px) で引くため、**レイヤー矩形いっぱいの solid** では端に最大 detail 幅の微小なにじみが出得る（マージンのあるテキスト/shape では不可視）。
+- **非目標**: パレット/preset 選択（金属縞は固定・v1）。物理ベースの環境反射・AE 相当のフォトリアル金属シェーダ一致。`fill=false`（下地を歪ませる金属ガラス風）モードは将来課題。
 
 #### `linearWipe` — Linear Wipe
 

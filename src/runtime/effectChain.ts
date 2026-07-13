@@ -83,6 +83,8 @@ export function resolveEffectChain(
             ? Math.max(0, typeof p["maxShift"] === "number" ? p["maxShift"] : 0)
             : effect.type === "pixelStretch"
               ? Math.max(0, typeof p["length"] === "number" ? p["length"] : 0)
+            : effect.type === "liquidChrome"
+              ? Math.max(0, typeof p["warp"] === "number" ? p["warp"] : 0)
               : Math.max(0, typeof p["amount"] === "number" ? p["amount"] : 0);
     fxMaxDisplaceScale = Math.max(fxMaxDisplaceScale, scale);
   }

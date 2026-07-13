@@ -33,7 +33,7 @@ async function runAt(evolution) {
         transform: { anchor: sp({ x: 0, y: 0, z: 0 }), position: sp({ x: 0, y: 0, z: 0 }), rotation: sp({ x: 0, y: 0, z: 0 }), scale: sp({ x: 1, y: 1, z: 1 }) },
         opacity: sp(1), isNull: false,
         components: [{ type: "solid", props: { color: sp({ r: 0.5, g: 0.5, b: 0.5, a: 1 }), size: sp({ x: W, y: H, z: 0 }) } }],
-        effects: [{ id: "fx", type: "liquidChrome", enabled: true, props: { amount: sp(40), size: sp(100), evolution: sp(evolution), highlight: sp(1), depth: sp(6), seed: sp(7), quality: sp(1) } }],
+        effects: [{ id: "fx", type: "liquidChrome", enabled: true, props: { size: sp(140), warp: sp(160), detail: sp(45), bands: sp(6), evolution: sp(evolution), seed: sp(7), quality: sp(1) } }],
       }],
     };
 
