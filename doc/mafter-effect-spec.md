@@ -2665,6 +2665,20 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 - **human 受け入れ**: 実 Chrome + CDP Tracing で `MainFrame.Draw` がエフェクト無しベースライン同等であることの確認は未実施（票の完了条件から Codex/Claude 自動宣言は除外）。改定1修正後の実際の描画は Playwright + 実 Chrome（`channel:"chrome"`）で確認済み（Preview の Fit ズーム相当の `transform:scale(0.4136)` 下で再現・修正）。
 - **非目標**: 走査線の彩度分離（NTSC/PAL 色収差）・インターレース疑似。
 
+### §27.3.1 ルックプリセットレシピ（散文のみ・WP-E・確定）
+
+「VHS」「CRT」「Acid Poster」等の完成ルックは、**新 effect 型やスキーマ・UI プリセット機構を作らず**、既存 builtin エフェクトを**エフェクト配列に順番通り積むスタック定型**として提供する（親ドキュメント `doc/cloudplan/acid-digi-hyper-live-effects-plan.md` §5.2 由来）。ユーザーは Inspector から個々のエフェクトを手動で追加する（自動プリセットボタンは将来課題・非目標）。
+
+- **VHS** = `chromaSplit(amount:3)` → `scanlines`（既定値程度） → `fastWave(amplitude:2, wavelength: 大きめ)` → `noiseGrain`（既定値程度）
+  - 色収差でにじませ、走査線でブラウン管質感を出し、緩い横波でトラッキングの揺れを、最後にグレインでテープノイズを足す。
+- **CRT** = `scanlines` → `opticsCompensation(reverse: true)` → `hyperGlow`（`intensity` 弱め）
+  - 走査線 + レンズの樽型歪みを逆方向にかけてブラウン管の湾曲を模し、弱いグロウで蛍光体の滲みを足す。
+  - `opticsCompensation` は displacement 系（`executionPath: "live"`・§2.2 の配線済み既存エフェクト）。`reverse:true` で凸型ではなく CRT 特有の内側湾曲になる（親 §3.4 の訂正どおり、非 displacement な `scanlines`/`hyperGlow` はレイヤー矩形の自動 150% 領域内で完結）。
+- **Acid Poster** = `posterize(levels:4)` → `gradientMap(preset:"acid")` → `noiseGrain`（粗め・`size` を大きく）
+  - 階調を 4 段に落として版画調にし、`acid` プリセットのグラデーションマップで毒々しい配色に置き換え、粗いグレインでポスター印刷のザラつきを足す。
+
+**適用順序が重要**: エフェクト配列は上から下へ順に適用される（§27.1）。上記のレシピは既存エフェクトの `apply()` 出力をそのまま連結した想定順序であり、順序を入れ替えると見た目が変わる（例: `posterize` を `gradientMap` の後に置くと量子化前の連続グラデーションが失われる）。各エフェクトのパラメータ既定値は §27.3 の該当項目を参照。数値の微調整（`amount`/`intensity` 等の具体的な「弱め」「粗め」の値）はユーザーの好みによるため本レシピでは固定しない。
+
 ### §27.4 調整レイヤー（Adjustment Layer・Live / Raster 2 モード・確定 2026-06-20）
 
 **意味（AE 準拠）**: 調整レイヤーは自身の content を描画せず、`effects[]` を**その下（背面・低 zOrder）に重なる全レイヤーの合成結果**に適用する。

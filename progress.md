@@ -1,5 +1,13 @@
 # Progress
 
+### 2026-07-13（Claude Sonnet 5）— Acid/Digi WP-E ルックプリセットレシピ（散文のみ）完了
+
+- **Source**: `doc/cloudplan/acid-digi-hyper-live-effects-plan-Detailed.md` §7 WP-E。コード変更ゼロ（要求どおり）。
+- **実装**: `doc/mafter-effect-spec.md` に新規 `§27.3.1 ルックプリセットレシピ` を追加。親ドキュメント §5.2 由来の VHS / CRT / Acid Poster の 3 レシピを、既存 builtin エフェクトのスタック定型として散文記載（新 effect 型・スキーマ・UI プリセット機構は作らない・非目標として明記）。
+- **WP-A〜E ステータス**: A（posterize/gradientMap/chromaSplit）・B（scanlines/noiseGrain/hyperGlow）・C（glitchSlice）・E（recipes）が完了。**D（pixelStretch spike / liquidChrome spike）のみ残作業**（委任不可・Claude+human・headed browser 実ピクセル判定が前提）。
+- **検証**: コード変更なしのため typecheck/test 対象外（spec のみ）。
+- **Next steps**: D-1 `pixelStretch` spike（8-bit 量子化アーティファクトの許容判断）→ D-2 `liquidChrome` spike（`feSpecularLighting` の INV-2 経路一致）。どちらも Claude が試作 → 実 Chrome で headed 実行 → 最終判断はユーザー（human 受け入れ必須、Claude が単独で go/no-go を確定させない）。
+
 ### 2026-07-13（Claude Sonnet 5）— `scanlines`（B-1）描画されないバグを実 Chrome で特定・修正 → 完了
 
 - **報告**: ユーザーから「scanlines が動作していないっぽい」。実 Chrome（Playwright、`channel:"chrome"`）でエディタを直接操作して調査（`window.__mafterEditorStore` 経由で solid + `scanlines` を追加し screenshot）。
