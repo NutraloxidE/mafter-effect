@@ -1,5 +1,9 @@
 # Progress
 
+### 2026-07-13（Claude Sonnet 5）— `glitchSlice`（C-1）完了マーク / `scanlines`（B-1）は未完了のまま調査中
+
+- **ステータス変更**: ユーザー確認により `glitchSlice`（C-1）は重さ最適化後の体感で**完了**とする。`scanlines`（B-1）は「動作していないっぽい」報告あり、**未完了**のまま調査・修正中（続報は本ファイル先頭の新規エントリに記載）。
+
 ### 2026-07-13（Claude Sonnet 5）— Acid/Digi B-1 `scanlines` / C-1 `glitchSlice` を未完了としてマーク + `glitchSlice` 重さ最適化
 
 - **ステータス変更**: `scanlines`（B-1）・`glitchSlice`（C-1）は**未完了**（human 受け入れ未実施のまま）。ユーザー指摘: `glitchSlice` が重すぎる。
