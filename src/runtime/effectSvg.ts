@@ -1506,9 +1506,18 @@ export function liquidChromePrimitives(opts: {
   const s = Math.max(0, Math.floor(seed)) % 4096;
   const lw = Math.max(1, w);
   const lh = Math.max(1, h);
+  // fastWave/fastRipple と同じ対策: feTurbulence の生成域を |pan| 分だけ対称拡張してから
+  // feOffset でパンする（生成域を (0,0,w,h) 固定のままパンすると、露出した端に生成域の
+  // 矩形の縁がそのまま見えてしまう）。
+  const padX = Math.abs(evoDx) + 2;
+  const padY = Math.abs(evoDy) + 2;
+  const tx = -padX;
+  const ty = -padY;
+  const tw = lw + 2 * padX;
+  const th = lh + 2 * padY;
 
   const parts: string[] = [
-    `<feTurbulence type="fractalNoise" baseFrequency="${freq} ${freq}" numOctaves="${octaves}" seed="${s}" stitchTiles="stitch" x="0" y="0" width="${lw}" height="${lh}" result="noiseRaw"/>`,
+    `<feTurbulence type="fractalNoise" baseFrequency="${freq} ${freq}" numOctaves="${octaves}" seed="${s}" stitchTiles="stitch" x="${tx}" y="${ty}" width="${tw}" height="${th}" result="noiseRaw"/>`,
     feTurbulenceCenterNoise("noiseRaw", "noiseBalanced", 0, FRACTAL_NOISE_G_BIAS_INTERCEPT),
   ];
   let noiseIn = "noiseBalanced";

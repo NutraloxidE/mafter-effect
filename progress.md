@@ -1,5 +1,14 @@
 # Progress
 
+### 2026-07-13（Claude Sonnet 5）— `liquidChrome`: Evolution で四角枠が動いて見えるバグを修正
+
+- **ユーザー報告**: `liquidChrome` の `Evolution` を変化させると、四角い枠（矩形の縁）が動いて見える。
+- **原因**: `liquidChromePrimitives()`（`src/runtime/effectSvg.ts`）の `feTurbulence` が生成域を `x=0 y=0 width=w height=h`（レイヤー実寸ぴったり）に固定したまま、`evolution` 由来の `feOffset`（`evolutionToOffsetPx()`）でノイズ場をパンしていた。生成域は固定サイズなのでパンすると片側の縁が露出し、**生成域そのものの矩形の境界線が動く縞として見えてしまう**。同じ問題は `fastWave`（位相パン）・`fastRipple`（center パン）で既に踏んだことがあり、両方とも生成域を `|pan|` 分だけ対称拡張する対策（`regionPadX`/`regionPadY`）で解消済みだった。`liquidChrome` は `turbulenceDisplace()` を再利用せず bump 用に `noiseRaw` を手動で result 管理する自前実装だったため、この対策が抜けていた。
+- **修正**: `feTurbulence` の `x/y/width/height` を `-pad..w+pad / -pad..h+pad`（`pad = |evoDx or evoDy| + 2`）へ対称拡張してからパンするよう変更（`fastWave`/`fastRipple` と同じ対策パターン）。外側の filter region 自体は §2.2 の規約どおり `(0,0,w,h)` にクランプされたまま（レイヤー矩形からのはみ出しは無い）。
+- **テスト**: `test/liquidChrome.test.ts` に「evolution=90° で生成域が対称拡張される」「evolution=0 でも最小マージン `pad=2` が入る（無パディングの `(0,0,w,h)` に戻らない）」の 2 ケースを追加（回帰防止）。
+- **検証**: typecheck ✅ / 新規含む `liquidChrome` テスト（13 tests）✅ / 全テスト ✅ / `npm run build:player` ✅。実 Chrome で `evolution=0/45/90/135/180/270` の 6 フレームを目視比較（`verify-liquidchrome-evolution-seam.mjs`）— パン量に応じて内部生成域の縁が動く様子は解消（レイヤー最外周に見える薄い縁取りは feSpecularLighting のエッジ効果で evolution に依らず静的・別件）。
+- **Next steps**: レイヤー最外周の薄い縁取り（feSpecularLighting のエッジ処理起因と推測）が気になる場合は別途エッジフェザー等の対策を検討。ユーザーへ実際の見た目の確認を依頼中。
+
 ### 2026-07-13（Claude Sonnet 5）— `liquidChrome` 本実装（D-2 spike go を受けての正式登録）
 
 - **やること**: D-2 spike の go 判定を受け、`liquidChrome` を実際にエディタから使えるようにする（`fastEffects.ts` への `EffectDef` 登録・§2.2 の 4 配線点・spec §27.3 追記）。spike スクリプトが登録していたのは Playwright テスト内の一時的な `globalPluginRegistry.registerEffect` のみで、本番の `builtinEffects.ts`/`fastEffects.ts` には未登録だったため、エディタの effect リストに出ていなかった（ユーザー指摘で発覚）。

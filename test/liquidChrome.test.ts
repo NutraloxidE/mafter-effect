@@ -54,6 +54,24 @@ describe("liquidChromePrimitives (pure)", () => {
     expect(hi).toContain('numOctaves="2"');
     expect(lo).toContain('numOctaves="1"');
   });
+
+  it("pads the feTurbulence generation region so an evolution pan doesn't expose its edge", () => {
+    // evolution=90deg with size=100 → dist=25px along +y (dx=cos(90)*25≈0, dy=sin(90)*25=25)。
+    // feTurbulence の x/y/width/height は (0,0,w,h) 固定ではなく |pan|+2 分だけ対称拡張されている必要がある。
+    const s = liquidChromePrimitives({ ...baseOpts, evolution: 90 });
+    const m = s.match(/<feTurbulence[^>]*\bx="(-?[\d.]+)"[^>]*\by="(-?[\d.]+)"[^>]*\bwidth="([\d.]+)"[^>]*\bheight="([\d.]+)"/);
+    expect(m).not.toBeNull();
+    const [, x, y, width, height] = m!;
+    expect(Number(x)).toBeLessThan(0);
+    expect(Number(y)).toBeLessThan(0);
+    expect(Number(width)).toBeGreaterThan(baseOpts.w);
+    expect(Number(height)).toBeGreaterThan(baseOpts.h);
+  });
+
+  it("evolution=0 still pads by the minimum margin (no unpadded (0,0,w,h) region)", () => {
+    const s = liquidChromePrimitives({ ...baseOpts, evolution: 0 });
+    expect(s).toContain(`x="-2" y="-2" width="${baseOpts.w + 4}" height="${baseOpts.h + 4}"`);
+  });
 });
 
 describe("liquidChrome wiring (§2.2 4 配線点)", () => {
