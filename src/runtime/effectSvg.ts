@@ -63,12 +63,20 @@ export function scanlineTilePng(
 }
 
 /**
- * §27.3 Glitch Slice — 水平スライスの変位マップを生 PNG に焼く（§2.2/§2.5）。
+ * §27.3 Glitch Slice — 水平スライスの変位マップを生 PNG に焼く（§2.2/§2.5・改定1: 1 列化）。
  *
- * スライスごとに変位が異なるためタイル化不可（`feTile` は使わず、レイヤー実寸 1 枚を
- * `feImage` で渡す）。R チャンネルに正規化変位（0.5=無変位）、G は中立 0.5 固定
- * （水平スライスなので Y 変位は使わない）。`seededRandom` + `phaseToSeed(evolution)` で
- * INV-1 決定論。
+ * スライスごとに変位が異なるためタイル化不可（`feTile` は使わず、`feImageLayer` で
+ * レイヤー実寸 `(0,0,w,h)` へ引き伸ばして渡す）。R チャンネルに正規化変位（0.5=無変位）、
+ * G は中立 0.5 固定（水平スライスなので Y 変位は使わない）。`seededRandom` +
+ * `phaseToSeed(evolution)` で INV-1 決定論。
+ *
+ * **改定1（重さ対策）**: 初版は `w×h` フル解像度でバッファを埋めていたが、値は各行内で
+ * x に依存しない（水平スライスは行内一様）ため **x 方向は完全に冗長**だった。1920×1080 なら
+ * 8.3MB の raw buffer を毎 apply() で生成・PNG エンコード・base64 化しており、これが
+ * 「重すぎる」の実体（JS 側の生成コストであって §2.5 の feImage ネスト文書コストとは別軸）。
+ * `feImage`(1×h の生 PNG) を `width="{w}"` で水平方向にのみ引き伸ばす（1 列を複製するだけ
+ * なので拡大縮小補間の余地がなく exact）。垂直方向は h=h の 1:1（スケーリングなし）を維持し、
+ * スライス境界の離散性（グリッチは離散が正）を崩さない。w×h → 1×h で ~w 倍軽量。
  */
 export function glitchSliceDisplaceMapPng(opts: {
   w: number;
@@ -79,14 +87,13 @@ export function glitchSliceDisplaceMapPng(opts: {
   seed: number;
   evolution: number;
 }): { uri: string; scale: number } {
-  const w = Math.max(1, Math.round(opts.w));
   const h = Math.max(1, Math.round(opts.h));
   const sliceHeight = Math.max(2, Math.round(opts.sliceHeight));
   const maxShift = Math.max(0, opts.maxShift);
   const density = Math.min(1, Math.max(0, opts.density));
   const baseSeed = Math.max(0, Math.floor(opts.seed)) % 100000;
   const evoSeed = phaseToSeed(opts.evolution);
-  const rgba = new Uint8Array(w * h * 4);
+  const rgba = new Uint8Array(1 * h * 4);
   const numSlices = Math.ceil(h / sliceHeight);
   for (let k = 0; k < numSlices; k++) {
     const rng = seededRandom((baseSeed * 1000003 + k * 97 + evoSeed) >>> 0);
@@ -98,17 +105,14 @@ export function glitchSliceDisplaceMapPng(opts: {
     const y0 = k * sliceHeight;
     const y1 = Math.min(h, y0 + sliceHeight);
     for (let y = y0; y < y1; y++) {
-      const rowOffset = y * w * 4;
-      for (let x = 0; x < w; x++) {
-        const o = rowOffset + x * 4;
-        rgba[o] = rVal;
-        rgba[o + 1] = 128;
-        rgba[o + 2] = 0;
-        rgba[o + 3] = 255;
-      }
+      const o = y * 4;
+      rgba[o] = rVal;
+      rgba[o + 1] = 128;
+      rgba[o + 2] = 0;
+      rgba[o + 3] = 255;
     }
   }
-  return { uri: rgbaToPngDataUri(rgba, w, h), scale: maxShift };
+  return { uri: rgbaToPngDataUri(rgba, 1, h), scale: maxShift };
 }
 
 /** displacement filter region 属性（userSpaceOnUse）。 */

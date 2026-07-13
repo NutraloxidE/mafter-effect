@@ -1,5 +1,19 @@
 # Progress
 
+### 2026-07-13（Claude Sonnet 5）— Acid/Digi B-1 `scanlines` / C-1 `glitchSlice` を未完了としてマーク + `glitchSlice` 重さ最適化
+
+- **ステータス変更**: `scanlines`（B-1）・`glitchSlice`（C-1）は**未完了**（human 受け入れ未実施のまま）。ユーザー指摘: `glitchSlice` が重すぎる。
+- **`glitchSlice` 重さの原因を調査・特定**（過去のノウハウ: implement-visual-effect §7c「`feImage`(ネスト SVG 文書) は毎フレーム再ラスタ」と mosaicLite の「PNG に焼いて軽量化」教訓を踏まえて再点検）:
+  - §2.5 のセオリー（生 PNG + ネスト文書回避）自体は前セッションで守れていたが、**生成する PNG 自体が過大**だった。`glitchSliceDisplaceMapPng` はレイヤー実寸 `w×h`（例: 1920×1080）の raw buffer を毎 `apply()` 呼び出しで生成 → 無圧縮 zlib エンコード → base64 化していた。
+  - しかし水平スライスの変位は **x に依存しない**（同じスライス内は全 x で同一値）ため、`w` 方向のデータは完全に冗長。1920×1080 なら 8.3MB の raw buffer を毎フレーム生成していたのが実体のボトルネック（§2.5 の「feImage ネスト文書」問題とは別軸の、**JS 側のラスタ生成コスト**そのもの）。
+- **修正**（`src/runtime/effectSvg.ts` の `glitchSliceDisplaceMapPng`）: バッファを `w×h` → **`1×h`** に変更。`feImageLayer` が `width="{w}"` で水平方向にのみ引き伸ばす（1 列の複製なので補間の余地がなく exact・visual 出力は数学的に同一）。垂直方向は `h=h` の 1:1 のまま（スケーリングなし）でスライス境界の離散性を維持。`w` 倍（実用上 1000倍超）軽量化。
+  - **回帰テスト追加**（`test/glitchSlice.test.ts`）: `w=1920` と `w=64`（同じ `h`）で出力 data URI が一致すること（w 非依存を固定）、1920×1080 生成が 50ms 未満・data URI が 50KB 未満であること（w×h 版への先祖返りを機械的に検知）。
+- **検証**: PASS `npm run typecheck`; PASS `npm test`（1132 tests）; `npm run build:player` 実行済み・`public/player.js` 更新。
+- **まだ未実施（human 受け入れ・両 Ticket とも完了条件から自動宣言除外のまま）**:
+  - `scanlines`: 実 Chrome + CDP Tracing で `MainFrame.Draw` がエフェクト無しベースライン同等であることの実測。
+  - `glitchSlice`: ① 今回の最適化後に実 Chrome + CDP Tracing で重さが解消したことの実測（未実施）、② preview/export の 1 フレーム画素一致（INV-2）、③ amount 大での重心ドリフトが raster 版と小数2桁一致。
+- **Next steps**: ユーザー/実機で `glitchSlice` の体感が改善したか確認 → 改善していれば残る human 受け入れ項目（重さ実測・INV-2・重心ドリフト）を実施して両 Ticket を完了扱いに昇格。改善が不十分なら、さらに `sliceHeight` 側（Y 方向）の追加ダウンサンプルは離散性を壊すため避け、代わりに `apply()` 呼び出し頻度側（呼び出し元でのメモ化・変更検知）を疑う。
+
 ### 2026-07-13（Claude Sonnet 5）— Acid/Digi Ticket B-1 `scanlines` + C-1 `glitchSlice`
 
 - **Source**: `doc/cloudplan/acid-digi-hyper-live-effects-plan-Detailed.md` Ticket B-1（WP-B）/ C-1（WP-C）。§5/INV 変更ゼロ。

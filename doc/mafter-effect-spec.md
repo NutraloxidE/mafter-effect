@@ -2459,7 +2459,8 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 | `seed` | Seed | scalar | `0` | 0..9999, step 1 | ❌ |
 
 - `apply` → `{ kind: "svg", primitives }`（`intensity === 0` または `maxShift === 0` → `null`）。
-- **技法（§2.5・SVG `<rect>` マップは使わない）**: `glitchSliceDisplaceMapPng()` がレイヤー実寸 `w×h` の変位マップを**生 PNG に焼く**（スライスごとに値が異なりタイル化不可のため `feTile` は使わない・1 枚を `feImage` に渡す）。スライス `y∈[k·sliceHeight,(k+1)·sliceHeight)` ごとに `seededRandom((seed·1000003 + k·97 + phaseToSeed(evolution)) >>> 0)` から jump 判定（`< intensity`）と変位量（R チャンネル `0.5 + shift/2`、未変位帯は R=0.5）を決定。G は中立 0.5 固定（水平スライスのため Y 変位なし）。`displaceWithMap(uri, maxShift, w, h)` で `feDisplacementMap` に接続。
+- **技法（§2.5・SVG `<rect>` マップは使わない）**: `glitchSliceDisplaceMapPng()` が変位マップを**生 PNG に焼く**（スライスごとに値が異なりタイル化不可のため `feTile` は使わない・`feImageLayer` で `(0,0,w,h)` へ引き伸ばして渡す）。スライス `y∈[k·sliceHeight,(k+1)·sliceHeight)` ごとに `seededRandom((seed·1000003 + k·97 + phaseToSeed(evolution)) >>> 0)` から jump 判定（`< intensity`）と変位量（R チャンネル `0.5 + shift/2`、未変位帯は R=0.5）を決定。G は中立 0.5 固定（水平スライスのため Y 変位なし）。`displaceWithMap(uri, maxShift, w, h)` で `feDisplacementMap` に接続。
+- **改定1（重さ対策・2026-07-13）**: 変位は x に依存しない（同一スライス内は全 x で同一値）ため、生成 raw buffer は `w×h` ではなく **`1×h`**（水平方向は `feImage` の `width` 引き伸ばしに委譲・1 列複製なので補間誤差ゼロ）。初版は 1920×1080 で 8.3MB の raw buffer を毎 `apply()` 呼び出しで生成しており、これが実測の重さの主因だった（§2.5 の「feImage ネスト文書」問題とは別軸の JS 側ラスタ生成コスト）。垂直方向は `h=h` のまま（スケーリングなし）でスライス境界の離散性を維持。
 - **§2.2 の 4 配線点（すべて対応済み）**: `effectSvg.ts` の `DISPLACEMENT_EFFECT_TYPES` / `FAST_DISPLACEMENT_EFFECT_TYPES` / `LIVE_DISPLACEMENT_EFFECT_TYPES` に `"glitchSlice"` 追加済み（region クランプ + Draft Preview Fast Path + live 判定）、`effectChain.ts` の scale 分岐に `glitchSlice` → `maxShift` 追加済み（`fxMaxDisplaceScale` へ反映）。
 - **カテゴリ**: `"ディストーション（軽量）"`（`fastEffects.ts` に登録）。
 - **経路**: live SVG（`executionPath: "live"`）。map smoothing（`fastSmoothPx`）は**掛けない**（グリッチは離散が正）。`chromaOffset` 連結は初版で未実装。
