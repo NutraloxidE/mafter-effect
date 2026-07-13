@@ -134,41 +134,59 @@ export function glitchSliceDisplaceMapPng(opts: {
 }
 
 /**
- * §27.3 Pixel Stretch（WP-D Ticket D-1 spike・go/no-go はユーザー確認待ち）— 線形ランプ変位マップ。
+ * §27.3 Pixel Stretch（Directional Line Stretch・改定2）— ライン起点の一方向ストレッチ変位マップ。
  *
- * `dy(y) = -(y - pivot)` を **G チャンネル**（8-bit・`0.5 + dy/(2*amount)` にクランプ）へ焼く。
- * `displaceWithMap` は `xChannelSelector="R" yChannelSelector="G"` 固定のため、縦方向の変位は
- * **G チャンネルに書く必要がある**（初版は誤って R に書いており、横方向のスライスシフトに
- * なっていた — バグ。修正済み）。R は中立 128 固定。
- * `feDisplacementMap` は pull 型（出力行 y は入力行 `y + dy(y)` をサンプルする）ため、
- * pivot 近傍（`|y-pivot| < amount` の非クランプ域）は `y + dy(y) = pivot` に収束し
- * **同一入力行が全域に引き伸ばされる**（AE Pixel Stretch のスミア）。pivot から離れた
- * クランプ域は `dy = ±amount`（一定）となり**元の内容が剛体シフトしたコピー**になる。
- * 8-bit G チャンネル由来の階段量子化がスミア/シフト境界に段差として現れるのが本エフェクトの
- * 見た目の実体（D-1 spike・味として受け入れるか実機で判断中・§6 参照）。x 方向は値が変化
- * しないため 1 列に圧縮する（`feTile` を使わない plain `feImage` stretch なので §2.5 系の
- * feTile 縮小サンプリング罠には該当しない・[[svg-fetile-1px-source-vanishes-under-css-scale]] 非該当）。
+ * あるライン（`right`/`left` は列 `linePos·w`、`down`/`up` は行 `linePos·h`）を境に、その**ライン上の
+ * 色を一方向へそのまま塗り延ばす**（参照画像そのもの）。`feDisplacementMap` は pull 型（出力ピクセル
+ * `p` は入力 `p + scale·(ch − 0.5)` をサンプル）なので、帯内の全ピクセルが厳密に `line` をサンプルする
+ * よう `ch = 0.5 + (line − p)/(2·length)` を焼く（`feDisplacementMap` の変位量は `scale·(C−0.5)` で
+ * `(C−0.5)∈[−0.5,+0.5]` のため、`length` px を届かせるには `scale = 2·length`）。帯の外は `ch = 0.5`（無変位）。
+ *
+ * `displaceWithMap` は `xChannelSelector="R" yChannelSelector="G"` 固定のため、**横ストレッチは R・
+ * 縦ストレッチは G** に書く（旧 D-1 spike のチャンネル取り違えバグをこの規約で再発不能に）。
+ * 値は変位軸のみに依存するため生 PNG は横 `w×1` / 縦 `1×h` に圧縮（もう一方の軸は `feImage` の
+ * width/height 引き伸ばしに委譲・1 列/行複製なので補間誤差ゼロ）。plain `feImage` stretch のため
+ * feTile-1px 縮小罠には非該当（[[svg-fetile-1px-source-vanishes-under-css-scale]] 非該当・
+ * [[svg-displacement-map-collapse-redundant-axis]]）。
+ *
+ * 精度: 1 階調あたり `scale/255 = 2·length/255` px。`length ≤ 128` はほぼ厳密（≤1px）、`length=300` で
+ * ±1.2px 程度のゆらぎ。帯端（ch=0/255）は変位ちょうど `±length` で line に厳密到達。無変位域を厳密 0.5 に
+ * 固定するため方向ごとに ch レンジの半分（right/down=[0.5,0], left/up=[0.5,1]）だけ使う。
+ *
+ * 前回フィードバックの「ランダム長・複数ライン・残像/前フレーム混合＝datamosh 系」は別エフェクト
+ * （`pixelSmear` 候補・保留）へ分離。独立票 doc/cloudplan/pixel-stretch-directional-line-stretch.md 参照。
  */
 export function pixelStretchDisplaceMapPng(opts: {
+  w: number;
   h: number;
-  amount: number;
-  pivot: number;
+  direction: "right" | "left" | "down" | "up";
+  linePos: number;
+  length: number;
 }): { uri: string; scale: number } {
-  const h = Math.max(1, Math.round(opts.h));
-  const amount = Math.max(1, opts.amount);
-  const pivot = Math.min(1, Math.max(0, opts.pivot)) * h;
-  const rgba = new Uint8Array(1 * h * 4);
-  for (let y = 0; y < h; y++) {
-    const dy = pivot - y;
-    const norm = 0.5 + dy / (2 * amount);
-    const g = Math.min(255, Math.max(0, Math.round(norm * 255)));
-    const o = y * 4;
-    rgba[o] = 128;
-    rgba[o + 1] = g;
+  const horiz = opts.direction === "right" || opts.direction === "left";
+  const len = Math.max(1, Math.round(opts.length));
+  const n = Math.max(1, Math.round(horiz ? opts.w : opts.h));
+  const line = Math.round(clamp01(opts.linePos) * n);
+  // right/down は line の後方（index 増加側）へ、left/up は前方（index 減少側）へ帯を張る。
+  const forward = opts.direction === "right" || opts.direction === "down";
+  const scale = 2 * len; // feDisplacementMap の変位量 = scale·(C−0.5) ∈ [−len, +len]
+  const rgba = new Uint8Array(n * 4);
+  for (let i = 0; i < n; i++) {
+    // pull-model: sampled = i + scale·(C−0.5) を line にするには C = 0.5 + (line−i)/scale。
+    const lineMinusP = line - i;
+    const inBand = forward
+      ? lineMinusP <= 0 && lineMinusP >= -len
+      : lineMinusP >= 0 && lineMinusP <= len;
+    const c = 0.5 + lineMinusP / scale; // 帯内は [0,1]、帯端で 0/1 に到達
+    const ch = inBand ? Math.round(clamp01(c) * 255) : 128; // 帯外は中立 0.5(=128)
+    const o = i * 4;
+    rgba[o] = horiz ? ch : 128; // R = X 変位
+    rgba[o + 1] = horiz ? 128 : ch; // G = Y 変位
     rgba[o + 2] = 0;
     rgba[o + 3] = 255;
   }
-  return { uri: rgbaToPngDataUri(rgba, 1, h), scale: amount };
+  const [pw, ph] = horiz ? [n, 1] : [1, n];
+  return { uri: rgbaToPngDataUri(rgba, pw, ph), scale };
 }
 
 /** displacement filter region 属性（userSpaceOnUse）。 */

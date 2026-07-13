@@ -190,23 +190,30 @@ const GLITCH_SLICE_EFFECT_DEF: EffectDef = {
   },
 };
 
+const PIXEL_STRETCH_DIRECTIONS = ["right", "left", "down", "up"] as const;
+
 const PIXEL_STRETCH_EFFECT_DEF: EffectDef = {
   type: "pixelStretch",
-  label: "Pixel Stretch (spike)",
+  label: "Pixel Stretch",
   category: "ディストーション（軽量）",
   previewBakeRequired: false,
   executionPath: "live",
   params: [
-    { key: "amount", label: "Amount", kind: "scalar", default: 300, animatable: true, min: 0, max: 2000, step: 1 },
-    { key: "pivot", label: "Pivot Y", kind: "scalar", default: 0.5, animatable: true, min: 0, max: 1, step: 0.01 },
+    { key: "direction", label: "Direction", kind: "enum", default: "right", animatable: false, options: [...PIXEL_STRETCH_DIRECTIONS] },
+    { key: "linePos", label: "Line Pos", kind: "scalar", default: 0.5, animatable: true, min: 0, max: 1, step: 0.01 },
+    { key: "length", label: "Length", kind: "scalar", default: 300, animatable: true, min: 0, max: 2000, step: 1 },
   ],
   apply(props, ctx: EffectRenderCtx) {
-    const amount = Math.max(0, num(props["amount"], 300));
-    if (amount === 0) return null;
+    const length = Math.max(0, num(props["length"], 300));
+    if (length === 0) return null;
     const w = Math.max(1, ctx.width);
     const h = Math.max(1, ctx.height);
-    const pivot = Math.min(1, Math.max(0, num(props["pivot"], 0.5)));
-    const { uri, scale } = pixelStretchDisplaceMapPng({ h, amount, pivot });
+    const dir = str(props["direction"], "right");
+    const direction = (PIXEL_STRETCH_DIRECTIONS as readonly string[]).includes(dir)
+      ? (dir as (typeof PIXEL_STRETCH_DIRECTIONS)[number])
+      : "right";
+    const linePos = Math.min(1, Math.max(0, num(props["linePos"], 0.5)));
+    const { uri, scale } = pixelStretchDisplaceMapPng({ w, h, direction, linePos, length });
     return { kind: "svg", primitives: displaceWithMap(uri, scale, w, h) };
   },
 };

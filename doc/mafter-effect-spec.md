@@ -2467,6 +2467,25 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 - **human 受け入れ**: ① preview/export の 1 フレーム画素一致（INV-2）、② amount 大での重心ドリフトが raster 版と小数2桁一致、③ §2.5 の重さ（実 Chrome + CDP Tracing で `MainFrame.Draw` がベースライン同等）— いずれも本セッション未実施（票の完了条件から自動宣言は除外）。
 - **非目標**: raster 版の並行提供。真のピクセル並び替え（引き延ばし/オフセット近似のみ）。
 
+##### `pixelStretch` — Pixel Stretch（Directional Line Stretch・§2.2 4 配線点）
+
+> **由来 / 改定2（2026-07-13）**: 初版（D-1 spike）は pivot 中心の対称線形ランプ（`dy=-(y-pivot)`）で、pivot 近傍が単色スミア・遠方は量子化された剛体シフトコピー、という「切ってずらす」見た目だった。ユーザーの意図（参照画像＝**あるラインを境に、そのライン上の色を一方向へそのまま塗り延ばす**）と別物と実機判断で確定したため、**Directional Line Stretch** へ全面再設計。独立作業票 [pixel-stretch-directional-line-stretch.md](../cloudplan/pixel-stretch-directional-line-stretch.md) を正とする（acid-digi プランとは切り離した独立エフェクト）。前回フィードバックの「ランダム長・複数ライン・残像/前フレーム混合＝datamosh 系」は**別エフェクト**（`pixelSmear` 候補・保留）へ分離。
+
+| param key | label | kind | default | range | animatable |
+|---|---|---|---|---|---|
+| `direction` | Direction | enum | `"right"` | `right` / `left` / `down` / `up` | ❌ |
+| `linePos` | Line Pos | scalar | `0.5` | 0..1, step 0.01（ソースライン位置） | ✅ |
+| `length` | Length | scalar | `300` | 0..2000 (px), step 1（引き伸ばし帯の長さ＝`scale`） | ✅ |
+
+- `apply` → `{ kind: "svg", primitives }`（`length === 0` → `null`）。`displaceWithMap(uri, 2·length, w, h)` で `feDisplacementMap` に接続（`pixelStretchDisplaceMapPng` が `scale = 2·length` を返す）。
+- **技法（pull 型 displacement）**: `feDisplacementMap` は出力ピクセル `p` が入力 `p + scale·(ch − 0.5)` をサンプルする pull 型。`(ch − 0.5) ∈ [−0.5, +0.5]` なので変位量の最大は `scale·0.5`。ソースライン位置を `line`（`right`/`left` は列 `linePos·w`、`down`/`up` は行 `linePos·h`）とし、帯内の全ピクセルが厳密に `line` をサンプルするよう `ch = 0.5 + (line − p)/(2·length)`、`scale = 2·length` を焼く（`length` px を届かせるため）。帯の手前・後方は `ch = 0.5`（無変位＝原画）。結果、**ライン上の色が帯全域へ塗り延ばされる有限帯ストレッチ**になる。方向は軸（X→R / Y→G）と符号で切替（`right`/`down` は line の index 増加側へ、`left`/`up` は減少側へ帯を張る）。`displaceWithMap` の固定チャンネル規約（`xChannelSelector="R" yChannelSelector="G"`）に整合させ、横は R・縦は G に書く。`effectChain.ts` の region クランプは実変位量 = `length`（`scale·0.5`）を参照する（`p["length"]`）。
+- **冗長軸圧縮（軽量ライブの担保）**: 値は変位軸のみに依存するため、生 PNG バッファは横 `w×1` / 縦 `1×h`（もう一方は `feImage` の width/height 引き伸ばしに委譲・1 列/行複製なので補間誤差ゼロ）。plain `feImage` stretch のため `feTile`-1px 縮小罠（scanlines 改定1）には非該当。glitchSlice の 1×h 最適化と同型。
+- **精度メモ**: 帯内で使う ch レンジは `right`/`down` が `[0.5,0]`、`left`/`up` が `[0.5,1]`（無変位域を厳密 0.5 に固定する制約上、方向ごとに半分だけ）。1 階調あたりの変位 = `scale/255 = 2·length/255` px なので、`length ≤ 128` はほぼ厳密（≤1px）、`length=300` で約 ±1.2px のソース位置ゆらぎ（軽い滲み）。帯端（ch=0/255）では変位量がちょうど `±length` になり line に厳密到達。`length` を超える変位は表現不可（有限帯の設計上の上限）。
+- **§2.2 の 4 配線点（すべて対応済み）**: `DISPLACEMENT_EFFECT_TYPES` / `FAST_DISPLACEMENT_EFFECT_TYPES` / `LIVE_DISPLACEMENT_EFFECT_TYPES` に `"pixelStretch"` 登録済み、`effectChain.ts` の scale 分岐に `pixelStretch` → `length` を追加（旧 `amount` 廃止に伴い generic フォールバックに任せられないため明示分岐）。
+- **カテゴリ**: `"ディストーション（軽量）"`（`fastEffects.ts` に登録）。**経路**: live SVG（`executionPath: "live"`）。
+- **human 受け入れ**: ① 実機で参照画像の見た目（ラインから色が一方向へ引き伸ばされる）、② preview/export の 1 フレーム画素一致（INV-2）、③ ライブ性（実 Chrome + CDP Tracing で `MainFrame.Draw` がベースライン同等）。
+- **非目標**: ランダム長・複数ライン・残像/前フレーム混合（＝別エフェクト `pixelSmear`）。raster 版。
+
 #### `linearWipe` — Linear Wipe
 
 | param key | label | kind | default | range | animatable |

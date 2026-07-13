@@ -1,5 +1,32 @@
 # Progress
 
+### 2026-07-13（Claude Sonnet 5）— `pixelStretch`（Directional Line Stretch）実装完了（独立票 §2）
+
+- **実装**: 独立票 `doc/cloudplan/pixel-stretch-directional-line-stretch.md` §2 に従い、`pixelStretch` を pivot 対称ランプ（旧 D-1 spike）から **Directional Line Stretch**（あるラインを境にライン上の色を一方向へ塗り延ばす有限帯ストレッチ）へ全面再設計。
+- **spec 先行**: `doc/mafter-effect-spec.md` §27.3 に `pixelStretch` エントリ（改定2）を追記（glitchSlice エントリ直後）。pull 型数学・`scale=2·length`・冗長軸圧縮・精度メモ・4 配線点を明記。
+- **変更ファイル**:
+  - `src/runtime/effectSvg.ts`: `pixelStretchDisplaceMapPng({ w, h, direction, linePos, length })` を全面差し替え。横は R・縦は G チャンネル（`displaceWithMap` 固定規約に整合）。生 PNG は横 `w×1` / 縦 `1×h`（冗長軸圧縮）。**重要な数学修正**: `feDisplacementMap` の変位量は `scale·(C−0.5)` で `(C−0.5)∈[−0.5,+0.5]` のため最大変位 = `scale·0.5`。`length` px 届かせるため `scale = 2·length`（初期プランの `scale=length` は帯の遠端が line に届かないバグだった）。`left`/`up` は符号反転（`ch` レンジ `[0.5,1]`）。
+  - `src/runtime/fastEffects.ts`: `PIXEL_STRETCH_EFFECT_DEF` を新 params（`direction` enum right/left/down/up・`linePos`・`length`）へ。ラベルから `(spike)` 除去。
+  - `src/runtime/effectChain.ts`: `fxMaxDisplaceScale` の `pixelStretch` 分岐を追加（`p["length"]` 参照＝実変位量。旧 `amount` 廃止で generic フォールバック不可）。
+  - `test/pixelStretch.test.ts`: 新スキーマへ全面更新（決定論・生 PNG・`scale=2·length`・**pull 型真値テスト**〈帯内各列が line を ±1px でサンプル〉・left 帯・down は G/`1×h`・h 非依存の冗長軸・`length=0→null`・不正 direction フォールバック）。`test/helpers/decodePng.ts` 新規（stored-block PNG デコーダ・真値テスト用）。
+- **検証**:
+  - PASS `npm run typecheck`。PASS `npm test`（**1145 tests**・`effects.test.ts` レジストリ一覧は既に pixelStretch 含みで無変更）。`npm run build:player` 実行済み・`public/player.js` 更新（runtime 変更のため必須）。
+  - **実 Chrome 実機検証（新規恒久スクリプト `verify-pixel-stretch.mjs`・意図: pixelStretch の directional stretch を実 feDisplacementMap で確認）**: 暗背景＋ソース列に細いシアン縦バーの content に right/length=120 を適用し、`rasterizeFilteredImage`（本番 raster 核）で計測。**帯の塗り延ばし率 1.000（>0.9）/ ライン手前のシアン率 0.000（<0.05）で PASS**。スクショで細い 6px バーが 120px の帯へ引き伸ばされる（＝参照画像の見た目）ことを目視確認。
+- **ステータス**: `pixelStretch`（Directional Line Stretch）**実装完了・実機確認済み**。前回フィードバックの datamosh 系（`pixelSmear` 候補）は独立票 §3 に分離・保留のまま（②完了後に別票起票）。acid-digi プラン側の残りは D-2 `liquidChrome` spike のみ。
+- **Next steps**: (a) 必要なら preview/export/bundle の INV-2 全経路一致を追加確認（現状 raster 核で確認済み・エフェクトは live SVG 共有経路のため経路差リスクは低い）。(b) ③ `pixelSmear` を別票で起票（ユーザー判断待ち）。
+
+### 2026-07-13（Claude Opus 4.8）— `pixelStretch` を独立票へ整理・再設計（Directional Line Stretch）/ 前回フィードバックは別エフェクトへ分離
+
+- **背景**: ユーザーが「あるラインから同じ色が特定方向へ引き伸ばされる」参照画像を提示。現行の D-1 spike `pixelStretch`（pivot 中心の対称線形ランプ＝近傍スミア＋遠方は量子化コピーのズレ）とは**狙う見た目が別物**と確定。「ライブ性は高レベルで維持」「acid-digi プランとは無関係のエフェクトとして一旦整理」との指示。
+- **整理の結論（3つを分離）**:
+  1. **acid-digi D-1 spike `pixelStretch`（現行実装）** → **廃止**（②へ置換）。
+  2. **`pixelStretch`（Directional Line Stretch）** → 参照画像そのもの。あるライン（列/行）を境にライン上の色を一方向へ塗り延ばす**有限帯の決定論ストレッチ**。既存 fast-displacement ライブ経路（`feImage`(生 PNG) + `feDisplacementMap`）上で完結（ラスタ化・nested SVG なし＝ライブ維持）。
+  3. **前回フィードバック（明るいピクセル起点・ランダム長・残像/前フレーム混合＝datamosh 系）** → **別エフェクトとして分離・保留**（`pixelSmear`/`datamoshTrail` 候補）。
+- **成果物**: 独立作業票 `doc/cloudplan/pixel-stretch-directional-line-stretch.md` を新規作成。②の実装チケット（pull 型数学・`w×1`/`1×h` 生 PNG・R/G チャンネル規約・4 param 廃止→`direction`/`linePos`/`length`・精度メモ・改修ファイル順・テスト真値・human 受け入れ）を **Sonnet 5 委任可の粒度**で記載。③は §3 に将来課題として切り出し（`pixelSortLite` 土台候補・INV-1 で前フレーム混合は近似のみ）。acid-digi プランとの関係（D-1 廃止・残りは D-2 のみ）を §4 に明記。
+- **重要な設計判断**: `direction` 4方向を軸（X→R / Y→G）と符号の切替で表現し、`displaceWithMap` の固定チャンネル規約（xR/yG）に構造的に整合させる（D-1 のチャンネル取り違えバグを再発不能に）。帯内 R レンジは `[0.5,0]` の片側のみ（無変位域を厳密 0.5 に固定する制約）で `length≤256` はほぼ厳密。
+- **ステータス**: **設計・整理のみ完了。コード未変更**（typecheck/test/build:player は対象外）。実装は独立票 §2 に従い次ターン以降（Sonnet 5 委任 or Claude 実装）。CLAUDE.md「先に spec → 次に実装」により、実装時に spec §27.3 `pixelStretch` を「改定2：Directional Line Stretch」へ書き換える。
+- **Next steps**: (a) 独立票 §2 で `pixelStretch` を Directional Line Stretch に作り直す（旧 `amount`/`pivot` 破棄）→ (b) ③ Pixel Smear は別票で後日起票 →（acid-digi 側の残りは D-2 `liquidChrome` spike のみ）。
+
 ### 2026-07-13（Claude Sonnet 5）— `pixelStretch` チャンネル取り違えバグ修正 + ユーザーからの見た目フィードバック（設計再検討中）
 
 - **バグ修正**: `pixelStretchDisplaceMapPng` が縦方向変位 `dy` を **R チャンネル**に書いていたが、`displaceWithMap` は `xChannelSelector="R" yChannelSelector="G"` 固定のため、実際には**横方向のスライスシフト**として解釈されていた（意図は縦方向ストレッチだったのに）。G チャンネルへ書くよう修正。
