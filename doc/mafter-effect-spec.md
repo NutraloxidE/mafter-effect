@@ -2491,6 +2491,31 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 - **human 受け入れ**: ① 実機で参照画像の見た目（ラインから色が一方向へ引き伸ばされる）、② preview/export の 1 フレーム画素一致（INV-2）、③ ライブ性（実 Chrome + CDP Tracing で `MainFrame.Draw` がベースライン同等）。
 - **非目標**: ランダム長・複数ライン・残像/前フレーム混合（＝別エフェクト `pixelSmear`）。raster 版。
 
+##### `liquidChrome` — Liquid Chrome（Y2K 液体クローム・§2.2 4 配線点・D-2 spike go）
+
+> **由来**: acid-digi プラン Tier 3（`doc/cloudplan/acid-digi-hyper-live-effects-plan.md` §5.1）。`feSpecularLighting`（本実装まで**コードベース未使用**）を含む合成のため、実装前に Ticket D-2（INV-2 spike）を必須としていた。`verify-liquidchrome-spike.mjs` で実アプリの登録経路（`globalPluginRegistry.registerEffect` → `DomRenderer.applyEffects` → `createSvgFilterElement`）を使い、feSpecularLighting 込みのフルチェーンが live 実ブラウザ合成（on-screen 実測）と既存 export 経路（`captureElementToCanvas` の foreignObject キャプチャ）とで **画素完全一致（`maxDiff=0`）** することを実測済み（go）。bundle player は preview と同じ live CSS filter 経路（`captureElementToCanvas` を通らない）のため、この一致で 3 経路（preview / export / bundle player）とも担保される。
+
+| param key | label | kind | default | range | animatable |
+|---|---|---|---|---|---|
+| `amount` | Amount | scalar | `18` | 0..200, step 0.1（displacement scale） | ✅ |
+| `size` | Size | scalar | `100` | 1..2000, step 0.1（turbulence 特徴サイズ） | ✅ |
+| `evolution` | Evolution | scalar | `0` | 無制限 (deg), step 1 | ✅ |
+| `highlight` | Highlight | scalar | `1` | 0..2, step 0.01（`specularConstant`） | ✅ |
+| `depth` | Depth | scalar | `6` | 0..20, step 0.1（`surfaceScale`） | ✅ |
+| `seed` | Seed | scalar | `7` | 0..9999, step 1 | ❌ |
+| `quality` | Quality | scalar | `1` | 0.1..1, step 0.05（0.5 未満で `numOctaves=1` に低下） | ✅ |
+
+- `apply` → `{ kind: "svg", primitives }`（`amount === 0` → `null`）。純関数 `liquidChromePrimitives()`（`effectSvg.ts`）が 3 段チェーンを生成。
+- **技法（3 段合成）**:
+  1. `feTurbulence type="fractalNoise"`（`baseFrequency = sizeToFrequency(size)`・`numOctaves`=quality依存）→ `feComponentTransfer`（fractalNoise の G バイアス補正 `FRACTAL_NOISE_G_BIAS_INTERCEPT`）→（`evolution` 分だけ `feOffset`）→（`fastSmoothPx(size)` 分だけ `feGaussianBlur`）→ `feDisplacementMap`（`scale=amount`・`xChannelSelector="R" yChannelSelector="G"`）で面を波打たせる（`fastTurbulentDisplace` と同系統の既存実績パターン）。
+  2. 同じ `feTurbulence` 生出力（`noiseRaw`）を bump map として再利用し、`feGaussianBlur`（軽い平滑化）→ `feSpecularLighting surfaceScale="{depth}" specularConstant="{highlight}" specularExponent="12"`（`feDistantLight azimuth="235" elevation="55"` 固定）でハイライトを生成 → `feComposite operator="in"` で displaced 済みアルファへクランプ → `feComposite operator="arithmetic" k3="1" k4="0"`（実質 A+B の透過安全な加算）で displaced 画像へ加算。
+  3. `gradientMapTable("chrome", 0, ...)` の固定テーブル（`feComponentTransfer type="table"`）で金属レンジ（暗→明→暗→明の非単調）へ写像。preset 選択 UI は持たない（`liquidChrome` = chrome 固定。他 preset が欲しい場合は `gradientMap` エフェクトを別途スタック）。
+- **§2.2 の 4 配線点（すべて対応済み）**: `DISPLACEMENT_EFFECT_TYPES` / `FAST_DISPLACEMENT_EFFECT_TYPES`（→ `LIVE_DISPLACEMENT_EFFECT_TYPES` に自動伝播）に `"liquidChrome"` 登録済み。`effectChain.ts` の scale 分岐は `fastTurbulentDisplace` 等と同じく明示分岐を追加せず、generic フォールバック（`p["amount"]`）にそのまま乗る（param key を `amount` に揃えたため）。
+- **カテゴリ**: `"スタイライズ"`（`fastEffects.ts` に登録）。**経路**: live SVG（`executionPath: "live"`）。
+- **決定論（INV-1）**: `Math.random` 不使用。`seed` は attribute として `feTurbulence` に直接渡す（既存 displacement 系と同じ規約）。
+- **テスト**: `test/liquidChrome.test.ts`（`liquidChromePrimitives()` の決定論・3段チェーン含有・param 反映・§2.2 3 Set 登録・`apply()` の null/非 null）。
+- **非目標**: gradientMap preset 選択（chrome 固定）。2 段ハイライト（コア+外側ハロー分離）。AE 相当のフォトリアルな金属シェーダ一致。
+
 #### `linearWipe` — Linear Wipe
 
 | param key | label | kind | default | range | animatable |

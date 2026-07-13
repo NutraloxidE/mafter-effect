@@ -301,6 +301,7 @@ export const DISPLACEMENT_EFFECT_TYPES = new Set([
   "fastTurbulentDisplace",
   "glitchSlice",
   "pixelStretch",
+  "liquidChrome",
 ]);
 
 /** §27.12 Draft Preview Fast Path 対象。 */
@@ -311,6 +312,7 @@ export const FAST_DISPLACEMENT_EFFECT_TYPES = new Set([
   "fastTurbulentDisplace",
   "glitchSlice",
   "pixelStretch",
+  "liquidChrome",
 ]);
 
 /** §27.3 — live CSS filter 完結 displacement（raster capture 対象外）。Fast* + opticsCompensation + glitchSlice。 */
@@ -1468,4 +1470,76 @@ export function gradientMapTable(
     g: gs.join(" "),
     b: bs.join(" "),
   };
+}
+
+// ---------------------------------------------------------------------------
+// liquidChrome — turbulence displace + feSpecularLighting + gradientMap(chrome)
+// (§27.3 / acid-digi Ticket D-2 spike go → 本実装)
+// ---------------------------------------------------------------------------
+
+/**
+ * liquidChrome の 3 段合成 primitives（`{kind:"svg"}` の中身）。
+ * 1) feTurbulence → feDisplacementMap で面を波打たせる（`turbulenceDisplace` と同型だが、
+ *    bump map として `noiseRaw` を後段へ再利用するため result 名を自前で管理する）。
+ * 2) 同じ noise を bump map として feSpecularLighting（feDistantLight）でハイライト生成し、
+ *    displaced 済みアルファでクランプしてから加算合成。
+ * 3) gradientMapTable("chrome") で金属レンジへ写像。
+ *
+ * D-2 spike（`verify-liquidchrome-spike.mjs`）で feSpecularLighting 込みの本チェーンが
+ * preview / export（foreignObject capture）で画素一致（INV-2）することを実測済み。
+ */
+export function liquidChromePrimitives(opts: {
+  amount: number;
+  size: number;
+  evolution: number;
+  highlight: number;
+  depth: number;
+  seed: number;
+  quality: number;
+  w: number;
+  h: number;
+}): string {
+  const { amount, size, evolution, highlight, depth, seed, quality, w, h } = opts;
+  const freq = sizeToFrequency(size);
+  const octaves = quality >= 0.5 ? 2 : 1;
+  const { dx: evoDx, dy: evoDy } = evolutionToOffsetPx(evolution, size);
+  const s = Math.max(0, Math.floor(seed)) % 4096;
+  const lw = Math.max(1, w);
+  const lh = Math.max(1, h);
+
+  const parts: string[] = [
+    `<feTurbulence type="fractalNoise" baseFrequency="${freq} ${freq}" numOctaves="${octaves}" seed="${s}" stitchTiles="stitch" x="0" y="0" width="${lw}" height="${lh}" result="noiseRaw"/>`,
+    feTurbulenceCenterNoise("noiseRaw", "noiseBalanced", 0, FRACTAL_NOISE_G_BIAS_INTERCEPT),
+  ];
+  let noiseIn = "noiseBalanced";
+  if (evoDx !== 0 || evoDy !== 0) {
+    parts.push(`<feOffset in="${noiseIn}" dx="${evoDx}" dy="${evoDy}" result="noiseOffset"/>`);
+    noiseIn = "noiseOffset";
+  }
+  const smoothPx = fastSmoothPx(size);
+  if (smoothPx > 0) {
+    parts.push(displaceMapBlur(noiseIn, "noiseSmooth", smoothPx));
+    noiseIn = "noiseSmooth";
+  }
+  parts.push(
+    `<feDisplacementMap in="SourceGraphic" in2="${noiseIn}" scale="${amount}" xChannelSelector="R" yChannelSelector="G" result="displaced"/>`,
+  );
+  const specBlur = Math.max(1, smoothPx || 1);
+  parts.push(
+    `<feGaussianBlur in="noiseRaw" stdDeviation="${specBlur}" result="bump"/>`,
+    `<feSpecularLighting in="bump" surfaceScale="${depth}" specularConstant="${highlight}" specularExponent="12" lighting-color="#ffffff" result="spec">` +
+      `<feDistantLight azimuth="235" elevation="55"/>` +
+      `</feSpecularLighting>`,
+    `<feComposite in="spec" in2="displaced" operator="in" result="specClamped"/>`,
+    `<feComposite in="displaced" in2="specClamped" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="lit"/>`,
+  );
+  const { r, g, b } = gradientMapTable("chrome", 0, { r: 0, g: 0, b: 0 }, { r: 1, g: 1, b: 1 });
+  parts.push(
+    `<feComponentTransfer in="lit">` +
+      `<feFuncR type="table" tableValues="${r}"/>` +
+      `<feFuncG type="table" tableValues="${g}"/>` +
+      `<feFuncB type="table" tableValues="${b}"/>` +
+      `</feComponentTransfer>`,
+  );
+  return parts.join("");
 }

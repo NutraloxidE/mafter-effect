@@ -347,10 +347,12 @@ Codex/Sonnet が「どこを触れば動くか」を推測しないための地�
 > feSpecularLighting を含めても preview と export（foreignObject 経由）は完全一致した。
 > bundle player は preview と同じ live CSS filter 経路（`DomRenderer` を直接 import・
 > `captureElementToCanvas` を通らない）のため、この一致で 3 経路とも担保される。
-> **次アクション**: 本番 Ticket（`builtinEffects.ts`/`fastEffects.ts` への `liquidChrome` 登録・
-> params 確定・spec §27.3 追記）を別票として起票し、Sonnet 5/Codex に委任可（displacement 系
-> なので §2.2 の 4 配線点は必須）。spike 自体の成果物は `verify-liquidchrome-spike.mjs`
-> （3 variant 比較・実行コマンド: `VERIFY_PORT=5175 node verify-liquidchrome-spike.mjs`）。
+> **本番実装完了（2026-07-13）**: `liquidChrome` を `fastEffects.ts`（`LIQUID_CHROME_EFFECT_DEF`・
+> `liquidChromePrimitives()` は `effectSvg.ts`）に登録し、§2.2 の 4 配線点（3 Set + scale 分岐＝
+> `amount` に統一して generic フォールバック流用）に対応済み。spec 確定は §27.3
+> `liquidChrome` を参照。テストは `test/liquidChrome.test.ts`。spike 自体の成果物は
+> `verify-liquidchrome-spike.mjs`（3 variant 比較・実行コマンド:
+> `VERIFY_PORT=5175 node verify-liquidchrome-spike.mjs`）。
 - **成果物**: 判定を本ファイルに追記。
 
 ---

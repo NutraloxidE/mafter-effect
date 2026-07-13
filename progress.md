@@ -1,5 +1,17 @@
 # Progress
 
+### 2026-07-13（Claude Sonnet 5）— `liquidChrome` 本実装（D-2 spike go を受けての正式登録）
+
+- **やること**: D-2 spike の go 判定を受け、`liquidChrome` を実際にエディタから使えるようにする（`fastEffects.ts` への `EffectDef` 登録・§2.2 の 4 配線点・spec §27.3 追記）。spike スクリプトが登録していたのは Playwright テスト内の一時的な `globalPluginRegistry.registerEffect` のみで、本番の `builtinEffects.ts`/`fastEffects.ts` には未登録だったため、エディタの effect リストに出ていなかった（ユーザー指摘で発覚）。
+- **実装**:
+  - `liquidChromePrimitives()`（`src/runtime/effectSvg.ts`）: spike で実証済みの 3 段チェーン（`feTurbulence`→`feDisplacementMap` displace → 同じ noise を bump map に `feSpecularLighting`/`feDistantLight` でハイライト生成→加算 → `gradientMapTable("chrome")` で金属レンジへ写像）を純関数として実装。`turbulenceDisplace()` を呼ばず、`noiseRaw`（bump 用）を後段へ再利用できるよう自前で result 名を管理する専用実装。
+  - `LIQUID_CHROME_EFFECT_DEF`（`src/runtime/fastEffects.ts`）: params は `amount`(0..200,既定18) / `size`(1..2000,既定100) / `evolution`(deg) / `highlight`(0..2,既定1=specularConstant) / `depth`(0..20,既定6=surfaceScale) / `seed`(既定7,❌) / `quality`(0.1..1,既定1・0.5未満で numOctaves=1)。`amount===0` → `null`。category `"スタイライズ"`・`executionPath:"live"`。`registerFastEffects()` に登録。
+  - **§2.2 の 4 配線点**: `DISPLACEMENT_EFFECT_TYPES` / `FAST_DISPLACEMENT_EFFECT_TYPES`（→ `LIVE_DISPLACEMENT_EFFECT_TYPES` に自動伝播）に `"liquidChrome"` 追加。`effectChain.ts` の scale 分岐は変更不要（param key を `amount` に揃えたため、`fastTurbulentDisplace` 等と同じく generic フォールバック `p["amount"]` にそのまま乗る）。
+  - spec §27.3 に `liquidChrome` エントリを追加（`pixelStretch` の直後）。
+- **テスト**: `test/liquidChrome.test.ts`（新規）— `liquidChromePrimitives()` の決定論・3段チェーン含有（feDisplacementMap/feSpecularLighting/feDistantLight/feComponentTransfer）・`amount`/`highlight`/`depth`/`quality` の反映・§2.2 3 Set 登録（配線漏れ回帰）・`apply()` の null/非null。既存 `test/effects.test.ts` の登録済みエフェクト一覧アサーションに `"liquidChrome"` を追加（24→25件）。
+- **検証**: typecheck ✅ / 新規テスト（11 tests）✅ / 全テスト（1162 tests, playerBuildFreshness 含む）✅ / `npm run build:player` ✅（runtime 変更のため必須）。実 Chrome smoke（一時スクリプトで store 経由 `addEffect(id, "liquidChrome")` → 正常登録・console error なしを確認、スクリプトはテスト後削除）。
+- **Next steps**: エディタでの目視確認（見た目の調整・パラメータの使用感）は未実施。`gradientMap` preset 選択や 2 段ハロー等の拡張は非目標のまま据え置き。
+
 ### 2026-07-13（Claude Sonnet 5）— acid-digi Ticket D-2 `liquidChrome` INV-2 spike 完了（go）
 
 - **やること**: `doc/cloudplan/acid-digi-hyper-live-effects-plan-Detailed.md` Ticket D-2。`feSpecularLighting`（コードベース未使用）を含む liquidChrome 3 段合成（`turbulenceDisplace` → `feSpecularLighting`/`feDistantLight` bump ハイライト → `gradientMapTable("chrome")`）が preview / export で経路差なく描画されるかの spike。

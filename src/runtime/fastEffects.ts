@@ -6,6 +6,7 @@ import {
   fastTurbulentDisplace,
   fastWaveDisplace,
   glitchSliceDisplaceMapPng,
+  liquidChromePrimitives,
   mosaicGridSnapFilter,
   pixelStretchPrimitives,
 } from "./effectSvg";
@@ -222,6 +223,41 @@ const PIXEL_STRETCH_EFFECT_DEF: EffectDef = {
   },
 };
 
+const LIQUID_CHROME_EFFECT_DEF: EffectDef = {
+  type: "liquidChrome",
+  label: "Liquid Chrome",
+  category: "スタイライズ",
+  previewBakeRequired: false,
+  executionPath: "live",
+  params: [
+    { key: "amount", label: "Amount", kind: "scalar", default: 18, animatable: true, min: 0, max: 200, step: 0.1 },
+    { key: "size", label: "Size", kind: "scalar", default: 100, animatable: true, min: 1, max: 2000, step: 0.1 },
+    { key: "evolution", label: "Evolution", kind: "scalar", default: 0, animatable: true, step: 1 },
+    { key: "highlight", label: "Highlight", kind: "scalar", default: 1, animatable: true, min: 0, max: 2, step: 0.01 },
+    { key: "depth", label: "Depth", kind: "scalar", default: 6, animatable: true, min: 0, max: 20, step: 0.1 },
+    { key: "seed", label: "Seed", kind: "scalar", default: 7, animatable: false, min: 0, max: 9999, step: 1 },
+    { key: "quality", label: "Quality", kind: "scalar", default: 1, animatable: true, min: 0.1, max: 1, step: 0.05 },
+  ],
+  apply(props, ctx: EffectRenderCtx) {
+    const amount = Math.max(0, num(props["amount"], 18));
+    if (amount === 0) return null;
+    const w = Math.max(1, ctx.width);
+    const h = Math.max(1, ctx.height);
+    const primitives = liquidChromePrimitives({
+      amount,
+      size: Math.max(1, num(props["size"], 100)),
+      evolution: num(props["evolution"], 0),
+      highlight: Math.min(2, Math.max(0, num(props["highlight"], 1))),
+      depth: Math.max(0, num(props["depth"], 6)),
+      seed: Math.max(0, Math.floor(num(props["seed"], 7))) % 4096,
+      quality: Math.min(1, Math.max(0.1, num(props["quality"], 1))),
+      w,
+      h,
+    });
+    return { kind: "svg", primitives };
+  },
+};
+
 export function registerFastEffects(): void {
   globalPluginRegistry.registerEffect(MOSAIC_LITE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(FAST_WAVE_EFFECT_DEF);
@@ -229,6 +265,7 @@ export function registerFastEffects(): void {
   globalPluginRegistry.registerEffect(FAST_TURBULENT_DISPLACE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(GLITCH_SLICE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(PIXEL_STRETCH_EFFECT_DEF);
+  globalPluginRegistry.registerEffect(LIQUID_CHROME_EFFECT_DEF);
 }
 
 export {
@@ -238,4 +275,5 @@ export {
   FAST_TURBULENT_DISPLACE_EFFECT_DEF,
   GLITCH_SLICE_EFFECT_DEF,
   PIXEL_STRETCH_EFFECT_DEF,
+  LIQUID_CHROME_EFFECT_DEF,
 };
