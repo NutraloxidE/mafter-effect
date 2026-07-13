@@ -354,6 +354,7 @@ Codex/Sonnet が「どこを触れば動くか」を推測しないための地�
 > `verify-liquidchrome-spike.mjs`（3 variant 比較・実行コマンド:
 > `VERIFY_PORT=5175 node verify-liquidchrome-spike.mjs`）。
 - **成果物**: 判定を本ファイルに追記。
+- **2026-07-14 追記**: 本 PLAN のスコープから `liquidChrome` を除外し、エフェクトリスト（UI）からも非表示にした（`src/runtime/fastEffects.ts` の `registerFastEffects()` で `LIQUID_CHROME_EFFECT_DEF` 登録行をコメントアウト）。実装（`effectSvg.ts` の `liquidChromePrimitives` 等）・spec §27.3・テストは削除せず温存。再度有効化する場合はコメントアウトを戻すだけでよい。
 
 ---
 

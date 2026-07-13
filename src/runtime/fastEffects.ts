@@ -263,7 +263,8 @@ export function registerFastEffects(): void {
   globalPluginRegistry.registerEffect(FAST_TURBULENT_DISPLACE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(GLITCH_SLICE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(PIXEL_STRETCH_EFFECT_DEF);
-  globalPluginRegistry.registerEffect(LIQUID_CHROME_EFFECT_DEF);
+  // liquidChrome: 今回の PLAN から除外・エフェクトリストから非表示（登録のみ停止、実装は温存）
+  // globalPluginRegistry.registerEffect(LIQUID_CHROME_EFFECT_DEF);
 }
 
 export {
