@@ -1,5 +1,12 @@
 # Progress
 
+### 2026-07-13（Claude Code）— 3D テキスト拡張（非破壊・ライブ・shape 再利用）の設計プランを作成（実装なし）
+
+- **やったこと**: ユーザー依頼「テキストを非破壊に 3D 化（押し出し厚・ねじ曲げ・キーフレーム可・多形式グラデーション・3D⇄2D トグル・shape にも再利用可能な機構）する仕様を cloudplan に md として記述」を受け、[doc/cloudplan/3d-text-extrusion-plan.md](doc/cloudplan/3d-text-extrusion-plan.md) を新規作成。コード・spec（SSoT）変更は一切なし。
+- **設計の核**: 3 案比較（CSS スライス積層 / per-layer 素 WebGL 実押し出しメッシュ / three.js 共有シーン）から **案 B（per-layer 素 WebGL・three.js 不使用）を推奨**。webgl-video-layer-plan v2 の「canvas はピクセルを作る手段」原則と v1 post-mortem の罠リストを踏襲。アウトラインは既存資産（opentype.js グリフ path / shape vertices・rings）を `OutlineProvider` 抽象で共通化し text/shape 再利用を担保。単位厚メッシュ生成をキャッシュ、depth/twist/bend/taper は頂点シェーダの純関数（KF アニメ中は再生成ゼロ）。グラデーションは再利用可能な `GradientFill`（linear/radial/conic/depth・stop 色/位置 KF 可）スキーマ案。
+- **未着手・次にやるべきこと（Next steps）**: プラン §9 の承認事項（§5 スキーマ追加 2 件・直列化規則・earcut 依存追加）と §11 のオープン質問 5 点を**ユーザーに確認**するのが最初の一歩（CLAUDE.md 運用体制上、§5 変更は承認必須）。承認後は spec 更新 → P0 スパイク（実 Chrome perf 実測）→ P1 押し出しコア、の順（プラン §8）。
+- **ブランチ**: `claude/3d-text-extension-k040dx`（プラン md + 本記録のみ）。
+
 ### 2026-07-11（Claude Sonnet 5）— mosaicLite（Mosaic Live）軽量化 Phase A: 毎フレーム無条件の filter DOM 再構築を解消
 
 - **背景**: ユーザー依頼「mosaicLiteエフェクトを解析して軽量化の余地がないか」。調査 PLAN（`C:\Users\resis\.claude\plans\mosaic-live-plan-encapsulated-spring.md`）で、`mosaicLite` が `fastWave`/`fastRipple`/`fastTurbulentDisplace`（改定4で `feImage` 廃止・`feTurbulence` 直結に統一済み・spec:2376）と違い唯一 `feImage`（埋め込み SVG data URI）方式のまま実装されていること、かつ `DomRenderer.applyEffects`→`applyFilterTokens`→`syncSvgFilters` が `fxSig` 比較を計算していながら実際には**毎フレーム無条件で `<defs>`/`<filter>` を再構築**していること（`blockSize` が静的でも feImage を毎フレーム再デコード）を特定。
