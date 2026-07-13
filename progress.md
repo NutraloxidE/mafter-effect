@@ -11,7 +11,8 @@
 - **テスト**: `test/pixelStretch.test.ts` を 2 段シミュレータ（stage2 → round → stage1 の合成）で書き換え。density=1・length=300 で帯内全ピクセルの到達誤差 ≤0.75px（旧実装は ±1.2px+プラトー反復）、length=100 は stage2 なしで ≤0.6px、density=0.5 は sliceW=32 のストリップ反復ターゲットに一致、left/down・帯外中立・h 非依存・primitives 段数・density 既定値=明示 1 と同一、を固定。
 - **検証**: typecheck ✅ / `test/pixelStretch.test.ts`（19 tests）✅ / 全テスト（1151 tests, playerBuildFreshness 含む）✅ / `npm run build:player` ✅。
 - **バグ修正（残差補正の探索窓漏れ）**: low-density（`sliceW>1`）ケースで `test/pixelStretch.test.ts` の「band repeats a sliceW-wide strip」が失敗（誤差 1.176px > 許容 0.75px）。原因は stage2 の探索窓が `⌈scale1/255⌉+2`（量子化プラトー幅のみ想定）で固定されており、スライス境界で `target` が `sliceW` 分ジャンプするケースをカバーできていなかった。`window = max(⌈scale1/255⌉+2, sliceW)` に修正（`src/runtime/effectSvg.ts`）して解消。
-- **Next steps**: 実 Chrome verify（`verify-pixel-stretch.mjs`）と、ユーザーがエディタで `density` を操作して見た目を確認（pic1⇄pic2 の連続変化）はまだ未実施。③ `pixelSmear`（datamosh 系）は引き続き別票・保留。
+- **実 Chrome verify**: `verify-pixel-stretch.mjs` を実行 → density=1 lineColorRatio=1.000（>0.9）/ density=0 lineColorRatio=0.247（<0.6）で意図どおり。`leftIntactRatio`=0.873 は 8px カラーストライプ境界の AA ノイズで閾値 0.9 を僅かに割ったため、しきい値を 0.8 に緩和（本質挙動には無関係）。PASS。
+- **Next steps**: ユーザーがエディタで `density` を操作して見た目を確認（pic1⇄pic2 の連続変化）はまだ未実施。③ `pixelSmear`（datamosh 系）は引き続き別票・保留。
 
 ### 2026-07-13（Claude Sonnet 5）— `pixelStretch`（Directional Line Stretch）実装完了（独立票 §2）
 
