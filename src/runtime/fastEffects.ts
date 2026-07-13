@@ -1,10 +1,14 @@
 import type { EffectDef, EffectRenderCtx } from "./plugin";
 import { globalPluginRegistry } from "./pluginRegistry";
 import {
+  displaceWithMap,
   fastRippleDisplace,
   fastTurbulentDisplace,
   fastWaveDisplace,
+  glitchSliceDisplaceMapPng,
+  liquidChromePrimitives,
   mosaicGridSnapFilter,
+  pixelStretchPrimitives,
 } from "./effectSvg";
 
 function num(v: unknown, fallback: number): number {
@@ -152,11 +156,115 @@ const FAST_TURBULENT_DISPLACE_EFFECT_DEF: EffectDef = {
   },
 };
 
+const GLITCH_SLICE_EFFECT_DEF: EffectDef = {
+  type: "glitchSlice",
+  label: "Glitch Slice",
+  category: "ディストーション（軽量）",
+  previewBakeRequired: false,
+  executionPath: "live",
+  params: [
+    { key: "intensity", label: "Intensity", kind: "scalar", default: 0.5, animatable: true, min: 0, max: 1, step: 0.01 },
+    { key: "maxShift", label: "Max Shift", kind: "scalar", default: 60, animatable: true, min: 0, max: 500, step: 1 },
+    { key: "sliceHeight", label: "Slice Height", kind: "scalar", default: 24, animatable: true, min: 2, max: 256, step: 1 },
+    { key: "evolution", label: "Evolution", kind: "scalar", default: 0, animatable: true, step: 1 },
+    { key: "seed", label: "Seed", kind: "scalar", default: 0, animatable: false, min: 0, max: 9999, step: 1 },
+  ],
+  apply(props, ctx: EffectRenderCtx) {
+    const intensity = Math.min(1, Math.max(0, num(props["intensity"], 0.5)));
+    const maxShift = Math.max(0, num(props["maxShift"], 60));
+    if (intensity === 0 || maxShift === 0) return null;
+    const w = Math.max(1, ctx.width);
+    const h = Math.max(1, ctx.height);
+    const sliceHeight = Math.max(2, Math.round(num(props["sliceHeight"], 24)));
+    const evolution = num(props["evolution"], 0);
+    const seed = Math.max(0, Math.floor(num(props["seed"], 0)));
+    const { uri, scale } = glitchSliceDisplaceMapPng({
+      w,
+      h,
+      sliceHeight,
+      maxShift,
+      density: intensity,
+      seed,
+      evolution,
+    });
+    return { kind: "svg", primitives: displaceWithMap(uri, scale, w, h) };
+  },
+};
+
+const PIXEL_STRETCH_DIRECTIONS = ["right", "left", "down", "up"] as const;
+
+const PIXEL_STRETCH_EFFECT_DEF: EffectDef = {
+  type: "pixelStretch",
+  label: "Pixel Stretch",
+  category: "ディストーション（軽量）",
+  previewBakeRequired: false,
+  executionPath: "live",
+  params: [
+    { key: "direction", label: "Direction", kind: "enum", default: "right", animatable: false, options: [...PIXEL_STRETCH_DIRECTIONS] },
+    { key: "linePos", label: "Line Pos", kind: "scalar", default: 0.5, animatable: true, min: 0, max: 1, step: 0.01 },
+    { key: "length", label: "Length", kind: "scalar", default: 300, animatable: true, min: 0, max: 2000, step: 1 },
+    { key: "density", label: "Density", kind: "scalar", default: 1, animatable: true, min: 0, max: 1, step: 0.01 },
+  ],
+  apply(props, ctx: EffectRenderCtx) {
+    const length = Math.max(0, num(props["length"], 300));
+    if (length === 0) return null;
+    const w = Math.max(1, ctx.width);
+    const h = Math.max(1, ctx.height);
+    const dir = str(props["direction"], "right");
+    const direction = (PIXEL_STRETCH_DIRECTIONS as readonly string[]).includes(dir)
+      ? (dir as (typeof PIXEL_STRETCH_DIRECTIONS)[number])
+      : "right";
+    const linePos = Math.min(1, Math.max(0, num(props["linePos"], 0.5)));
+    const density = Math.min(1, Math.max(0, num(props["density"], 1)));
+    return {
+      kind: "svg",
+      primitives: pixelStretchPrimitives({ w, h, direction, linePos, length, density }),
+    };
+  },
+};
+
+const LIQUID_CHROME_EFFECT_DEF: EffectDef = {
+  type: "liquidChrome",
+  label: "Liquid Chrome",
+  category: "スタイライズ",
+  previewBakeRequired: false,
+  executionPath: "live",
+  params: [
+    { key: "size", label: "Size", kind: "scalar", default: 140, animatable: true, min: 1, max: 2000, step: 0.1 },
+    { key: "warp", label: "Warp", kind: "scalar", default: 160, animatable: true, min: 0, max: 500, step: 1 },
+    { key: "detail", label: "Detail", kind: "scalar", default: 45, animatable: true, min: 0, max: 200, step: 1 },
+    { key: "bands", label: "Bands", kind: "scalar", default: 6, animatable: true, min: 1, max: 24, step: 1 },
+    { key: "evolution", label: "Evolution", kind: "scalar", default: 0, animatable: true, step: 1 },
+    { key: "seed", label: "Seed", kind: "scalar", default: 7, animatable: false, min: 0, max: 9999, step: 1 },
+    { key: "quality", label: "Quality", kind: "scalar", default: 1, animatable: true, min: 0.1, max: 1, step: 0.05 },
+  ],
+  apply(props, ctx: EffectRenderCtx) {
+    const w = Math.max(1, ctx.width);
+    const h = Math.max(1, ctx.height);
+    const primitives = liquidChromePrimitives({
+      size: Math.max(1, num(props["size"], 140)),
+      warp: Math.max(0, num(props["warp"], 160)),
+      detail: Math.max(0, num(props["detail"], 45)),
+      bands: Math.min(24, Math.max(1, Math.round(num(props["bands"], 6)))),
+      evolution: num(props["evolution"], 0),
+      seed: Math.max(0, Math.floor(num(props["seed"], 7))) % 4096,
+      quality: Math.min(1, Math.max(0.1, num(props["quality"], 1))),
+      w,
+      h,
+    });
+    return { kind: "svg", primitives };
+  },
+};
+
 export function registerFastEffects(): void {
   globalPluginRegistry.registerEffect(MOSAIC_LITE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(FAST_WAVE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(FAST_RIPPLE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(FAST_TURBULENT_DISPLACE_EFFECT_DEF);
+  globalPluginRegistry.registerEffect(GLITCH_SLICE_EFFECT_DEF);
+  globalPluginRegistry.registerEffect(PIXEL_STRETCH_EFFECT_DEF);
+  // liquidChrome: 今回の PLAN から除外・エフェクトリストから非表示（登録のみ停止、実装は温存）
+  // globalPluginRegistry.registerEffect(LIQUID_CHROME_EFFECT_DEF);
 }
 
 export {
@@ -164,4 +272,7 @@ export {
   FAST_WAVE_EFFECT_DEF,
   FAST_RIPPLE_EFFECT_DEF,
   FAST_TURBULENT_DISPLACE_EFFECT_DEF,
+  GLITCH_SLICE_EFFECT_DEF,
+  PIXEL_STRETCH_EFFECT_DEF,
+  LIQUID_CHROME_EFFECT_DEF,
 };

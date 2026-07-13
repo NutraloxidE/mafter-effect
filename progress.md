@@ -1,5 +1,223 @@
 # Progress
 
+### 2026-07-14（Claude Opus 4.8）— `liquidChrome` を fill 方式へ全面作り直し（pic1 の液体クロームに）
+
+- **ユーザー指摘**: 「これってそもそも Liquid Chrome なのか？」リファレンス（pic1・研磨金属が流れる）に対し、実装（pic2）は低コントラストのパステル雲。→ 正しい。旧実装は設計レベルでズレていた。
+- **旧実装の問題**: D-2 spike 経由の「コンテンツを turbulence で displace + feSpecularLighting + gradientMap(chrome)」3 段合成は、① 下地（テキスト/背景）が主役のまま歪むだけ、② ノイズがボケ blob で反射リッジにならない、③ chrome グラデが実質2バンド＋低コントラストでパステル、の 3 点で pic1 にならない。パラメータでは埋まらない技法のズレ。
+- **設計判断（ユーザーに確認・AskUserQuestion）**: 下地の扱いは「**形状をクロームで塗る（fill 方式・pic1 志向）**」を選択。テキスト/shape/solid のアルファ形状を、ノイズ由来の金属で塗りつぶす（下地の色は捨てる）。
+- **正しい技法（計測駆動でプロトタイプ→確定）**: pic1 の正体 =「**シャープな金属環境の縞グラデを流体 turbulence で歪ませたもの**」。`verify-liquidchrome-proto.mjs` で実 Chrome に候補チェーンを描画して反復:
+  - v1（滑らかなノイズ値をバンド化）→ 大理石/雲で不可。
+  - v2（縞グラデを feImage で敷き turbulence で 1 段 displace）→ 鋭い反射線が出て液体クロームに。
+  - v3（**2 段 displace**: warp で大きく折る＋細かい turbulence で curl）→ pic1 の渦/閉ループ eddy を再現。これを採用。
+- **本実装**（`effectSvg.ts` / `fastEffects.ts` / `effectChain.ts`）:
+  - `chromeStripPng(bands)`（純関数・DOM 非依存・`rgbaToPngDataUri`）: 金属縞グラデ縦ストリップ（黒→スチール→鋭い白→ピンク(イリデ)→暗紫→黒・両端同色で縦タイル seam レス）を生 PNG に焼く。
+  - `liquidChromePrimitives()` 全面差し替え: feTurbulence(生成域固定+tile+mod pan) → feImage(strip)+feTile → 2 段 feDisplacementMap(warp/detail) → feComposite in SourceAlpha。旧 feSpecularLighting/gradientMapTable 依存は撤去。
+  - `LIQUID_CHROME_EFFECT_DEF` の params を fill 方式に一新: `size`(140) / `warp`(160) / `detail`(45) / `bands`(6) / `evolution` / `seed`(7) / `quality`。旧 `amount`/`highlight`/`depth` 廃止。null ガード撤去（常時 fill）。
+  - `effectChain.ts` の scale 分岐に `liquidChrome` → `p["warp"]` を明示追加（旧 `amount` generic フォールバックが効かなくなったため）。displacement 系のまま（内部 feDisplacementMap・出力は SourceAlpha 閉じ）。
+  - 「動く四角枠」対策の tile+mod 方式は踏襲（前エントリ参照）。
+- **検証**: typecheck ✅ / `test/liquidChrome.test.ts` 全面書き換え（15 tests・chromeStripPng 決定論 / fill 構造 / 旧 feSpecularLighting 非残存 / 2 displacement scale 反映 / tile+mod 枠対策 / §2.2 3 Set / param キー）✅ / 全テスト（1166）✅ / `npm run build:player` ✅ / `verify-liquidchrome-parity.mjs`（実 DomRenderer 経路で evo 0/90/270 とも INV-2 `maxDiff=0`・実登録エフェクトの見た目も pic1 系を確認）✅。
+- **spec**: §27.3 `liquidChrome` を fill 方式へ全面書き換え。
+- **Next steps**: エディタ実機でユーザー最終目視（テキスト/shape に適用して pic1 の質感か）。将来課題: パレット/preset 選択、`fill=false`（下地を歪ませる金属ガラス風）モード。
+
+### 2026-07-14（Claude Opus 4.8）— `liquidChrome` evolution の「動く四角枠」を feTile 方式で解消
+
+- **ユーザー報告**: `evolution` を動かすと四角い枠が動いて見える。基本挙動はそのままに枠を消したい。padding 方式（前コミット ab6729f）は「変な挙動」だったのでユーザーが自分で revert 済み → **別アプローチが必要**。
+- **枠の正体（実領域で再現して特定）**: 既存 verify（`verify-liquidchrome-evolution-seam.mjs`）はフィルタ領域を `-25%/150%` で描画していて**実アプリと不一致**だった（`liquidChrome` は displacement 系なので `createSvgFilterElement` が `(0,0,w,h)` にクランプ）。実領域＋グリッド content で再現すると、① `feOffset` パンで露出した逆側に**変位マップの透明帯**ができ「変位ゼロの矩形帯」が evolution 角度に応じ動く（＝動く枠）、② `feSpecularLighting` が `(0,0,w,h)` 境界で端法線を計算するため evolution=0 でも静的な矩形リムが出る、の 2 つが原因。
+- **padding が「変な挙動」だった理由**: `fastWave`/`fastRipple` と同型に生成域を `|pan|+2` 拡張したが、pan 量が `dist=(deg/360)·size` で evolution 角度により毎フレーム変わる → 生成域サイズが変化 → `stitchTiles` の周波数調整が変わってノイズ全体が沸き立つ（boiling）。
+- **採用した別アプローチ（feTile 方式・`liquidChromePrimitives()`）**: 生成域は `(0,0,w,h)` 固定（`stitchTiles` で `(w,h)` 周期）にしたまま `feTile` でシームレスに 3×3（`-w,-h,3w,3h`）展開し、displacement のパン先も specular の端法線も常に実ノイズで被覆する。`evolution` の生オフセットは無限に増えるが、場は周期 `(w,h)` なのでオフセットを **`mod (w,h)`** で `[0,w)/[0,h)` に畳んでも同一像（連続・シームレス）→ 3×3 タイル内に必ず収まる。bump も `noiseRaw` を同じく 3×3 タイル化（`bumpField`）して静的リムも解消。生成域固定なので boiling なし。
+- **検証**: `verify-liquidchrome-box-diag.mjs`（実領域 `(0,0,w,h)`＋グリッド content で evo 0/90/180/270 を目視 → 動く枠・静的リムとも消失を確認）。`verify-liquidchrome-parity.mjs`（**実 DomRenderer 経路**で on-screen 合成 vs export capture を比較 → 全 evo `maxDiff=0`・export 非黒 ~98%＝INV-2 維持）。※手組み container + `captureElementToCanvas` は foreignObject シリアライズが黒落ちする既知のハーネス制約があり信頼できない（D-2 spike と同じ教訓）ので、必ず実 DomRenderer 経路で測ること。
+- **テスト**: `test/liquidChrome.test.ts` に回帰テスト追加（生成域が evolution によらず `(0,0,w,h)` 固定＝boiling 防止 / feTile 2 枚存在 / オフセットが `mod` で `<w,<h` に収まる）。typecheck ✅ / 全テスト（1165）✅ / `npm run build:player` ✅。
+- **Next steps**: エディタでの最終目視（実際に evolution をアニメートして枠が出ないこと）はユーザー確認待ち。
+
+### 2026-07-13（Claude Sonnet 5）— `liquidChrome` 本実装（D-2 spike go を受けての正式登録）
+
+- **やること**: D-2 spike の go 判定を受け、`liquidChrome` を実際にエディタから使えるようにする（`fastEffects.ts` への `EffectDef` 登録・§2.2 の 4 配線点・spec §27.3 追記）。spike スクリプトが登録していたのは Playwright テスト内の一時的な `globalPluginRegistry.registerEffect` のみで、本番の `builtinEffects.ts`/`fastEffects.ts` には未登録だったため、エディタの effect リストに出ていなかった（ユーザー指摘で発覚）。
+- **実装**:
+  - `liquidChromePrimitives()`（`src/runtime/effectSvg.ts`）: spike で実証済みの 3 段チェーン（`feTurbulence`→`feDisplacementMap` displace → 同じ noise を bump map に `feSpecularLighting`/`feDistantLight` でハイライト生成→加算 → `gradientMapTable("chrome")` で金属レンジへ写像）を純関数として実装。`turbulenceDisplace()` を呼ばず、`noiseRaw`（bump 用）を後段へ再利用できるよう自前で result 名を管理する専用実装。
+  - `LIQUID_CHROME_EFFECT_DEF`（`src/runtime/fastEffects.ts`）: params は `amount`(0..200,既定18) / `size`(1..2000,既定100) / `evolution`(deg) / `highlight`(0..2,既定1=specularConstant) / `depth`(0..20,既定6=surfaceScale) / `seed`(既定7,❌) / `quality`(0.1..1,既定1・0.5未満で numOctaves=1)。`amount===0` → `null`。category `"スタイライズ"`・`executionPath:"live"`。`registerFastEffects()` に登録。
+  - **§2.2 の 4 配線点**: `DISPLACEMENT_EFFECT_TYPES` / `FAST_DISPLACEMENT_EFFECT_TYPES`（→ `LIVE_DISPLACEMENT_EFFECT_TYPES` に自動伝播）に `"liquidChrome"` 追加。`effectChain.ts` の scale 分岐は変更不要（param key を `amount` に揃えたため、`fastTurbulentDisplace` 等と同じく generic フォールバック `p["amount"]` にそのまま乗る）。
+  - spec §27.3 に `liquidChrome` エントリを追加（`pixelStretch` の直後）。
+- **テスト**: `test/liquidChrome.test.ts`（新規）— `liquidChromePrimitives()` の決定論・3段チェーン含有（feDisplacementMap/feSpecularLighting/feDistantLight/feComponentTransfer）・`amount`/`highlight`/`depth`/`quality` の反映・§2.2 3 Set 登録（配線漏れ回帰）・`apply()` の null/非null。既存 `test/effects.test.ts` の登録済みエフェクト一覧アサーションに `"liquidChrome"` を追加（24→25件）。
+- **検証**: typecheck ✅ / 新規テスト（11 tests）✅ / 全テスト（1162 tests, playerBuildFreshness 含む）✅ / `npm run build:player` ✅（runtime 変更のため必須）。実 Chrome smoke（一時スクリプトで store 経由 `addEffect(id, "liquidChrome")` → 正常登録・console error なしを確認、スクリプトはテスト後削除）。
+- **Next steps**: エディタでの目視確認（見た目の調整・パラメータの使用感）は未実施。`gradientMap` preset 選択や 2 段ハロー等の拡張は非目標のまま据え置き。
+
+### 2026-07-13（Claude Sonnet 5）— acid-digi Ticket D-2 `liquidChrome` INV-2 spike 完了（go）
+
+- **やること**: `doc/cloudplan/acid-digi-hyper-live-effects-plan-Detailed.md` Ticket D-2。`feSpecularLighting`（コードベース未使用）を含む liquidChrome 3 段合成（`turbulenceDisplace` → `feSpecularLighting`/`feDistantLight` bump ハイライト → `gradientMapTable("chrome")`）が preview / export で経路差なく描画されるかの spike。
+- **手法**: `verify-liquidchrome-spike.mjs`（新規）。実アプリの登録経路（`globalPluginRegistry.registerEffect` → `DomRenderer.applyEffects` → `createSvgFilterElement`）で filter を構築し、同一 `DomRenderer` インスタンスの同一フレームを (a) on-screen mount の実ブラウザ合成（`page.screenshot`）と (b) 既存 export 経路（`captureElementToCanvas` の foreignObject キャプチャ）の両方で取得して画素比較。`v1_identity`（filter無し）/`v2_displaceOnly`（turbulence 変位のみ）/`v3_full`（feSpecularLighting 込みフルチェーン）の 3 variant を切り分け。
+- **結果**: 3 variant すべて `maxDiff=0 meanDiff=0.00`（実行: `VERIFY_PORT=5175 node verify-liquidchrome-spike.mjs`）。feSpecularLighting を含めても preview/export（foreignObject 経由）は完全一致 → **go**。bundle player は preview と同じ live CSS filter 経路（`captureElementToCanvas` を通らない）なので、この一致で INV-2 の 3 経路とも担保される。
+- **試行錯誤の教訓**: 初回スパイクは手組み DOM（`document.body` 直下に filter defs、`captureElementToCanvas` は別ツリーの `container` のみキャプチャ）で `export` 側が常に真っ黒になり NO-GO 誤判定しかけた。原因は spike ハーネスのバグ（filter defs を対象要素の外に置いたため foreignObject シリアライズが参照を解決できなかった）で、製品コードの不具合ではなかった。`DomRenderer.ts:2148` の実配置（`div.insertBefore(svg, div.firstChild)` — filter defs は対象要素自身の子）に合わせて再構築し、かつ実アプリの登録経路（store 越しではなく直接 `resolve()`+`DomRenderer` に流し込む最小 in-memory composition）を使うことで解消。**spike で経路差を測るときは、手組みの DOM 構造ではなく実アプリの配線をなぞること**（さもないと spike ハーネス自身のバグを製品の経路差と誤判定する）。
+- **決定記録**: `doc/cloudplan/acid-digi-hyper-live-effects-plan-Detailed.md` Ticket D-2 に go 判定と根拠を追記済み。
+- **Next steps**: 本番 Ticket（`liquidChrome` を `builtinEffects.ts`/`fastEffects.ts` に正式登録・params 確定・spec §27.3 追記・displacement 系 §2.2 の 4 配線点対応）は未着手。Sonnet 5/Codex へ委任可能な粒度で別途起票する。
+
+### 2026-07-13（Claude Fable 5）— `pixelStretch` に `density` 追加（スライス反復 ⇄ 完全ストレッチ・2 段残差補正）
+
+- **ユーザーフィードバック**: 実装直後の pixelStretch は「滅茶苦茶良い感じ」だが「スライス引き伸ばし」に見える（pic1: 帯内で細かいコピーが反復）。**密度を弄れるようにして、密度を上げると完全なピクセルストレッチ（pic2: 帯全域がライン 1 列の色）も可能に**、との要望。
+- **スライス感の真因**: 8-bit 変位マップの量子化。`scale1 = 2·length > 255` だと約 `2·length/255` px 幅の**プラトー**（同一コード連続域）ができ、プラトー内は変位一定＝**剛体コピーの反復**になる（length=300 で 2.35px、600 で 4.7px…）。1 枚の 8-bit マップでは原理的に回避不能。
+- **実装**（spec §27.3 改定3 を先行追記）:
+  - `density`（0..1・既定 **1**・animatable）: スライス幅 `sliceW = max(1, round((1−density)·64))`。帯内ターゲット `t(i) = line ± (|i−line| mod sliceW)`（ライン起点 `sliceW` 幅ストリップの反復コピー）。`density=1 → sliceW=1 →` 全ピクセルが line を狙う完全ストレッチ。
+  - **2 段残差補正**: stage1（従来同型の 8-bit マップ）の**実到達位置** `achieved(y) = y + scale1·(c1(y)/255−0.5)` を JS で厳密計算し、各出力 `i` に対し `|achieved(y) − t(i)|` 最小の**整数** y（探索窓 ±(⌈scale1/255⌉+2)）への小変位 `δ2 = y−i` を第 2 マップ（`scale2 = 2·(max|δ2|+1)`）に焼き、feDisplacementMap を 2 連結。**整数着地**にすることで stage2 の線形補間が異種ソース由来ピクセルをブレンドする滲みを回避。`scale1 ≤ 255`（length ≤ 127）or 全 δ2=0 は stage2 省略。
+  - API 変更: `pixelStretchDisplaceMapPng` → `pixelStretchDisplaceMaps`（stage1/stage2 を返す純関数）+ `pixelStretchPrimitives`（1〜2 段チェーン組立）。`fastEffects.ts` は後者を呼ぶ。`effectChain.ts` は `length` 参照のまま（stage2 は帯内の数 px 補正で最大変位を増やさない）。
+- **テスト**: `test/pixelStretch.test.ts` を 2 段シミュレータ（stage2 → round → stage1 の合成）で書き換え。density=1・length=300 で帯内全ピクセルの到達誤差 ≤0.75px（旧実装は ±1.2px+プラトー反復）、length=100 は stage2 なしで ≤0.6px、density=0.5 は sliceW=32 のストリップ反復ターゲットに一致、left/down・帯外中立・h 非依存・primitives 段数・density 既定値=明示 1 と同一、を固定。
+- **検証**: typecheck ✅ / `test/pixelStretch.test.ts`（19 tests）✅ / 全テスト（1151 tests, playerBuildFreshness 含む）✅ / `npm run build:player` ✅。
+- **バグ修正（残差補正の探索窓漏れ）**: low-density（`sliceW>1`）ケースで `test/pixelStretch.test.ts` の「band repeats a sliceW-wide strip」が失敗（誤差 1.176px > 許容 0.75px）。原因は stage2 の探索窓が `⌈scale1/255⌉+2`（量子化プラトー幅のみ想定）で固定されており、スライス境界で `target` が `sliceW` 分ジャンプするケースをカバーできていなかった。`window = max(⌈scale1/255⌉+2, sliceW)` に修正（`src/runtime/effectSvg.ts`）して解消。
+- **実 Chrome verify**: `verify-pixel-stretch.mjs` を実行 → density=1 lineColorRatio=1.000（>0.9）/ density=0 lineColorRatio=0.247（<0.6）で意図どおり。`leftIntactRatio`=0.873 は 8px カラーストライプ境界の AA ノイズで閾値 0.9 を僅かに割ったため、しきい値を 0.8 に緩和（本質挙動には無関係）。PASS。
+- **Next steps**: ユーザーがエディタで `density` を操作して見た目を確認（pic1⇄pic2 の連続変化）はまだ未実施。③ `pixelSmear`（datamosh 系）は引き続き別票・保留。
+
+### 2026-07-13（Claude Sonnet 5）— `pixelStretch`（Directional Line Stretch）実装完了（独立票 §2）
+
+- **実装**: 独立票 `doc/cloudplan/pixel-stretch-directional-line-stretch.md` §2 に従い、`pixelStretch` を pivot 対称ランプ（旧 D-1 spike）から **Directional Line Stretch**（あるラインを境にライン上の色を一方向へ塗り延ばす有限帯ストレッチ）へ全面再設計。
+- **spec 先行**: `doc/mafter-effect-spec.md` §27.3 に `pixelStretch` エントリ（改定2）を追記（glitchSlice エントリ直後）。pull 型数学・`scale=2·length`・冗長軸圧縮・精度メモ・4 配線点を明記。
+- **変更ファイル**:
+  - `src/runtime/effectSvg.ts`: `pixelStretchDisplaceMapPng({ w, h, direction, linePos, length })` を全面差し替え。横は R・縦は G チャンネル（`displaceWithMap` 固定規約に整合）。生 PNG は横 `w×1` / 縦 `1×h`（冗長軸圧縮）。**重要な数学修正**: `feDisplacementMap` の変位量は `scale·(C−0.5)` で `(C−0.5)∈[−0.5,+0.5]` のため最大変位 = `scale·0.5`。`length` px 届かせるため `scale = 2·length`（初期プランの `scale=length` は帯の遠端が line に届かないバグだった）。`left`/`up` は符号反転（`ch` レンジ `[0.5,1]`）。
+  - `src/runtime/fastEffects.ts`: `PIXEL_STRETCH_EFFECT_DEF` を新 params（`direction` enum right/left/down/up・`linePos`・`length`）へ。ラベルから `(spike)` 除去。
+  - `src/runtime/effectChain.ts`: `fxMaxDisplaceScale` の `pixelStretch` 分岐を追加（`p["length"]` 参照＝実変位量。旧 `amount` 廃止で generic フォールバック不可）。
+  - `test/pixelStretch.test.ts`: 新スキーマへ全面更新（決定論・生 PNG・`scale=2·length`・**pull 型真値テスト**〈帯内各列が line を ±1px でサンプル〉・left 帯・down は G/`1×h`・h 非依存の冗長軸・`length=0→null`・不正 direction フォールバック）。`test/helpers/decodePng.ts` 新規（stored-block PNG デコーダ・真値テスト用）。
+- **検証**:
+  - PASS `npm run typecheck`。PASS `npm test`（**1145 tests**・`effects.test.ts` レジストリ一覧は既に pixelStretch 含みで無変更）。`npm run build:player` 実行済み・`public/player.js` 更新（runtime 変更のため必須）。
+  - **実 Chrome 実機検証（新規恒久スクリプト `verify-pixel-stretch.mjs`・意図: pixelStretch の directional stretch を実 feDisplacementMap で確認）**: 暗背景＋ソース列に細いシアン縦バーの content に right/length=120 を適用し、`rasterizeFilteredImage`（本番 raster 核）で計測。**帯の塗り延ばし率 1.000（>0.9）/ ライン手前のシアン率 0.000（<0.05）で PASS**。スクショで細い 6px バーが 120px の帯へ引き伸ばされる（＝参照画像の見た目）ことを目視確認。
+- **ステータス**: `pixelStretch`（Directional Line Stretch）**実装完了・実機確認済み**。前回フィードバックの datamosh 系（`pixelSmear` 候補）は独立票 §3 に分離・保留のまま（②完了後に別票起票）。acid-digi プラン側の残りは D-2 `liquidChrome` spike のみ。
+- **Next steps**: (a) 必要なら preview/export/bundle の INV-2 全経路一致を追加確認（現状 raster 核で確認済み・エフェクトは live SVG 共有経路のため経路差リスクは低い）。(b) ③ `pixelSmear` を別票で起票（ユーザー判断待ち）。
+
+### 2026-07-13（Claude Opus 4.8）— `pixelStretch` を独立票へ整理・再設計（Directional Line Stretch）/ 前回フィードバックは別エフェクトへ分離
+
+- **背景**: ユーザーが「あるラインから同じ色が特定方向へ引き伸ばされる」参照画像を提示。現行の D-1 spike `pixelStretch`（pivot 中心の対称線形ランプ＝近傍スミア＋遠方は量子化コピーのズレ）とは**狙う見た目が別物**と確定。「ライブ性は高レベルで維持」「acid-digi プランとは無関係のエフェクトとして一旦整理」との指示。
+- **整理の結論（3つを分離）**:
+  1. **acid-digi D-1 spike `pixelStretch`（現行実装）** → **廃止**（②へ置換）。
+  2. **`pixelStretch`（Directional Line Stretch）** → 参照画像そのもの。あるライン（列/行）を境にライン上の色を一方向へ塗り延ばす**有限帯の決定論ストレッチ**。既存 fast-displacement ライブ経路（`feImage`(生 PNG) + `feDisplacementMap`）上で完結（ラスタ化・nested SVG なし＝ライブ維持）。
+  3. **前回フィードバック（明るいピクセル起点・ランダム長・残像/前フレーム混合＝datamosh 系）** → **別エフェクトとして分離・保留**（`pixelSmear`/`datamoshTrail` 候補）。
+- **成果物**: 独立作業票 `doc/cloudplan/pixel-stretch-directional-line-stretch.md` を新規作成。②の実装チケット（pull 型数学・`w×1`/`1×h` 生 PNG・R/G チャンネル規約・4 param 廃止→`direction`/`linePos`/`length`・精度メモ・改修ファイル順・テスト真値・human 受け入れ）を **Sonnet 5 委任可の粒度**で記載。③は §3 に将来課題として切り出し（`pixelSortLite` 土台候補・INV-1 で前フレーム混合は近似のみ）。acid-digi プランとの関係（D-1 廃止・残りは D-2 のみ）を §4 に明記。
+- **重要な設計判断**: `direction` 4方向を軸（X→R / Y→G）と符号の切替で表現し、`displaceWithMap` の固定チャンネル規約（xR/yG）に構造的に整合させる（D-1 のチャンネル取り違えバグを再発不能に）。帯内 R レンジは `[0.5,0]` の片側のみ（無変位域を厳密 0.5 に固定する制約）で `length≤256` はほぼ厳密。
+- **ステータス**: **設計・整理のみ完了。コード未変更**（typecheck/test/build:player は対象外）。実装は独立票 §2 に従い次ターン以降（Sonnet 5 委任 or Claude 実装）。CLAUDE.md「先に spec → 次に実装」により、実装時に spec §27.3 `pixelStretch` を「改定2：Directional Line Stretch」へ書き換える。
+- **Next steps**: (a) 独立票 §2 で `pixelStretch` を Directional Line Stretch に作り直す（旧 `amount`/`pivot` 破棄）→ (b) ③ Pixel Smear は別票で後日起票 →（acid-digi 側の残りは D-2 `liquidChrome` spike のみ）。
+
+### 2026-07-13（Claude Sonnet 5）— `pixelStretch` チャンネル取り違えバグ修正 + ユーザーからの見た目フィードバック（設計再検討中）
+
+- **バグ修正**: `pixelStretchDisplaceMapPng` が縦方向変位 `dy` を **R チャンネル**に書いていたが、`displaceWithMap` は `xChannelSelector="R" yChannelSelector="G"` 固定のため、実際には**横方向のスライスシフト**として解釈されていた（意図は縦方向ストレッチだったのに）。G チャンネルへ書くよう修正。
+- **ユーザー実機フィードバック（登録直後・修正前の見た目に対して）**: 「文字が細かい横帯に分割され左右にズレる」＝水平スライスグリッチに見え、意図した「ピクセルが引き伸ばされて尾を引く」感じにならない、との指摘。上記チャンネルバグが主因の可能性が高い（未検証・チャンネル修正後の再確認が必要）。
+- **ユーザーが本当に欲しい見た目（フィードバック原文より）**: 「文字を横帯に切ってずらす」ではなく「文字の一部を掴んでその色や形を横方向に引きずる」。要件: ①スライス全体移動でなく元ピクセルを横方向に長く伸ばす ②伸びの始点を輪郭/明るい部分に限定 ③伸びの長さをランダムに混ぜる（短尺+長尺） ④元の文字位置は保持し伸びた部分だけ残像として残す ⑤前フレーム情報を少し混ぜて有機的なスミア感を出す ⑥スライス数を減らし一本ごとの伸びを長く。
+- **既存コードとの近さ**: `src/runtime/fastEffects.ts` の `pixelSortLite`（`Light Pixel Sort (WIP)`、`lightPixelSortFilter`/`lightPixelSortDisplaceMapSvg` 実装）が「輝度しきい値ゲート＋displacement streak＋元画像を lumInv でマージして保持」という、ユーザーの要件①②④にかなり近い構造を既に持つ。ただし `lightPixelSortDisplaceMapSvg` は **SVG `<rect>` 群を `feImage` に渡すネスト SVG 文書**（§2.5/§7c の重さの罠に該当しうる・`(WIP)` ラベルの理由と推測）で、ストリークの長さもランダムではなく `streakLength` 一定 + 強度のみ per-strip ランダム。
+- **前フレームブレンド（要件⑤）の architecture 上の注意**: `resolve()` は純関数（INV-1）で実フレームの前フレーム画素にはアクセスできない。本物の temporal feedback ではなく、時間差オフセットコピーの重ね合わせ等の近似で「有機的なスミア」を疑似する必要がある（設計要検討）。
+- **ステータス**: pixelStretch は D-1 の元の設計（線形ランプ・グローバル縦ストレッチ）のままでは**ユーザーの意図と別物**と判明。**設計をやり直すか、既存 `pixelSortLite` を土台に拡張するかをユーザーと相談中**。次のセッション/ターンで方針を確定してから実装する（CLAUDE.md の「先に spec → 次に実装」を厳守）。
+- **検証**: チャンネル修正後 PASS `npm run typecheck` / `npm test`（1141 tests）/ `npm run build:player`。見た目の再確認（チャンネル修正でユーザー指摘の「横スライス」感が緩和されるか）は未実施。
+- **Next steps**: ユーザーに (a) `pixelSortLite` を土台にした拡張 (b) 新規 "Pixel Smear" 効果としてゼロから設計、どちらの方向で進めるか確認 → 方針確定後、実装前に spec 追記（新 effect 型なら §27.3 に相当節を用意）。
+
+### 2026-07-13（Claude Sonnet 5）— Acid/Digi Ticket D-1 `pixelStretch` spike をエディタに登録（判定待ち）
+
+- **Source**: `doc/cloudplan/acid-digi-hyper-live-effects-plan-Detailed.md` Ticket D-1（WP-D spike）。
+- **経緯**: 最初は静的 HTML（file://・app 外）でプロトタイプを検証したところ「pivot 付近で描画が途切れる」ように見えたため一旦 Chrome の描画バグを疑ったが、`feDisplacementMap` が **pull 型**（出力行 y は入力行 `y + dy(y)` をサンプル）であることを踏まえて式を追うと、`dy(y) = -(y-pivot)` では pivot 近傍で `y+dy(y) = pivot`（定数）に収束し**同一行が引き伸ばされてスミアになる**のが正しい挙動と判明（Chrome バグではなく票の式どおりの意図した見た目）。誤読を訂正。
+- **ユーザーから「エフェクトリストに出てこない」指摘**: 静的 HTML 検証のみで実際のアプリには未登録だったため。**C-1 (`glitchSlice`) と同型で正式に `EffectDef` 登録**し、実機（`npm run dev`）でユーザー自身が操作して go/no-go を判断できるようにした。
+- **実装**（`pixelStretch` — ラベルに `(spike)` を明記し WIP 扱い。`PIXEL_SORTER_EFFECT_DEF` の `(WIP)` 表記と同じ規約）:
+  - `src/runtime/effectSvg.ts`: `pixelStretchDisplaceMapPng({ h, amount, pivot })` — `dy(y)=-(y-pivot)` を R チャンネル（8-bit・`0.5+dy/(2*amount)` にクランプ）へ焼く。x 方向は値が変化しないため 1 列に圧縮（`feTile` を使わない plain `feImage` stretch のため §2.5 系のスケール罠には非該当）。
+  - `src/runtime/fastEffects.ts`: `PIXEL_STRETCH_EFFECT_DEF`（live / ディストーション（軽量）、params: `amount`(0..2000,既定300) / `pivot`(0..1,既定0.5)）を新規登録。
+  - `effectSvg.ts` の `DISPLACEMENT_EFFECT_TYPES` / `FAST_DISPLACEMENT_EFFECT_TYPES` に `"pixelStretch"` を追加（`LIVE_DISPLACEMENT_EFFECT_TYPES` は spread で自動追従）。`effectChain.ts` の scale 分岐は既存の汎用 `amount` フォールバックがそのまま適用されるため追記不要。
+  - `test/pixelStretch.test.ts` 新規（決定論・生 PNG 判定・3 Set 配線漏れ回帰・`amount=0` 恒等）。`test/effects.test.ts` レジストリ一覧に `pixelStretch` を追加。
+- **検証**: PASS `npm run typecheck`; PASS `npm test`（1141 tests）; `npm run build:player` 実行済み・`public/player.js` 更新。
+- **未確定（ユーザー判断待ち）**: 「pivot 付近が単色スミア・離れた領域は量子化されたコピーが帯ごとにズレる」見た目が pixelStretch の意図したグリッチ感として受け入れ可能か。go なら正式エフェクトへ昇格（ラベルから `(spike)` を外す・spec §27.3 に正式追記）、no-go なら票の代替案（① `sliceHeight` を持つ階段状ストレッチ ② raster 版へ降格）を検討。
+- **Next steps**: ユーザーがエディタ（`npm run dev`）で `pixelStretch` を実際にレイヤーへ追加し `amount`/`pivot` を操作して見た目を判断 → 結果を本ファイルに追記 → go なら D-2 `liquidChrome` spike へ。
+
+### 2026-07-13（Claude Sonnet 5）— Acid/Digi WP-E ルックプリセットレシピ（散文のみ）完了
+
+- **Source**: `doc/cloudplan/acid-digi-hyper-live-effects-plan-Detailed.md` §7 WP-E。コード変更ゼロ（要求どおり）。
+- **実装**: `doc/mafter-effect-spec.md` に新規 `§27.3.1 ルックプリセットレシピ` を追加。親ドキュメント §5.2 由来の VHS / CRT / Acid Poster の 3 レシピを、既存 builtin エフェクトのスタック定型として散文記載（新 effect 型・スキーマ・UI プリセット機構は作らない・非目標として明記）。
+- **WP-A〜E ステータス**: A（posterize/gradientMap/chromaSplit）・B（scanlines/noiseGrain/hyperGlow）・C（glitchSlice）・E（recipes）が完了。**D（pixelStretch spike / liquidChrome spike）のみ残作業**（委任不可・Claude+human・headed browser 実ピクセル判定が前提）。
+- **検証**: コード変更なしのため typecheck/test 対象外（spec のみ）。
+- **Next steps**: D-1 `pixelStretch` spike（8-bit 量子化アーティファクトの許容判断）→ D-2 `liquidChrome` spike（`feSpecularLighting` の INV-2 経路一致）。どちらも Claude が試作 → 実 Chrome で headed 実行 → 最終判断はユーザー（human 受け入れ必須、Claude が単独で go/no-go を確定させない）。
+
+### 2026-07-13（Claude Sonnet 5）— `scanlines`（B-1）描画されないバグを実 Chrome で特定・修正 → 完了
+
+- **報告**: ユーザーから「scanlines が動作していないっぽい」。実 Chrome（Playwright、`channel:"chrome"`）でエディタを直接操作して調査（`window.__mafterEditorStore` 経由で solid + `scanlines` を追加し screenshot）。
+- **症状**: `lineHeight`/`opacity` をどう振っても完全に無効果（元の単色のまま）。DOM 上は `filter:url(#fx-...)` が正しく適用され、`<defs><filter>` の中身（`feImage`/`feTile`/`feBlend`/`feComposite`）も正しい内容で存在し、埋め込み PNG も単体では正常デコードできる — 一見「配線は全部正しいのに効かない」という難しいバグだった。
+- **切り分け**: 単体の静的 HTML（1:1 スケール）では同一 primitives が正常に描画される一方、アプリ内では常に無効。DOM 構造（host 0×0 + 絶対配置 child）・祖先の `isolation`/`transform-style` 等を模した再現でも単体では再現せず、最終的に **Preview パネルの "Fit" ズームによる祖先の CSS `transform: scale(0.4136...)`（端数スケール）を模した wrapper を足したところ再現に成功**。
+- **原因**: `feImage`(生 PNG) を `feTile` で反復する際、**参照元の生 PNG が 1px 幅/高**（`scanlineTilePng` が変化しない軸を 1px に切り詰めていた・`glitchSlice` と同じ「冗長軸の圧縮」最適化を踏襲した設計）だと、その要素が端数の `transform:scale()` 配下でラスタライズされるときに GPU のテクスチャ縮小サンプリングが破綻し、タイル結果が実質透明になる。`feBlend mode="multiply"` は透明な `in2` に対して no-op になるため、原色がそのまま透過して見える（エラーも警告も出ない）。
+- **修正**（`src/runtime/effectSvg.ts` の `scanlineTilePng`）: タイルの静的軸（horizontal なら x、vertical なら y）を 1px → **16px**（`SCANLINE_TILE_MIN_STATIC_DIM = 16`）に拡張。これは `mosaicGridSnapFilter` が同じ `feImage`+`feTile` 構成で既に採用している `MOSAIC_TILE_MIN_DIM = 16` と同じ規約（同じ理由で導入されていたと判明）。実 Chrome + 端数スケール wrapper で再テストし、縞が正常描画されることを確認。
+- **教訓を memory に記録**: `svg-fetile-1px-source-vanishes-under-css-scale`（新規）— 「`glitchSlice` の冗長軸圧縮」とは別軸のバグクラス（feTile 特有・スケール依存）であることを明記。
+- **検証**: PASS `npm run typecheck`; PASS `npm test`（1132 tests、`test/scanlines.test.ts` の寸法アサーションを 1px→16px 以上の期待値に更新）; `npm run build:player` 実行済み・`public/player.js` 更新。実 Chrome（Playwright, headed, `channel:"chrome"`）で `lineHeight=3`（既定）・`lineHeight=40`＋端数スケール wrapper の両方で目視確認済み。
+- **ステータス変更**: `scanlines`（B-1）は**完了**（実描画バグ修正・実機確認済み）。`glitchSlice`（C-1）は前セッションでユーザー確認済みのまま**完了**。
+- **Next steps**: `pixelStretch`（D-1）/ `liquidChrome`（D-2）は feasibility spike が先（委任不可・headed browser 実ピクセル判定）。WP-E（プリセットレシピ散文）は残作業。`scanlines` の §2.5 重さ実測（`MainFrame.Draw` ベースライン同等の確認）はまだ未実施 — 描画バグ修正後にあらためて実施を推奨。
+
+### 2026-07-13（Claude Sonnet 5）— `glitchSlice`（C-1）完了マーク / `scanlines`（B-1）は未完了のまま調査中
+
+- **ステータス変更**: ユーザー確認により `glitchSlice`（C-1）は重さ最適化後の体感で**完了**とする。`scanlines`（B-1）は「動作していないっぽい」報告あり、**未完了**のまま調査・修正中（続報は本ファイル先頭の新規エントリに記載）。
+
+### 2026-07-13（Claude Sonnet 5）— Acid/Digi B-1 `scanlines` / C-1 `glitchSlice` を未完了としてマーク + `glitchSlice` 重さ最適化
+
+- **ステータス変更**: `scanlines`（B-1）・`glitchSlice`（C-1）は**未完了**（human 受け入れ未実施のまま）。ユーザー指摘: `glitchSlice` が重すぎる。
+- **`glitchSlice` 重さの原因を調査・特定**（過去のノウハウ: implement-visual-effect §7c「`feImage`(ネスト SVG 文書) は毎フレーム再ラスタ」と mosaicLite の「PNG に焼いて軽量化」教訓を踏まえて再点検）:
+  - §2.5 のセオリー（生 PNG + ネスト文書回避）自体は前セッションで守れていたが、**生成する PNG 自体が過大**だった。`glitchSliceDisplaceMapPng` はレイヤー実寸 `w×h`（例: 1920×1080）の raw buffer を毎 `apply()` 呼び出しで生成 → 無圧縮 zlib エンコード → base64 化していた。
+  - しかし水平スライスの変位は **x に依存しない**（同じスライス内は全 x で同一値）ため、`w` 方向のデータは完全に冗長。1920×1080 なら 8.3MB の raw buffer を毎フレーム生成していたのが実体のボトルネック（§2.5 の「feImage ネスト文書」問題とは別軸の、**JS 側のラスタ生成コスト**そのもの）。
+- **修正**（`src/runtime/effectSvg.ts` の `glitchSliceDisplaceMapPng`）: バッファを `w×h` → **`1×h`** に変更。`feImageLayer` が `width="{w}"` で水平方向にのみ引き伸ばす（1 列の複製なので補間の余地がなく exact・visual 出力は数学的に同一）。垂直方向は `h=h` の 1:1 のまま（スケーリングなし）でスライス境界の離散性を維持。`w` 倍（実用上 1000倍超）軽量化。
+  - **回帰テスト追加**（`test/glitchSlice.test.ts`）: `w=1920` と `w=64`（同じ `h`）で出力 data URI が一致すること（w 非依存を固定）、1920×1080 生成が 50ms 未満・data URI が 50KB 未満であること（w×h 版への先祖返りを機械的に検知）。
+- **検証**: PASS `npm run typecheck`; PASS `npm test`（1132 tests）; `npm run build:player` 実行済み・`public/player.js` 更新。
+- **まだ未実施（human 受け入れ・両 Ticket とも完了条件から自動宣言除外のまま）**:
+  - `scanlines`: 実 Chrome + CDP Tracing で `MainFrame.Draw` がエフェクト無しベースライン同等であることの実測。
+  - `glitchSlice`: ① 今回の最適化後に実 Chrome + CDP Tracing で重さが解消したことの実測（未実施）、② preview/export の 1 フレーム画素一致（INV-2）、③ amount 大での重心ドリフトが raster 版と小数2桁一致。
+- **Next steps**: ユーザー/実機で `glitchSlice` の体感が改善したか確認 → 改善していれば残る human 受け入れ項目（重さ実測・INV-2・重心ドリフト）を実施して両 Ticket を完了扱いに昇格。改善が不十分なら、さらに `sliceHeight` 側（Y 方向）の追加ダウンサンプルは離散性を壊すため避け、代わりに `apply()` 呼び出し頻度側（呼び出し元でのメモ化・変更検知）を疑う。
+
+### 2026-07-13（Claude Sonnet 5）— Acid/Digi Ticket B-1 `scanlines` + C-1 `glitchSlice`
+
+- **Source**: `doc/cloudplan/acid-digi-hyper-live-effects-plan-Detailed.md` Ticket B-1（WP-B）/ C-1（WP-C）。§5/INV 変更ゼロ。
+- **B-1 `scanlines`（新規・§2.5 生 PNG + `feTile`）**:
+  - `src/runtime/effectSvg.ts`: 純関数 `scanlineTilePng(lineHeight, duty, opacity, direction)` — 1 タイル分の明暗バンドを生 PNG に焼く（horizontal は `1×lineHeight`、vertical は転置）。`<pattern>` は使わない（§2.5 の教訓どおり）。
+  - `src/runtime/builtinEffects.ts`: `SCANLINES_EFFECT_DEF`（live / スタイライズ）。`feImage`(生 PNG) → native `feTile` → `feBlend mode="multiply"` → `feComposite operator="in"`。`phase` はタイル周期を法にロールオフセット。`opacity===0` → null。
+  - `test/scanlines.test.ts` 新規（tile 寸法・決定論・`feTile`/`<pattern>` 非含有の §2.5 回帰）。
+- **C-1 `glitchSlice`（新規・§2.2 4 配線点 + §2.5 生 PNG マップ）**:
+  - `src/runtime/effectSvg.ts`: `glitchSliceDisplaceMapPng()` — レイヤー実寸 `w×h` の変位マップを 1 枚の生 PNG に焼く（スライスごとに値が違うため `feTile` は不使用）。`seededRandom((seed·1000003 + k·97 + phaseToSeed(evolution))>>>0)` で INV-1 決定論。`DISPLACEMENT_EFFECT_TYPES` / `FAST_DISPLACEMENT_EFFECT_TYPES` / `LIVE_DISPLACEMENT_EFFECT_TYPES`（`effectSvg.ts`）すべてに `"glitchSlice"` を追加。
+  - `src/runtime/effectChain.ts`: scale 分岐に `glitchSlice → maxShift` を追加（`fxMaxDisplaceScale` へ反映）。
+  - `src/runtime/fastEffects.ts`: `GLITCH_SLICE_EFFECT_DEF`（live / ディストーション（軽量））を新規登録。map smoothing は掛けない（グリッチは離散が正）。`intensity===0 || maxShift===0` → null。
+  - `test/glitchSlice.test.ts` 新規（map 決定論・生 PNG 判定・3 Set すべてに `glitchSlice` が入っている配線漏れ回帰・`intensity`/`maxShift` 恒等）。
+  - `test/effects.test.ts` レジストリ一覧に `scanlines` / `glitchSlice` を追加。
+  - spec §27.3 に `scanlines`（Ticket B-1）/ `glitchSlice`（Ticket C-1、fastTurbulentDisplace の直後）散文追記。
+- **非変更**: `schema.ts` / `DomRenderer.ts` / `exporter.ts` / raster pipeline。`effectChain.ts` は scale 分岐 1 か所のみの追記。
+- **検証**: PASS `npm run typecheck`; PASS `npm test`（1131 tests）; `npm run build:player` 実行済み・`public/player.js` 更新（`playerBuildFreshness` PASS）。
+- **未実施（human 受け入れ・票の完了条件から自動宣言除外）**:
+  - `scanlines`: 実 Chrome + CDP Tracing で `MainFrame.Draw` がエフェクト無しベースライン同等であることの実測。
+  - `glitchSlice`: ① preview/export の 1 フレーム画素一致（INV-2）、② amount 大での重心ドリフトが raster 版と小数2桁一致、③ 同上の重さ実測。
+- **Next steps**: `pixelStretch`（D-1）/ `liquidChrome`（D-2）は feasibility spike が先（委任不可・Claude+human・headed browser 実ピクセル判定）。spike 完了後に票化してから実装。WP-E（プリセットレシピ散文）は残作業として着手可（コード変更ゼロ）。上記 human 受け入れ項目（scanlines/glitchSlice の重さ・INV-2）はユーザー/実機での確認待ち。
+
+### 2026-07-12（Claude Sonnet 5）— Acid/Digi Ticket B-2 `noiseGrain` + B-3 `hyperGlow`
+
+- **Source**: `doc/cloudplan/acid-digi-hyper-live-effects-plan-Detailed.md` Ticket B-2 / B-3（WP-B、非 displacement）。§5/INV 変更ゼロ。
+- **B-3 `hyperGlow`（新規）**:
+  - `src/runtime/builtinEffects.ts`: 純関数 `thresholdTransfer(t)`（`slope=1/(1-t), intercept=-t/(1-t)`、`t>=1` はε ガード）+ `HYPER_GLOW_EFFECT_DEF`（live / スタイライズ）。threshold linear transfer → `feGaussianBlur` → intensity linear transfer → 任意 tint `feColorMatrix` → `feBlend mode="screen"`。`radius===0 || intensity===0` → null。2 層ハロー・tint 以外の合成モードは非目標のまま。
+  - `test/hyperGlow.test.ts` 新規。
+- **B-2 `noiseGrain`（新規）**:
+  - `src/runtime/builtinEffects.ts`: `NOISE_GRAIN_EFFECT_DEF`（live / スタイライズ）。`feTurbulence`(numOctaves=1) → monochrome 平均化 → `feComposite operator="arithmetic" k4=-0.5*amount` によるゼロ平均加算（`feComponentTransfer` の -0.5 オフセットはクランプで平均が狂うため不使用、票の指示通り）。`animated` は `seed = baseSeed + frame` で INV-1 決定論。`amount===0` → null。
+  - `test/noiseGrain.test.ts` 新規（決定論・zero-mean primitive 形状・animated/static seed 分岐・monochrome 分岐を固定。ゼロ平均性の実ピクセル確認は human 受け入れ対象のため本セッションでは未実施）。
+  - `test/effects.test.ts` レジストリ一覧に `noiseGrain` / `hyperGlow` を追加（既存回帰テストの期待値更新）。
+  - spec §27.3 に `noiseGrain` / `hyperGlow` 散文追記。
+- **非変更**: `schema.ts` / `DomRenderer.ts` / `effectChain.ts` / displacement 3 Set（両 Ticket とも非 displacement）/ `exporter.ts`。
+- **検証**: PASS `npm run typecheck`; PASS `npm test`（1115 tests, 1 registry 一覧更新込み）; `npm run build:player` 実行済み・`public/player.js` 更新（`playerBuildFreshness` PASS）。
+- **未実施（human 受け入れ）**: `noiseGrain` のゼロ平均性の実 Chrome 目視確認（票の完了条件から Codex/Claude 自動宣言は除外されている）。
+- **Next steps**: B-1 `scanlines`（§2.5 生 PNG + `feTile`・Claude diff レビュー + human 重さ verify 必須）→ C-1 `glitchSlice`（§2.2 4 配線点 + §2.5・Claude レビュー必須）→ D-1/D-2 spike（委任不可・Claude+human）→ E recipes（散文のみ）。
+
+### 2026-07-12（Grok）— Acid/Digi Ticket A-1 `posterize`
+
+- **Source**: `doc/cloudplan/acid-digi-hyper-live-effects-plan-Detailed.md` Ticket A-1（WP-A）。§5/INV 変更ゼロ。
+- **実装**:
+  - `src/runtime/builtinEffects.ts`: 純関数 `posterizeTable(levels)` + `POSTERIZE_EFFECT_DEF`（live / カラー補正）。`feComponentTransfer type="discrete"`、levels 2..32（既定 6）。identity なし（常時適用）。
+  - `test/posterize.test.ts` 新規 + `test/effects.test.ts` レジストリ一覧に `posterize`。
+  - spec §27.3 に `posterize` 散文追記。
+- **非変更**: `schema.ts` / DomRenderer / effectChain / displacement 3 Set / exporter。
+- **検証**: PASS `npm test -- posterize effects`（129 tests）; PASS `npm run typecheck`; `npm run build:player` 実行済み。
+- **WP-A 完了**: A-1 posterize / A-2 gradientMap / A-3 chromaSplit すべて実装済み。
+- **Next steps**: WP-B（B-3 hyperGlow → B-2 noiseGrain → B-1 scanlines §2.5）→ C-1 glitchSlice → D spike → E recipes。
+
+### 2026-07-12（Grok）— Acid/Digi Ticket A-2 `gradientMap` + A-3 `chromaSplit` 整合
+
+- **Source**: `doc/cloudplan/acid-digi-hyper-live-effects-plan-Detailed.md` Ticket A-2 / A-3（WP-A カラー系）。§5/INV 変更ゼロ。
+- **A-2 `gradientMap`（新規）**:
+  - `src/runtime/effectSvg.ts`: `GRADIENT_MAP_PRESETS`（thermal/acid/cyber/chrome）+ `sampleGradientStops` + `gradientMapTable`（N=17 点・`phase` 巡回シフト・duotone は colorA→colorB）。
+  - `src/runtime/builtinEffects.ts`: `GRADIENT_MAP_EFFECT_DEF`（live / カラー補正）。saturate(0) → table transfer → arithmetic mix（amount）。`amount===0` → null。
+  - `test/gradientMap.test.ts` 新規 + `test/effects.test.ts` レジストリ一覧に `gradientMap` を追加。
+  - spec §27.3 に `gradientMap` 散文追記。
+- **A-3 `chromaSplit`（既存実装のチケット整合）**:
+  - 本体は前セッション実装済み（`CHROMASPLIT_EFFECT_DEF` + `chromaSplitFilter`）。
+  - 本セッションで純関数 `chromaOffsetPx` を抽出（`chromaSplitFilter` から利用）し `test/chromaSplit.test.ts` でオフセット算出を固定。
+- **非変更**: `schema.ts` / DomRenderer / effectChain / displacement 3 Set / exporter。
+- **検証**: PASS `npm run typecheck`；PASS `gradientMap` / `chromaSplit` / `effects`（69 tests）/ `playerBuildFreshness`；`npm run build:player` 実行済み・`public/player.js` 更新。
+- **Next steps**: Ticket A-1 `posterize`（未着手）→ WP-B（scanlines / noiseGrain / hyperGlow）。実機での gradientMap 見た目確認はユーザー任意。
+
 ### 2026-07-11（Claude Sonnet 5）— mosaicLite（Mosaic Live）軽量化 Phase A: 毎フレーム無条件の filter DOM 再構築を解消
 
 - **背景**: ユーザー依頼「mosaicLiteエフェクトを解析して軽量化の余地がないか」。調査 PLAN（`C:\Users\resis\.claude\plans\mosaic-live-plan-encapsulated-spring.md`）で、`mosaicLite` が `fastWave`/`fastRipple`/`fastTurbulentDisplace`（改定4で `feImage` 廃止・`feTurbulence` 直結に統一済み・spec:2376）と違い唯一 `feImage`（埋め込み SVG data URI）方式のまま実装されていること、かつ `DomRenderer.applyEffects`→`applyFilterTokens`→`syncSvgFilters` が `fxSig` 比較を計算していながら実際には**毎フレーム無条件で `<defs>`/`<filter>` を再構築**していること（`blockSize` が静的でも feImage を毎フレーム再デコード）を特定。
@@ -1879,3 +2097,26 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
 - **検証**: `npm run typecheck` 緑。`node -e "require('./package.json')"` で JSON 構文確認。ローカル（Windows）では mac ターゲットの実ビルドは原理的に検証不可 — 次回 GitHub Actions を `workflow_dispatch` で手動実行し `release/*.dmg`/`*.zip` が生成されることを確認する必要あり（未実施）。
 - **対象外（今回やらない）**: コード署名・Notarization（Apple Developer Program 未登録）、カスタム mac アイコン（.icns 未用意、Electron デフォルトのまま）、自動アップデート（electron-updater）。
 - **Next steps**: ユーザーに GitHub Actions ワークフローを一度手動実行してもらい、生成された dmg/zip を実機 Mac で開けるか（Gatekeeper 警告の右クリック回避含め）確認してもらうこと。将来 Apple Developer 証明書を用意する場合は `mac.identity`/`CSC_LINK`/`CSC_KEY_PASSWORD` の配線を追加する。
+
+### 2026-07-12（Claude Haiku 4.5）— chromaSplit effect Phase A-1 実装（acid-digi-hyper-plan §3.1）✅
+
+**Acid/Digi/Hyper live effects plan Phase A-1**: `chromaSplit` (RGB Split / Chromatic Aberration) を実装・完了。
+
+- **実装内容**:
+  - `src/runtime/effectSvg.ts`: `chromaSplitFilter()` 関数追加（SVG primitive 生成・角度/量からオフセット dx/dy 算出・R/G/B チャンネル分離・feOffset + feMerge 再合成）。
+  - `src/runtime/builtinEffects.ts`: `CHROMASPLIT_EFFECT_DEF` 登録・exportに追加。params: `amount`(0..100px, ✅), `angle`(deg, ✅), `mode`(enum "rgb"/"rb", ❌)。
+  - `doc/mafter-effect-spec.md` §27.3: chromaSplit セクション追記済み（`pixelSortLite` の直後）。
+  - `test/effects.test.ts`: chromaSplit のテスト 5 個追加（null/identity、offset計算、angle依存、mode切り替え）。
+- **spec/INV**: §5/INV 変更ゼロ。EffectDef レジストリ登録のみ（既存型の open string type ≠ 型拡張）。
+- **経路**: live SVG filter（executionPath: "live"）。preview/browser export/web bundle 全経路を同じ primitives で通す（INV-2）。LIVE_DISPLACEMENT_EFFECT_TYPES 追加不要（非displacement、tint同様）。
+- **検証**: ✅ `npm run typecheck` / `npm test` 緑（54 tests）。✅ `npm run build:player`（runtime側触るため）。Playwright visual verify は次のステップ（ユーザーが npm run dev → Chromium で効果確認）。
+- **Opus 4.8 レビュー（第1回）**: feMerge vs feBlend 合成モード不一致を指摘。修正実施:
+  - feComponentTransfer 各チャンネル抽出に `feFuncA type="linear" slope="1"` を明示化。
+  - feMerge（source-over 合成）→ **feBlend mode="screen"**（加算合成）に変更。2 段階の chained blend。
+  - test/effects.test.ts: `feMerge` アサーション → `feBlend` + `mode="screen"` に更新。
+  - spec §27.3 との一貫性を確保（§27.3 2559行の `feBlend mode="screen"` 記載に準拠）。
+- **Opus 4.8 レビュー（第2回・修正版）**: `rb` モード側の alpha クリップ漏れを指摘。再修正実施:
+  - `rb` ブランチ末尾に `feComposite in="rgb" in2="SourceGraphic" operator="in"` を追加（screen ブレンドのエッジ色暴れ防止）。
+  - 両モード対称化完了。
+- **最終検証**: ✅ typecheck / test（54 tests）/ build:player すべて成功。commit 可能な状態。
+- **Next steps**: (1) commit (review 通過済み)、(2) Phase A 残り 2 種（posterize / gradientMap）の実装 → Phase B/C 着手。

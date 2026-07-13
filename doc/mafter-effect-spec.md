@@ -2448,6 +2448,80 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 - preview/bundle 直適用 path の受け入れ条件: amount 5/20/50/100 スイープで ink centroid delta **≤ 2px**（comp 座標）。
 - `amount === 0` は `null`。
 
+##### `glitchSlice` — Glitch Slice（§2.2 4 配線点 + §2.5 生 PNG マップ）
+
+| param key | label | kind | default | range | animatable |
+|---|---|---|---|---|---|
+| `intensity` | Intensity | scalar | `0.5` | 0..1, step 0.01（= slice ごとの jump 発生密度） | ✅ |
+| `maxShift` | Max Shift | scalar | `60` | 0..500 (px), step 1 | ✅ |
+| `sliceHeight` | Slice Height | scalar | `24` | 2..256 (px), step 1 | ✅ |
+| `evolution` | Evolution | scalar | `0` | 無制限（度）, step 1 | ✅ |
+| `seed` | Seed | scalar | `0` | 0..9999, step 1 | ❌ |
+
+- `apply` → `{ kind: "svg", primitives }`（`intensity === 0` または `maxShift === 0` → `null`）。
+- **技法（§2.5・SVG `<rect>` マップは使わない）**: `glitchSliceDisplaceMapPng()` が変位マップを**生 PNG に焼く**（スライスごとに値が異なりタイル化不可のため `feTile` は使わない・`feImageLayer` で `(0,0,w,h)` へ引き伸ばして渡す）。スライス `y∈[k·sliceHeight,(k+1)·sliceHeight)` ごとに `seededRandom((seed·1000003 + k·97 + phaseToSeed(evolution)) >>> 0)` から jump 判定（`< intensity`）と変位量（R チャンネル `0.5 + shift/2`、未変位帯は R=0.5）を決定。G は中立 0.5 固定（水平スライスのため Y 変位なし）。`displaceWithMap(uri, maxShift, w, h)` で `feDisplacementMap` に接続。
+- **改定1（重さ対策・2026-07-13）**: 変位は x に依存しない（同一スライス内は全 x で同一値）ため、生成 raw buffer は `w×h` ではなく **`1×h`**（水平方向は `feImage` の `width` 引き伸ばしに委譲・1 列複製なので補間誤差ゼロ）。初版は 1920×1080 で 8.3MB の raw buffer を毎 `apply()` 呼び出しで生成しており、これが実測の重さの主因だった（§2.5 の「feImage ネスト文書」問題とは別軸の JS 側ラスタ生成コスト）。垂直方向は `h=h` のまま（スケーリングなし）でスライス境界の離散性を維持。
+- **§2.2 の 4 配線点（すべて対応済み）**: `effectSvg.ts` の `DISPLACEMENT_EFFECT_TYPES` / `FAST_DISPLACEMENT_EFFECT_TYPES` / `LIVE_DISPLACEMENT_EFFECT_TYPES` に `"glitchSlice"` 追加済み（region クランプ + Draft Preview Fast Path + live 判定）、`effectChain.ts` の scale 分岐に `glitchSlice` → `maxShift` 追加済み（`fxMaxDisplaceScale` へ反映）。
+- **カテゴリ**: `"ディストーション（軽量）"`（`fastEffects.ts` に登録）。
+- **経路**: live SVG（`executionPath: "live"`）。map smoothing（`fastSmoothPx`）は**掛けない**（グリッチは離散が正）。`chromaOffset` 連結は初版で未実装。
+- **human 受け入れ**: ① preview/export の 1 フレーム画素一致（INV-2）、② amount 大での重心ドリフトが raster 版と小数2桁一致、③ §2.5 の重さ（実 Chrome + CDP Tracing で `MainFrame.Draw` がベースライン同等）— いずれも本セッション未実施（票の完了条件から自動宣言は除外）。
+- **非目標**: raster 版の並行提供。真のピクセル並び替え（引き延ばし/オフセット近似のみ）。
+
+##### `pixelStretch` — Pixel Stretch（Directional Line Stretch・§2.2 4 配線点）
+
+> **由来 / 改定2（2026-07-13）**: 初版（D-1 spike）は pivot 中心の対称線形ランプ（`dy=-(y-pivot)`）で、pivot 近傍が単色スミア・遠方は量子化された剛体シフトコピー、という「切ってずらす」見た目だった。ユーザーの意図（参照画像＝**あるラインを境に、そのライン上の色を一方向へそのまま塗り延ばす**）と別物と実機判断で確定したため、**Directional Line Stretch** へ全面再設計。独立作業票 [pixel-stretch-directional-line-stretch.md](../cloudplan/pixel-stretch-directional-line-stretch.md) を正とする（acid-digi プランとは切り離した独立エフェクト）。前回フィードバックの「ランダム長・複数ライン・残像/前フレーム混合＝datamosh 系」は**別エフェクト**（`pixelSmear` 候補・保留）へ分離。
+
+| param key | label | kind | default | range | animatable |
+|---|---|---|---|---|---|
+| `direction` | Direction | enum | `"right"` | `right` / `left` / `down` / `up` | ❌ |
+| `linePos` | Line Pos | scalar | `0.5` | 0..1, step 0.01（ソースライン位置） | ✅ |
+| `length` | Length | scalar | `300` | 0..2000 (px), step 1（引き伸ばし帯の長さ＝`scale`） | ✅ |
+| `density` | Density | scalar | `1` | 0..1, step 0.01（1=完全ストレッチ / 下げるとスライス反復） | ✅ |
+
+- `apply` → `{ kind: "svg", primitives }`（`length === 0` → `null`）。`pixelStretchPrimitives()` が `feImage`(生 PNG)＋`feDisplacementMap` の 1〜2 段チェーン（改定3）を返す。マップ生成の純関数は `pixelStretchDisplaceMaps()`（`scale1 = 2·length`）。
+- **技法（pull 型 displacement）**: `feDisplacementMap` は出力ピクセル `p` が入力 `p + scale·(ch − 0.5)` をサンプルする pull 型。`(ch − 0.5) ∈ [−0.5, +0.5]` なので変位量の最大は `scale·0.5`。ソースライン位置を `line`（`right`/`left` は列 `linePos·w`、`down`/`up` は行 `linePos·h`）とし、帯内の全ピクセルが厳密に `line` をサンプルするよう `ch = 0.5 + (line − p)/(2·length)`、`scale = 2·length` を焼く（`length` px を届かせるため）。帯の手前・後方は `ch = 0.5`（無変位＝原画）。結果、**ライン上の色が帯全域へ塗り延ばされる有限帯ストレッチ**になる。方向は軸（X→R / Y→G）と符号で切替（`right`/`down` は line の index 増加側へ、`left`/`up` は減少側へ帯を張る）。`displaceWithMap` の固定チャンネル規約（`xChannelSelector="R" yChannelSelector="G"`）に整合させ、横は R・縦は G に書く。`effectChain.ts` の region クランプは実変位量 = `length`（`scale·0.5`）を参照する（`p["length"]`）。
+- **冗長軸圧縮（軽量ライブの担保）**: 値は変位軸のみに依存するため、生 PNG バッファは横 `w×1` / 縦 `1×h`（もう一方は `feImage` の width/height 引き伸ばしに委譲・1 列/行複製なので補間誤差ゼロ）。plain `feImage` stretch のため `feTile`-1px 縮小罠（scanlines 改定1）には非該当。glitchSlice の 1×h 最適化と同型。
+- **精度メモ**: 帯内で使う ch レンジは `right`/`down` が `[0.5,0]`、`left`/`up` が `[0.5,1]`（無変位域を厳密 0.5 に固定する制約上、方向ごとに半分だけ）。1 階調あたりの変位 = `scale/255 = 2·length/255` px。`length > 128` では 8-bit 量子化により約 `2·length/255` px 幅の**プラトー**（同一コード連続域）ができ、プラトー内は剛体コピー＝スライス反復に見える（改定3 で解消）。
+- **改定3（2026-07-13・`density` + 2 段残差補正）**: ユーザー要望「密度を弄れるように」（低密度=スライス反復の質感 / density=1=帯全域がライン 1 列の色で塗り延ばされる完全ストレッチ）に対応。
+  - **`density` → スライス幅**: `sliceW = max(1, round((1 − density) · 64))` px。帯内のターゲットは `t(i) = line ± ((|i−line|) mod sliceW)`（ライン起点の `sliceW` 幅ストリップを反復コピー）。`density=1` で `sliceW=1` ＝全ピクセルが `t(i)=line` を狙う完全ストレッチ。
+  - **2 段目（残差補正）**: `scale1 = 2·length > 255` のとき 8-bit 量子化プラトーが 1px を超え、1 枚のマップでは `t(i)` に届かない。そこで stage1 の**実際の 8-bit 到達位置** `achieved(y) = y + scale1·(c1(y)/255 − 0.5)` を JS 側で厳密に計算し、各出力 `i` について `|achieved(y) − t(i)|` を最小化する**整数** `y`（探索窓 ±(⌈scale1/255⌉+2)）を選び、`δ2(i) = y − i` を第 2 マップ（`scale2 = 2·(max|δ2|+1)`・同じく生 PNG `w×1`/`1×h`）に焼く。primitives は `feImage+feDisplacementMap` を 2 連結（stage2 の `in` は stage1 の `result`）。**整数着地**にすることで stage2 の線形補間が異なるソース由来のピクセルをブレンドするのを回避（残差 ≤ ~0.5px + stage2 自身の量子化 `scale2/510` ≪ 1px）。`scale1 ≤ 255`（`length ≤ 127`）または全 `δ2 = 0` のときは stage2 を省略（1 段のまま）。
+  - **重さ**: stage2 は同じ `w×h` 領域への feDisplacementMap 1 パス追加＋JS 探索 `O(n·⌈scale1/255⌉)`（1920px・length=2000 でも ~2 万 op）で、ライブ性は維持。`length` を超える変位は引き続き表現不可（有限帯の設計上の上限）。
+- **§2.2 の 4 配線点（すべて対応済み）**: `DISPLACEMENT_EFFECT_TYPES` / `FAST_DISPLACEMENT_EFFECT_TYPES` / `LIVE_DISPLACEMENT_EFFECT_TYPES` に `"pixelStretch"` 登録済み、`effectChain.ts` の scale 分岐に `pixelStretch` → `length` を追加（旧 `amount` 廃止に伴い generic フォールバックに任せられないため明示分岐）。
+- **カテゴリ**: `"ディストーション（軽量）"`（`fastEffects.ts` に登録）。**経路**: live SVG（`executionPath: "live"`）。
+- **human 受け入れ**: ① 実機で参照画像の見た目（ラインから色が一方向へ引き伸ばされる）、② preview/export の 1 フレーム画素一致（INV-2）、③ ライブ性（実 Chrome + CDP Tracing で `MainFrame.Draw` がベースライン同等）。
+- **非目標**: ランダム長・複数ライン・残像/前フレーム混合（＝別エフェクト `pixelSmear`）。raster 版。
+
+##### `liquidChrome` — Liquid Chrome（Y2K 液体クローム・fill 方式・§2.2 配線点）
+
+> **作り直し（2026-07-14）**: 初版は D-2 spike（`feSpecularLighting`）を経て「**コンテンツを turbulence で displace + specular + gradientMap(chrome)**」の 3 段合成で実装したが、下地（テキスト/背景）が主役のまま歪むだけの**低コントラストなパステル雲**にしかならず、リファレンス（研磨金属が流れる pic1）の液体クロームにならなかった（ユーザー実機判断）。技法を **fill 方式**へ全面作り直し。旧実装の feSpecularLighting / gradientMapTable(chrome) 依存は撤去。
+>
+> **正しい技法の要点**: pic1 の質感 =「**シャープな金属環境の縞グラデ**を流体 turbulence で歪ませたもの」。縞がシャープなので歪めても鋭い反射線が残る。滑らかなノイズ値をバンド化する方式（旧案）は「バンド自体がボケて大理石/雲」になり不可。
+
+| param key | label | kind | default | range | animatable |
+|---|---|---|---|---|---|
+| `size` | Size | scalar | `140` | 1..2000, step 0.1（turbulence 特徴サイズ＝流れの大きさ） | ✅ |
+| `warp` | Warp | scalar | `160` | 0..500, step 1（1 段目 displacement scale＝渦の骨格） | ✅ |
+| `detail` | Detail | scalar | `45` | 0..200, step 1（2 段目 curl displacement scale＝eddy/閉ループ） | ✅ |
+| `bands` | Bands | scalar | `6` | 1..24, step 1（金属縞グラデの周期数＝反射線の密度） | ✅ |
+| `evolution` | Evolution | scalar | `0` | 無制限 (deg), step 1 | ✅ |
+| `seed` | Seed | scalar | `7` | 0..9999, step 1 | ❌ |
+| `quality` | Quality | scalar | `1` | 0.1..1, step 0.05（0.5 未満で base turbulence を 2 octaves に低下） | ✅ |
+
+- `apply` → `{ kind: "svg", primitives }`（常時適用・下地の色は捨てレイヤーのアルファ形状をクロームで塗る fill）。純関数 `liquidChromePrimitives()`（`effectSvg.ts`）が生成。
+- **技法（fill 方式）**:
+  1. `feTurbulence type="fractalNoise" stitchTiles="stitch"`（`baseFrequency = sizeToFrequency(size)`・`numOctaves`=quality依存・**生成域 `(0,0,w,h)` 固定**）→ `feTile` で `(−w,−h,3w,3h)` にシームレス展開 → `evolution` パンを周期 `(w,h)` で畳んだ `feOffset`（下記「動く四角枠対策」）。
+  2. **金属縞グラデ**を `chromeStripPng(bands)`（純関数・生 PNG・縦 `bands` 周期のグラデ: 黒(青み)→スチール→鋭い白ハイライト→ピンク(イリデッセンス)→暗紫→黒。両端同色で縦タイル seam レス）で焼き、`feImage` で `(0,0,w,h)` に敷いて `feTile` で 3×3 展開（displacement が端で透明を引かない）。
+  3. 縞を **2 段 `feDisplacementMap`** で歪ませる: 1 段目 `scale=warp`（大きく折る＝渦の骨格）→ 2 段目は `size·0.45` の細かい `feTurbulence type="turbulence"` を map に `scale=detail`（curl させ閉ループ/eddy を作る）。→ 鋭い反射線が流れる液体クローム。
+  4. `feComposite operator="in" in2="SourceAlpha"` でレイヤー形状に閉じ込め（テキスト/shape/solid の中身がクローム化・下地の色は捨てる）。
+- **evolution パンの「動く四角枠」対策（tile+mod 方式）**: 生成域 `(0,0,w,h)` 固定（`stitchTiles` で `(w,h)` 周期）のまま `feTile` でシームレス 3×3 展開し、パン先も縞も常に実データで被覆。`evolution` 生オフセットは `dist=(deg/360)·size` で無限に増えるが、場は周期 `(w,h)` なのでオフセットを **`mod (w,h)`** で `[0,w)/[0,h)` に畳んでも同一像（連続・シームレス）。**却下した padding 方式**は pan 量が毎フレーム変わり生成域サイズ変化 → `stitchTiles` の周波数が変わってノイズが沸き立つ（boiling）ため不採用。
+- **§2.2 の配線点**: 内部で `feDisplacementMap` を使うため displacement 系として `DISPLACEMENT_EFFECT_TYPES` / `FAST_DISPLACEMENT_EFFECT_TYPES`（→ `LIVE_DISPLACEMENT_EFFECT_TYPES` に自動伝播）に `"liquidChrome"` 登録。`effectChain.ts` の scale 分岐は `liquidChrome` → `p["warp"]` を明示追加（region クランプ参照スケール）。出力は `SourceAlpha` に閉じるためレイヤー矩形を超えない。
+- **カテゴリ**: `"スタイライズ"`（`fastEffects.ts` に登録）。**経路**: live SVG（`executionPath: "live"`）。
+- **決定論（INV-1）**: `Math.random` 不使用。`seed` は `feTurbulence` に直接渡す。strip は純関数 `chromeStripPng` で deterministic。
+- **INV-2**: `verify-liquidchrome-parity.mjs`（**実 DomRenderer 経路**で on-screen 合成 vs export capture）で evo 0/90/270 とも `maxDiff=0`。bundle player は preview と同じ live CSS filter 経路のため 3 経路担保。※手組み container + `captureElementToCanvas` は foreignObject シリアライズが黒落ちする既知のハーネス制約があり信頼できない。
+- **テスト**: `test/liquidChrome.test.ts`（`chromeStripPng`/`liquidChromePrimitives` の決定論・fill 構造＝feImage strip + 2 displacement + SourceAlpha 閉じ込め・旧 feSpecularLighting 非残存・param 反映・tile+mod 枠対策・§2.2 3 Set 登録・EffectDef param キー）。
+- **既知の制約**: 2 段目 displacement は warp1 出力を `(0,0,w,h)` クランプ後に detail(≤200px) で引くため、**レイヤー矩形いっぱいの solid** では端に最大 detail 幅の微小なにじみが出得る（マージンのあるテキスト/shape では不可視）。
+- **非目標**: パレット/preset 選択（金属縞は固定・v1）。物理ベースの環境反射・AE 相当のフォトリアル金属シェーダ一致。`fill=false`（下地を歪ませる金属ガラス風）モードは将来課題。
+
 #### `linearWipe` — Linear Wipe
 
 | param key | label | kind | default | range | animatable |
@@ -2546,6 +2620,119 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 - **カテゴリ**: `"スタイライズ"`。
 - **非目標**: 厳密 sort / Sort Blocks / highlights-shadows / `pixelSorter` とのピクセル一致。**AEPS2 100% 一致は非目標**。
 - **既知差**: 引き延ばしベース近似のため [`pixelSorter`](pixelSorter) と見た目・ピクセルは一致しない（許容）。
+
+#### `chromaSplit` — RGB Split / Chromatic Aberration
+
+| param key | label | kind | default | range | animatable |
+|---|---|---|---|---|---|
+| `amount` | Amount | scalar | `4` | 0..100 (px), step 0.1 | ✅ |
+| `angle` | Angle | scalar | `0` | 無制限（度）, step 1 | ✅ |
+| `mode` | Mode | enum | `"rgb"` | `rgb` / `rb`（Green 固定） | ❌ |
+
+- `apply` → `{ kind: "svg", primitives }`（`amount === 0` → `null`）。
+- **技法**: RGB チャンネル分離 → 指定角度方向へオフセット（G は原点固定・R/B を対称 ±amount でシフト）→ `feBlend mode="screen"` で再合成。アルファは SourceGraphic を保持（透明レイヤー縁の色暴れ防止）。
+- **angle と amount**: `angle` の方向ベクトル `(cos(angle°), sin(angle°))` へ `amount` px ぶんオフセット。モード `"rgb"` のとき R=+amount, G=原点, B=−amount（対称）。モード `"rb"` のとき R/B のみ ±amount、G は常に原点固定。
+- **offset 算出**: `dx = amount · cos(angle°)`、`dy = amount · sin(angle°)`（純関数 `chromaOffsetPx`）。filter region クランプにより offset で矩形外へはみ出す分は欠け（AE 同挙動）。
+- **カテゴリ**: `"スタイライズ"`。
+- **非目標**: AE Lens Distortion との物理的色収差完全一致。**見た目的な RGB separation effect で十分**。
+- **リスク**: 低。全 primitive（`feColorMatrix` / `feOffset` / `feBlend` / `feComposite`）は既存 effect で使用実績あり。
+
+#### `gradientMap` — Gradient Map / Acid Colorize
+
+| param key | label | kind | default | range | animatable |
+|---|---|---|---|---|---|
+| `preset` | Preset | enum | `"thermal"` | `thermal` / `acid` / `cyber` / `chrome` / `duotone` | ❌ |
+| `colorA` | Color A | color | 黒 | — | ✅（duotone 暗部） |
+| `colorB` | Color B | color | 白 | — | ✅（duotone 明部） |
+| `phase` | Phase | scalar | `0` | 0..360, step 1 | ✅ |
+| `amount` | Amount | scalar | `1` | 0..1, step 0.01 | ✅ |
+
+- `apply` → `{ kind: "svg", primitives }`（`amount === 0` → `null`）。
+- **技法**: `feColorMatrix type="saturate" values="0"` で輝度化 → `feComponentTransfer type="table"` の R/G/B `tableValues`（N=17 点サンプル）でグラデーション写像 → `feComposite operator="arithmetic"`（k2=`amount`, k3=`1-amount`）で原色とミックス。
+- **preset**: `thermal` / `acid` / `cyber` / `chrome` は固定 stop 配列（`GRADIENT_MAP_PRESETS`）。`duotone` のみ `colorA`→`colorB` 線形。`phase` はサンプル位置を `phase/360` 分巡回シフト（ヒュー・サイクル）。
+- **カテゴリ**: `"カラー補正"`。
+- **経路**: live SVG（`executionPath: "live"`）。非 displacement・region 自動 150%。
+- **非目標**: AE Gradient Map の全プリセット一致。preset 追加はデータのみ。
+
+#### `posterize` — Posterize / 階調量子化
+
+| param key | label | kind | default | range | animatable |
+|---|---|---|---|---|---|
+| `levels` | Levels | scalar | `6` | 2..32, step 1 | ✅ |
+
+- `apply` → `{ kind: "svg", primitives }`（常時適用・identity なし。AE 準拠）。
+- **技法**: `feComponentTransfer` の R/G/B に `type="discrete"` と等間隔 `tableValues`（純関数 `posterizeTable(levels)`: `0, 1/(L-1), …, 1`、`L<2` は `L=2` にクランプ）。アルファは触らない。
+- **カテゴリ**: `"カラー補正"`。
+- **経路**: live SVG（`executionPath: "live"`）。非 displacement・region 自動 150%。
+- **非目標**: AE Posterize の gamma / チャンネル別 levels 一致。
+
+#### `noiseGrain` — Noise Grain / ゼロ平均フィルムグレイン
+
+| param key | label | kind | default | range | animatable |
+|---|---|---|---|---|---|
+| `amount` | Amount | scalar | `0.15` | 0..1, step 0.01 | ✅ |
+| `size` | Size | scalar | `1` | 0.5..8, step 0.1 | ✅ |
+| `animated` | Animated | bool | `false` | — | ❌ |
+| `monochrome` | Monochrome | bool | `true` | — | ❌ |
+| `seed` | Seed | scalar | `0` | 0..9999, step 1 | ❌ |
+
+- `apply` → `{ kind: "svg", primitives }`（`amount === 0` → `null`）。
+- **技法**: `feTurbulence type="fractalNoise" numOctaves="1"`（`baseFrequency = 1/max(0.5, size)`）→（`monochrome` のとき輝度平均化 `feColorMatrix`）→ `feComposite operator="arithmetic"`（`k2=amount, k3=1, k4=-0.5*amount`）で `SourceGraphic + amount*(noise-0.5)` を float 演算後にクランプ合成（ゼロ平均加算。`feComponentTransfer` での -0.5 オフセットは負値クランプで平均が狂うため不使用）。
+- **決定論（INV-1）**: `seed = animated ? (baseSeed + frame) % 65536 : baseSeed`。`Math.random` 不使用。
+- **カテゴリ**: `"スタイライズ"`。
+- **経路**: live SVG（`executionPath: "live"`）。非 displacement・region 自動 150%。
+- **既知の受け入れ条件**: `amount` を振っても平均輝度・重心が不動（ゼロ平均性）。実 Chrome での目視確認を推奨。
+- **非目標**: フィルム粒子の彩度分布・感光乳剤シミュレーション一致。
+
+#### `hyperGlow` — Hyper Glow / 閾値グロウ
+
+| param key | label | kind | default | range | animatable |
+|---|---|---|---|---|---|
+| `threshold` | Threshold | scalar | `0.7` | 0..1, step 0.01 | ✅ |
+| `radius` | Radius | scalar | `24` | 0..200, step 0.1 | ✅ |
+| `intensity` | Intensity | scalar | `1.5` | 0..8, step 0.01 | ✅ |
+| `tint` | Tint | color | 白 | — | ✅ |
+| `quality` | Quality | scalar | `1` | 0.1..1, step 0.05 | ✅ |
+
+- `apply` → `{ kind: "svg", primitives }`（`radius === 0` または `intensity === 0` → `null`）。
+- **技法**: `feComponentTransfer type="linear"`（純関数 `thresholdTransfer(t)`: `slope=1/(1-t), intercept=-t/(1-t)`）で `threshold` 未満を 0 にクランプしつつ明部を強調 → `feGaussianBlur stdDeviation="radius*quality"` → `feComponentTransfer type="linear" slope="intensity"` で強度調整 →（`tint` が白以外のとき `feColorMatrix` でチャンネル別乗算）→ `feBlend mode="screen"` で元画像に加算合成。
+- **滲み範囲**: 非 displacement のため filter region は矩形の自動 150%（§2.1 訂正）。グロウはレイヤー矩形の外へ ~25% まで滲む（150% を超える分のみクリップ）。
+- **カテゴリ**: `"スタイライズ"`。
+- **経路**: live SVG（`executionPath: "live"`）。
+- **非目標**: 2 層ハロー（コア+外側ハロー分離）は初版で省略。AE Glow の全モード（Add/Screen/Composite 選択等）一致。
+
+#### `scanlines` — Scanlines / CRT 走査線（§2.5: 生 PNG タイル + `feTile`）
+
+| param key | label | kind | default | range | animatable |
+|---|---|---|---|---|---|
+| `lineHeight` | Line Height | scalar | `3` | 1..64 (px), step 1 | ✅ |
+| `duty` | Duty | scalar | `0.5` | 0.05..0.95, step 0.01 | ✅ |
+| `opacity` | Opacity | scalar | `0.35` | 0..1, step 0.01 | ✅ |
+| `direction` | Direction | enum | `"horizontal"` | `horizontal` / `vertical` | ❌ |
+| `phase` | Phase | scalar | `0` | 0..360, step 1 | ✅ |
+
+- `apply` → `{ kind: "svg", primitives }`（`opacity === 0` → `null`）。
+- **技法（§2.5・`<pattern>` は使わない）**: 1 タイル分の明暗バンドを `scanlineTilePng()` で**生 PNG に焼き**（horizontal は `16×lineHeight`、vertical はその転置。改定1参照）、`feImage`(生 PNG) → native `feTile` でフィルタグラフ内でネイティブに全域反復 → `feBlend mode="multiply"` で暗バンドを乗算 → `feComposite operator="in"` でソースアルファへクリップ。`phase` はタイル周期 `lineHeight` を法にロール方向（horizontal は y、vertical は x）へオフセット。
+- **既知の罠（implement-visual-effect §7c）**: `<pattern>`/`<linearGradient>` 等を含むネスト SVG 文書を `feImage` に渡すと `backdrop-filter` 下で毎フレーム再ラスタライズされ致命的に重い（mosaicLite 実測 ~200 倍）。生 PNG を渡す `feImage` はこの罠に該当しない。
+- **改定1（描画されないバグの修正・2026-07-13）**: 初版は変化しない軸（horizontal なら x）を **1px** に切り詰めていたが、実 Chrome で「エフェクトを追加しても何も起きない」ことが判明。原因は **1px 幅の `feImage` を `feTile` で反復し、さらにその要素が祖先の CSS `transform: scale(...)`（Preview パネルの "Fit" ズームは常時これ）で縮小表示される**と、GPU のテクスチャ縮小サンプリングが破綻し縞が一切描画されない（`feBlend mode="multiply"` が事実上 no-op 化し原色がそのまま透過して見える）こと。`mosaicGridSnapFilter` が同じ `feImage`+`feTile` 構成で `MOSAIC_TILE_MIN_DIM = 16` を最小タイル寸法にしているのと同じ理由でタイルの静的軸を **最低 16px** に拡張して解消（`SCANLINE_TILE_MIN_STATIC_DIM = 16`）。データ量はわずかに増えるが §2.5 の「生 PNG + feTile」自体の軽さは変わらない。
+- **カテゴリ**: `"スタイライズ"`。
+- **経路**: live SVG（`executionPath: "live"`）。非 displacement・region 自動 150%。
+- **human 受け入れ**: 実 Chrome + CDP Tracing で `MainFrame.Draw` がエフェクト無しベースライン同等であることの確認は未実施（票の完了条件から Codex/Claude 自動宣言は除外）。改定1修正後の実際の描画は Playwright + 実 Chrome（`channel:"chrome"`）で確認済み（Preview の Fit ズーム相当の `transform:scale(0.4136)` 下で再現・修正）。
+- **非目標**: 走査線の彩度分離（NTSC/PAL 色収差）・インターレース疑似。
+
+### §27.3.1 ルックプリセットレシピ（散文のみ・WP-E・確定）
+
+「VHS」「CRT」「Acid Poster」等の完成ルックは、**新 effect 型やスキーマ・UI プリセット機構を作らず**、既存 builtin エフェクトを**エフェクト配列に順番通り積むスタック定型**として提供する（親ドキュメント `doc/cloudplan/acid-digi-hyper-live-effects-plan.md` §5.2 由来）。ユーザーは Inspector から個々のエフェクトを手動で追加する（自動プリセットボタンは将来課題・非目標）。
+
+- **VHS** = `chromaSplit(amount:3)` → `scanlines`（既定値程度） → `fastWave(amplitude:2, wavelength: 大きめ)` → `noiseGrain`（既定値程度）
+  - 色収差でにじませ、走査線でブラウン管質感を出し、緩い横波でトラッキングの揺れを、最後にグレインでテープノイズを足す。
+- **CRT** = `scanlines` → `opticsCompensation(reverse: true)` → `hyperGlow`（`intensity` 弱め）
+  - 走査線 + レンズの樽型歪みを逆方向にかけてブラウン管の湾曲を模し、弱いグロウで蛍光体の滲みを足す。
+  - `opticsCompensation` は displacement 系（`executionPath: "live"`・§2.2 の配線済み既存エフェクト）。`reverse:true` で凸型ではなく CRT 特有の内側湾曲になる（親 §3.4 の訂正どおり、非 displacement な `scanlines`/`hyperGlow` はレイヤー矩形の自動 150% 領域内で完結）。
+- **Acid Poster** = `posterize(levels:4)` → `gradientMap(preset:"acid")` → `noiseGrain`（粗め・`size` を大きく）
+  - 階調を 4 段に落として版画調にし、`acid` プリセットのグラデーションマップで毒々しい配色に置き換え、粗いグレインでポスター印刷のザラつきを足す。
+
+**適用順序が重要**: エフェクト配列は上から下へ順に適用される（§27.1）。上記のレシピは既存エフェクトの `apply()` 出力をそのまま連結した想定順序であり、順序を入れ替えると見た目が変わる（例: `posterize` を `gradientMap` の後に置くと量子化前の連続グラデーションが失われる）。各エフェクトのパラメータ既定値は §27.3 の該当項目を参照。数値の微調整（`amount`/`intensity` 等の具体的な「弱め」「粗め」の値）はユーザーの好みによるため本レシピでは固定しない。
 
 ### §27.4 調整レイヤー（Adjustment Layer・Live / Raster 2 モード・確定 2026-06-20）
 
