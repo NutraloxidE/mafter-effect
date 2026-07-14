@@ -171,6 +171,8 @@ export interface PixelStretchOpts {
   length: number;
   /** 1=完全ストレッチ（帯全域がライン 1 列）/ 下げるとスライス反復（0 → 64px スライス）。 */
   density: number;
+  /** サンプル線の手動オフセット(px, 符号付き)。ストレッチ軸に沿って加算。未指定=0。 */
+  lineBias?: number;
 }
 
 export function pixelStretchDisplaceMaps(opts: PixelStretchOpts): {
@@ -180,7 +182,8 @@ export function pixelStretchDisplaceMaps(opts: PixelStretchOpts): {
   const horiz = opts.direction === "right" || opts.direction === "left";
   const len = Math.max(1, Math.round(opts.length));
   const n = Math.max(1, Math.round(horiz ? opts.w : opts.h));
-  const line = Math.round(clamp01(opts.linePos) * n);
+  const rawLine = clamp01(opts.linePos) * n + (opts.lineBias ?? 0);
+  const line = Math.max(0, Math.min(n - 1, Math.round(rawLine)));
   // right/down は line の後方（index 増加側）へ、left/up は前方（index 減少側）へ帯を張る。
   const forward = opts.direction === "right" || opts.direction === "down";
   const sliceW = Math.max(1, Math.round((1 - clamp01(opts.density)) * PIXEL_STRETCH_MAX_SLICE));

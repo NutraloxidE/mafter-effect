@@ -134,6 +134,15 @@ describe("pixelStretchDisplaceMaps (pure)", () => {
     expect(a.stage1.uri).toBe(b.stage1.uri);
     expect(a.stage2?.uri).toBe(b.stage2?.uri);
   });
+
+  it("lineBias=0 or omitted yields bit-identical maps (regression gate for no behavioral change)", () => {
+    const base = { w: 800, h: 4, direction: "right" as const, linePos: 0.25, length: 300, density: 1 };
+    const a = pixelStretchDisplaceMaps(base);
+    const b = pixelStretchDisplaceMaps({ ...base, lineBias: 0 });
+    const c = pixelStretchDisplaceMaps({ ...base, lineBias: undefined });
+    expect(a).toEqual(b);
+    expect(a).toEqual(c);
+  });
 });
 
 describe("pixelStretchPrimitives", () => {
@@ -180,6 +189,14 @@ describe("PIXEL_STRETCH_EFFECT_DEF apply", () => {
     const a = PIXEL_STRETCH_EFFECT_DEF.apply({ direction: "right", linePos: 0.5, length: 300 }, ctx);
     const b = PIXEL_STRETCH_EFFECT_DEF.apply({ direction: "right", linePos: 0.5, length: 300, density: 1 }, ctx);
     expect(a).toEqual(b);
+  });
+
+  it("lineBias defaults to 0 and is passed through", () => {
+    const a = PIXEL_STRETCH_EFFECT_DEF.apply({ direction: "right", linePos: 0.5, length: 300 }, ctx);
+    const b = PIXEL_STRETCH_EFFECT_DEF.apply({ direction: "right", linePos: 0.5, length: 300, lineBias: 0 }, ctx);
+    expect(a).toEqual(b);
+    const c = PIXEL_STRETCH_EFFECT_DEF.apply({ direction: "right", linePos: 0.5, length: 300, lineBias: 7 }, ctx);
+    expect(c).not.toEqual(a);
   });
 
   it("falls back to 'right' for an unknown direction", () => {

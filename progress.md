@@ -2194,3 +2194,16 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
   - 両モード対称化完了。
 - **最終検証**: ✅ typecheck / test（54 tests）/ build:player すべて成功。commit 可能な状態。
 - **Next steps**: (1) commit (review 通過済み)、(2) Phase A 残り 2 種（posterize / gradientMap）の実装 → Phase B/C 着手。
+### 2026-07-14 (opencode) — pixelStretch lineBias (PLAN-ALT-1 WP-1/2) + Inspector slider
+- Purpose: ALT-1 manual bias (ink auto-measure alternative). Users visually tune line origin with Line Bias (px, signed, animatable).
+- Changes (minimal, INV-1/INV-2 structurally satisfied):
+  - src/runtime/effectSvg.ts: PixelStretchOpts.lineBias?: number (optional). pixelStretchDisplaceMaps now does rawLine=clamp01(linePos)*n+(lineBias??0) then clamp+round to [0,n-1].
+  - src/runtime/fastEffects.ts: PIXEL_STRETCH_EFFECT_DEF.params inserts lineBias (default 0, -200..+200, step 1, animatable) right after linePos. apply reads num(props["lineBias"],0) and forwards to primitives.
+  - Existing behavior (bias omitted or 0) is bit-identical (unit test gate).
+- Tests: test/pixelStretch.test.ts +2 cases (bias=0/omitted identity + apply passthrough). 21 pixelStretch tests PASS.
+- Verify: typecheck OK / npm test -- pixelStretch OK / verify-pixel-stretch.mjs PASS / measure-*.mjs (bias=0) unchanged PASS.
+- Player: npm run build:player executed (mandatory for runtime touch).
+- Spec: doc/mafter-effect-spec.md §27.3 pixelStretch table now lists lineBias (manual px offset, references PLAN-ALT-1).
+- Pre-snapshot: e2916aa committed investigations/.../PLAN-ALT-1.md before any code change.
+- Status: WP-1+WP-2 done. **Waiting for WP-2.5 user real-device tuning feedback**. Then WP-3 (bake defaults per A/B/C). PLAN.md (ink) remains on hold.
+- Impact: pure math in shared path (preview/export/bundle parity automatic). No §5/INV changes. Note: full-solid may be harmed by nonzero bias (confirm in WP-2.5).

@@ -202,6 +202,7 @@ const PIXEL_STRETCH_EFFECT_DEF: EffectDef = {
   params: [
     { key: "direction", label: "Direction", kind: "enum", default: "right", animatable: false, options: [...PIXEL_STRETCH_DIRECTIONS] },
     { key: "linePos", label: "Line Pos", kind: "scalar", default: 0.5, animatable: true, min: 0, max: 1, step: 0.01 },
+    { key: "lineBias", label: "Line Bias", kind: "scalar", default: 0, animatable: true, min: -200, max: 200, step: 1 },
     { key: "length", label: "Length", kind: "scalar", default: 300, animatable: true, min: 0, max: 2000, step: 1 },
     { key: "density", label: "Density", kind: "scalar", default: 1, animatable: true, min: 0, max: 1, step: 0.01 },
   ],
@@ -215,10 +216,11 @@ const PIXEL_STRETCH_EFFECT_DEF: EffectDef = {
       ? (dir as (typeof PIXEL_STRETCH_DIRECTIONS)[number])
       : "right";
     const linePos = Math.min(1, Math.max(0, num(props["linePos"], 0.5)));
+    const lineBias = num(props["lineBias"], 0);
     const density = Math.min(1, Math.max(0, num(props["density"], 1)));
     return {
       kind: "svg",
-      primitives: pixelStretchPrimitives({ w, h, direction, linePos, length, density }),
+      primitives: pixelStretchPrimitives({ w, h, direction, linePos, length, density, lineBias }),
     };
   },
 };
