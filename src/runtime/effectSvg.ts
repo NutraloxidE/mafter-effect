@@ -260,14 +260,21 @@ export function pixelStretchPrimitives(opts: PixelStretchOpts): string {
   const h = Math.max(1, Math.round(opts.h));
   const parts = [
     feImageLayer(stage1.uri, w, h, "psA"),
-    `<feDisplacementMap in="SourceGraphic" in2="psA" scale="${stage1.scale}" xChannelSelector="R" yChannelSelector="G"${stage2 ? ' result="ps1"' : ""}/>`,
+    `<feDisplacementMap in="SourceGraphic" in2="psA" scale="${stage1.scale}" xChannelSelector="R" yChannelSelector="G" result="ps1"/>`,
   ];
   if (stage2) {
     parts.push(
       feImageLayer(stage2.uri, w, h, "psB"),
-      `<feDisplacementMap in="ps1" in2="psB" scale="${stage2.scale}" xChannelSelector="R" yChannelSelector="G"/>`,
+      `<feDisplacementMap in="ps1" in2="psB" scale="${stage2.scale}" xChannelSelector="R" yChannelSelector="G" result="ps1"/>`,
     );
   }
+  // 中立バイアス補正（length 比例ドリフト根治）:
+  // feDisplacementMap の真の中立は C=0.5 だが 8bit では 127.5 を表せず、帯外/未使用チャネルの
+  // 中立コード 128 が `scale·(128/255−0.5)=scale/510` の一様変位を全ピクセルの両軸に与える。
+  // 結果、レイヤー全体が原点方向へ (Σscale)/510 = len/255 ドリフトする（帯外は stage2 で補正されない）。
+  // 逆方向の feOffset でこの一様バイアスを打ち消す（帯内は一様 smear のため見た目不変）。
+  const neutralBiasPx = (stage1.scale + (stage2 ? stage2.scale : 0)) * (128 / 255 - 0.5);
+  parts.push(`<feOffset in="ps1" dx="${neutralBiasPx}" dy="${neutralBiasPx}"/>`);
   return parts.join("");
 }
 
