@@ -196,12 +196,19 @@ export function pixelStretchDisplaceMaps(opts: PixelStretchOpts): {
   const sliceW = Math.max(1, Math.round((1 - clamp01(opts.density)) * PIXEL_STRETCH_MAX_SLICE));
   const scale1 = 2 * len; // feDisplacementMap の変位量 = scale·(C−0.5) ∈ [−len, +len]
 
+  // 中立バイアス補正（pixelStretchPrimitives の feOffset）は出力全体を +neutralBiasPx ずらす。
+  // 帯外（実体）はそれで正しくなるが、帯（ストレッチ部）も一緒に +bias ドリフトしてしまう。
+  // 対策: 帯のメンバーシップだけを bias 分だけ手前に符号化し、feOffset 後にちょうど base へ戻す。
+  // src（サンプル色元・lineBias）は不変＝直交。スライス反復は整数のまま保つ（小数残差は feOffset が吸収）。
+  const bandShift = Math.round(scale1 / 510); // ≈ len/255
+  const bandBase = base - bandShift;
+
   // ターゲット: 帯内の各ピクセルは「src」を起点とした sliceW 幅ストリップを反復サンプルする。
-  // ただし帯の範囲（inBand）は base からの距離で決める（エフェクト開始位置は linePos のまま）。
+  // ただし帯の範囲（inBand）は bandBase からの距離で決める（feOffset 後の開始位置は linePos のまま）。
   const target = new Float64Array(n);
   const inBand = new Uint8Array(n);
   for (let i = 0; i < n; i++) {
-    const signedD = forward ? i - base : base - i;
+    const signedD = forward ? i - bandBase : bandBase - i;
     if (signedD >= 0 && signedD <= len) {
       inBand[i] = 1;
       const offset = signedD % sliceW;

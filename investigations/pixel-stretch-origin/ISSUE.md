@@ -319,3 +319,15 @@ lineBias 手動ノブ（PLAN-ALT-1, default=8）は length 非依存の定数補
 linePos+length のみで決まり不変、lineBias は引くソース列/行だけをずらす**（base/src 分離）。
 `verify-linebias.mjs`: lineBias 0/+40/−40 でサンプル元が line/line+40/line−40 に厳密追従、
 帯位置は不変を確認。ドリフト補正(feOffset)と直交して共存。
+
+---
+
+## 追加修正（ストレッチ部＝帯のドリフト・2026-07-14）
+実体(帯外)ドリフトを feOffset で直したことで、feOffset が帯(smear)も一緒に +len/255 ずらす副作用が
+顕在化（ユーザー報告）。X(ストレッチ)軸は「帯外=0変位・帯=stage2補正済み」で要求が逆のため一様
+feOffset では両立しない。対策: `pixelStretchDisplaceMaps` で帯メンバーシップだけを bandShift=round(scale1/510)
+だけ手前に符号化し、feOffset 後にちょうど base へ戻す（bandBase=base−bandShift）。src(サンプル色元/lineBias)
+は不変＝直交、スライス反復は整数維持（小数残差は feOffset が吸収）。
+検証: `measure-seam.mjs` で seam が全 length で line−1（一定・±1計測許容, 従来 +len/255 ドリフト消滅）、
+`measure-tilted-lengthsweep.mjs` の実体 minX/minY=42 固定維持、`verify-linebias.mjs` 直交維持、unit 86 PASS。
+test の `simulate` は feOffset を織り込む形に更新（最終パイプライン準拠）。
