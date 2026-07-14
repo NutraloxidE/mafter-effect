@@ -213,11 +213,11 @@ describe("PIXEL_STRETCH_EFFECT_DEF apply", () => {
     expect(a).toEqual(b);
   });
 
-  it("lineBias defaults to 0 and is passed through", () => {
+  it("lineBias defaults to 8 (PLAN-ALT-1 WP-3 baked baseline) and is passed through", () => {
     const a = PIXEL_STRETCH_EFFECT_DEF.apply({ direction: "right", linePos: 0.5, length: 300 }, ctx);
-    const b = PIXEL_STRETCH_EFFECT_DEF.apply({ direction: "right", linePos: 0.5, length: 300, lineBias: 0 }, ctx);
+    const b = PIXEL_STRETCH_EFFECT_DEF.apply({ direction: "right", linePos: 0.5, length: 300, lineBias: 8 }, ctx);
     expect(a).toEqual(b);
-    const c = PIXEL_STRETCH_EFFECT_DEF.apply({ direction: "right", linePos: 0.5, length: 300, lineBias: 7 }, ctx);
+    const c = PIXEL_STRETCH_EFFECT_DEF.apply({ direction: "right", linePos: 0.5, length: 300, lineBias: 0 }, ctx);
     expect(c).not.toEqual(a);
   });
 

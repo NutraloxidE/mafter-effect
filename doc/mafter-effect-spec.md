@@ -2544,7 +2544,7 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 |---|---|---|---|---|---|
 | `direction` | Direction | enum | `"right"` | `right` / `left` / `down` / `up` | ❌ |
 | `linePos` | Line Pos | scalar | `0.5` | 0..1, step 0.01（ソースライン位置） | ✅ |
-| `lineBias` | Line Bias | scalar | `0` | -200..+200 (px), step 1（サンプル元ラインの手動オフセットのみ。帯/エフェクト開始位置は linePos のみで決まる） | ✅ |
+| `lineBias` | Line Bias | scalar | `8` | -200..+200 (px), step 1（サンプル元ラインの手動オフセットのみ。帯/エフェクト開始位置は linePos のみで決まる。default=8 は box-vs-ink オフセットの実測近似値・PLAN-ALT-1 WP-3。根治ではないため content 次第で手動微調整が必要） | ✅ |
 | `length` | Length | scalar | `300` | 0..2000 (px), step 1（引き伸ばし帯の長さ＝`scale`） | ✅ |
 | `density` | Density | scalar | `1` | 0..1, step 0.01（1=完全ストレッチ / 下げるとスライス反復） | ✅ |
 

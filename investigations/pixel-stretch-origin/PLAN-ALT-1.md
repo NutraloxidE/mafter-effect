@@ -154,3 +154,43 @@ Cursor/Claude はここで**停止し、ユーザーに調整を依頼する**�
 ## 実測ログ（WP-2.5 の結果をここに追記）
 
 <!-- direction / linePos / 合った lineBias / 定数 or linePos依存 / full solid で bias 要否 -->
+
+- ユーザー実機確認: `lineBias = 8` で見た目の起点ズレが解消することを確認。
+
+## WP-3 実施（2026-07-14）
+
+### 本質的な原因（ISSUE.md 実測から）
+
+`lineBias` が要る根本原因は ISSUE.md で確定済み：`linePos` はレイヤー**ボックス**
+（`offsetWidth/Height`）基準で解決されるが、実際の塗り（グリフ・シェイプ・ビットマップ）は
+ボックス内で非対称パディングを持つことが多く、`line = linePos·boxW` は「見た目の ink 基準の
+linePos」より**原点方向（左/上）へズレる**。ズレ量は
+`bias(px) = inkLeft − linePos·(leftPad + rightPad)` で決まり、**inkLeft・パディング・linePos
+に依存する変量**（ISSUE.md 実測表: full solid=0, diamond=±21, text=−11〜+122 など）。
+つまり「8」は普遍定数ではなく、**根治（ink bbox 化 = ISSUE.md 案(A)）を行わない限り、
+どの定数を選んでも一部のコンテンツ／linePos では過不足が残る**。
+
+### 分類判定（A/B/C）
+
+ISSUE.md の実測（型・linePos で符号も大きさも変わる）に照らすと、本来は **案 C
+（linePos/コンテンツ依存・定数で根治不可）** に該当する。
+
+### 採用判断（ユーザー指示によりハードコーディングで確定・close）
+
+ユーザーが実機で `lineBias = 8` を確認し、「本質的原因を解析したうえで、ハードコーディングが
+ベストであれば 8 を基準に焼き込んで close」と明示指示。案 C の根治（ink bbox 配線・INV-2 整合
+コスト大）を今すぐ行うより、**実務上よく使う構図（テキスト／シェイプの軽い偏り）で体感ズレを
+大きく減らす近似値として `lineBias` の default を `0` → `8` に変更**する（案 A 相当の運用）。
+
+- 変更点: `PIXEL_STRETCH_EFFECT_DEF.params` の `lineBias.default`、および `apply` 内
+  `num(props["lineBias"], 8)` フォールバックを `8` に統一（`src/runtime/fastEffects.ts`）。
+- **既知の限界（残課題として記録・再オープンしない）**: full solid や大きく異なる ink
+  パディングを持つコンテンツでは `8` が最適値ではない（過剰／過小補正になりうる）。
+  その場合はユーザーが Inspector の "Line Bias" スライダで手動微調整する（既存 WP-2 の
+  ツマミがそのまま救済経路）。根治したい場合は ISSUE.md 案(A) ink bbox 化を再検討する
+  （別 PLAN・要相談）。
+- **完了条件（回帰ゲート、更新）**: `lineBias` 省略時の出力は新 default（`8`）を用いた計算と
+  一致すること（旧 default=0 相当の出力と一致することは、もはや regression gate ではない）。
+  `test/pixelStretch.test.ts` の "lineBias defaults to 8" テストで固定。
+- **Status: Closed.** 残課題は上記「既知の限界」として記録済み。ink bbox 根治は別途要望あれば
+  ISSUE.md 案(A) から新 PLAN を起票する。

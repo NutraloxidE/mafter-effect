@@ -2217,3 +2217,19 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
 - player: build:player 再実行。
 - spec: §27.3 の技法説明を base/src 区分で更新（lineBias はサンプル元のみ）。
 - PLAN-ALT-1 との整合: 「サンプル線の手動オフセット」という意図に合致する形に是正。
+### 2026-07-14 (Claude Sonnet 5) — pixelStretch lineBias WP-3 完了・PLAN-ALT-1 close
+- ユーザー実機確認: `lineBias = 8` で起点ズレ解消を確認、WP-3（基準値焼き込み）へ進行指示。
+- **本質原因（ISSUE.md 実測ベース）**: `linePos` はレイヤーボックス基準、実際の塗り(ink)は
+  ボックス内で非対称パディングを持つため `line = linePos·boxW` は原点方向へズレる。ズレ量は
+  `inkLeft − linePos·(leftPad+rightPad)` でコンテンツ/linePos依存の変量（ISSUE.md 実測: full
+  solid=0, diamond=±21, text=−11〜+122）。→ 分類上は案C（linePos依存・定数で根治不可）。
+- **採用**: ユーザー指示によりハードコーディングで確定。`lineBias` の default を `0`→`8` に変更
+  （src/runtime/fastEffects.ts の params.default と apply 内 `num(props["lineBias"], 8)` の両方）。
+  よく使う構図（テキスト/シェイプの軽い偏り）での体感ズレを大きく減らす近似値として運用。
+- **既知の限界（再オープンしない・残課題として記録）**: full solid や大きく異なる ink padding を
+  持つコンテンツでは 8 が最適でない。手動微調整は既存の Line Bias スライダで可能。根治したい場合は
+  ISSUE.md 案(A)（ink bbox 化・EffectRenderCtx.contentBox 拡張・要 INV-2 整合検討）を新規 PLAN として起票。
+- テスト: test/pixelStretch.test.ts の "lineBias defaults to 0" ケースを "defaults to 8" に更新
+  （omitted/8 が一致・0 は不一致、を検証する内容に変更）。
+- 検証: typecheck / npm test / build:player 実行（結果は本行以降に追記）。
+- Status: **PLAN-ALT-1 close**。PLAN.md（ink 自動測定・案A根治）は保留のまま、次に触る場合は要望ベースで再起票。
