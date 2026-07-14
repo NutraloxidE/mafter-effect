@@ -34,6 +34,37 @@ export const BUILTIN_FONTS: BuiltinFontDef[] = [
       { weight: 700, file: "NotoSansJP-Bold.ttf" },
     ],
   },
+  {
+    family: "Roboto",
+    label: "Roboto",
+    weights: [{ weight: 400, file: "Roboto-Variable.ttf" }],
+  },
+  {
+    family: "Tinos",
+    label: "Tinos (Times 互換)",
+    weights: [
+      { weight: 400, file: "Tinos-Regular.ttf" },
+      { weight: 700, file: "Tinos-Bold.ttf" },
+    ],
+  },
+  {
+    family: "Cousine",
+    label: "Cousine (Courier 互換)",
+    weights: [
+      { weight: 400, file: "Cousine-Regular.ttf" },
+      { weight: 700, file: "Cousine-Bold.ttf" },
+    ],
+  },
+  {
+    family: "Anton",
+    label: "Anton (Impact 風)",
+    weights: [{ weight: 400, file: "Anton-Regular.ttf" }],
+  },
+  {
+    family: "Dancing Script",
+    label: "Dancing Script (Cursive 風)",
+    weights: [{ weight: 400, file: "DancingScript-Variable.ttf" }],
+  },
 ];
 
 /** zip / public 上のフォントディレクトリ名。 */
@@ -59,8 +90,12 @@ export function isBuiltinFontFamily(font: string): boolean {
 
 /** family がスタック（例: `'Noto Sans', sans-serif`）の先頭に現れるか。 */
 export function fontUsesFamily(font: string, family: string): boolean {
-  const first = font.split(",")[0]?.trim().replace(/^['"]|['"]$/g, "");
-  return first === family;
+  return primaryFontFamily(font) === family;
+}
+
+/** CSS font スタックの先頭 family を bare 名で返す（'Noto Sans', sans-serif → Noto Sans）。 */
+export function primaryFontFamily(font: string): string {
+  return font.split(",")[0]?.trim().replace(/^['"]|['"]$/g, "") ?? font;
 }
 
 const STYLE_EL_ID = "mafter-builtin-fonts";

@@ -1,5 +1,15 @@
 import { create } from "zustand";
+import { parse as parseOpentypeFont } from "opentype.js";
 import { createProject } from "../core/createProject";
+import {
+  BUILTIN_FONT_DIR,
+  findBuiltinFontByFamily,
+  isBuiltinFontFamily,
+  nearestBuiltinWeight,
+  primaryFontFamily,
+} from "../runtime/builtinFonts";
+import { publicAssetUrl } from "../runtime/publicAssetUrl";
+import { registerAssetFonts } from "../runtime/assetFontFaces";
 import { newBinId, newCompId, newObjectId } from "../core/ids";
 import { loadProject, saveProject } from "../core/projectFs";
 import {
@@ -291,6 +301,10 @@ export interface EditorStore {
   addAudioLayer: (assetId: string, name?: string) => string | null;
   // 画像アセットをインポートして project.assets に追加する
   importImageAsset: (file: File) => Promise<string | null>;
+  // §5.5f 3D Extrude ON 時、Bundled フォントをまだ asset 化していなければ自動で取り込む
+  ensureBundledFontAsset: (font: string, weight: number) => Promise<void>;
+  // カスタムフォントファイルをインポートして project.assets(kind:"font") に追加する
+  importFontAsset: (file: File) => Promise<{ assetId: string; family: string } | null>;
   // image component を持つ SceneObject を追加する
   addImageLayer: (assetId: string, name?: string) => string | null;
   // 動画アセットをインポートして project.assets に追加する
@@ -1317,6 +1331,65 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     );
     get().applyCommand({ label: "Import Image", before, after });
     return id;
+  },
+
+  ensureBundledFontAsset: async (font, weight) => {
+    const before = get().project;
+    if (!before || !isBuiltinFontFamily(font)) return;
+    const fam = primaryFontFamily(font);
+    if (before.assets.some((a) => a.kind === "font" && a.meta?.family === fam)) return;
+    const def = findBuiltinFontByFamily(fam);
+    if (!def) return;
+    const w = nearestBuiltinWeight(def, Number.isFinite(weight) ? weight : 400);
+    let bytes: Uint8Array;
+    try {
+      const resp = await fetch(publicAssetUrl(`${BUILTIN_FONT_DIR}/${w.file}`));
+      if (!resp.ok) return;
+      bytes = new Uint8Array(await resp.arrayBuffer());
+    } catch {
+      return;
+    }
+    const id = newObjectId();
+    const assetPath = `${DIR_ASSETS}/${id}.ttf`;
+    await fs.write(assetPath, bytes);
+    const asset: AssetEntry = { id, path: assetPath, kind: "font", meta: { family: fam } };
+    const after = registerNewProjectItem(
+      {
+        ...before,
+        assets: [...before.assets, asset].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+      },
+      { kind: "asset", id },
+    );
+    get().applyCommand({ label: "Embed font", before, after });
+  },
+
+  importFontAsset: async (file) => {
+    const before = get().project;
+    if (!before) return null;
+    const ext = file.name.split(".").pop() ?? "ttf";
+    const buf = await file.arrayBuffer();
+    let family: string;
+    try {
+      const font = parseOpentypeFont(buf);
+      const names = font.names.fontFamily;
+      family = names?.en ?? Object.values(names ?? {})[0] ?? file.name.replace(/\.[^.]+$/, "");
+    } catch {
+      family = file.name.replace(/\.[^.]+$/, "");
+    }
+    const id = newObjectId();
+    const assetPath = `${DIR_ASSETS}/${id}.${ext}`;
+    await fs.write(assetPath, new Uint8Array(buf));
+    const asset: AssetEntry = { id, path: assetPath, kind: "font", meta: { family } };
+    const after = registerNewProjectItem(
+      {
+        ...before,
+        assets: [...before.assets, asset].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+      },
+      { kind: "asset", id },
+    );
+    get().applyCommand({ label: "Import font", before, after });
+    void registerAssetFonts(after, fs);
+    return { assetId: id, family };
   },
 
   addImageLayer: (assetId, name) => {

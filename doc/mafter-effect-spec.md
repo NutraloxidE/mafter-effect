@@ -2034,7 +2034,7 @@ registerComponent({
 `font` は引き続き **`kind: "string"` の静的プロパティ**（§26.1・スキーマ不変）。UI のみ自由入力テキストボックスから**プルダウン＋カスタム入力**へ置換する。
 
 - **候補リスト（`WEB_SAFE_FONTS`）**: 一般的なブラウザで追加インストール無しに開ける family。CSS 総称（`sans-serif` / `serif` / `monospace` / `cursive` / `system-ui`）＋クロスプラットフォームで概ね利用可能な定番（`Arial`, `Helvetica`, `Times New Roman`, `Georgia`, `Courier New`, `Verdana`, `Trebuchet MS`, `Tahoma`, `Impact`, `Comic Sans MS`）。各 option の表示テキスト自体をそのフォントで描く（`style.fontFamily`）ことで見本になる。
-- **Custom… エスケープハッチ**: プルダウン末尾に `Custom…` を置き、選ぶとテキスト入力欄を出して任意の family 名（assets フォント §11.6 / システム固有フォント）を直接入力できる。現状値が候補リストに無ければ自動的に Custom 入力としてプリフィルする（既存プロジェクトの非標準 family を壊さない）。
+- **アップロード（確定・2026-07 更新）**: プルダウンには Bundled / Web safe に加えて **Uploaded**（`project.assets` の `kind:"font"`）optgroup を出す。任意フォントの追加はテキスト入力ではなく **「⬆ Upload font…」ボタン**（隠し `<input type="file">`）で行う。アップロードは `importFontAsset(file)`（[store.ts](../src/editor/store.ts)）が opentype.js でパースして family 名を取得し、`assets/<id>.<ext>` へ書き込み `AssetEntry{kind:"font", meta:{family}}` を追加、[assetFontFaces.ts](../src/runtime/assetFontFaces.ts) の `registerAssetFonts` が `@font-face` を注入して即座に 2D 描画へ反映する。現状値が候補に無ければ select に読み取り専用の追加 option として表示する（既存プロジェクトの非標準 family を壊さない）。
 - 書き込みは他の静的プロパティと同様 `writeStatic("font", value)` 経由（`components[i].props.font` を更新、undo 可）。`addText` の既定（`font="sans-serif"`）も候補リストに含まれる。
 - リストは `src/editor/fontList.ts` 等の単一定数として持ち、Inspector が参照する。**描画経路（DomRenderer / SVG）には影響しない**（family 文字列をそのまま `font-family` に渡す既存挙動を維持）。
 
@@ -2042,7 +2042,7 @@ registerComponent({
 
 システム依存の Web セーフフォント（§26.3.1）は環境ごとに有無・字形が変わり、**preview と export の一致（INV-2）を保証できない**。これを解消するため、アプリに**実フォントファイルを同梱**して環境非依存で使える family を提供する。
 
-- **同梱対象**: `Noto Sans`（ラテン）と `Noto Sans JP`（日本語グリフを含む）。各 **3 ウェイト = Regular(400) / Medium(500) / Bold(700)**。実体は `public/fonts/*.ttf`（完全版 TTF、サブセットしない）。
+- **同梱対象**: `Noto Sans`（ラテン, 3 ウェイト）/ `Noto Sans JP`（日本語グリフ, 3 ウェイト）に加え、3D Extrude の選択肢を増やす目的で OSS フォントを追加（2026-07）: `Roboto` / `Tinos`(Times 互換) / `Cousine`(Courier 互換) / `Anton`(Impact 風) / `Dancing Script`(Cursive 風)（各 1〜2 ウェイト）。実体は `public/fonts/*.ttf`（完全版 TTF、サブセットしない、ライセンス OFL/Apache）。
 - **登録の単一情報源**: `src/runtime/builtinFonts.ts` に `BUILTIN_FONTS`（family・label・weights→ファイル名）を定義。`registerBuiltinFonts(baseUrl)` が family×weight 分の `@font-face`（`src: url(<baseUrl>/<file>) format('truetype')`、`font-display: swap`）を 1 つの `<style>` として `document.head` に注入する（冪等）。ブラウザはグリフ使用時のみ遅延ロードするため、起動コストは増えない。
 - **適用範囲（INV-2 を満たすための配線）**:
   - **エディタ + ブラウザ export**: `main.tsx` 起動時に `registerBuiltinFonts("/fonts")` を 1 回呼ぶ。WebCodecs / PNG 連番 export は**同一 document 内**で走るため、これだけで preview と export が同じ実フォントを使う。
@@ -2070,7 +2070,10 @@ registerComponent({
   - **assets として取り込んだフォント**（§11.6, `.ttf/.otf/.woff`）: フォントパーサ（推奨 `opentype.js`、差し替え可）でグリフ path を取得 → 正確なアウトライン。**これが厳密モードの正路**。
   - **system フォント**（アセット実体なし）: ブラウザは外形 path を公開しないため正確なアウトライン化は不可。**SVG `<text>`（ベクタだが font 依存）にフォールバック**し、ストロークは `paint-order` で近似する。→ 「厳密モードを正確に使うにはフォントを asset として取り込む」を UX 上の前提とする（Inspector / export ダイアログに注記）。
 - 文字レイアウト（advance/改行/align/tracking/leading）の算出は**決定論**であること（INV-1）。パーサのメトリクスのみを用い、`Math.random`/`Date.now`/DOM measureText を resolve 経路に持ち込まない。アウトライン生成はレンダラ層（`ResolvedScene` 受領後）で行い、`resolve()` 自体は不変。
-- **§5.5f（3D 押し出し）も同じ制約を継承する**: `geomEnabled=true` でも asset フォント以外（system フォント・ビルトイン Noto 含む）はアウトライン抽出不可のため 2D 描画へ自動フォールバックする。
+- **§5.5f（3D 押し出し）も同じ制約を継承する（2026-07 更新）**: 3D Extrude はアウトライン抽出可能なフォント（**Bundled 同梱 + assets として取り込んだフォント**）でのみ有効。
+  - **Bundled フォント**（[builtinFonts.ts](../src/runtime/builtinFonts.ts) の `BUILTIN_FONTS`）は `geomEnabled` を ON にした瞬間（または 3D ON 中に Bundled family へ変更した瞬間）、`ensureBundledFontAsset`（[store.ts](../src/editor/store.ts)）が `public/fonts/*.ttf` を fetch して自動的に `project.assets`（`kind:"font"`）へ取り込む。ユーザー操作は不要。
+  - **web-safe / システムフォント**（`WEB_SAFE_FONTS`, [fontList.ts](../src/editor/fontList.ts)）は実ファイルをブラウザから取得できず原理的に 3D 化不可。ドロップダウンの label に `(no-3D)` を明示し、`geomEnabled=true` かつ非対応フォント時は Inspector に警告文を表示した上で 2D 描画へフォールバックする（サイレントフォールバックにしない）。`is3DCapableFont(font, project)`（[fontList.ts](../src/editor/fontList.ts)）が判定を持つ。
+  - **アップロード済みフォント**は他の asset フォントと同様アウトライン抽出可能なため 3D 化できる。
 
 #### §26.4.2 レンダーキャッシュ（将来・IF のみ今回確保）
 

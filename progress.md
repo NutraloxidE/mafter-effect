@@ -1,5 +1,18 @@
 # Progress
 
+### 2026-07-14（Claude Sonnet 5）— 3D Extrude 用フォント自動アセット化 + カスタムフォントアップロード
+
+- **ユーザー報告**: text レイヤーで 3D Extrude を ON にしても立体化しない。原因 = [DomRenderer.ts:2300](src/runtime/DomRenderer.ts#L2300) の `fontCache.getFont(fontFamily)` が輪郭抽出不可（system フォント／`project.assets` に font エントリ無し）だと**サイレントで 2D フォールバック**する（§26.4.1 の既存制約）上、フォントを asset 化する導線が皆無だった。
+- **実装（3 点セット、ユーザー方針確定を受けて）**:
+  1. **Bundled フォント自動アセット化**: `Geom3DFields` の 3D ON トグル（および 3D ON 中の font 変更）で `ensureBundledFontAsset(font, weight)`（[store.ts](src/editor/store.ts)）を発火。`public/fonts/*.ttf` を fetch → `assets/<id>.ttf` へ書込 → `AssetEntry{kind:"font", meta:{family}}` を `project.assets` に追加。全 `FontOutlineCache.loadFromProject` 経路（preview/exporter/compFrameCapture/BundlePlayer/frameExtractor）と zip 往復は既存の汎用配線がそのまま拾う（追加配線不要）。
+  2. **Web-safe は 3D 不可を明示**: `WEB_SAFE_FONTS`（[fontList.ts](src/editor/fontList.ts)）の label に `(no-3D)` を付与。`is3DCapableFont(font, project)` を追加し、3D ON かつ非対応時は Inspector に警告文を表示（サイレントフォールバック廃止）。合わせて **OSS フォントを Bundled に追加**（Roboto / Tinos(Times互換) / Cousine(Courier互換) / Anton(Impact風) / Dancing Script(Cursive風)、`public/fonts/` に OFL/Apache の実体を配置）し、3D 化できる選択肢を増やした。
+  3. **カスタムフォントアップロード**: `FontField` の「Custom…」テキスト入力を撤去し「⬆ Upload font…」ボタン（隠し file input）に置換。`importFontAsset(file)`（store.ts）が opentype.js で family を解決し asset 化、新規 [assetFontFaces.ts](src/runtime/assetFontFaces.ts) の `registerAssetFonts` が `@font-face` を注入して 2D 描画にも即反映。
+  - **副次修正**: `FontOutlineCache.getFont`/`loadFromProject` のキーが CSS スタック全体 vs bare family で不一致だったバグを `primaryFontFamily()`（[builtinFonts.ts](src/runtime/builtinFonts.ts)）正規化で修正（本来 asset font が一致すら取れていなかった潜在バグ）。
+- **検証**: typecheck ✅ / 全テスト（`test/builtinFonts.test.ts` は新規フォントの weight 数アサーションを Noto 2 種限定に修正）✅（`liquidChrome`/`projectBins` の既存無関係 flake 1 件は変更前から再現・pre-existing 確認済み）/ `npm run build` + `npm run build:player` ✅ / 実機 Playwright（`verify-font-3d-extrude.mjs`, port 5175, UI 実操作で + Text→Font 選択→3D トグル）: Bundled(Noto Sans) 3D ON で `canvas.mafter-geom3d-canvas` 出現・警告なし・`project.assets` に font 追加、Arial(no-3D) へ変更で canvas 消滅・警告表示、console error 0 → **PASS**。
+- **spec**: §26.3.1（アップロード UI へ更新）/ §26.3.2（Bundled フォント一覧に OSS 追加を追記）/ §26.4.1（3D Extrude のフォント対応可否ルールを更新）。
+- **依存追加**: `playwright`（devDependency、実機検証ハーネス用。この環境には未インストールだったため `npm install -D playwright` + `npx playwright install chromium` を実施）。
+- **Next steps**: なし（3 点セット完了）。将来課題: OSS Bundled フォントの取捨選択（ユーザー確認）、custom アップロードの family 名衝突時の挙動（現状は後勝ち @font-face 上書き）。
+
 ### 2026-07-14（Claude Opus 4.8）— `liquidChrome` を fill 方式へ全面作り直し（pic1 の液体クロームに）
 
 - **ユーザー指摘**: 「これってそもそも Liquid Chrome なのか？」リファレンス（pic1・研磨金属が流れる）に対し、実装（pic2）は低コントラストのパステル雲。→ 正しい。旧実装は設計レベルでズレていた。
