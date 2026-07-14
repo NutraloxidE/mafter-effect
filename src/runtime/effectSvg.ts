@@ -171,7 +171,12 @@ export interface PixelStretchOpts {
   length: number;
   /** 1=完全ストレッチ（帯全域がライン 1 列）/ 下げるとスライス反復（0 → 64px スライス）。 */
   density: number;
-  /** サンプル線の手動オフセット(px, 符号付き)。ストレッチ軸に沿って加算。未指定=0。 */
+  /**
+   * サンプル元のラインに対する手動オフセット(px, 符号付き)。
+   * 帯（エフェクトが適用される領域）の位置は linePos + length のみで決まり、
+   * lineBias は「どのソース列/行の色をその帯内に引き伸ばすか」だけをずらす。
+   * 未指定=0。
+   */
   lineBias?: number;
 }
 
@@ -182,22 +187,27 @@ export function pixelStretchDisplaceMaps(opts: PixelStretchOpts): {
   const horiz = opts.direction === "right" || opts.direction === "left";
   const len = Math.max(1, Math.round(opts.length));
   const n = Math.max(1, Math.round(horiz ? opts.w : opts.h));
-  const rawLine = clamp01(opts.linePos) * n + (opts.lineBias ?? 0);
-  const line = Math.max(0, Math.min(n - 1, Math.round(rawLine)));
-  // right/down は line の後方（index 増加側）へ、left/up は前方（index 減少側）へ帯を張る。
+
+  // base: エフェクト帯（ストレッチ領域）の開始位置。linePos + length のみで決まる。
+  // src : 実際に色をサンプルするソースライン。lineBias はここだけをずらす（帯位置は動かさない）。
+  const base = Math.round(clamp01(opts.linePos) * n);
+  const src = Math.max(0, Math.min(n - 1, Math.round(base + (opts.lineBias ?? 0))));
+
+  // right/down は base の後方（index 増加側）へ、left/up は前方（index 減少側）へ帯を張る。
   const forward = opts.direction === "right" || opts.direction === "down";
   const sliceW = Math.max(1, Math.round((1 - clamp01(opts.density)) * PIXEL_STRETCH_MAX_SLICE));
   const scale1 = 2 * len; // feDisplacementMap の変位量 = scale·(C−0.5) ∈ [−len, +len]
 
-  // ターゲット: 帯内の各ピクセルはライン起点の sliceW 幅ストリップを反復サンプルする。
+  // ターゲット: 帯内の各ピクセルは「src」を起点とした sliceW 幅ストリップを反復サンプルする。
+  // ただし帯の範囲（inBand）は base からの距離で決める（エフェクト開始位置は linePos のまま）。
   const target = new Float64Array(n);
   const inBand = new Uint8Array(n);
   for (let i = 0; i < n; i++) {
-    const signedD = forward ? i - line : line - i;
+    const signedD = forward ? i - base : base - i;
     if (signedD >= 0 && signedD <= len) {
       inBand[i] = 1;
       const offset = signedD % sliceW;
-      target[i] = forward ? line + offset : line - offset;
+      target[i] = forward ? src + offset : src - offset;
     } else {
       target[i] = i; // 帯外は無変位
     }

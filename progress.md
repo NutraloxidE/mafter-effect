@@ -2207,3 +2207,13 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
 - Pre-snapshot: e2916aa committed investigations/.../PLAN-ALT-1.md before any code change.
 - Status: WP-1+WP-2 done. **Waiting for WP-2.5 user real-device tuning feedback**. Then WP-3 (bake defaults per A/B/C). PLAN.md (ink) remains on hold.
 - Impact: pure math in shared path (preview/export/bundle parity automatic). No §5/INV changes. Note: full-solid may be harmed by nonzero bias (confirm in WP-2.5).
+### 2026-07-14 (opencode) — pixelStretch lineBias 意味修正
+- 問題: 旧実装では `lineBias` が `linePos` 由来の「帯開始位置（エフェクト開始）」も一緒にずらしていた。
+- 修正: `base`（帯開始 = linePos のみで決定）と `src`（サンプル元 = base + lineBias）を分離。
+  - 帯範囲（inBand）と帯長は `base` で決まる。
+  - 変位マップのターゲット（どの色を引くか）だけが `src` を使う。
+- 影響: `lineBias` で「ストレッチするサンプルの開始位置」のみ調整可能になり、エフェクト（帯）の開始位置は動かない。
+- テスト: 新規ケース追加（band start 直前は neutral / band start で (base+bias) をサンプル）。
+- player: build:player 再実行。
+- spec: §27.3 の技法説明を base/src 区分で更新（lineBias はサンプル元のみ）。
+- PLAN-ALT-1 との整合: 「サンプル線の手動オフセット」という意図に合致する形に是正。

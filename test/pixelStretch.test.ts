@@ -143,6 +143,28 @@ describe("pixelStretchDisplaceMaps (pure)", () => {
     expect(a).toEqual(b);
     expect(a).toEqual(c);
   });
+
+  it("lineBias shifts only the sampled source position, not the band (effect) start position", () => {
+    const w = 800;
+    const length = 100;
+    const linePos = 0.25;
+    const bias = 7;
+    const base = Math.round(linePos * w); // 200
+    const sim = simulate({ w, h: 4, direction: "right", linePos, length, density: 1, lineBias: bias });
+    // Band (effect region where stretching happens) starts at position determined by linePos only.
+    // Before the band: identity (samples its own position).
+    expect(Math.round(sim.sampledAt(base - 1))).toBe(base - 1);
+    // At the very start of the band (effect start), it should sample from (base + bias), not base.
+    expect(Math.round(sim.sampledAt(base))).toBe(base + bias);
+    // Inside the band too (density=1 means constant sample).
+    expect(Math.round(sim.sampledAt(base + 20))).toBe(base + bias);
+    // The map should be neutral just before band start, and non-neutral at band start.
+    const maps = pixelStretchDisplaceMaps({ w, h: 4, direction: "right", linePos, length, density: 1, lineBias: bias });
+    const m1 = decodePngDataUri(maps.stage1.uri);
+    const neutral = (x: number) => m1.rgba[x * 4 + 0] === 128;
+    expect(neutral(base - 1)).toBe(true);
+    expect(neutral(base)).toBe(false);
+  });
 });
 
 describe("pixelStretchPrimitives", () => {

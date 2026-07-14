@@ -2544,12 +2544,18 @@ HTML（live）再生でディストーション 3 種（`wave` / `ripple` / `tur
 |---|---|---|---|---|---|
 | `direction` | Direction | enum | `"right"` | `right` / `left` / `down` / `up` | ❌ |
 | `linePos` | Line Pos | scalar | `0.5` | 0..1, step 0.01（ソースライン位置） | ✅ |
-| `lineBias` | Line Bias | scalar | `0` | -200..+200 (px), step 1（手動 px オフセット。PLAN-ALT-1） | ✅ |
+| `lineBias` | Line Bias | scalar | `0` | -200..+200 (px), step 1（サンプル元ラインの手動オフセットのみ。帯/エフェクト開始位置は linePos のみで決まる） | ✅ |
 | `length` | Length | scalar | `300` | 0..2000 (px), step 1（引き伸ばし帯の長さ＝`scale`） | ✅ |
 | `density` | Density | scalar | `1` | 0..1, step 0.01（1=完全ストレッチ / 下げるとスライス反復） | ✅ |
 
 - `apply` → `{ kind: "svg", primitives }`（`length === 0` → `null`）。`pixelStretchPrimitives()` が `feImage`(生 PNG)＋`feDisplacementMap` の 1〜2 段チェーン（改定3）を返す。マップ生成の純関数は `pixelStretchDisplaceMaps()`（`scale1 = 2·length`）。
-- **技法（pull 型 displacement）**: `feDisplacementMap` は出力ピクセル `p` が入力 `p + scale·(ch − 0.5)` をサンプルする pull 型。`(ch − 0.5) ∈ [−0.5, +0.5]` なので変位量の最大は `scale·0.5`。ソースライン位置を `line`（`right`/`left` は列 `linePos·w`、`down`/`up` は行 `linePos·h`）とし、帯内の全ピクセルが厳密に `line` をサンプルするよう `ch = 0.5 + (line − p)/(2·length)`、`scale = 2·length` を焼く（`length` px を届かせるため）。帯の手前・後方は `ch = 0.5`（無変位＝原画）。結果、**ライン上の色が帯全域へ塗り延ばされる有限帯ストレッチ**になる。方向は軸（X→R / Y→G）と符号で切替（`right`/`down` は line の index 増加側へ、`left`/`up` は減少側へ帯を張る）。`displaceWithMap` の固定チャンネル規約（`xChannelSelector="R" yChannelSelector="G"`）に整合させ、横は R・縦は G に書く。`effectChain.ts` の region クランプは実変位量 = `length`（`scale·0.5`）を参照する（`p["length"]`）。
+- **技法（pull 型 displacement）**: `feDisplacementMap` は出力ピクセル `p` が入力 `p + scale·(ch − 0.5)` をサンプルする pull 型。`(ch − 0.5) ∈ [−0.5, +0.5]` なので変位量の最大は `scale·0.5`。
+  - 帯（エフェクト適用領域）の開始位置は `base = round(linePos · n)` のみで決まる（`length` で帯長を張る）。
+  - サンプル元ラインは `src = clamp(base + lineBias)`（`lineBias` はサンプル元だけをずらす。帯位置は動かさない）。
+  - 帯内の各ピクセルは `src` を厳密にサンプルするよう `ch = 0.5 + (src − p)/(2·length)` を焼く（density=1 の完全ストレッチ時）。`scale=2·length`。
+  - 帯外は `ch=0.5`（無変位）。結果、**ライン上の色が帯全域へ塗り延ばされる有限帯ストレッチ**。
+  - 方向は軸（X→R / Y→G）と符号で切替（`right`/`down` は base の後方へ帯を張り、`left`/`up` は前方へ）。`displaceWithMap` 固定規約に合わせ横は R・縦は G。`effectChain.ts` の region クランプは `length` を参照。
+  - `lineBias` の典型用途：実機で「奥がサンプルされる」ズレを逆方向に詰める手動補正（PLAN-ALT-1）。
 - **冗長軸圧縮（軽量ライブの担保）**: 値は変位軸のみに依存するため、生 PNG バッファは横 `w×1` / 縦 `1×h`（もう一方は `feImage` の width/height 引き伸ばしに委譲・1 列/行複製なので補間誤差ゼロ）。plain `feImage` stretch のため `feTile`-1px 縮小罠（scanlines 改定1）には非該当。glitchSlice の 1×h 最適化と同型。
 - **精度メモ**: 帯内で使う ch レンジは `right`/`down` が `[0.5,0]`、`left`/`up` が `[0.5,1]`（無変位域を厳密 0.5 に固定する制約上、方向ごとに半分だけ）。1 階調あたりの変位 = `scale/255 = 2·length/255` px。`length > 128` では 8-bit 量子化により約 `2·length/255` px 幅の**プラトー**（同一コード連続域）ができ、プラトー内は剛体コピー＝スライス反復に見える（改定3 で解消）。
 - **改定3（2026-07-13・`density` + 2 段残差補正）**: ユーザー要望「密度を弄れるように」（低密度=スライス反復の質感 / density=1=帯全域がライン 1 列の色で塗り延ばされる完全ストレッチ）に対応。
