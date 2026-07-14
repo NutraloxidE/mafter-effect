@@ -1,5 +1,29 @@
 # Progress
 
+### 2026-07-14（Claude Sonnet 5）— 3D Extrude 描画を実 MVP 投影へ再設計（P2）
+
+- **ユーザー報告**: 3D Extrude ON にしても質感がボヤけて平坦（カメラ/回転に追従しない）。調査の結果、P1 実装（前セッション）は
+  [geom3dGl.ts](src/runtime/geom3d/geom3dGl.ts) の `buildDefaultCamera` が**固定内蔵カメラ**でフラットに焼き、その平面を
+  `entry.div` の CSS `matrix3d(cameraPre·worldTransform)` で**カードとして傾けるだけ**（comp のアクティブカメラ・
+  `Transform.rotation` を GL 側は無視）と判明。加えて canvas を CSS px 等倍でラスタライズ→引き伸ばしていたため
+  HiDPI/Fit ズームで滲む問題も併発していた。
+- **方針確定（ユーザー選択）**: ①per-object canvas + 実 MVP 投影（DOM のレイヤー構造/blend/filter/track matte は維持）、
+  ②comp・ワールド空間の平行光でライティング。
+- **実装**:
+  1. [mat4.ts](src/runtime/mat4.ts) に `transpose`/`normalMatrix` を追加。
+  2. [geom3dGl.ts](src/runtime/geom3d/geom3dGl.ts): `buildDefaultCamera` を廃し、`uMVP`/`uNormalMatrix`/`uLightDirWorld` を GL に渡す薄いレイヤーへ変更。
+  3. [geom3dDomApply.ts](src/runtime/geom3d/geom3dDomApply.ts): `mvp = Proj·cameraPre·worldTransform` を計算（`Proj` は CSS `perspective` リグ〈`translate(cx,cy,P)·view`〉と数式的に厳密一致するよう手計算で導出・pixel-space）。canvas は comp 全域を dpr 解像度で描画（AABB 最適化は次フェーズ）。`outline.minX/minY` オフセットは `translation()` で world 側に焼き戻す（旧実装は div の `left/top` で吸収していた）。
+  4. [DomRenderer.ts](src/runtime/DomRenderer.ts): `renderFrame` で `this.cameraFov` を per-frame 保持。`updateComponentEl` に `geom3dCamera`（cameraPre/fov/world/compW/compH）引数を追加し text ケースへ配線。3D-extrude 成功時は親 div の CSS `matrix3d` 傾けを打ち消す（GL の mvp が投影を一手に担うため）。ネスト comp 経路（`renderNestedComp`）は `geom3dCamera` を渡さず、既存の CSS 傾け近似のまま（次フェーズのスコープ外・spec §6.5c に明記）。
+  5. Light Direction を `geom3dParams.ts`/store 既定 props/Inspector に露出（非アニメータブルの静的 Vec3、簡易 UI）。
+- **検証（実機 Playwright, port 5175）**:
+  - `verify-geom3d-neutral.mjs`: camera 無し・回転無し・depth=0 で 2D 描画と水平位置/幅がほぼ一致（許容 6px）。垂直方向は 2D の CSS line-box と GL の ink-bbox の測定手法差ぶんズレる（想定内・実装バグでない）。→ **PASS**。
+  - `verify-geom3d-mvp.mjs`: camera 追加 → dolly（POI 固定で距離を詰める）で投影後 bbox が拡大（旧実装は無反応だったはず）、`Transform.rotation.y` 回転で bbox が変化、console error 0。→ **PASS**。
+  - 非 3D-extrude の 3D solid（CSS `matrix3d` 経路）が引き続きカメラ pan に応答し無回帰であることを別途確認 → **PASS**。
+  - **dolly の符号に注意**: `addCamera` の既定 `position.z = zoom`（"+z は視点側"）なので、カメラを content に近づける＝dolly in は `position.z を減らす`。
+- **確認**: typecheck ✅ / 全テスト ✅（`liquidChrome` 1 件は既存無関係 flake、変更前から再現）/ `npm run build` + `npm run build:player` ✅。
+- **spec**: §5.5f（P2 実 MVP 投影へ改訂・`geomLightDir` prop 追加）/ §6.5c（固定カメラ簡略化の記述を実 MVP に更新）。
+- **Next steps**: mp4/webm/bundle export の実 parity verify（GL canvas の export 経路は本セッション未検証）、ネスト comp 内 3D-extrude text の実 MVP 化、per-object canvas の AABB クロップ最適化（現在は comp 全域を毎フレーム描画）、shape への 3D 押し出し適用（P4）。
+
 ### 2026-07-14（Claude Sonnet 5）— 3D Extrude 用フォント自動アセット化 + カスタムフォントアップロード
 
 - **ユーザー報告**: text レイヤーで 3D Extrude を ON にしても立体化しない。原因 = [DomRenderer.ts:2300](src/runtime/DomRenderer.ts#L2300) の `fontCache.getFont(fontFamily)` が輪郭抽出不可（system フォント／`project.assets` に font エントリ無し）だと**サイレントで 2D フォールバック**する（§26.4.1 の既存制約）上、フォントを asset 化する導線が皆無だった。

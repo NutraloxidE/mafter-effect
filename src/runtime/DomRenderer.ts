@@ -212,6 +212,8 @@ export class DomRenderer implements Renderer {
   private frameHasNestedComposite = false;
   /** §6.5b per-object カメラ前置行列 = translate(cx,cy,P)·view。3D 層にのみ掛ける。null = カメラなし。 */
   private cameraPre: Mat4 | null = null;
+  /** §5.5f 3D-extrude text の実 MVP 投影用。cameraPre と対の fov（度）。カメラなし時は null。 */
+  private cameraFov: number | null = null;
   /** §27.12 hold-last raster（full displacement 用）。 */
   private holdLastRaster = false;
   /** §27.4 auto_raster_mp4 — mp4/png export 時に Live調整も comp 背面 capture へ回す
@@ -373,6 +375,7 @@ export class DomRenderer implements Renderer {
 
     // camera / perspective (§6.5 / §6.5b)
     this.cameraPre = this.setupCameraRig(this.root, scene);
+    this.cameraFov = scene.camera?.fov ?? null;
 
     // §5.4f: matteId → fill（マット源を fillHost 内へ載せるため）
     const fillByMatteId = new Map<string, ResolvedObject>();
@@ -1162,7 +1165,8 @@ export class DomRenderer implements Renderer {
           forceSeek = true;
         }
         const persistentlyMuted = this.persistentlyMutedVideoIds?.has(obj.id) ?? false;
-        updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, frame, hostInPoint, fps, this.previewVideoPlayback, this.exportVideoStep, forceSeek, this.playbackPauseForSync, this.muteVideoPlayback, this.playbackRateForSync, persistentlyMuted);
+        const geom3dCamera = { cameraPre: this.cameraPre, fov: this.cameraFov, world: obj.worldTransform, compW, compH };
+        updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, frame, hostInPoint, fps, this.previewVideoPlayback, this.exportVideoStep, forceSeek, this.playbackPauseForSync, this.muteVideoPlayback, this.playbackRateForSync, persistentlyMuted, geom3dCamera);
       }
 
       // Plugin component: registry から ComponentDef.render を呼ぶ（組み込み型は未登録でスキップ）
@@ -2230,6 +2234,8 @@ function updateComponentEl(
   playbackRateForSync = 1,
   /** fix-plan-v2plus (bundle 専用): 音声抽出済み video は gesture unmute 後も常時ミュート維持。 */
   persistentlyMuted = false,
+  /** §5.5f 3D-extrude text の実 MVP 投影に必要なカメラ/world/comp サイズ（text 以外は未使用）。 */
+  geom3dCamera: { cameraPre: Mat4 | null; fov: number | null; world: Mat4; compW: number; compH: number } | null = null,
 ): void {
   switch (type) {
     case "solid": {
@@ -2298,11 +2304,16 @@ function updateComponentEl(
     case "text": {
       const fontFamily = typeof props["font"] === "string" ? props["font"] : "sans-serif";
       const font = fontCache?.getFont(fontFamily) ?? null;
-      // §5.5f 3D 押し出し（P1: depth+bevel+lambert、非破壊トグル）。system フォント（アウトライン
-      // 抽出不可）またはメッシュ生成失敗時は既存 2D 描画へフォールバックする（§26.4.1 と同じ制約）。
+      // §5.5f 3D 押し出し（実 MVP 投影・非破壊トグル）。system フォント（アウトライン抽出不可）
+      // またはメッシュ生成失敗、あるいは geom3dCamera 未提供（ネスト comp・§ 補足のスコープ外）の
+      // ときは既存 2D 描画へフォールバックする（§26.4.1 と同じ制約）。
       const geom3d = parseGeom3DParams(props);
-      const usedGeom3D = geom3d.enabled && applyGeom3DText(el, props, font, geom3d);
-      if (!usedGeom3D) {
+      const usedGeom3D = geom3d.enabled && geom3dCamera !== null && applyGeom3DText(el, props, font, geom3d, geom3dCamera);
+      if (usedGeom3D) {
+        // 親 div（entry.div）に applyObject が焼いた CSS 3D 傾け（matrix3d）を打ち消す。
+        // GL 側の mvp が実投影を担うため、el/canvas はスクリーン空間 2D 配置のままでよい。
+        if (el.parentElement) el.parentElement.style.transform = "";
+      } else {
         clearGeom3DCanvas(el);
         applyTextEl(el, props, textQuality, font);
       }

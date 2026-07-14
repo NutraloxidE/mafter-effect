@@ -14,6 +14,7 @@ export const GEOM3D_PARAM_DESCRIPTORS: ParamDescriptor[] = [
   { key: "geomCurveQuality", label: "Curve Quality", kind: "enum", default: "medium", animatable: false, options: ["low", "medium", "high"] },
   { key: "geomShading", label: "Shading", kind: "enum", default: "lambert", animatable: false, options: ["none", "lambert"] },
   { key: "geomAmbient", label: "Ambient", kind: "scalar", default: 0.35, animatable: true, min: 0, max: 1 },
+  { key: "geomLightDir", label: "Light Dir", kind: "vec3", default: { x: -0.5, y: -0.7, z: -0.5 }, animatable: false },
 ];
 
 const DEFAULT_LIGHT_DIR: Vec3 = { x: -0.5, y: -0.7, z: -0.5 };

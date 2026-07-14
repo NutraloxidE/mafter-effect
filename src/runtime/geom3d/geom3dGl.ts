@@ -1,40 +1,34 @@
-import { perspective, type Mat4 } from "../mat4";
+import type { Mat4 } from "../mat4";
 import type { MeshData } from "./geom3dTypes";
 
 /**
- * §3 案 B — per-layer 素の WebGL canvas（three.js 不使用）。canvas は「ピクセルを作る手段」でしかなく、
+ * §5.5f 案 B — per-layer 素の WebGL canvas（three.js 不使用）。canvas は「ピクセルを作る手段」でしかなく、
  * DOM のレイヤー構造・matrix3d・blend/filter・export のレイヤー列挙には一切関与しない
  * （webgl-video-layer-plan.md §1 の確立原則を踏襲。videoAlphaGl.ts と同じ WeakMap 登録パターン）。
  *
- * **カメラの簡略化（P1 スコープの明示的な設計判断）**: このセッションでは comp のアクティブカメラ
- * （§6.5）や Transform.rotation を GL 側で適用しない。GL は固定の既定パースペクティブのみを使う
- * （下記 DEFAULT_EYE_DISTANCE_FACTOR）。front cap は常にローカル z=0 で、この固定カメラは
- * z=0 平面をピクセル等倍・無歪みで投影するよう校正されている（§6.5b の translate(cx,cy,P) 中立化と
- * 同じ考え方）ため、depth=0 のときは常に既存 2D 描画と一致する。Transform.rotation は引き続き
- * 既存の CSS matrix3d 経路（entry.div）で見た目に適用されるが、GL 側の奥行き幾何自体は
- * その回転に追従しない（= 回転させると「厚みのある画像を平面カードとして傾ける」近似になる）。
- * 真の per-object 3D 回転応答は次フェーズ（DomRenderer の transform 分離が必要・要設計）。
+ * **実 MVP 投影（P2・再設計）**: comp のアクティブカメラ（§6.5）と Transform（回転含む）を
+ * 呼び出し側（geom3dDomApply.ts）が `mvp = Proj·cameraPre·worldTransform` として合成し、
+ * このモジュールは行列を掛けるだけの薄い GL レイヤーに徹する。camera 無し・回転無し・depth=0 のとき
+ * mvp は既存 2D 描画とピクセル一致するよう呼び出し側で中立化される（このファイルはそれを仮定しない）。
+ * ライティングは comp/world 空間の平行光（`uLightDirWorld`）を `uNormalMatrix`（= world の逆転置）で
+ * 変換した法線と内積する＝オブジェクトを回転させると陰影が正しく面を横断する。
  */
-
-/** 既定カメラの「奥行き距離 ÷ canvas 高さ」比。大きいほど遠近感が弱くなる（望遠寄り）。 */
-const DEFAULT_EYE_DISTANCE_FACTOR = 1.5;
-const NEAR = 1;
-const FAR = 1_000_000;
 
 const VERTEX_SRC = `
 attribute vec3 aPosition;
 attribute vec3 aNormal;
-uniform mat4 uView;
-uniform mat4 uProjection;
-uniform vec3 uLightDir;
+uniform mat4 uMVP;
+uniform mat4 uNormalMatrix;
+uniform vec3 uLightDirWorld;
 uniform float uAmbient;
 uniform vec4 uBaseColor;
 varying vec4 vColor;
 void main() {
-  float ndotl = max(0.0, dot(normalize(aNormal), -uLightDir));
+  vec3 nWorld = normalize((uNormalMatrix * vec4(aNormal, 0.0)).xyz);
+  float ndotl = max(0.0, dot(nWorld, -normalize(uLightDirWorld)));
   float lighting = clamp(uAmbient + (1.0 - uAmbient) * ndotl, 0.0, 1.0);
   vColor = vec4(uBaseColor.rgb * lighting, uBaseColor.a);
-  gl_Position = uProjection * uView * vec4(aPosition, 1.0);
+  gl_Position = uMVP * vec4(aPosition, 1.0);
 }
 `;
 
@@ -85,9 +79,9 @@ interface Geom3DGlState {
   indexBuffer: WebGLBuffer;
   aPosition: number;
   aNormal: number;
-  uView: WebGLUniformLocation | null;
-  uProjection: WebGLUniformLocation | null;
-  uLightDir: WebGLUniformLocation | null;
+  uMVP: WebGLUniformLocation | null;
+  uNormalMatrix: WebGLUniformLocation | null;
+  uLightDirWorld: WebGLUniformLocation | null;
   uAmbient: WebGLUniformLocation | null;
   uBaseColor: WebGLUniformLocation | null;
   /** 直前にアップロードした mesh の参照。同一参照ならバッファ再アップロードをスキップ。 */
@@ -125,9 +119,9 @@ function createState(canvas: HTMLCanvasElement): Geom3DGlState | null {
       indexBuffer,
       aPosition: gl.getAttribLocation(program, "aPosition"),
       aNormal: gl.getAttribLocation(program, "aNormal"),
-      uView: gl.getUniformLocation(program, "uView"),
-      uProjection: gl.getUniformLocation(program, "uProjection"),
-      uLightDir: gl.getUniformLocation(program, "uLightDir"),
+      uMVP: gl.getUniformLocation(program, "uMVP"),
+      uNormalMatrix: gl.getUniformLocation(program, "uNormalMatrix"),
+      uLightDirWorld: gl.getUniformLocation(program, "uLightDirWorld"),
       uAmbient: gl.getUniformLocation(program, "uAmbient"),
       uBaseColor: gl.getUniformLocation(program, "uBaseColor"),
       lastMesh: null,
@@ -159,29 +153,14 @@ export function releaseGeom3DGl(canvas: HTMLCanvasElement): void {
   statesByCanvas.delete(canvas);
 }
 
-/** 既定カメラの view/projection（§ ファイル冒頭コメント参照）。canvas 実ピクセルサイズ基準。 */
-function buildDefaultCamera(width: number, height: number): { view: Mat4; projection: Mat4 } {
-  const eyeDistance = Math.max(1, height) * DEFAULT_EYE_DISTANCE_FACTOR;
-  const cx = width / 2;
-  const cy = height / 2;
-  // (x,y,z) -> (x-cx, -(y-cy), z-eyeDistance)。Y 反転はローカル座標(y-down)と NDC(y-up)の変換。
-  const view: Mat4 = [
-    1, 0, 0, 0,
-    0, -1, 0, 0,
-    0, 0, 1, 0,
-    -cx, cy, -eyeDistance, 1,
-  ];
-  const fovDeg = 2 * Math.atan(height / 2 / eyeDistance) * (180 / Math.PI);
-  const aspect = width / Math.max(1, height);
-  const projection = perspective(fovDeg, aspect, NEAR, FAR);
-  return { view, projection };
-}
-
 export interface Geom3DRenderOptions {
-  width: number;
-  height: number;
+  /** Proj · cameraPre · worldTransform（呼び出し側が中立性込みで合成済み）。 */
+  mvp: Mat4;
+  /** 法線を world 空間へ運ぶ行列（= normalMatrix(worldTransform)）。 */
+  normalMatrix: Mat4;
   baseColor: readonly [number, number, number, number];
-  lightDir: readonly [number, number, number];
+  /** comp/world 空間の平行光方向（正規化は shader 側で行う）。 */
+  lightDirWorld: readonly [number, number, number];
   ambient: number;
 }
 
@@ -233,10 +212,9 @@ export function renderGeom3D(canvas: HTMLCanvasElement, mesh: MeshData, opts: Ge
 
   gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, state.indexBuffer);
 
-  const { view, projection } = buildDefaultCamera(opts.width, opts.height);
-  gl.uniformMatrix4fv(state.uView, false, view);
-  gl.uniformMatrix4fv(state.uProjection, false, projection);
-  gl.uniform3f(state.uLightDir, opts.lightDir[0], opts.lightDir[1], opts.lightDir[2]);
+  gl.uniformMatrix4fv(state.uMVP, false, opts.mvp);
+  gl.uniformMatrix4fv(state.uNormalMatrix, false, opts.normalMatrix);
+  gl.uniform3f(state.uLightDirWorld, opts.lightDirWorld[0], opts.lightDirWorld[1], opts.lightDirWorld[2]);
   gl.uniform1f(state.uAmbient, opts.ambient);
   gl.uniform4f(state.uBaseColor, opts.baseColor[0], opts.baseColor[1], opts.baseColor[2], opts.baseColor[3]);
 

@@ -361,7 +361,7 @@ type ShapeRings = ShapeVertex[][];
 - Bake 後は `mergeInputs` が無くなるため、参照されていた他レイヤーは自動的に再表示される（§5.5d の自動非表示は `mergeInputs` の存在に基づく構造的判定のため、自然に解除される）。
 - rings も Inspector で編集可能（既存 `ShapeVertexRow` をリングごとに再利用。リング単位の削除、または「Rings を破棄して単一パスに戻す」で `vertices: []` の単一図形へ戻せる）。
 
-#### §5.5f text 3D 押し出し（geom3d・非破壊・additive・確定・P1 実装済み 2026-07-13）
+#### §5.5f text 3D 押し出し（geom3d・非破壊・additive・確定・P1 実装済み 2026-07-13・P2 実 MVP 投影 2026-07-14）
 
 > 設計の正は [doc/cloudplan/3d-text-extrusion-plan.md](../doc/cloudplan/3d-text-extrusion-plan.md)（アーキテクチャ・比較検討）/ [doc/cloudplan/3d-text-extrusion-implementation.md](../doc/cloudplan/3d-text-extrusion-implementation.md)（作業票）。Illustrator の 3D 効果（押し出し・ベベル）相当をライブ（ベイク不要）に実現する。**P1 実装スコープ = depth + bevel + lambert 陰影 + 3D⇄2D トグルのみ**。twist/bend/taper（ねじり・曲げ・テーパー）とグラデーション面塗り（`GradientFill`）は本リビジョンでは**未実装**（次フェーズ）。
 
@@ -377,20 +377,36 @@ interface Geom3DTextProps {
   geomCurveQuality:  "low" | "medium" | "high";          // ベジェ flatten 分割数。既定 "medium"
   geomShading:       "none" | "lambert";                 // 既定 "lambert"
   geomAmbient:       AnimatedProp<number>;               // 0..1。既定 0.35（lambert 時のみ意味を持つ）
+  geomLightDir:      Vec3;                                // comp/world 空間の平行光方向。既定 {x:-0.5,y:-0.7,z:-0.5}。animatable: false
 }
 ```
 
 - **3D⇄2D トグル（非破壊）**: `geomEnabled=false`（既定・省略）は既存 2D 描画経路（draft DOM / precise SVG、§26.4）を**そのまま**通る。ON にしても既存 `text`/`color`/`strokeColor` 等の 2D 用 props は変更されない。トグルは非アニメータブル（AE の 3D レイヤースイッチと同じ理由 — フレーム間で DOM 構造が切り替わるとキャッシュ・export 分岐が毎フレーム変わるため）。
 - **色の継承**: 前面/背面/側面/ベベルはすべて既存 `color` を継承し lambert 陰影を掛けるのみ（面ごとの色/グラデーション上書きは次フェーズ §5.5g 予定・未実装）。
 - **フォント制約（§26.4.1 と同じ）**: アウトライン抽出できるのは asset フォント（`.ttf/.otf/.woff` を assets として取り込んだもの）のみ。system フォント（`sans-serif` 等、ビルトイン Noto を含む — Noto は `@font-face` 実ロードのみで opentype パース未登録・§26.3.2）では `geomEnabled=true` でも**アウトライン抽出不可のため自動的に 2D 描画へフォールバックする**（無音・非破壊。Inspector 警告表示は未実装・既知のギャップ）。
-- **カメラ（簡略化・既知の設計判断）**: 本リビジョンは comp のアクティブカメラ（§6.5）・`Transform.rotation` を GL 側の押し出しメッシュに適用**しない**。GL は固定の既定パースペクティブのみを使い、front cap（ローカル z=0）を常にピクセル等倍・無歪みで投影する（`depth=0` は既存 2D 描画とピクセル一致）。`Transform.rotation` は既存の CSS `matrix3d` 経路でオブジェクト全体（＝GL が描いたラスタ）を平面カードとして傾けるのみで、真の per-object 3D 回転応答（per-pixel parallax）ではない。真のカメラ/回転応答は次フェーズ（§6.5c 参照）。
+- **カメラ・実 MVP 投影（P2・確定 2026-07-14）**: comp のアクティブカメラ（§6.5）・`Transform.rotation` を含む
+  `worldTransform` を GL に実投影する。`mvp = Proj·cameraPre·worldTransform`（`cameraPre` は `DomRenderer.setupCameraRig` の
+  `translate(cx,cy,P)·view` を再利用、`Proj` は同じ CSS `perspective` リグを数式的に再現した pixel-space 透視/正射影）。
+  法線は `normalMatrix(worldTransform)`（= world の逆転置）で world 空間へ運び、`geomLightDir`（comp/world 空間の平行光）と
+  内積して lambert 陰影を計算する＝回転させると陰影が正しく面を横断する（真の per-object 3D 回転応答）。
+  **中立性**: camera 無し・回転無し・`depth=0` のとき既存 2D 描画とスクリーン位置/サイズが一致する（実機 verify 済み、水平方向は厳密一致・
+  垂直方向は 2D の CSS line-box と GL の ink-bbox の測定手法差ぶんの許容あり）。
+  **描画方式**: per-object canvas（3D レイヤーごとに 1 canvas）。canvas は **comp 全域**を `devicePixelRatio` 解像度で覆い、
+  親 div（`entry.div`）の CSS `matrix3d` 傾けは打ち消す（投影は GL の `mvp` が一手に担う。§ AABB 最適化は次フェーズ）。
+  レイヤー間の合成は既存 z-order（DOM）、オブジェクト内の自己遮蔽は GL depth buffer が担う。
+  ネスト comp（`renderNestedComp`）内の 3D-extrude text は本リビジョンの対象外（`geom3dCamera=null` で従来の
+  CSS `matrix3d` 傾け近似のまま・既知のギャップ、次フェーズ）。
 - **描画経路（案 B・確定）**: per-layer の**素の WebGL canvas**（three.js 不使用）。`entry.contentRoot`（= `el`）内の 1 DOM 要素として座り、blend/filter/matte/export のレイヤー列挙には一切関与しない（[webgl-video-layer-plan.md](../doc/cloudplan/webgl-video-layer-plan.md) §1 の確立原則を踏襲）。実装: `src/runtime/geom3d/`（`geom3dTypes.ts`/`geom3dParams.ts`/`outlineProvider.ts`/`extrudeMesh.ts`（earcut 使用）/`geom3dGl.ts`/`geom3dMeshCache.ts`/`geom3dDomApply.ts`）、配線は `DomRenderer.ts` の `case "text"` 内のみ（型別オプトイン）。
 - **メッシュ生成の設計簡略化（既知）**: `depth`/`bevelSize` は uniform ではなく**メッシュ生成時に実座標として焼き込む**（front cap z=0 固定・back cap z=-depth。ベベルの XY オフセット px と Z 比率を正しく釣り合わせるため）。そのため depth/bevel の変更はメッシュキャッシュ（`geom3dMeshCache.ts`、決定論キー）のミス＝再生成を伴う。twist/bend/taper 用に想定していた「アニメ中 uniform のみで再生成ゼロ」は本パスでは未達成（次フェーズの性能最適化課題）。
 - **export（INV-2）**: GL canvas は `preserveDrawingBuffer: true`。mp4/webm/PNG 連番・bundle は既存の canvas インライン化 export 経路に乗る想定（本リビジョンで詳細な export parity verify は未実施・次フェーズで実施）。`exportStrategy` の既定は他の text と同じ `live`（§5.5、GL 描画はブラウザでライブ実行可能なため bake 不要）。
 - **依存追加**: `earcut`（MIT・~2KB、三角形分割）。
 - **INV 影響**: なし（既存 INV-1〜6 の枠内。§5 追加は additive-optional・INV-4 準拠）。
 
-**受け入れ確認（実機 Playwright・本リビジョンで実施済み）**: 実フォント（Noto Sans asset）でのグリフ押し出し（depth/bevel/lambert）が実 Chrome で正しく描画されること、`geomEnabled` トグルの ON→OFF→ON 往復で 2D/3D 双方の DOM 構造が正しく切り替わり残留ノードが無いこと、`depth=0` で例外なく描画できること、Inspector から `geomEnabled`/`geomDepth`/`geomBevelSize`/`geomBevelSegments`/`geomCurveQuality`/`geomShading`/`geomAmbient` を編集できることを確認。**mp4/webm/bundle export の実 parity verify、shape への適用（P4）、Inspector の system フォント警告表示は未実施・次フェーズ**。
+**受け入れ確認（実機 Playwright）**: P1 = 実フォント（Noto Sans asset）でのグリフ押し出し（depth/bevel/lambert）が実 Chrome で正しく描画されること、`geomEnabled` トグルの ON→OFF→ON 往復で 2D/3D 双方の DOM 構造が正しく切り替わり残留ノードが無いこと、`depth=0` で例外なく描画できること、Inspector から各 param を編集できることを確認。
+P2（2026-07-14, `verify-geom3d-neutral.mjs`/`verify-geom3d-mvp.mjs`）= camera 無し・回転無し・depth=0 で 2D と実機ピクセル一致（中立性）、
+camera dolly（POI 固定で距離を詰める）で投影後 bbox が拡大、`Transform.rotation.y` 回転で bbox が変化（旧固定カメラ実装は camera/rotation 無応答だった）、
+非 3D-extrude の 3D solid/image が引き続き CSS `matrix3d` 経路で無回帰（`cameraPre` 応答・console error 0）を確認。
+**mp4/webm/bundle export の実 parity verify、shape への適用（P4）、ネスト comp 内 3D-extrude text の実 MVP 化、Inspector の system フォント警告表示は未実施・次フェーズ**。
 
 **MVP built-in component types:**
 
@@ -603,12 +619,23 @@ L = T(position) · R(rotation) · S(scale) · T(-anchor)
 - **2D 免除（確定・実装済み）**: per-object 方式により、3D レイヤー（`threeD=true`）のみカメラ/dolly/zoom に応答し、2D レイヤーは画面に固定（AE 準拠）。Phase 1.1 で実測確定（dolly 半距離→2.0倍/倍距離→0.5倍、zoom 望遠2倍/広角0.5倍、2D 不動）。two-stratum 分離は不要だった（per-object 焼き込みで特異点が出ないため）。
 - **被写界深度**（Phase 3）: `focusDistance`/`aperture`(F値)/`blurLevel`。GL bokeh パスが主、dom 経路は per-layer blur 近似。
 
-#### §6.5c geom3d（text 3D 押し出し）のカメラ整合（P1 実装済み・簡略化・確定 2026-07-13）
+#### §6.5c geom3d（text 3D 押し出し）のカメラ整合（P2 実 MVP 投影・確定 2026-07-14）
 
-> §5.5f の押し出しメッシュは per-layer 素の WebGL canvas で描画され、本節で言う comp のアクティブカメラ（§6.5 冒頭）や `raster3d` 共有シーン（§6.5b）とは**別系統**。
+> §5.5f の押し出しメッシュは per-layer 素の WebGL canvas で描画される。本節で言う comp のアクティブカメラ（§6.5 冒頭）を
+> **実際に消費する**（`raster3d` 共有シーン §6.5b とは引き続き別系統・別 GL コンテキスト）。
 
-- **本リビジョンのスコープ**: geom3d の押し出しメッシュは comp のアクティブカメラ・`Transform.rotation` を GL 側で**適用しない**。GL は固定の既定パースペクティブのみを使い、front cap（ローカル z=0）をピクセル等倍・無歪みで投影する（`depth=0` は既存 2D 描画とピクセル一致・§5.5f）。`Transform.rotation` は既存の CSS `matrix3d` 経路（`entry.div`）でオブジェクト全体（＝GL が描いたラスタ）を平面カードとして傾けるのみ。
-- **次フェーズで検討すべきこと**（未着手）: 真の per-object 3D 回転応答（Transform.rotation に応じて押し出しメッシュ自体が GL 内で回転し per-pixel parallax が出る）には、`DomRenderer.applyObject` の `worldTransform` を「位置+スケール」と「回転」に分離し（`mat4.decomposeTrs`/`rotationEuler` で可能）、回転を CSS ではなく GL の `uWorld`（または同等の uniform）へ渡す設計変更が要る。これは §5.4b/§6.5 の共有 transform 計算に触れるため、着手前に影響評価とユーザー確認が必要（CLAUDE.md 運用体制）。
+- **実装（P2）**: geom3d は comp のアクティブカメラ・`Transform.rotation` を含む `worldTransform` を GL に実投影する。
+  `mvp = Proj·cameraPre·worldTransform`（`cameraPre` は §6.5a の `translate(cx,cy,P)·view` を `DomRenderer` から再利用、
+  `Proj` は同じ CSS `perspective` リグを pixel-space で数式再現）。`Transform.rotation` に応じてメッシュ自体が GL 内で
+  回転し per-pixel parallax が出る（旧 P1 の「平面カードを CSS で傾けるだけ」を解消）。
+  法線は `normalMatrix(worldTransform)` で world 空間へ運び、`geomLightDir`（comp/world 空間の平行光）と内積するため、
+  回転させると陰影が正しく面を横断する。
+  3D-extrude text の `entry.div` は CSS `matrix3d` 傾けを**適用しない**（GL の `mvp` が投影を一手に担うため）。
+  canvas は comp 全域を `devicePixelRatio` 解像度で覆う（per-object の AABB クロップ最適化は次フェーズ）。
+- **中立性**: camera 無し・回転無し・`depth=0` は既存 2D 描画とスクリーン位置/サイズが一致する（実機 verify 済み）。
+- **既知のギャップ（次フェーズ）**: ネスト comp（`renderNestedComp`）内の 3D-extrude text は本リビジョンの対象外
+  （nested cameraPre が `DomRenderer` インスタンスの `this` に保持されないため未配線・従来の CSS 傾け近似のまま）。
+  per-object 方式のため 3D レイヤー同士の**真の相互貫通**は非対応（レイヤー間合成は既存 z-order）。
 
 ---
 

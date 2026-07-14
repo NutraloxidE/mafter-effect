@@ -2164,10 +2164,30 @@ function Geom3DFields({
             </select>
           </Row>
           {shading === "lambert" && numRow("geomAmbient", "Ambient", ambientProp, 0, 1)}
+          {shading === "lambert" && (
+            <Row label="Light Dir">
+              {(["x", "y", "z"] as const).map((axis) => {
+                const dir = isVec3Value(props["geomLightDir"]) ? props["geomLightDir"] : { x: -0.5, y: -0.7, z: -0.5 };
+                return (
+                  <ScrubNumber
+                    key={axis}
+                    value={dir[axis]}
+                    onCommit={(v) => writeStatic("geomLightDir", { ...dir, [axis]: v }, `Edit light dir ${axis}`)}
+                    step={0.1}
+                    style={numInputStyle}
+                  />
+                );
+              })}
+            </Row>
+          )}
         </>
       )}
     </>
   );
+}
+
+function isVec3Value(v: unknown): v is Vec3 {
+  return typeof v === "object" && v !== null && "x" in v && "y" in v && "z" in v;
 }
 
 /** §31.1 Solid content — Fill 色のみ。Text の Fill 行と同型（ColorSwatch + ◇）。 */

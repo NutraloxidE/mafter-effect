@@ -1235,6 +1235,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
             geomCurveQuality: "medium",
             geomShading: "lambert",
             geomAmbient: staticProp(0.35),
+            geomLightDir: vec3(-0.5, -0.7, -0.5),
           },
         },
       ],

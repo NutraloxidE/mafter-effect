@@ -7,6 +7,7 @@ import { releaseGeom3DGl, renderGeom3D } from "./geom3dGl";
 import { getCachedMesh } from "./geom3dMeshCache";
 import { textToOutlineGlyphs } from "./outlineProvider";
 import type { Geom3DParams } from "./geom3dTypes";
+import { multiply, normalMatrix, translation, type Mat4 } from "../mat4";
 
 /** DOM 上で geom3d canvas を識別するクラス（entry 削除時の GL 解放クエリ用・§entry-removal）。 */
 export const GEOM3D_CANVAS_CLASS = "mafter-geom3d-canvas";
@@ -37,10 +38,64 @@ export function clearGeom3DCanvas(el: HTMLElement): void {
 const DEFAULT_RGBA: RGBA = { r: 1, g: 1, b: 1, a: 1 };
 
 /**
+ * §5.5f 3D-extrude text に必要なカメラ/world/comp サイズ。DomRenderer の applyObject 呼び出し元が
+ * 毎フレーム渡す（this.cameraPre・this.cameraFov は renderFrame で per-frame 更新済み）。
+ */
+export interface Geom3DCameraContext {
+  /** §6.5b cameraPre = translate(cx,cy,P)·view。カメラ無し comp では null。 */
+  cameraPre: Mat4 | null;
+  /** cameraPre とペアの垂直画角（度）。cameraPre が null のときは無視される。 */
+  fov: number | null;
+  /** このオブジェクトの worldTransform（parent chain 込み・§4 座標系合成順）。 */
+  world: Mat4;
+  compW: number;
+  compH: number;
+}
+
+/**
+ * comp ピクセル空間 → clip 空間の投影行列（camera 有り）。DomRenderer.setupCameraRig の
+ * `translate(cx,cy,P)·view` と CSS `perspective:${P}px` を数式的に再現し、CSS 3D リグと
+ * 厳密に一致する投影を GL 側で行う（§6.5b の中立性: camera 無し・回転無し・depth=0 で 2D と一致、
+ * を「実カメラで動いても一致し続ける」よう一般化したもの）。
+ * 導出: Q = cameraPre·world·p = (Vx+cx, Vy+cy, Vz+P) とすると、CSS の perspective-origin
+ * 中心透視除算は screen = center + (Q-center)·P/(P-Vz) を与える（P=focalP）。
+ * これを NDC (screen→[-1,1]、Y反転込み) に変換し、Q の同次線形写像として解いた結果が下記行列。
+ */
+function perspectivePixelMvp(compW: number, compH: number, focalP: number): Mat4 {
+  return [
+    (2 * focalP) / compW, 0, 0, 0,
+    0, (-2 * focalP) / compH, 0, 0,
+    0, 0, -1, -1,
+    -focalP, focalP, focalP, 2 * focalP,
+  ];
+}
+
+/** camera 無し comp 用の正射影（CSS 側も perspective 無し＝z を無視した平面表示に一致）。 */
+function orthoPixelMvp(compW: number, compH: number): Mat4 {
+  return [
+    2 / compW, 0, 0, 0,
+    0, -2 / compH, 0, 0,
+    0, 0, -1 / 10000, 0,
+    -1, 1, 0, 1,
+  ];
+}
+
+/**
  * §5.5f text の 3D 押し出し描画。system フォント（アウトライン抽出不可）のときは false を返し、
  * 呼び出し側が既存 2D 描画へフォールバックする（§26.4.1 と同じ制約）。
+ *
+ * P2 再設計: 固定内蔵カメラで焼いた平面を CSS matrix3d で傾ける近似をやめ、GL に
+ * `mvp = Proj·cameraPre·worldTransform` を渡して実メッシュを投影する（呼び出し側が親 div の
+ * CSS 3D transform を打ち消している前提）。canvas は comp 全域を devicePixelRatio 解像度で覆う
+ * （AABB 最適化は将来課題・plan 補足参照）。
  */
-export function applyGeom3DText(el: HTMLElement, props: Record<string, unknown>, font: Font | null, geom: Geom3DParams): boolean {
+export function applyGeom3DText(
+  el: HTMLElement,
+  props: Record<string, unknown>,
+  font: Font | null,
+  geom: Geom3DParams,
+  camera: Geom3DCameraContext,
+): boolean {
   if (!font) return false;
   const p = parseTextProps(props);
   const segments = curveQualitySegments(geom.curveQuality);
@@ -52,19 +107,24 @@ export function applyGeom3DText(el: HTMLElement, props: Record<string, unknown>,
   if (!outline) return false;
 
   const canvas = ensureCanvas(el);
-  el.style.left = `${outline.minX}px`;
-  el.style.top = `${outline.minY}px`;
-  el.style.width = `${outline.width}px`;
-  el.style.height = `${outline.height}px`;
+  // el 自体は comp 原点に固定（親 div の CSS 3D transform は呼び出し側が打ち消す）。
+  // 投影は GL 側の mvp が一手に担うため、el/canvas はスクリーン空間 2D 配置のみでよい。
+  el.style.left = "0px";
+  el.style.top = "0px";
+  el.style.width = `${camera.compW}px`;
+  el.style.height = `${camera.compH}px`;
   el.style.overflow = "visible";
   el.style.transform = "";
 
-  const w = Math.max(1, Math.ceil(outline.width));
-  const h = Math.max(1, Math.ceil(outline.height));
+  const dpr = typeof window !== "undefined" && window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
+  const w = Math.max(1, Math.ceil(camera.compW));
+  const h = Math.max(1, Math.ceil(camera.compH));
   canvas.style.width = `${w}px`;
   canvas.style.height = `${h}px`;
-  if (canvas.width !== w) canvas.width = w;
-  if (canvas.height !== h) canvas.height = h;
+  const bw = Math.max(1, Math.round(w * dpr));
+  const bh = Math.max(1, Math.round(h * dpr));
+  if (canvas.width !== bw) canvas.width = bw;
+  if (canvas.height !== bh) canvas.height = bh;
 
   const meshKey = [
     p.text, p.size, p.tracking, p.leading, p.align, p.boxWidth, p.boxHeight,
@@ -75,12 +135,27 @@ export function applyGeom3DText(el: HTMLElement, props: Record<string, unknown>,
     extrudeGeometry(outline.glyphs, { depth: geom.depth, bevelSize: geom.bevelSize, bevelSegments: geom.bevelSegments }),
   );
 
+  // outline のグリフ座標は content bbox 基準（font.getPath に -bounds.minX 済み）。
+  // object のローカル原点（= worldTransform が仮定する座標系）へ戻すには (minX, minY) を足し戻す
+  // ＝ 旧実装が div の left/top=minX/minY で行っていたのと同じ補正を world 側の平行移動で行う。
+  const localOffset = translation(outline.minX, outline.minY, 0);
+  const meshWorld = multiply(camera.world, localOffset);
+
+  let mvp: Mat4;
+  if (camera.cameraPre && camera.fov !== null) {
+    const focalP = camera.compH / 2 / Math.tan((camera.fov * Math.PI) / 360);
+    const proj = perspectivePixelMvp(camera.compW, camera.compH, focalP);
+    mvp = multiply(proj, multiply(camera.cameraPre, meshWorld));
+  } else {
+    mvp = multiply(orthoPixelMvp(camera.compW, camera.compH), meshWorld);
+  }
+
   const color = p.color ?? DEFAULT_RGBA;
   renderGeom3D(canvas, mesh, {
-    width: w,
-    height: h,
+    mvp,
+    normalMatrix: normalMatrix(meshWorld),
     baseColor: [color.r, color.g, color.b, color.a],
-    lightDir: [geom.lightDir.x, geom.lightDir.y, geom.lightDir.z],
+    lightDirWorld: [geom.lightDir.x, geom.lightDir.y, geom.lightDir.z],
     ambient: geom.ambient,
   });
   return true;
