@@ -204,6 +204,8 @@ const PIXEL_STRETCH_EFFECT_DEF: EffectDef = {
     { key: "linePos", label: "Line Pos", kind: "scalar", default: 0.5, animatable: true, min: 0, max: 1, step: 0.01 },
     { key: "length", label: "Length", kind: "scalar", default: 300, animatable: true, min: 0, max: 2000, step: 1 },
     { key: "density", label: "Density", kind: "scalar", default: 1, animatable: true, min: 0, max: 1, step: 0.01 },
+    // サンプル開始位置の手動バイアス(px)。帯位置は動かさず、引くソース列/行だけをずらす（任意位置サンプル）。
+    { key: "lineBias", label: "Line Bias", kind: "scalar", default: 0, animatable: true, min: -500, max: 500, step: 1 },
   ],
   apply(props, ctx: EffectRenderCtx) {
     const length = Math.max(0, num(props["length"], 300));
@@ -216,9 +218,10 @@ const PIXEL_STRETCH_EFFECT_DEF: EffectDef = {
       : "right";
     const linePos = Math.min(1, Math.max(0, num(props["linePos"], 0.5)));
     const density = Math.min(1, Math.max(0, num(props["density"], 1)));
+    const lineBias = num(props["lineBias"], 0);
     return {
       kind: "svg",
-      primitives: pixelStretchPrimitives({ w, h, direction, linePos, length, density }),
+      primitives: pixelStretchPrimitives({ w, h, direction, linePos, length, density, lineBias }),
     };
   },
 };

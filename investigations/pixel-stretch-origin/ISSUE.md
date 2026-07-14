@@ -310,3 +310,12 @@ INV-2: preview(live) と export は同一 `pixelStretchPrimitives` を通るた�
 ### 破棄したアプローチ
 lineBias 手動ノブ（PLAN-ALT-1, default=8）は length 非依存の定数補正で、length 比例ドリフトを
 根治できない近似。ブランチ `spike/pixelstretch-linebias-failed` に保全し本 fix では不採用。
+
+---
+
+## 追加（Line Bias 手動サンプル位置・2026-07-14）
+ドリフト根治後も残る「サンプル開始位置のズレ」（box-vs-ink 等・内容依存で自動決定不可）向けに、
+`lineBias`(px) を params 最後尾に追加（default=0）。**帯（エフェクト適用領域）の開始位置は
+linePos+length のみで決まり不変、lineBias は引くソース列/行だけをずらす**（base/src 分離）。
+`verify-linebias.mjs`: lineBias 0/+40/−40 でサンプル元が line/line+40/line−40 に厳密追従、
+帯位置は不変を確認。ドリフト補正(feOffset)と直交して共存。
