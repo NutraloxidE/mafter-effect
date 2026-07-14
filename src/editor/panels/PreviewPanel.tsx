@@ -1273,6 +1273,13 @@ export function PreviewPanel() {
                 boxShadow: "0 0 0 1px #444",
                 transform: `scale(${effectiveZoom}) translate(${effectivePan.x}px, ${effectivePan.y}px)`,
                 transformOrigin: "0 0",
+                // 縮小表示(Fit/≤100%)では stage を合成レイヤー化し、ライブ CSS filter
+                // (pixelStretch 等の displacement)を「ネイティブ解像度でラスタライズ→GPU 縮小」
+                // させる。これをしないと Chrome は filter を scale 後のデバイス解像度で再評価し、
+                // 変位マップのサンプリングが崩れて帯にスパイク(ガタガタ)が出る(export は 1:1 で無害)。
+                // 毎フレーム焼き直しは発生せず性能不変・出力不変(非破壊)。>1 の拡大時は Chrome が
+                // 拡大解像度で再ラスタライズするため無効なので付けない(不要な平坦化を避ける)。
+                willChange: effectiveZoom <= 1 ? "transform" : undefined,
                 overflow: "hidden",
               }}
             >
