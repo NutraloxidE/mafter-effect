@@ -3,6 +3,7 @@
 export const PROJECT_JSON = "project.json";
 
 export const DIR_ASSETS = "assets";
+export const DIR_ASSETS_FONTS = "assets/font";
 export const DIR_COMPOSITIONS = "compositions";
 export const DIR_SCRIPTS = "scripts";
 export const DIR_PRESETS = "presets";

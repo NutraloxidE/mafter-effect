@@ -65,7 +65,8 @@ SceneObject
 
 ```
 Project/
- ├ assets/                 # 画像・動画・フォント等のバイナリ
+ ├ assets/                 # 画像・動画等のバイナリ
+ │   └ font/               # フォント（.ttf/.otf/.woff）。新規取り込みはここへ書く
  ├ compositions/
  │   └ <compId>/           # HTML Composition は 1 ディレクトリ
  │       ├ index.html
@@ -2061,7 +2062,7 @@ registerComponent({
 `font` は引き続き **`kind: "string"` の静的プロパティ**（§26.1・スキーマ不変）。UI のみ自由入力テキストボックスから**プルダウン＋カスタム入力**へ置換する。
 
 - **候補リスト（`WEB_SAFE_FONTS`）**: 一般的なブラウザで追加インストール無しに開ける family。CSS 総称（`sans-serif` / `serif` / `monospace` / `cursive` / `system-ui`）＋クロスプラットフォームで概ね利用可能な定番（`Arial`, `Helvetica`, `Times New Roman`, `Georgia`, `Courier New`, `Verdana`, `Trebuchet MS`, `Tahoma`, `Impact`, `Comic Sans MS`）。各 option の表示テキスト自体をそのフォントで描く（`style.fontFamily`）ことで見本になる。
-- **アップロード（確定・2026-07 更新）**: プルダウンには Bundled / Web safe に加えて **Uploaded**（`project.assets` の `kind:"font"`）optgroup を出す。任意フォントの追加はテキスト入力ではなく **「⬆ Upload font…」ボタン**（隠し `<input type="file">`）で行う。アップロードは `importFontAsset(file)`（[store.ts](../src/editor/store.ts)）が opentype.js でパースして family 名を取得し、`assets/<id>.<ext>` へ書き込み `AssetEntry{kind:"font", meta:{family}}` を追加、[assetFontFaces.ts](../src/runtime/assetFontFaces.ts) の `registerAssetFonts` が `@font-face` を注入して即座に 2D 描画へ反映する。現状値が候補に無ければ select に読み取り専用の追加 option として表示する（既存プロジェクトの非標準 family を壊さない）。
+- **アップロード（確定・2026-07 更新）**: プルダウンには Bundled / Web safe に加えて **Uploaded**（`project.assets` の `kind:"font"`）optgroup を出す。任意フォントの追加はテキスト入力ではなく **「⬆ Upload font…」ボタン**（隠し `<input type="file">`）で行う。アップロードは `importFontAsset(file)`（[store.ts](../src/editor/store.ts)）が opentype.js でパースして family 名を取得し、`assets/font/<id>.<ext>` へ書き込み（フォントは `assets/font/` 配下。旧プロジェクトの `assets/<id>.<ext>` は `asset.path` をそのまま読むので互換） `AssetEntry{kind:"font", meta:{family}}` を追加、[assetFontFaces.ts](../src/runtime/assetFontFaces.ts) の `registerAssetFonts` が `@font-face` を注入して即座に 2D 描画へ反映する。現状値が候補に無ければ select に読み取り専用の追加 option として表示する（既存プロジェクトの非標準 family を壊さない）。
 - 書き込みは他の静的プロパティと同様 `writeStatic("font", value)` 経由（`components[i].props.font` を更新、undo 可）。`addText` の既定（`font="sans-serif"`）も候補リストに含まれる。
 - リストは `src/editor/fontList.ts` 等の単一定数として持ち、Inspector が参照する。**描画経路（DomRenderer / SVG）には影響しない**（family 文字列をそのまま `font-family` に渡す既存挙動を維持）。
 
@@ -2098,7 +2099,7 @@ registerComponent({
   - **system フォント**（アセット実体なし）: ブラウザは外形 path を公開しないため正確なアウトライン化は不可。**SVG `<text>`（ベクタだが font 依存）にフォールバック**し、ストロークは `paint-order` で近似する。→ 「厳密モードを正確に使うにはフォントを asset として取り込む」を UX 上の前提とする（Inspector / export ダイアログに注記）。
 - 文字レイアウト（advance/改行/align/tracking/leading）の算出は**決定論**であること（INV-1）。パーサのメトリクスのみを用い、`Math.random`/`Date.now`/DOM measureText を resolve 経路に持ち込まない。アウトライン生成はレンダラ層（`ResolvedScene` 受領後）で行い、`resolve()` 自体は不変。
 - **§5.5f（3D 押し出し）も同じ制約を継承する（2026-07 更新）**: 3D Extrude はアウトライン抽出可能なフォント（**Bundled 同梱 + assets として取り込んだフォント**）でのみ有効。
-  - **Bundled フォント**（[builtinFonts.ts](../src/runtime/builtinFonts.ts) の `BUILTIN_FONTS`）は `geomEnabled` を ON にした瞬間（または 3D ON 中に Bundled family へ変更した瞬間）、`ensureBundledFontAsset`（[store.ts](../src/editor/store.ts)）が `public/fonts/*.ttf` を fetch して自動的に `project.assets`（`kind:"font"`）へ取り込む。ユーザー操作は不要。
+  - **Bundled フォント**（[builtinFonts.ts](../src/runtime/builtinFonts.ts) の `BUILTIN_FONTS`）は `geomEnabled` を ON にした瞬間（または 3D ON 中に Bundled family へ変更した瞬間）、`ensureBundledFontAsset`（[store.ts](../src/editor/store.ts)）が `public/fonts/*.ttf` を fetch して自動的に `project.assets`（`kind:"font"`）へ取り込む（FS 書き込み先は `assets/font/<id>.ttf`）。ユーザー操作は不要。
   - **web-safe / システムフォント**（`WEB_SAFE_FONTS`, [fontList.ts](../src/editor/fontList.ts)）は実ファイルをブラウザから取得できず原理的に 3D 化不可。ドロップダウンの label に `(no-3D)` を明示し、`geomEnabled=true` かつ非対応フォント時は Inspector に警告文を表示した上で 2D 描画へフォールバックする（サイレントフォールバックにしない）。`is3DCapableFont(font, project)`（[fontList.ts](../src/editor/fontList.ts)）が判定を持つ。
   - **アップロード済みフォント**は他の asset フォントと同様アウトライン抽出可能なため 3D 化できる。
 

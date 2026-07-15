@@ -42,7 +42,7 @@ import type {
   TimelineComposition,
 } from "../core/schema";
 import { IndexedDbFs } from "../fs/IndexedDbFs";
-import { compositionDir, DIR_ASSETS, pluginEntryPath, pluginManifestPath } from "../core/paths";
+import { compositionDir, DIR_ASSETS, DIR_ASSETS_FONTS, pluginEntryPath, pluginManifestPath } from "../core/paths";
 import { compLayerDefaultOutPoint, compWouldCreateCycle } from "../runtime/compLayer";
 import { rescaleCompFps, resizeCompCentered } from "./compEdit";
 import { isLayerLocked } from "./layerLock";
@@ -1351,7 +1351,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       return;
     }
     const id = newObjectId();
-    const assetPath = `${DIR_ASSETS}/${id}.ttf`;
+    const assetPath = `${DIR_ASSETS_FONTS}/${id}.ttf`;
     await fs.write(assetPath, bytes);
     const asset: AssetEntry = { id, path: assetPath, kind: "font", meta: { family: fam } };
     const after = registerNewProjectItem(
@@ -1378,7 +1378,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       family = file.name.replace(/\.[^.]+$/, "");
     }
     const id = newObjectId();
-    const assetPath = `${DIR_ASSETS}/${id}.${ext}`;
+    const assetPath = `${DIR_ASSETS_FONTS}/${id}.${ext}`;
     await fs.write(assetPath, new Uint8Array(buf));
     const asset: AssetEntry = { id, path: assetPath, kind: "font", meta: { family } };
     const after = registerNewProjectItem(
