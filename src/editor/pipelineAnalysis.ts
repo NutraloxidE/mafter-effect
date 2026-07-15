@@ -2,7 +2,7 @@
 
 import type { Project, SceneObject, TimelineComposition } from "../core/schema";
 import { hasEnabledFullDisplacement, needsSvgDisplaceCapture } from "../runtime/effectRouting";
-import { isSplitAlphaVideoMeta } from "../runtime/imageAssetCache";
+import { isPackedAlphaVideoMeta, isSplitAlphaVideoMeta } from "../runtime/imageAssetCache";
 import { globalPluginRegistry } from "../runtime/pluginRegistry";
 
 export type PipelineSegmentKind = "live" | "raster";
@@ -36,6 +36,16 @@ export interface PipelineAlphaWarning {
   message: string;
 }
 
+/** §5.5f — WebGL context を消費するレイヤー数の**静的な目安**（precomp を再帰集約）。 */
+export interface PipelineGlLayers {
+  /** 3D-extrude text（per-layer 1 context・予算なし＝上限に効く主因） */
+  geom3d: number;
+  /** split / packed alpha video（GL 合成器・予算 8 でそれ以上は CPU フォールバック） */
+  alphaVideo: number;
+  /** 合計（≒ 同時に必要な context 数の目安） */
+  total: number;
+}
+
 export interface PipelineAnalysisResult {
   segments: PipelineSegment[];
   rasterPassCount: number;
@@ -46,9 +56,20 @@ export interface PipelineAnalysisResult {
   cliffs: PipelineCliff[];
   /** §19.5 split alpha 透過レイヤー警告（precomp nested を再帰集約・cliffs とは異なり伝播する）。 */
   alphaWarnings: PipelineAlphaWarning[];
+  /** §5.5f WebGL context 上限（~16）に対する消費レイヤー数の目安（precomp 再帰集約）。 */
+  glLayers: PipelineGlLayers;
 }
 
 const MAX_PRECOMP_DEPTH = 4;
+
+/**
+ * Chrome の同時 WebGL context 上限（1 ドキュメント・実測 ~16）。超えると
+ * `Too many active WebGL contexts. Oldest context will be lost.` で古い context が黙って破棄される。
+ */
+export const WEBGL_CONTEXT_LIMIT = 16;
+
+/** 上限に近づいた警告を出す閾値（余裕を持って手前で知らせる）。 */
+export const WEBGL_CONTEXT_WARN_AT = 12;
 
 function compIdFromObject(obj: SceneObject): string | null {
   for (const c of obj.components) {
@@ -104,6 +125,62 @@ function collectAlphaWarnings(
     }
   }
   return warnings;
+}
+
+/**
+ * §5.5f 既知のリスク — WebGL context を消費するレイヤーを precomp まで再帰カウントする。
+ *
+ * Chrome の同時 WebGL context は **1 ドキュメント ~16** が上限で、超えると古い context から
+ * 黙って破棄される（＝先に描いたレイヤーの絵が消える）。`geom3d`（3D-extrude text）は
+ * **per-layer 1 context を予算なしで作る**ため、積むほど上限に近づく。
+ *
+ * **これは静的な目安**（実際の context 数ではない）。frame 依存の in/out 点や、
+ * alpha video の予算超過時の CPU フォールバックまでは見ない。上限に近づいたことを
+ * ユーザーへ早めに知らせる応急的な指標として使う。
+ */
+function collectGlLayers(
+  comp: TimelineComposition,
+  project: Project,
+  depth: number,
+): { geom3d: number; alphaVideo: number } {
+  let geom3d = 0;
+  let alphaVideo = 0;
+  for (const obj of comp.objects) {
+    // 無効レイヤーは描画されない＝ context を作らない。
+    if (obj.enabled === false) continue;
+    for (const c of obj.components) {
+      // geomEnabled は animatable:false の素の bool（§5.5f）。
+      if (c.type === "text" && c.props["geomEnabled"] === true) geom3d += 1;
+    }
+    if (hasAlphaGlVideo(obj, project)) alphaVideo += 1;
+
+    if (depth >= MAX_PRECOMP_DEPTH) continue;
+    const nestedCompId = compIdFromObject(obj);
+    if (!nestedCompId) continue;
+    const nestedComp = project.compositions.find(
+      (c) => c.id === nestedCompId && c.kind === "timeline",
+    );
+    if (nestedComp && nestedComp.kind === "timeline") {
+      // 同じ precomp を 2 回置けば context も 2 倍要る＝重複カウントが正しい。
+      const n = collectGlLayers(nestedComp, project, depth + 1);
+      geom3d += n.geom3d;
+      alphaVideo += n.alphaVideo;
+    }
+  }
+  return { geom3d, alphaVideo };
+}
+
+/** §2.1/§2.2 — GL 合成器（split / packed alpha）を要する video を検出する。 */
+function hasAlphaGlVideo(obj: SceneObject, project: Project): boolean {
+  for (const c of obj.components) {
+    if (c.type !== "video") continue;
+    const assetId = typeof c.props["asset"] === "string" ? c.props["asset"] : null;
+    if (!assetId) continue;
+    const asset = project.assets.find((a) => a.id === assetId);
+    if (asset?.kind !== "video") continue;
+    if (isSplitAlphaVideoMeta(asset.meta) || isPackedAlphaVideoMeta(asset.meta)) return true;
+  }
+  return false;
 }
 
 function enabledEffects(obj: SceneObject) {
@@ -251,8 +328,10 @@ function analyzeComp(
     summaryLabel,
     summaryTone,
     cliffs: detectCliffs(segments),
-    // alphaWarnings は collectAlphaWarnings が独立に再帰集約するため、ここ（nested 中間結果含む）では未使用。
+    // alphaWarnings / glLayers は専用の再帰集約関数が独立に走査するため、
+    // ここ（nested 中間結果を含む）では空値を置き、公開 entry point で埋める。
     alphaWarnings: [],
+    glLayers: { geom3d: 0, alphaVideo: 0, total: 0 },
   };
 }
 
@@ -261,8 +340,10 @@ export function pipelineAnalysis(
   comp: TimelineComposition,
   project: Project,
 ): PipelineAnalysisResult {
+  const gl = collectGlLayers(comp, project, 0);
   return {
     ...analyzeComp(comp, project, 0),
     alphaWarnings: collectAlphaWarnings(comp, project, 0),
+    glLayers: { ...gl, total: gl.geom3d + gl.alphaVideo },
   };
 }

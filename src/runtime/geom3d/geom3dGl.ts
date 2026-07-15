@@ -91,6 +91,23 @@ interface Geom3DGlState {
 
 const statesByCanvas = new WeakMap<HTMLCanvasElement, Geom3DGlState>();
 
+/**
+ * **GL context 数の上限に注意（§5.5f 既知のリスク・2026-07-16）**
+ *
+ * Chrome の同時 WebGL context は **1 ドキュメント ~16** が上限。超えると
+ * `Too many active WebGL contexts. Oldest context will be lost.` を出して**古い context から
+ * 黙って破棄する**＝先に描いたレイヤーの絵が消える（例外は飛ばない）。**上限はページ全体で共有**で、
+ * split/packed alpha 合成（`videoAlphaGl.ts`・`MAX_GL_ALPHA_CONTEXTS = 8` の予算あり）とも食い合う。
+ *
+ * ここは **per-layer に 1 context を予算なしで作る**（3D text レイヤーを積むほど無制限に増える）。
+ * 大量の 3D text ＋ alpha 動画を併用すると上限に届きうる — 必要になったら
+ * `shouldCreateGlAlphaCompositor()` と同型の予算ロジック＋2D フォールバックをここにも入れる。
+ *
+ * 使い終わった canvas は必ず `releaseGeom3DGl()`（DOM 配下一括なら
+ * `DomRenderer.releaseAlphaGlCompositorsUnder()`）で明示解放する。**canvas を DOM から
+ * 外すだけでは解放されない**（context は canvas 要素に紐づき GC 待ちになる）。毎フレーム
+ * canvas を作り直す実装は数十フレームで上限に達する（§23.3e のネスト comp が実例）。
+ */
 function createState(canvas: HTMLCanvasElement): Geom3DGlState | null {
   const gl = canvas.getContext("webgl", {
     alpha: true,
