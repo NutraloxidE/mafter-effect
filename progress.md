@@ -2356,3 +2356,17 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
 - **既知のリスク（今回記録・未対応）**: **WebGL context は 1 ドキュメント ~16 が上限でページ全体で共有**。`geom3d` は **per-layer 1 context を予算なしで作る（無制限）**一方、split/packed alpha は `MAX_GL_ALPHA_CONTEXTS = 8` の予算＋キルスイッチを持つ（`videoAlphaGl.ts`）。**3D テキストを多数積む／alpha 動画と併用すると上限に届き、古い context から黙って破棄される＝絵が消える**。対処が要るようになったら `shouldCreateGlAlphaCompositor()` と同型の予算ロジック＋2D フォールバックを geom3d に入れる。spec §5.5f / `geom3dGl.ts` の `createState` 冒頭にも記録済み。**issue 化: [doc/issue/webgl-context-limit.md](doc/issue/webgl-context-limit.md)**（症状・原因の非対称性・検出が GC 依存で不安定な点・根治案3種と推奨＝geom3d へ予算＋2D フォールバック）。
 - **応急処置（2026-07-16 実装）**: Pipeline パネル（左下）に **`GL×N` バッジ**を追加。project データからの静的な目安で、**precomp を再帰カウント**（同じ precomp を 2 回置けば 2 倍・無効レイヤーは除外）。`>=12` で琥珀 `GL×N!`、`>=16` で赤、tooltip に内訳と対処。実装は `pipelineAnalysis.ts` の `collectGlLayers`（純関数・`test/pipelineAnalysis.test.ts` に 4 件追加）と `PipelinePanel.tsx` の `GlBadge`。実機確認: Main 単独 `GL×3` → Outer に Main×1 で `GL×3`（再帰カウント動作）→ Main×5 で琥珀 `GL×15!`。**破綻を防ぐものではなく気付けるようにするだけ**（根治は上記 issue の案1）。
 - **Next steps**: 上記 (a)(b)(c) の要否をユーザーに確認。geom3d の GL context 予算の要否判断（3D text を大量に積む使い方が出てきたら）。mp4/webm/HTML bundle の実機 3D parity（今回は `compFrameCapture` バイト等価まで確認）。
+
+### 2026-07-16（Claude Sonnet 5）— ネスト comp 内 video の再生が進まない問題を根治（上記 (c) の未配線を着手）✅
+
+- **症状（ユーザー報告）**: DL にあるサンプルプロジェクト（`purini-23mafter-project.zip`。`Comp 2` が `music and screen`（video レイヤーあり）を precomp として nest）で、**nested comp 内の動画の再生が行かない**。
+- **真因**: `renderNestedComp` は毎フレーム `container.innerHTML = ""` する非 reconcile 実装で、既存の持ち越し対象は `text`（geom3d canvas）と再帰コンテナ（`comp`）のみ。**`video` は対象外**だったため、トップレベルの `acquireVideoFromPool` 相当が無く、**毎フレーム新規 `<video>` 要素を生成していた**（同一 asset でも `<video src>` を持たない素の要素からやり直し）。上記 §23.3e 修正セッションで「(c) 未配線・要判断」として記録済みだった項目そのもの。
+- **修正**（`src/runtime/DomRenderer.ts` のみ・ネスト経路に閉じた最小 diff）:
+  - `text` に加え **`video` も** `reuseKey`（`objId:index:type`）で `nestedElReuse` に持ち越す。`updateComponentEl` が video の中身（src/seek/`syncVideoElementTime`）を毎フレーム全書き換えするため、要素を再利用しても描画結果は変わらない。
+  - 今フレーム使われなかった持ち越し video は既存の GL 解放に加え **`teardownVideoElement()`（pause + removeAttribute("src") + load）** で明示的に破棄する（トップレベルの離脱時 teardown と同じ後始末）。
+- **検証（実機 Playwright・ユーザーの実 zip を import して `Comp 2` を再生）**:
+  - 素朴な currentTime 前進チェックは**修正前後どちらも PASS してしまい偽陰性**だった（毎フレーム新規要素でも `video.currentTime` は JS 側の seek 代入で見かけ上前進するため）。**歯のあるゲート**は `<video>` 要素の**参照同一性**で判定: 2 秒間・約120サンプルで **修正前 recreateCount=45（毎フレーム新規） → 修正後 recreateCount=1（初回のみ）**。
+  - readyState/描画ピクセルでの検証は本サンプル（500MB・多数の proxy 動画資産）特有の非同期資産パイプラインが絡み確定的な結果を得られず（別要因の疑い、本修正の scope 外）、上記の要素同一性ゲートを正としている。
+  - 無回帰: `tsc --noEmit` 緑 / `npm test` 1285 passed（唯一の失敗 `effects.test.ts > liquidChrome 再登録` は **stash して本変更前から失敗を確認済み・無関係**）/ `npm run build:player` は git hook が自動実行（`public/player.js` 更新済み）・`playerBuildFreshness` 緑。
+- **調査で判明した残りの未配線（今回は未修正）**: (a) track matte、(b) plugin component の `ComponentDef.render` は引き続き未配線。今回のサンプルには該当しないため症状は出ない。**着手はユーザー判断待ち**。
+- **branch**: `fix/nested-comp-video-playback`（コミット・PR は未実施、ユーザー確認待ち）。
