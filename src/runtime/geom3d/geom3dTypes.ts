@@ -25,9 +25,14 @@ export interface Geom3DParams {
 
 /**
  * text/shape のアウトラインを共通形へ正規化したもの（OutlineProvider 抽象、§5.1）。
- * rings は flatten 済みポリゴン（外周 CCW / 穴 CW）で、配置（グリフの x/baseline 等）は
- * 座標へ焼き込み済み（renderPreciseText の font.getPath 呼び出しと同じ規約）。
+ * rings は flatten 済みポリゴンで、配置（グリフの x/baseline 等）は座標へ焼き込み済み
+ * （renderPreciseText の font.getPath 呼び出しと同じ規約）。
  * text は 1 グリフ = 1 要素、shape は輪郭 1 個 = 1 要素（穴は同じ要素内の複数 rings）。
+ *
+ * **不変条件**: rings は `normalizeRingsNonzero` を通過済み＝**互いに交差せず自己交差もしない**
+ * （外周と真の穴のみ）。フォントの生アウトラインはこの条件を満たさない（nonzero winding rule 前提で
+ * 画どうしが重なる）ため、生の輪郭を直接ここへ入れてはならない。下流の `groupRingsByNesting` /
+ * earcut / bevel inset / 側面 band はすべてこの前提に依存する。
  */
 export interface OutlineGlyph {
   rings: Vec2[][];

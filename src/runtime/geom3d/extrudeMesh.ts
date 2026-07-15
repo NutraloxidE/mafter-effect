@@ -53,6 +53,10 @@ function pointInPolygon(pt: Vec2, ring: Vec2[]): boolean {
  * リング列を「外周 + 直下のホール」のグループへ分解する（点包含の入れ子深度ベース・巻き方向に非依存）。
  * 深度が偶数のリングを外周として扱い、深度が親+1 のリングをそのホールとして割り当てる
  * （TrueType/OpenType の穴付きグリフ「O」「A」「8」等、および「i」「%」のような複数輪郭を両対応）。
+ *
+ * **前提（重要）**: 入力リングは互いに交差しない（`normalizeRingsNonzero` 通過済み・geom3dTypes.ts の
+ * OutlineGlyph 参照）。巻き方向を捨てる本アルゴリズムは重なる輪郭を原理的に解けず、フォントの生
+ * アウトラインを直接渡すと実体を穴と誤判定する（例: `日` の横棒は枠の内側にあるが穴ではない）。
  */
 export function groupRingsByNesting(rings: Vec2[][]): RingGroup[] {
   const n = rings.length;
