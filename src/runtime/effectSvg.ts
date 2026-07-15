@@ -1060,6 +1060,11 @@ export function blueNoiseMaskSvg(w: number, h: number, reveal: number): string {
   return ditherPatternMaskSvg(w, h, reveal, "blueNoise");
 }
 
+// §27.3 Dither Dissolve — reveal は 64 段量子化・w/h/pattern はレイヤー固定なので、
+// 取りうる mask 文字列は有限。毎フレームの rect 生成 + encodeURIComponent を避けるため
+// (pattern|qStep|w|h) でメモ化する。純関数・決定論のまま（INV-1 / INV-2 不変）。
+const ditherMaskCache = new Map<string, string>();
+
 /**
  * §27.3 Dither Dissolve — wipe と同型の SVG filter primitives（feTile 不使用）。
  * reveal は呼び出し側で ditherEffectiveReveal 済みを渡す。
@@ -1072,10 +1077,21 @@ export function ditherDissolveMask(
 ): string {
   const q = quantizeDitherReveal(reveal);
   if (q >= 1) return "";
-  if (q <= 0) return maskComposite(svgDataUri(allBlackMaskSvg(w, h)), 0, w, h);
   const p = normalizeDitherPattern(pattern);
-  const maskSvg = p === "blueNoise" ? blueNoiseMaskSvg(w, h, q) : bayerMaskSvg(w, h, q);
-  return maskComposite(svgDataUri(maskSvg), 0, w, h);
+  const qStep = Math.max(0, Math.min(64, Math.round(q * 64)));
+  const key = `${p}|${qStep}|${w}|${h}`;
+  const cached = ditherMaskCache.get(key);
+  if (cached !== undefined) return cached;
+
+  let result: string;
+  if (q <= 0) {
+    result = maskComposite(svgDataUri(allBlackMaskSvg(w, h)), 0, w, h);
+  } else {
+    const maskSvg = p === "blueNoise" ? blueNoiseMaskSvg(w, h, q) : bayerMaskSvg(w, h, q);
+    result = maskComposite(svgDataUri(maskSvg), 0, w, h);
+  }
+  ditherMaskCache.set(key, result);
+  return result;
 }
 
 /**
