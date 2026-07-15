@@ -2332,3 +2332,25 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
 - **spec**: §26.4.1 に「weight は family と対等な識別子」節を追記（meta.weight / family×weight キー / font-weight 記述子必須 / meshKey は font identity）。
 - **Next steps**: browser export（mp4/PNG 連番）と HTML bundle での 3D weight 実機確認は未実施。
   export 経路は fonts を描画前に一括ロードするため今回の「毒」レースは構造上起きず、family×weight 化の恩恵のみ受ける想定（unit test で固定済み）。
+
+### 2026-07-16（Claude Opus 4.8）— ネスト comp 内の 3D-extrude text が 2D に落ちる問題を根治（§23.3e）✅
+
+- **症状（ユーザー報告）**: DL にある新しい pj（`mafter-pj-3Dtext-with-pixelstretch.zip`）の **`Main` を他のコンポジションから呼び出すと正しく動作しない**。実測すると 3D 押し出しが完全に消え、フラットな 2D テキストになる（さらに pixelStretch が平面テキストに掛かって `語` が崩れる）。
+- **真因（2 つ。1 つ目だけ直すと 2 つ目で壊れる）**:
+  1. **`renderNestedComp` が `updateComponentEl` に `geom3dCamera` を渡していなかった**（トップレベル `applyObject` は渡す）。`updateComponentEl` は `geom3dCamera === null` で 2D フォールバックする仕様のため、precomp として呼ばれた瞬間 3D が消えていた。当時のコメント自体が「ネスト comp はスコープ外」と明記＝**意図的な未配線が仕様の穴として残っていた**。
+  2. **`renderNestedComp` は毎フレーム `container.innerHTML = ""` する非 reconcile 実装**。1 を直すだけだと geom3d canvas が毎フレーム作り直され、**WebGL context が毎フレーム生成 → Chrome の同時上限(~16)を数十フレームで超過**し `Too many active WebGL contexts. Oldest context will be lost.` で 3D が消える（実機 70 フレームスクラブで再現・15 フレームでは出ないため短い検証だと見逃す）。
+- **修正**（`src/runtime/DomRenderer.ts` のみ・ネスト経路に閉じた最小 diff）:
+  - `geom3dCamera` に**子 comp のカメラ**（ローカル `cameraPre` / `childScene.camera?.fov` / `childComp.width/height`）を渡す。`this.cameraPre` は親 comp の値なので使わない。
+  - `nestedElReuse: WeakMap<container, Map<key, el>>` を追加し、**`text` の el と再帰コンテナ（`comp`）だけ**を key（`objId:index:type`）で持ち越す（他型は従来どおり毎フレーム新規＝無回帰）。
+  - 今フレーム使われなかった持ち越し el は既存の `releaseAlphaGlCompositorsUnder()` で GL を明示解放（持ち越しと解放は対で必要）。
+- **検証（実機 Playwright・ユーザーの実 zip を import して Main を Outer にネスト）**:
+  - 新規恒久 verify `verify-nested-geom3d.mjs`: 修正前 nested=**0 canvas / ink 0**（FAIL）→ 修正後 **3 canvas / ink 176920・standalone と ratio 1.000**（PASS）。
+  - GL 持ち越しゲート: canvas 実体の同一性を見る（`kept === total`）。reuse を外すと `kept 0/3` で FAIL することを確認済み＝**ゲートに歯がある**。`Too many active WebGL contexts` 警告の観測は **GC 依存で不安定**なため合否条件にしない（実測で確認済み）。
+  - **INV-2**: `compFrameCapture` の export PNG が 修正前 `outer(1cd74c…) ≠ main(81cb54…)` → 修正後 **両者バイト等価(81cb54…)**。preview だけでなく export も直った。
+  - 無回帰: `typecheck` 緑 / `npm test` 1281 passed（唯一の失敗 `effects.test.ts > liquidChrome 再登録` は **stash して本変更前から失敗を確認済み・無関係**）/ `verify-font-3d-extrude` `verify-font-3d-weight` `verify-geom3d-mvp` `verify-geom3d-neutral` すべて PASS / `npm run build:player` 実行済み（player が DomRenderer を import するため必須）+ `playerBuildFreshness` 緑。
+- **spec**: §5.5f の「ネスト comp は対象外」記述 3 箇所を更新し、**§23.3e**（ネスト comp 内 3D-extrude text と GL リソース持ち越し規約）を新設。§5 型・INV 変更なし（散文のみ）。
+- **調査で判明した他の未配線（今回は未修正・要判断）**: `renderNestedComp` はトップレベル `applyObject` と比べて次が未配線 —
+  (a) **track matte**（ネスト内マット無効）、(b) **plugin component の `ComponentDef.render`**（プラグイン型がネスト内で描画されない）、(c) **video プール/ループ warmup**（ネスト video は毎フレーム新規要素＝decode churn）。(d) html comp と raster 系 effect は既知の Phase 1 除外（§28.11 のラスタ経路で反映）。
+  今回の pj には track matte / plugin / video が無いため症状は出ない。**着手はユーザー判断待ち**。
+- **既知のリスク（今回記録・未対応）**: **WebGL context は 1 ドキュメント ~16 が上限でページ全体で共有**。`geom3d` は **per-layer 1 context を予算なしで作る（無制限）**一方、split/packed alpha は `MAX_GL_ALPHA_CONTEXTS = 8` の予算＋キルスイッチを持つ（`videoAlphaGl.ts`）。**3D テキストを多数積む／alpha 動画と併用すると上限に届き、古い context から黙って破棄される＝絵が消える**。対処が要るようになったら `shouldCreateGlAlphaCompositor()` と同型の予算ロジック＋2D フォールバックを geom3d に入れる。spec §5.5f / `geom3dGl.ts` の `createState` 冒頭にも記録済み。
+- **Next steps**: 上記 (a)(b)(c) の要否をユーザーに確認。geom3d の GL context 予算の要否判断（3D text を大量に積む使い方が出てきたら）。mp4/webm/HTML bundle の実機 3D parity（今回は `compFrameCapture` バイト等価まで確認）。

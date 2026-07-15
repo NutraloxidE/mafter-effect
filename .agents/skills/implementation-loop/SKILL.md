@@ -86,6 +86,8 @@ description: Mafter Effect で新機能実装・バグ修正・視覚/レンダ�
 型・挙動は `c.type` 分岐や集合定数に **10〜15 箇所**散在する。
 新型・新挙動軸を足すときは grep で全ヒットを洗い、各点で「何をするか」を明示決定する
 （"何もしない" も決定）。詳細は [add-layer-component-type](../add-layer-component-type/SKILL.md)。
+トップレベル `applyObject` と `renderNestedComp` は**別コードパス**。新機能をトップレベルにだけ配線すると
+precomp で無言に落ちる → [wire-feature-into-nested-comp](../wire-feature-into-nested-comp/SKILL.md)。
 
 ### 2d. バグの経路分解（局在化）
 
@@ -182,6 +184,7 @@ worked example（2026-06-26）: 動画 export で `inlineVideoFrames` + `exportV
 | 視覚・位置・parity・「見た目がおかしい」 | [debug-visual-render-bug](../debug-visual-render-bug/SKILL.md) **必須** |
 | displacement / filter / 調整レイヤー / ドリフト | [implement-visual-effect](../implement-visual-effect/SKILL.md) |
 | 新 built-in component / 型の配線漏れ | [add-layer-component-type](../add-layer-component-type/SKILL.md) |
+| **ネスト comp（precomp）で新機能だけ効かない・消える** | [wire-feature-into-nested-comp](../wire-feature-into-nested-comp/SKILL.md) **必須** |
 | フィードバック収穫→要約→提案（一文・日常入口） | [run-feedback-loop](../run-feedback-loop/SKILL.md) **推奨** |
 | ユーザーフィードバックの要約のみ | [summarize-user-feedback](../summarize-user-feedback/SKILL.md) |
 | 要約から次タスク提案のみ（実装前） | [propose-from-user-feedback](../propose-from-user-feedback/SKILL.md) |
