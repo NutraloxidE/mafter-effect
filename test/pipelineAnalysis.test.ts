@@ -244,3 +244,59 @@ describe("pipelineAnalysis", () => {
     expect(result.alphaWarnings[0]?.depth).toBe(1);
   });
 });
+
+describe("glLayers（§5.5f WebGL context 上限の目安）", () => {
+  const text3d = (id: string, enabled3d: boolean, overrides: Partial<SceneObject> = {}) =>
+    baseObj(id, {
+      components: [{ type: "text", props: { text: staticProp("hi"), geomEnabled: enabled3d } }],
+      ...overrides,
+    });
+
+  it("3D Extrude ON の text だけを数える（2D text は 0）", () => {
+    const p = createProject({ now: "2026-01-01T00:00:00.000Z" });
+    timeline(p).objects = [text3d("01A", true), text3d("01B", false), text3d("01C", true)];
+
+    const gl = pipelineAnalysis(timeline(p), p).glLayers;
+    expect(gl.geom3d).toBe(2);
+    expect(gl.total).toBe(2);
+  });
+
+  it("無効レイヤーは context を作らないので数えない", () => {
+    const p = createProject({ now: "2026-01-01T00:00:00.000Z" });
+    timeline(p).objects = [text3d("01A", true), text3d("01B", true, { enabled: false })];
+
+    expect(pipelineAnalysis(timeline(p), p).glLayers.geom3d).toBe(1);
+  });
+
+  it("split/packed alpha video を alphaVideo として数える", () => {
+    const p = createProject({ now: "2026-01-01T00:00:00.000Z" });
+    p.assets.push(videoAsset("asset-split", "split"));
+    p.assets.push(videoAsset("asset-plain", undefined));
+    timeline(p).objects = [videoLayer("01V", "asset-split"), videoLayer("01W", "asset-plain")];
+
+    const gl = pipelineAnalysis(timeline(p), p).glLayers;
+    expect(gl.alphaVideo).toBe(1);
+    expect(gl.geom3d).toBe(0);
+  });
+
+  it("precomp の中身も再帰カウントし、同じ precomp を 2 回置けば 2 倍になる", () => {
+    const p = createProject({ now: "2026-01-01T00:00:00.000Z" });
+    const nestedComp: TimelineComposition = {
+      id: "nested-comp",
+      name: "Nested",
+      kind: "timeline",
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      duration: 90,
+      objects: [text3d("01N1", true), text3d("01N2", true)],
+    };
+    p.compositions.push(nestedComp);
+    const compLayer = (id: string) =>
+      baseObj(id, { components: [{ type: "comp", props: { compId: "nested-comp", trimStart: 0 } }] });
+    timeline(p).objects = [compLayer("01P1"), compLayer("01P2"), text3d("01T", true)];
+
+    // nested 2 枚 × precomp 2 個 + 直下 1 枚 = 5
+    expect(pipelineAnalysis(timeline(p), p).glLayers.total).toBe(5);
+  });
+});
