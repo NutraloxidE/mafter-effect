@@ -25,15 +25,20 @@ function simulate(opts: PixelStretchOpts): {
   const { stage1, stage2 } = pixelStretchDisplaceMaps(opts);
   const horiz = opts.direction === "right" || opts.direction === "left";
   const m1 = decodePngDataUri(stage1.uri);
+  const n = horiz ? m1.width : m1.height;
   const chanOf = (m: { rgba: Uint8Array }, i: number) => m.rgba[i * 4 + (horiz ? 0 : 1)]!;
   const m2 = stage2 ? decodePngDataUri(stage2.uri) : null;
+  // pixelStretchPrimitives が付ける中立バイアス補正 feOffset。出力位置 i は displaced(i−offset) を読む。
+  // 帯は maps 側で offset 分だけ手前に符号化されており、この feOffset でちょうど base に戻る。
+  const offset = (stage1.scale + (stage2 ? stage2.scale : 0)) * (128 / 255 - 0.5);
+  const clamp = (v: number) => Math.max(0, Math.min(n - 1, v));
   return {
     hasStage2: stage2 !== null,
     sampledAt: (i: number) => {
-      let y = i;
+      let y = clamp(Math.round(i - offset));
       if (stage2 && m2) {
-        const p = i + stage2.scale * (chanOf(m2, i) / 255 - 0.5);
-        y = Math.round(p);
+        const p = y + stage2.scale * (chanOf(m2, y) / 255 - 0.5);
+        y = clamp(Math.round(p));
       }
       return y + stage1.scale * (chanOf(m1, y) / 255 - 0.5);
     },

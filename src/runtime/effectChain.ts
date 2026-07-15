@@ -11,6 +11,8 @@ export interface EffectChainCtx {
   height: number;
   frame: number;
   layerOpacity?: number;
+  /** 実効レンダースケール（>=1）。preview zoom>1 / player 拡大で pixelStretch のマップ細分化に使う。既定 1。 */
+  renderScale?: number;
 }
 
 export type RasterChainItem = {

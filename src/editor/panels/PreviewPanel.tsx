@@ -511,6 +511,15 @@ export function PreviewPanel() {
     setRenderTick((t) => t + 1);
   }, [effectiveTextQuality]);
 
+  // pixelStretch 動的解像度: プレビューの実効表示スケール(zoom×dpr)を DomRenderer へ渡し、
+  // 拡大表示(>1)で live displacement のマップをデバイス解像度に細分化してスパイクを消す。
+  // 縮小(<1)は stage の will-change(ネイティブ→GPU 縮小)側で処理するため 1 にクランプ。
+  useEffect(() => {
+    const dpr = typeof window !== "undefined" && window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
+    rendererRef.current?.setRenderScale(Math.max(1, effectiveZoom) * dpr);
+    setRenderTick((t) => t + 1);
+  }, [effectiveZoom]);
+
   // undo/redo 等で project が差し替わったら draft を捨てて DomRenderer を必ず再描画
   useEffect(() => {
     setDraftTransform(null);
@@ -1273,6 +1282,13 @@ export function PreviewPanel() {
                 boxShadow: "0 0 0 1px #444",
                 transform: `scale(${effectiveZoom}) translate(${effectivePan.x}px, ${effectivePan.y}px)`,
                 transformOrigin: "0 0",
+                // 縮小表示(Fit/≤100%)では stage を合成レイヤー化し、ライブ CSS filter
+                // (pixelStretch 等の displacement)を「ネイティブ解像度でラスタライズ→GPU 縮小」
+                // させる。これをしないと Chrome は filter を scale 後のデバイス解像度で再評価し、
+                // 変位マップのサンプリングが崩れて帯にスパイク(ガタガタ)が出る(export は 1:1 で無害)。
+                // 毎フレーム焼き直しは発生せず性能不変・出力不変(非破壊)。>1 の拡大時は Chrome が
+                // 拡大解像度で再ラスタライズするため無効なので付けない(不要な平坦化を避ける)。
+                willChange: effectiveZoom <= 1 ? "transform" : undefined,
                 overflow: "hidden",
               }}
             >
