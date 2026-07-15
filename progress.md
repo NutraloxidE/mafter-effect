@@ -2332,3 +2332,21 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
 - **spec**: §26.4.1 に「weight は family と対等な識別子」節を追記（meta.weight / family×weight キー / font-weight 記述子必須 / meshKey は font identity）。
 - **Next steps**: browser export（mp4/PNG 連番）と HTML bundle での 3D weight 実機確認は未実施。
   export 経路は fonts を描画前に一括ロードするため今回の「毒」レースは構造上起きず、family×weight 化の恩恵のみ受ける想定（unit test で固定済み）。
+
+### 2026-07-15（Claude Sonnet 5）— ditherDissolve の毎フレーム再計算を軽量化（メモ化）✅
+- **調査**: `ditherDissolve` は live エフェクトとして毎フレーム `ditherDissolveMask()` → `ditherPatternMaskSvg()` を再実行し、
+  blueNoise パターンでは 64×64=4096 個の `<rect>` 文字列生成 + `encodeURIComponent` を毎フレームやり直していた。
+  `reveal` は `quantizeDitherReveal` で 64 段に量子化・`w/h/pattern` はレイヤー内固定なので、取りうる mask 文字列は
+  1 レイヤーにつき最大 64 通りしかない（`.cursor/plans/dither-pattern-modes.plan.md` でも予定されていたが未実装だった）。
+- **修正**: `src/runtime/effectSvg.ts` の `ditherDissolveMask()` を `pattern|qStep|w|h` キーの module-level `Map` でメモ化。
+  ロジック・戻り値は不変（純関数のまま・`Math.random`/`Date.now`/DOM 追加なし → INV-1 不変）。
+- **検証**:
+  - `npm run typecheck` 緑。
+  - `npm test` — 既存失敗 1 件（`effects.test.ts > liquidChrome 再登録`）のみ、stash して確認済みで**本変更と無関係の pre-existing 失敗**。
+  - `npm run build:player` 実行済み（`effectSvg.ts` は player import 対象のランタイム側）。
+  - 実機 `verify-dither-dissolve.mjs`（Playwright, `/opt/pw-browsers/chromium` を一時指定して実行・スクリプト自体は未変更のままコミット）:
+    変更前後で **pixel 解析値が完全に同一**（pureRed 3269 / pureBlue 3459 / blended 113272 / blueShare 0.5141 — 両方とも一致）＝
+    出力バイト等価・無回帰を実測で確認。スクリプトが報告した FAIL は favicon.ico の 404（コンソールエラー収集の環境ノイズ）で
+    baseline でも同一に再現する既知の無関係事象。
+- **doc**: 調査結果と Sonnet 5 low 向け修整手順を `doc/cloudplan/dither-dissolve-optimization-sonnet5low.md` に記録済み（Opt 1 実装済み・Opt 3 feTile化はスコープ外のまま）。
+- **Next steps**: Opt 4（blueNoise で白セルのみ emit）は任意。今回はやっていない。
