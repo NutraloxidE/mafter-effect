@@ -2,7 +2,7 @@
 
 > **対象**: `geom3d`（3D-extrude text・§5.5f）/ split・packed alpha video の GL 合成（§2.1/§2.2）
 > **状態**: 2026-07-16 **未対応（既知のリスクとして記録）**。応急処置として Pipeline パネルに GL レイヤー数を表示（下記「応急処置」）。根治（予算＋フォールバック）は**要望ベースで起票**。
-> **発見経緯**: ネスト comp の 3D text 配線（§23.3e）の実機検証中に、毎フレーム canvas 再生成で上限へ到達して発覚。
+> **発見経緯**: ネスト comp の 3D text 配線（§23.3e）の実機検証中に、毎フレーム canvas 再生成で上限へ到達して発覚（本体の調査は [nested-comp-3d-text-fallback.md](nested-comp-3d-text-fallback.md) 参照）。
 
 **関連 spec**: §5.5f（既知のリスク）/ §23.3e（ネスト comp の GL 持ち越し規約）
 **関連実装**: [geom3dGl.ts](../../src/runtime/geom3dGl.ts) の `createState` / [videoAlphaGl.ts](../../src/runtime/videoAlphaGl.ts) の `shouldCreateGlAlphaCompositor` / [DomRenderer.ts](../../src/runtime/DomRenderer.ts) の `releaseAlphaGlCompositorsUnder`
