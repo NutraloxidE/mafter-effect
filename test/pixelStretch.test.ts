@@ -25,15 +25,20 @@ function simulate(opts: PixelStretchOpts): {
   const { stage1, stage2 } = pixelStretchDisplaceMaps(opts);
   const horiz = opts.direction === "right" || opts.direction === "left";
   const m1 = decodePngDataUri(stage1.uri);
+  const n = horiz ? m1.width : m1.height;
   const chanOf = (m: { rgba: Uint8Array }, i: number) => m.rgba[i * 4 + (horiz ? 0 : 1)]!;
   const m2 = stage2 ? decodePngDataUri(stage2.uri) : null;
+  // pixelStretchPrimitives が付ける中立バイアス補正 feOffset。出力位置 i は displaced(i−offset) を読む。
+  // 帯は maps 側で offset 分だけ手前に符号化されており、この feOffset でちょうど base に戻る。
+  const offset = (stage1.scale + (stage2 ? stage2.scale : 0)) * (128 / 255 - 0.5);
+  const clamp = (v: number) => Math.max(0, Math.min(n - 1, v));
   return {
     hasStage2: stage2 !== null,
     sampledAt: (i: number) => {
-      let y = i;
+      let y = clamp(Math.round(i - offset));
       if (stage2 && m2) {
-        const p = i + stage2.scale * (chanOf(m2, i) / 255 - 0.5);
-        y = Math.round(p);
+        const p = y + stage2.scale * (chanOf(m2, y) / 255 - 0.5);
+        y = clamp(Math.round(p));
       }
       return y + stage1.scale * (chanOf(m1, y) / 255 - 0.5);
     },
@@ -213,11 +218,11 @@ describe("PIXEL_STRETCH_EFFECT_DEF apply", () => {
     expect(a).toEqual(b);
   });
 
-  it("lineBias defaults to 8 (PLAN-ALT-1 WP-3 baked baseline) and is passed through", () => {
+  it("lineBias defaults to 0 (length-drift root-cause fix supersedes box-vs-ink baking) and is passed through", () => {
     const a = PIXEL_STRETCH_EFFECT_DEF.apply({ direction: "right", linePos: 0.5, length: 300 }, ctx);
-    const b = PIXEL_STRETCH_EFFECT_DEF.apply({ direction: "right", linePos: 0.5, length: 300, lineBias: 8 }, ctx);
+    const b = PIXEL_STRETCH_EFFECT_DEF.apply({ direction: "right", linePos: 0.5, length: 300, lineBias: 0 }, ctx);
     expect(a).toEqual(b);
-    const c = PIXEL_STRETCH_EFFECT_DEF.apply({ direction: "right", linePos: 0.5, length: 300, lineBias: 0 }, ctx);
+    const c = PIXEL_STRETCH_EFFECT_DEF.apply({ direction: "right", linePos: 0.5, length: 300, lineBias: 8 }, ctx);
     expect(c).not.toEqual(a);
   });
 

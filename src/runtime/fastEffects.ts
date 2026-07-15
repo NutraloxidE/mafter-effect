@@ -9,6 +9,7 @@ import {
   liquidChromePrimitives,
   mosaicGridSnapFilter,
   pixelStretchPrimitives,
+  PIXEL_STRETCH_MAX_MAP_DIM,
 } from "./effectSvg";
 
 function num(v: unknown, fallback: number): number {
@@ -202,11 +203,10 @@ const PIXEL_STRETCH_EFFECT_DEF: EffectDef = {
   params: [
     { key: "direction", label: "Direction", kind: "enum", default: "right", animatable: false, options: [...PIXEL_STRETCH_DIRECTIONS] },
     { key: "linePos", label: "Line Pos", kind: "scalar", default: 0.5, animatable: true, min: 0, max: 1, step: 0.01 },
-    // PLAN-ALT-1 WP-3: box-vs-ink オフセット（ISSUE.md 実測）の実機平均値を基準として焼き込み。
-    // linePos/content 依存で真の根治ではない（ISSUE.md 案C）が、未調整時の見た目を大きく改善する近似値。
-    { key: "lineBias", label: "Line Bias", kind: "scalar", default: 8, animatable: true, min: -200, max: 200, step: 1 },
     { key: "length", label: "Length", kind: "scalar", default: 300, animatable: true, min: 0, max: 2000, step: 1 },
     { key: "density", label: "Density", kind: "scalar", default: 1, animatable: true, min: 0, max: 1, step: 0.01 },
+    // サンプル開始位置の手動バイアス(px)。帯位置は動かさず、引くソース列/行だけをずらす（任意位置サンプル）。
+    { key: "lineBias", label: "Line Bias", kind: "scalar", default: 0, animatable: true, min: -500, max: 500, step: 1 },
   ],
   apply(props, ctx: EffectRenderCtx) {
     const length = Math.max(0, num(props["length"], 300));
@@ -218,11 +218,18 @@ const PIXEL_STRETCH_EFFECT_DEF: EffectDef = {
       ? (dir as (typeof PIXEL_STRETCH_DIRECTIONS)[number])
       : "right";
     const linePos = Math.min(1, Math.max(0, num(props["linePos"], 0.5)));
-    const lineBias = num(props["lineBias"], 8);
+    const lineBias = num(props["lineBias"], 0);
     const density = Math.min(1, Math.max(0, num(props["density"], 1)));
+    // 実効レンダースケール>1（preview zoom-in / html export 拡大）では変位マップを細分化して
+    // 「いま画面に表示されている実解像度」と 1:1 化し、分数スケール再ラスタによる帯スパイクを防ぐ。
+    // ズーム率(zoom×dpr)に**連続追従**し、上限は %ではなくマップ寸法予算で決める
+    // （ストレッチ軸のレイヤー実寸 × k がテクスチャ上限を超えない範囲）。
+    const axisPx = direction === "right" || direction === "left" ? w : h;
+    const maxSuperSample = Math.max(1, PIXEL_STRETCH_MAX_MAP_DIM / Math.max(1, axisPx));
+    const superSample = Math.min(maxSuperSample, Math.max(1, ctx.renderScale ?? 1));
     return {
       kind: "svg",
-      primitives: pixelStretchPrimitives({ w, h, direction, linePos, length, density, lineBias }),
+      primitives: pixelStretchPrimitives({ w, h, direction, linePos, length, density, lineBias, superSample }),
     };
   },
 };
