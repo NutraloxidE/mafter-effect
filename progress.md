@@ -1,5 +1,25 @@
 # Progress
 
+### 2026-07-15（Claude Opus 4.8）— 3D Extrude のメッシュ生成破綻を根治（輪郭の nonzero 正規化）
+
+- **症状**: 3D 押し出しテキストで「メッシュが正しく生成されない時がある」。`日本語3DA` で `日`/`本`/`A` が破綻し `3`/`D` は無傷。ユーザー報告どおり **Roboto 等の欧文フォントでも再現**し、**フォントごとに壊れ方が違う**。
+- **真因**: フォントのアウトラインは **nonzero winding rule** 前提で作られ、**輪郭どうしが重なってよい**（画 = stroke ごとの独立輪郭）。その生アウトラインを earcut（`extrudeMesh.addCap`）へ直接渡していた。earcut が扱えるのは「単純多角形 + 入れ子の穴」だけ。さらに `groupRingsByNesting` は巻き方向を捨てる設計（旧 progress で「巻き方向に非依存」を利点として記録していたが、nonzero rule は巻き方向そのものが塗りを決めるため**原理的に解けない**）。
+  - 実データで確定: Noto Sans JP の `日` は〈枠をシーム付き 1 輪郭で描いたもの〉+〈横棒 2 本〉の 3 輪郭が重なった構成で、**穴を 1 つも持たない**。旧実装は横棒を「枠の内側にあるリング」＝穴と誤判定していた。`本` は 5 輪郭が 7 ペアで交差。Roboto の `A`/`B`/`8` でも発生（`B` は自己交差も）。Anton/Tinos/Noto Sans/Cousine は重なりを持たず無傷 → **フォント依存であって言語依存ではない**＝「フォントごとに一貫性が無い」の正体。
+  - cap だけでなく `addBand`/`insetRing` も重なった輪郭を側面にするため、文字内部に壁が生えていた（報告画像のトゲ・板状ノイズ）。
+- **修正**: `OutlineProvider` に **nonzero 正規化**を追加（新規 [normalizeRings.ts](src/runtime/geom3d/normalizeRings.ts) の `normalizeRingsNonzero`）。`libtess`（GLU tesselator 移植・SGI FSL B・17KB min）を `GLU_TESS_WINDING_NONZERO` + **`GLU_TESS_BOUNDARY_ONLY`** で使い、交差の無いリング列へ再構築してから既存パイプライン（`groupRingsByNesting` → earcut → bevel/band）へ渡す。**下流は無変更**。
+  - **BOUNDARY_ONLY（三角形ではなく輪郭を返す）が要件**: bevel の inset と側面 band がリングを要求するため、三角形しか返さない tesselator では代替不可。既存依存の `polygon-clipping` は even-odd 系 boolean のみで nonzero rule を表現できず不採用。
+  - 正規化はグリフ単位（tracking が詰まっても文字どうしを融合させない）。tesselator 失敗時は生リングへフォールバックし描画を止めない。
+  - `libtess` は .d.ts 非同梱 → [src/types/libtess.d.ts](src/types/libtess.d.ts) を追加。**default import で型付け**（過去に `polygon-clipping` の named import が Rollup 本番ビルドだけ undefined に落ち bundle export が実行時クラッシュした事故と同型を回避）。`build:player` で実際に取り込まれ `not exported` 警告 0 を確認済み。
+- **検証**:
+  - `npm run typecheck` ✅ / `npm run build` + `build:player` ✅（player.js 再ビルド済み — geom3d は DomRenderer 経由で player が import するため HTML bundle export に必須）。
+  - `npx vitest run` = 1252/1253。唯一の失敗 `test/effects.test.ts`（プラグイン再登録数 24 vs 25）は **`git stash` した clean tree でも再現する既存バグ**で本変更と無関係（切り分け済み）。
+  - 新規 [test/geom3d/normalizeRings.test.ts](test/geom3d/normalizeRings.test.ts) 38 件 ✅ — 実フォント 6 種で「出力リングが交差しない」＋「塗り領域が入力の nonzero winding と等価（グリッド不一致 <1%）」を固定。`日` の横棒が実体として塗られること（今回のバグそのもの）も明示的に固定。
+  - 新規 [verify-geom3d-glyph-fidelity.mjs](verify-geom3d-glyph-fidelity.mjs) 実 Chrome 7/7 PASS・console error 0。
+  - 既存 `verify-geom3d-neutral.mjs` / `verify-geom3d-mvp.mjs` 無回帰 PASS。
+- **教訓（重要・同型事故の予防）**: **既存の `verify-geom3d-neutral.mjs` は bbox しか比較していないため、このバグを検出できずに緑で通り抜けていた**（`日` が塗り潰れた塊になっても bbox は不変）。壊れるのが「塗りの中身」なら面積・IoU で測る必要がある。新 verify はブラウザ自身の `fillText`（＝同じ nonzero rule で塗る実装非依存の第三者）を正解として IoU を取る。
+  - 閾値は憶測でなく**正規化を bypass して実測較正**した: 壊れている側 IoU 0.346〜0.726 / 健全側 0.898〜0.975 → gate 0.85（ギャップの中央）。IoU が 1.0 に届かないのは解像度の違う 2 マスクのリサンプル量子化が原因で、**バグと無関係な対照群 `O` が 0.949 で頭打ち**なことから系統的な計測バイアスと確認（curveQuality=high でも 0.9488 までしか動かず曲線近似は主因でない）。塗り率超過も併用（塊化時 `日` は +80%、健全時は常に -1〜-4%）。
+- **Next steps**: shape 経路（P4）にも同じ正規化を通すこと（`OutlineProvider` の同じ境界に載るので流用可）。ネスト comp 内 3D-extrude text の実 MVP 化・mp4/webm/bundle export の geom3d parity verify は従来どおり未実施のまま。
+
 ### 2026-07-14（Claude Sonnet 5）— 3D Extrude 描画を実 MVP 投影へ再設計（P2）
 
 - **ユーザー報告**: 3D Extrude ON にしても質感がボヤけて平坦（カメラ/回転に追従しない）。調査の結果、P1 実装（前セッション）は

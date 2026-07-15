@@ -397,10 +397,14 @@ interface Geom3DTextProps {
   レイヤー間の合成は既存 z-order（DOM）、オブジェクト内の自己遮蔽は GL depth buffer が担う。
   ネスト comp（`renderNestedComp`）内の 3D-extrude text は本リビジョンの対象外（`geom3dCamera=null` で従来の
   CSS `matrix3d` 傾け近似のまま・既知のギャップ、次フェーズ）。
-- **描画経路（案 B・確定）**: per-layer の**素の WebGL canvas**（three.js 不使用）。`entry.contentRoot`（= `el`）内の 1 DOM 要素として座り、blend/filter/matte/export のレイヤー列挙には一切関与しない（[webgl-video-layer-plan.md](../doc/cloudplan/webgl-video-layer-plan.md) §1 の確立原則を踏襲）。実装: `src/runtime/geom3d/`（`geom3dTypes.ts`/`geom3dParams.ts`/`outlineProvider.ts`/`extrudeMesh.ts`（earcut 使用）/`geom3dGl.ts`/`geom3dMeshCache.ts`/`geom3dDomApply.ts`）、配線は `DomRenderer.ts` の `case "text"` 内のみ（型別オプトイン）。
+- **描画経路（案 B・確定）**: per-layer の**素の WebGL canvas**（three.js 不使用）。`entry.contentRoot`（= `el`）内の 1 DOM 要素として座り、blend/filter/matte/export のレイヤー列挙には一切関与しない（[webgl-video-layer-plan.md](../doc/cloudplan/webgl-video-layer-plan.md) §1 の確立原則を踏襲）。実装: `src/runtime/geom3d/`（`geom3dTypes.ts`/`geom3dParams.ts`/`outlineProvider.ts`/`normalizeRings.ts`/`extrudeMesh.ts`（earcut 使用）/`geom3dGl.ts`/`geom3dMeshCache.ts`/`geom3dDomApply.ts`）、配線は `DomRenderer.ts` の `case "text"` 内のみ（型別オプトイン）。
+- **輪郭の nonzero 正規化（確定・2026-07-15 修正）**: フォントのアウトラインは **nonzero winding rule** 前提で作られ、**輪郭どうしが重なってよい**（画 = stroke ごとの独立輪郭）。押し出しパイプラインの下流（`groupRingsByNesting` の入れ子深度判定・earcut・bevel の inset・側面 band）はいずれも「交差しない外周 + 真の穴」しか扱えないため、`OutlineProvider` は**リングをグリフ単位で nonzero rule により再構築してから**下流へ渡す（`normalizeRings.ts` の `normalizeRingsNonzero`）。正規化後のリングが互いに交差しないことは `OutlineGlyph` の不変条件であり、生アウトラインを下流へ直接渡してはならない。
+  - 生アウトラインが下流の前提を満たさない実例: Noto Sans JP の `日` は〈枠をシーム付き 1 輪郭で描いたもの〉+〈横棒 2 本〉の重なりで**穴を 1 つも持たない**。巻き方向を捨てる入れ子深度判定はこの横棒を穴と誤判定する。Roboto の `A`/`B`/`8` でも起き、**フォント依存であって言語依存ではない**（Anton/Tinos/Noto Sans/Cousine のように重なりを持たないフォントは影響を受けない）。
+  - 正規化は塗り領域を保存する（nonzero で塗った面積が等価）ため、見た目の意図は変わらない。tesselator が失敗した場合は生リングへフォールバックし描画を止めない。
+  - グリフ単位で正規化する（tracking が詰まって文字どうしが重なっても融合させない）。
 - **メッシュ生成の設計簡略化（既知）**: `depth`/`bevelSize` は uniform ではなく**メッシュ生成時に実座標として焼き込む**（front cap z=0 固定・back cap z=-depth。ベベルの XY オフセット px と Z 比率を正しく釣り合わせるため）。そのため depth/bevel の変更はメッシュキャッシュ（`geom3dMeshCache.ts`、決定論キー）のミス＝再生成を伴う。twist/bend/taper 用に想定していた「アニメ中 uniform のみで再生成ゼロ」は本パスでは未達成（次フェーズの性能最適化課題）。
 - **export（INV-2）**: GL canvas は `preserveDrawingBuffer: true`。mp4/webm/PNG 連番・bundle は既存の canvas インライン化 export 経路に乗る想定（本リビジョンで詳細な export parity verify は未実施・次フェーズで実施）。`exportStrategy` の既定は他の text と同じ `live`（§5.5、GL 描画はブラウザでライブ実行可能なため bake 不要）。
-- **依存追加**: `earcut`（MIT・~2KB、三角形分割）。
+- **依存追加**: `earcut`（MIT・~2KB、cap の三角形分割）、`libtess`（SGI Free Software License B・~17KB min、輪郭の nonzero 正規化）。`libtess` を選ぶ理由は **nonzero rule での輪郭出力**（`GLU_TESS_BOUNDARY_ONLY`）が必要なため — bevel の inset と側面 band がリングを要求するので三角形しか返さない tesselator では代替できず、既存依存の `polygon-clipping` は even-odd 系 boolean 演算のみで nonzero rule を表現できない。
 - **INV 影響**: なし（既存 INV-1〜6 の枠内。§5 追加は additive-optional・INV-4 準拠）。
 
 **受け入れ確認（実機 Playwright）**: P1 = 実フォント（Noto Sans asset）でのグリフ押し出し（depth/bevel/lambert）が実 Chrome で正しく描画されること、`geomEnabled` トグルの ON→OFF→ON 往復で 2D/3D 双方の DOM 構造が正しく切り替わり残留ノードが無いこと、`depth=0` で例外なく描画できること、Inspector から各 param を編集できることを確認。

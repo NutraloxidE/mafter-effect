@@ -1,5 +1,6 @@
 import type { Font, PathCommand } from "opentype.js";
 import { resolveTextLayout, textBaselineY, type TextAlign } from "../textLayout";
+import { normalizeRingsNonzero } from "./normalizeRings";
 import type { OutlineGlyph, Vec2 } from "./geom3dTypes";
 
 /**
@@ -124,7 +125,9 @@ export function textToOutlineGlyphs(p: TextOutlineInput, font: Font, curveSegmen
     for (const g of line.glyphs) {
       if (!g.char || g.char === "\n" || !g.char.trim()) continue;
       const path = font.getPath(g.char, g.x - bounds.minX, baseline, p.size);
-      const rings = flattenPathCommandsToRings(path.commands, curveSegments);
+      const raw = flattenPathCommandsToRings(path.commands, curveSegments);
+      // グリフ単位で正規化する（文字どうしは tracking が詰まって重なっても融合させない）。
+      const rings = normalizeRingsNonzero(raw);
       if (rings.length > 0) glyphs.push({ rings });
     }
   }
