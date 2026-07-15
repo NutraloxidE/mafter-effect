@@ -9,6 +9,7 @@ import {
   liquidChromePrimitives,
   mosaicGridSnapFilter,
   pixelStretchPrimitives,
+  PIXEL_STRETCH_MAX_MAP_DIM,
 } from "./effectSvg";
 
 function num(v: unknown, fallback: number): number {
@@ -219,9 +220,16 @@ const PIXEL_STRETCH_EFFECT_DEF: EffectDef = {
     const linePos = Math.min(1, Math.max(0, num(props["linePos"], 0.5)));
     const density = Math.min(1, Math.max(0, num(props["density"], 1)));
     const lineBias = num(props["lineBias"], 0);
+    // 実効レンダースケール>1（preview zoom-in / html export 拡大）では変位マップを細分化して
+    // 「いま画面に表示されている実解像度」と 1:1 化し、分数スケール再ラスタによる帯スパイクを防ぐ。
+    // ズーム率(zoom×dpr)に**連続追従**し、上限は %ではなくマップ寸法予算で決める
+    // （ストレッチ軸のレイヤー実寸 × k がテクスチャ上限を超えない範囲）。
+    const axisPx = direction === "right" || direction === "left" ? w : h;
+    const maxSuperSample = Math.max(1, PIXEL_STRETCH_MAX_MAP_DIM / Math.max(1, axisPx));
+    const superSample = Math.min(maxSuperSample, Math.max(1, ctx.renderScale ?? 1));
     return {
       kind: "svg",
-      primitives: pixelStretchPrimitives({ w, h, direction, linePos, length, density, lineBias }),
+      primitives: pixelStretchPrimitives({ w, h, direction, linePos, length, density, lineBias, superSample }),
     };
   },
 };

@@ -163,6 +163,16 @@ export function glitchSliceDisplaceMapPng(opts: {
  */
 export const PIXEL_STRETCH_MAX_SLICE = 64;
 
+/**
+ * pixelStretch 動的解像度スーパーサンプルのマップ最大寸法(px)。
+ * supersample は preview / html export の実効表示スケール(zoom×dpr)に**連続で追従**し
+ * 「いま画面に表示されている実解像度」に変位マップを一致させる。上限はズーム率(%)ではなく
+ * この寸法予算で決める（k_max = MAX_MAP_DIM / ストレッチ軸のレイヤー実寸）。
+ * 小さいレイヤーは高倍率まで、大きいレイヤーは寸法上限まで、常に表示解像度へ一致させる。
+ * 8192 はブラウザの canvas/SVG filter テクスチャ上限と毎 apply の PNG エンコード負荷の安全弁。
+ */
+export const PIXEL_STRETCH_MAX_MAP_DIM = 8192;
+
 export interface PixelStretchOpts {
   w: number;
   h: number;
@@ -178,6 +188,14 @@ export interface PixelStretchOpts {
    * 未指定=0。
    */
   lineBias?: number;
+  /**
+   * 実効レンダースケール（デバイス解像度 / レイヤー表示解像度、>=1）。
+   * preview の zoom>1 や bundle player の拡大表示では、Chrome が live CSS filter を
+   * スケール後のデバイス解像度で再ラスタライズするため、この係数ぶん変位マップを細分化
+   * （grid を k 倍）してテクセルと出力ピクセルを 1:1 化し、帯のスパイク（ガタガタ）を消す。
+   * feDisplacementMap の scale は userSpace px 据え置き（返り値で k を割り戻す）。未指定/1 で従来と等価。
+   */
+  superSample?: number;
 }
 
 export function pixelStretchDisplaceMaps(opts: PixelStretchOpts): {
@@ -185,16 +203,20 @@ export function pixelStretchDisplaceMaps(opts: PixelStretchOpts): {
   stage2: { uri: string; scale: number } | null;
 } {
   const horiz = opts.direction === "right" || opts.direction === "left";
-  const len = Math.max(1, Math.round(opts.length));
-  const n = Math.max(1, Math.round(horiz ? opts.w : opts.h));
+  // 表示解像度(userSpace px)と grid 解像度(=表示×supersample)。全ての空間量は grid 単位で計算し、
+  // feDisplacementMap へ渡す変位量だけ userSpace px へ割り戻す（g で割る）。g=1 で従来と厳密一致。
+  const dispN = Math.max(1, Math.round(horiz ? opts.w : opts.h));
+  const n = Math.max(dispN, Math.round(dispN * Math.max(1, opts.superSample ?? 1)));
+  const g = n / dispN; // 実効 supersample 係数（丸め込み反映）
+  const len = Math.max(1, Math.round(opts.length * g));
   // base: エフェクト帯（ストレッチ領域）の開始位置。linePos + length のみで決まる。
   // src : 実際に色をサンプルするソースライン。lineBias はここだけをずらす（帯位置は動かさない）。
   const base = Math.round(clamp01(opts.linePos) * n);
-  const src = Math.max(0, Math.min(n - 1, Math.round(base + (opts.lineBias ?? 0))));
+  const src = Math.max(0, Math.min(n - 1, Math.round(base + (opts.lineBias ?? 0) * g)));
   // right/down は base の後方（index 増加側）へ、left/up は前方（index 減少側）へ帯を張る。
   const forward = opts.direction === "right" || opts.direction === "down";
-  const sliceW = Math.max(1, Math.round((1 - clamp01(opts.density)) * PIXEL_STRETCH_MAX_SLICE));
-  const scale1 = 2 * len; // feDisplacementMap の変位量 = scale·(C−0.5) ∈ [−len, +len]
+  const sliceW = Math.max(1, Math.round((1 - clamp01(opts.density)) * PIXEL_STRETCH_MAX_SLICE * g));
+  const scale1 = 2 * len; // grid 単位での変位量 = scale·(C−0.5) ∈ [−len, +len]（userSpace は scale1/g）
 
   // 中立バイアス補正（pixelStretchPrimitives の feOffset）は出力全体を +neutralBiasPx ずらす。
   // 帯外（実体）はそれで正しくなるが、帯（ストレッチ部）も一緒に +bias ドリフトしてしまう。
@@ -238,7 +260,8 @@ export function pixelStretchDisplaceMaps(opts: PixelStretchOpts): {
     return horiz ? rgbaToPngDataUri(rgba, n, 1) : rgbaToPngDataUri(rgba, 1, n);
   };
 
-  const stage1 = { uri: encode(c1), scale: scale1 };
+  // 返す scale は feDisplacementMap の userSpace px。grid 単位 scale1 を g で割り戻す。
+  const stage1 = { uri: encode(c1), scale: scale1 / g };
 
   // stage2（残差補正）: scale1 ≤ 255 なら量子化誤差 ≤0.5px で不要。
   if (scale1 <= 255) return { stage1, stage2: null };
@@ -263,12 +286,12 @@ export function pixelStretchDisplaceMaps(opts: PixelStretchOpts): {
     if (a > maxAbs) maxAbs = a;
   }
   if (maxAbs === 0) return { stage1, stage2: null };
-  const scale2 = 2 * (maxAbs + 1);
+  const scale2 = 2 * (maxAbs + 1); // grid 単位（エンコードに使用）
   const c2 = new Uint8Array(n);
   for (let i = 0; i < n; i++) {
     c2[i] = Math.round(clamp01(0.5 + d2[i]! / scale2) * 255);
   }
-  return { stage1, stage2: { uri: encode(c2), scale: scale2 } };
+  return { stage1, stage2: { uri: encode(c2), scale: scale2 / g } };
 }
 
 /** pixelStretch の SVG primitives（feImage+feDisplacementMap の 1〜2 段チェーン）。 */

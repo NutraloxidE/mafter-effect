@@ -2194,3 +2194,23 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
   - 両モード対称化完了。
 - **最終検証**: ✅ typecheck / test（54 tests）/ build:player すべて成功。commit 可能な状態。
 - **Next steps**: (1) commit (review 通過済み)、(2) Phase A 残り 2 種（posterize / gradientMap）の実装 → Phase B/C 着手。
+
+### 2026-07-15（Claude Opus 4.8）— pixelStretch プレビュー帯スパイク（ガタガタ）を非破壊で根治 ✅
+- **症状**: pixelStretch のストレッチ帯が「プレビューでだけ」縦スパイクでガタガタ。export は綺麗。
+- **真因**: pixelStretch は live CSS filter。プレビューの `transform: scale()`（zoom）下で Chrome が
+  filter を **scale 後のデバイス解像度で再ラスタライズ**し、変位マップのサンプリングが崩れる。
+  実 Chrome 計測（investigations/pixel-stretch-origin/measure-spikes.mjs, measure-dynres.mjs）で確定。
+  stage2 は無実（落とすと 1:1 でも悪化）。
+- **修正（縮小 zoom≤1）**: 既存の will-change 案。stage(scale を持つ要素)を合成レイヤー化
+  → ネイティブ解像度でラスタ→GPU 縮小。spikeJumps 38/29→0。
+- **修正（拡大 zoom>1・本命）**: 動的解像度スーパーサンプル。変位マップを実効表示スケール
+  (zoom×dpr)ぶん細分化して 1:1 化。measure-dynres.mjs で 106/333/519→1。
+  - `PixelStretchOpts.superSample`（effectSvg.ts）: grid を k 倍、feDisplacementMap scale は
+    userSpace 据え置き（返り値 /g）。k=1 で従来と厳密一致。上限 3。
+  - `EffectRenderCtx/EffectChainCtx.renderScale` 追加、`DomRenderer.setRenderScale()`。
+    preview=effectiveZoom×dpr、bundle player=fit zoom×dpr を注入。export は 1:1（既定 1・無回帰）。
+  - **`npm run build:player` 実行済み**（runtime + player 変更のため必須）。
+- **検証**: typecheck 緑 / pixelStretch.test.ts 19 / playerBuildFreshness / verify-pixel-stretch.mjs(1:1 drift) 全 PASS。
+- **制限/Next steps**: 拡大は上限 3× まで（それ以上のズームインは僅かに残り得る）。
+  ユーザーに >100% ズーム・HTML 書き出しの実機確認を依頼。実エディタ end-to-end の Playwright 追試は未実施
+  （harness で実 filter コードパスは検証済み）。commit 未実施。

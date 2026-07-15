@@ -51,6 +51,12 @@ export interface EffectRenderCtx {
   frame: number;
   /** §27.3 Dither Dissolve — ResolvedObject.opacity */
   layerOpacity?: number;
+  /**
+   * 実効レンダースケール（デバイス解像度 / レイヤー表示解像度、>=1）。既定 1（export/1:1）。
+   * preview zoom>1 / bundle player の拡大表示で、live CSS filter が scale 後の解像度で
+   * 再ラスタライズされる際、pixelStretch 等が変位マップを細分化して 1:1 化するのに使う。
+   */
+  renderScale?: number;
 }
 
 export interface EffectDef {

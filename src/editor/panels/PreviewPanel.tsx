@@ -511,6 +511,15 @@ export function PreviewPanel() {
     setRenderTick((t) => t + 1);
   }, [effectiveTextQuality]);
 
+  // pixelStretch 動的解像度: プレビューの実効表示スケール(zoom×dpr)を DomRenderer へ渡し、
+  // 拡大表示(>1)で live displacement のマップをデバイス解像度に細分化してスパイクを消す。
+  // 縮小(<1)は stage の will-change(ネイティブ→GPU 縮小)側で処理するため 1 にクランプ。
+  useEffect(() => {
+    const dpr = typeof window !== "undefined" && window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
+    rendererRef.current?.setRenderScale(Math.max(1, effectiveZoom) * dpr);
+    setRenderTick((t) => t + 1);
+  }, [effectiveZoom]);
+
   // undo/redo 等で project が差し替わったら draft を捨てて DomRenderer を必ず再描画
   useEffect(() => {
     setDraftTransform(null);

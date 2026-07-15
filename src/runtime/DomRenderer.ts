@@ -199,6 +199,17 @@ export class DomRenderer implements Renderer {
   // mount 後に setHtmlPlayer() で差し替え可。
   private htmlPlayer: HtmlCompPlayer | null = null;
 
+  /**
+   * pixelStretch 動的解像度用の実効レンダースケール（デバイス解像度 / 表示解像度、>=1）。既定 1。
+   * preview は zoom>1 のとき PreviewPanel が zoom×dpr を注入、bundle player は表示サイズから導出。
+   * export(mp4/webm/PNG) は 1:1 なので既定 1 のまま。live filter の再ラスタ解像度に追随して
+   * 変位マップを細分化するためだけに使う（scene 解決値・INV-2 には影響しない）。
+   */
+  private renderScale = 1;
+  setRenderScale(scale: number): void {
+    this.renderScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
+  }
+
   // §26.4 テキスト品質モード
   private textQuality: "draft" | "precise" = "precise";
   private fontCache: FontOutlineCache | null = null;
@@ -1327,12 +1338,13 @@ export class DomRenderer implements Renderer {
     }
     const layerOpacity = obj.opacity;
     const ctx = obj.isAdjustment
-      ? { width: compW, height: compH, frame, layerOpacity }
+      ? { width: compW, height: compH, frame, layerOpacity, renderScale: this.renderScale }
       : {
           width: layerW || entry.div.offsetWidth || compW,
           height: layerH || entry.div.offsetHeight || compH,
           frame,
           layerOpacity,
+          renderScale: this.renderScale,
         };
 
     const chain = resolveEffectChain(effects, ctx, `fx-${obj.id}`);
@@ -2114,7 +2126,7 @@ export class DomRenderer implements Renderer {
     const isAdj = obj.isAdjustment === true;
     const w = isAdj ? Math.max(1, Math.round(compW)) : Math.max(1, Math.round(div.offsetWidth || compW || 0));
     const h = isAdj ? Math.max(1, Math.round(compH)) : Math.max(1, Math.round(div.offsetHeight || compH || 0));
-    const ctx = { width: w, height: h, frame, layerOpacity: obj.opacity };
+    const ctx = { width: w, height: h, frame, layerOpacity: obj.opacity, renderScale: this.renderScale };
     const tokens: string[] = [];
     const svgFilters: { id: string; primitives: string }[] = [];
     let i = 0;
