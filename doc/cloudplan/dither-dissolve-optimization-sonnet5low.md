@@ -1,19 +1,26 @@
-# Dither Dissolve 軽量化 — 調査結果 & Sonnet 5 low 用 修整手順書
+# Dither Dissolve 軽量化 — 調査結果 & 実装記録
 
 > 対象: `ditherDissolve` エフェクト（live 経路）の毎フレーム再計算コスト削減。
-> 実行モデル想定: **Claude Sonnet 5（low）**。手順は逐語的に追える粒度で書く。
 > spec §5 / INV は変更しない（純関数のメモ化のみ・出力バイト等価）。
+>
+> **ステータス（2026-07-15 更新）:**
+> - ✅ **Opt 1（メモ化）実装・検証・push 済み** — commit `c533a96`（`src/runtime/effectSvg.ts`）。
+> - ⬜ Opt 4（白セルのみ emit）— 任意・未着手。
+> - ❌ Opt 3（feTile 化）— スコープ外（据え置き）。
+>
+> 元は Sonnet 5 low 向けの逐語手順書として書いた。Opt 1 は実装済みだが、手順・パッチ・
+> 検証コマンドは Opt 4 に着手する場合や将来の追随実装で再利用できるよう残す。
 
 ---
 
 ## 0. TL;DR（結論）
 
-- **軽量化の余地は「ある」。** 主因は blueNoise パターンで毎フレーム **4096 個の `<rect>` 文字列生成 + `encodeURIComponent`** をやり直していること。
-- しかし `reveal` は **64 段に量子化**され、`w / h / pattern` はレイヤー内で固定。よって取りうるマスク文字列は **1 レイヤーにつき最大 64 通り**しかない。毎フレーム作り直すのは**純粋な無駄**。
-- **推奨修整 = `ditherDissolveMask()` の出力文字列をキー `pattern|qReveal|w|h` でメモ化する**（Opt 1）。
-  - 純関数のまま・決定論のまま → **INV-1 / INV-2 を壊さない**。出力は従来と**バイト等価**。
+- **軽量化の余地は「あった」。** 主因は blueNoise パターンで毎フレーム **4096 個の `<rect>` 文字列生成 + `encodeURIComponent`** をやり直していたこと。
+- `reveal` は **64 段に量子化**され、`w / h / pattern` はレイヤー内で固定。よって取りうるマスク文字列は **1 レイヤーにつき最大 64 通り**しかない。毎フレーム作り直すのは**純粋な無駄**だった。
+- **✅ 実施済み修整 = `ditherDissolveMask()` の出力文字列をキー `pattern|qStep|w|h` でメモ化**（Opt 1・commit `c533a96`）。
+  - 純関数のまま・決定論のまま → **INV-1 / INV-2 を壊さない**。出力は従来と**バイト等価**（verify で実測一致・§4）。
   - 再生 / スクラブ中はキャッシュヒット率ほぼ 100%。文字列生成と URI エンコードが毎フレームから消える。
-- Opt 4（白セルのみ emit）は任意の追加最適化。**feTile 化（Opt 3）は今回スコープ外**（共有キャプチャ経路を触るため）。
+- Opt 4（白セルのみ emit）は任意の追加最適化（未着手）。**feTile 化（Opt 3）は今回スコープ外**（共有キャプチャ経路を触るため）。
 
 ---
 
@@ -46,24 +53,24 @@ DomRenderer (毎frame)
 - ⇒ **(pattern, qReveal, w, h) の組み合わせは有限**。同じ入力から同じ文字列を毎フレーム再生成している。
 - `.cursor/plans/dither-pattern-modes.plan.md` のリスク表（105 行目）でも
   「pattern 追加でマスク SVG が重い → data URI キャッシュキーに `pattern|seed|qReveal|w|h`」
-  と**メモ化が予定されていたが未実装**。今回それを入れる。
+  と**メモ化が予定されていたが未実装だった**。今回それを入れた（Opt 1・下記）。
 
 ---
 
-## 2. 修整方針（Sonnet 5 low はここだけ実装する）
+## 2. 修整方針
 
-### ✅ Opt 1（必須・低リスク）: `ditherDissolveMask` の結果をメモ化
+### ✅ Opt 1（実装済み・commit `c533a96`）: `ditherDissolveMask` の結果をメモ化
 
-`src/runtime/effectSvg.ts` の `ditherDissolveMask` に module-level `Map` キャッシュを足す。
-**関数のシグネチャ・戻り値・呼び出し側は一切変えない。**
+`src/runtime/effectSvg.ts` の `ditherDissolveMask` に module-level `Map` キャッシュを追加した。
+**関数のシグネチャ・戻り値・呼び出し側は一切変えていない**（純関数のまま）。以下は適用済みの内容。
 
-#### やること（逐語）
+#### やったこと（＝適用済み手順）
 
 1. `src/runtime/effectSvg.ts` を開く。
 2. `ditherDissolveMask`（1067 行目付近）の**直前**に、キャッシュ用 Map を宣言する。
 3. `ditherDissolveMask` 本体の先頭でキーを組み、キャッシュにあれば返す。無ければ従来ロジックで作って `set` してから返す。
 
-#### 参考パッチ（このまま適用してよい）
+#### 適用済みパッチ
 
 変更前:
 
@@ -118,7 +125,7 @@ export function ditherDissolveMask(
 }
 ```
 
-#### 守ること（Sonnet 5 low へのガード）
+#### 守ること（適用時のガード・Opt 4 追随時も同様）
 
 - **戻り値の中身を変えない。** キャッシュミス時のロジックは従来と 1:1。`q >= 1 → ""`、`q <= 0 → allBlack` の分岐順序と結果を保つ。
 - **キーに w, h を必ず含める。** サイズ違いのレイヤーで同じマスクを使い回すと表示崩れ。
@@ -176,7 +183,9 @@ for (let y = 0; y < tile; y++) {
 
 ---
 
-## 4. 検証手順（この順に実行し、全部緑を確認）
+## 4. 検証（Opt 1 は実施済み・結果を記録）
+
+実行コマンド:
 
 ```bash
 # 1) 型 & 単体テスト
@@ -186,17 +195,31 @@ npm test                   # ditherMask / ditherReveal / effects / effectSvg が
 # 2) player 再ビルド（ランタイム変更のため必須）
 npm run build:player       # public/player.js を更新
 
-# 3) 実機 verify（preview + export の dither 挙動無回帰）
-npm run dev &              # 別ターミナル or background で dev サーバ起動（PORT=5173）
-node verify-dither-dissolve.mjs   # PASS を確認（純色/混色ピクセル署名で判定）
+# 3) 実機 verify（preview の dither 挙動無回帰）
+MAFTER_DEV_HTTP1=1 npm run dev &   # dev サーバ起動（PORT=5173）
+node verify-dither-dissolve.mjs    # 純色/混色ピクセル署名で判定
 ```
 
-### 合否基準
+### Opt 1 の実測結果（2026-07-15）
 
-- [ ] `npm test` 緑（特に `test/ditherMask.test.ts` `test/ditherReveal.test.ts`）。
-- [ ] `node verify-dither-dissolve.mjs` が **PASS**（ordered での純色ピクセル数・completion 0.5 の blueShare が従来通り）。
-- [ ] `public/player.js` が更新済み（`playerBuildFreshness` テストが通る）。
-- [ ] 目視: エフェクトの見た目が変更前と**区別つかない**（Opt 1 なら文字列バイト等価なので保証、Opt 4 なら要スクショ比較）。
+| 項目 | 結果 |
+|------|------|
+| `npm run typecheck` | ✅ 緑 |
+| `npm test`（dither/effects/effectSvg） | ✅ 緑。ただし `effects.test.ts > liquidChrome 再登録` の **1 件のみ FAIL** — **変更前から失敗する pre-existing 不良**（`git stash` して baseline でも同一に再現。本変更と無関係） |
+| `npm run build:player` | ✅ `public/player.js` 更新済み |
+| `verify-dither-dissolve.mjs` のピクセル解析 | ✅ **変更前後で完全一致**（`pureRed 3269 / pureBlue 3459 / blended 113272 / blueShare 0.5141`）＝**出力バイト等価・無回帰を実測で確認** |
+
+> **verify スクリプトの PASS/FAIL について:** スクリプト最終判定は `errors.length === 0` を含むため
+> favicon.ico の 404（コンソールエラー収集の環境ノイズ）で FAIL 表示になるが、これは baseline でも
+> 同一に再現する既知の無関係事象。**合否は「ピクセル解析値が baseline と一致するか」で判断する**（一致 = 無回帰）。
+
+### 環境メモ（この sandbox 固有）
+
+- dev サーバは既定で HTTPS（HTTP/2）化されるため、`http://localhost:5173` に curl すると 000。
+  Playwright verify は `http://` を叩くので **`MAFTER_DEV_HTTP1=1 npm run dev`** で HTTP/1.1 に固定して起動する。
+- pre-installed Chromium（`/opt/pw-browsers/chromium`）と `playwright` の revision がずれていて既定 launch が失敗する。
+  検証時のみ `chromium.launch({ executablePath: "/opt/pw-browsers/chromium" })` を一時指定して実行した
+  （**`verify-dither-dissolve.mjs` 本体はコミットしていない** — sandbox 限定のワークアラウンドのため revert 済み）。
 
 ### （任意）軽量化を定量したい場合
 
@@ -206,18 +229,19 @@ node verify-dither-dissolve.mjs   # PASS を確認（純色/混色ピクセル�
 
 ---
 
-## 5. 完了後にやること
+## 5. 完了状況・残タスク
 
-1. `progress.md` に「ditherDissolve メモ化で毎フレームの mask 文字列生成を除去（INV 不変・バイト等価）」を追記。
-2. コミットメッセージ例:
-   ```
-   perf(dither): memoize ditherDissolveMask by (pattern|qReveal|w|h)
+**Opt 1 は完了済み（2026-07-15）:**
 
-   reveal は 64 段量子化・w/h/pattern 固定のため取りうる mask 文字列は有限。
-   毎フレームの rect 生成 + encodeURIComponent を除去。純関数・決定論のまま
-   出力はバイト等価（INV-1 / INV-2 不変）。build:player 済み。
-   ```
-3. `git push -u origin claude/dither-dissolve-optimization-kysf3s`。
+1. ✅ 実装: `src/runtime/effectSvg.ts` メモ化 — commit `c533a96`。
+2. ✅ `npm run build:player` → `public/player.js` 更新（同 commit に同梱）。
+3. ✅ `progress.md` 追記 — 「2026-07-15（Claude Sonnet 5）— ditherDissolve のメモ化」節 / commit `d002291`。
+4. ✅ `git push` 済み（`claude/dither-dissolve-optimization-kysf3s`）。
+
+**残タスク（任意・未着手）:**
+
+- ⬜ Opt 4（blueNoise で白セルのみ emit）。初回生成（キャッシュミス時）も軽くしたい場合のみ。§2 の手順を参照。着手時は `verify-dither-dissolve.mjs` のスクショ無回帰を必ず再確認。
+- ❌ Opt 3（feTile 化）は据え置き（§2 スコープ外の理由参照）。
 
 ---
 
