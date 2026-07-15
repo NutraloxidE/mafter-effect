@@ -1,5 +1,20 @@
 # Progress
 
+### 2026-07-15（Claude Opus 4.8）— 自動生成 ttf を Project パネルの `fonts` フォルダへ集約
+
+- **症状（ユーザー報告・スクリーンショット）**: 3D Extrude でフォントを自動埋め込みするたび、**Project パネルのルートに ttf が直接積み上がる**（Main / Comp 2 / ttf / ttf / Comp 3 / ttf …）。comp と混ざって一覧が汚い。
+- **最初の誤読（記録・同型の取り違え防止）**: 「assets/font 以下に入っていない」を **FS パス**の話と読んで path 移行を実装したが、ユーザーが指していたのは **Project パネルのツリー（bin）**だった。FS の書き込み先は b8880c8 の時点で既に `assets/font/` で正しい。**「フォルダ」がユーザー語彙では bin を指すことがある**（`pre-rendered` フォルダと同じバイブス、という言い方が手がかりだった）。
+- **修正**:
+  - 新規 [fontBin.ts](src/editor/fontBin.ts) — §11.2b [preRender.ts](src/editor/preRender.ts) と対称の純関数群。`ensureFontsBin`（ルート直下 `fonts` bin を作成 or 再利用）/ `addFontAssetToProject` / `migrateFontAssetsToBin` / `strayFontAssetIds`。**bin 構成はユーザー確認済み**: 「ルート直下 `fonts`（pre-rendered と同列）」を選択（`assets > fonts` のネストは不採用）。
+  - `ensureBundledFontAsset`（自動埋め込み）と `importFontAsset`（アップロード）が `registerNewProjectItem`（＝ルート末尾）ではなく `addFontAssetToProject` を通る。
+  - `loadFromFs` に読み込み時移送を追加 — ルート直下に残っている font asset を `fonts` へ移す。**ユーザーが自分で別フォルダへ動かしたフォントは対象外**（`binId` を持つものは触らない）。
+  - 併せて FS 側も移行: 新規 [migrateFontAssetPaths.ts](src/editor/migrateFontAssetPaths.ts) が `assets/font/` 配下でない font asset を `assets/font/<id>.<ext>` へ移す（`assets/font/` 導入前のプロジェクト用。best-effort でコピー失敗時は旧 path 維持）。スキーマ・直列化形式は不変。
+- **検証**:
+  - `npm run typecheck` ✅ / `npx vitest run` 1267/1268 — 失敗 1 件 `test/effects.test.ts`（プラグイン再登録数）は **clean tree でも再現する既存バグ**で無関係（`git stash` で切り分け済み）。
+  - 新規 [test/fontBin.test.ts](test/fontBin.test.ts) 6 件・[test/migrateFontAssetPaths.test.ts](test/migrateFontAssetPaths.test.ts) 4 件 ✅。
+  - 新規 [verify-font-bin.mjs](verify-font-bin.mjs) 実 Chrome PASS — 新規埋め込み・旧プロジェクト再読込の両方でルートに `asset:font` が無く `bin:fonts` 配下に入ること、`is3DCapableFont` が bin 移動後も true（family 参照が壊れない）ことを確認。実際の Project パネルのスクリーンショットでも `fonts` フォルダ表示を目視確認。
+  - 新規 [verify-font-asset-migration.mjs](verify-font-asset-migration.mjs) PASS（FS path 移送）。既存 `verify-font-3d-weight.mjs` / `verify-font-3d-extrude.mjs` 無回帰 PASS。
+- **player 再ビルド不要**: 変更は `src/editor/` + `src/core/paths.ts` のみで `src/player` / `src/runtime` の描画・expression 経路に触れていない。
 ### 2026-07-15（Claude Opus 4.8）— 3D Extrude のメッシュ生成破綻を根治（輪郭の nonzero 正規化）
 
 - **症状**: 3D 押し出しテキストで「メッシュが正しく生成されない時がある」。`日本語3DA` で `日`/`本`/`A` が破綻し `3`/`D` は無傷。ユーザー報告どおり **Roboto 等の欧文フォントでも再現**し、**フォントごとに壊れ方が違う**。
