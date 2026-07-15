@@ -12,6 +12,23 @@ import { multiply, normalMatrix, translation, type Mat4 } from "../mat4";
 /** DOM 上で geom3d canvas を識別するクラス（entry 削除時の GL 解放クエリ用・§entry-removal）。 */
 export const GEOM3D_CANVAS_CLASS = "mafter-geom3d-canvas";
 
+// メッシュの字形は「要求した weight」ではなく「実際に使えた face」で決まる。asset フォントは
+// 非同期ロードのため、要求 weight のアウトラインが未ロードの間は近傍 face で描画されうる。
+// 要求 weight をキーにするとその暫定メッシュが本来の weight のキーで焼き付き、後からフォントが
+// 届いても永久にキャッシュヒットしてしまう（= weight 変更が 3D に反映されない）。
+const fontIds = new WeakMap<Font, number>();
+let nextFontId = 1;
+
+/** 実際に使われた Font インスタンスの安定 ID。face が差し替われば必ずキャッシュミスさせる。 */
+function fontIdentity(font: Font): number {
+  let id = fontIds.get(font);
+  if (id === undefined) {
+    id = nextFontId++;
+    fontIds.set(font, id);
+  }
+  return id;
+}
+
 function ensureCanvas(el: HTMLElement): HTMLCanvasElement {
   let canvas = el.querySelector(`canvas.${GEOM3D_CANVAS_CLASS}`) as HTMLCanvasElement | null;
   if (!canvas) {
@@ -126,9 +143,11 @@ export function applyGeom3DText(
   if (canvas.width !== bw) canvas.width = bw;
   if (canvas.height !== bh) canvas.height = bh;
 
+  // fontIdentity が字形の正体（family×weight×italic の解決結果）を表すため、要求 weight は
+  // キーに含めない — 含めると未ロード時の暫定メッシュを本来の weight で焼き付けてしまう。
   const meshKey = [
     p.text, p.size, p.tracking, p.leading, p.align, p.boxWidth, p.boxHeight,
-    typeof props["font"] === "string" ? props["font"] : "",
+    fontIdentity(font),
     geom.depth, geom.bevelSize, geom.bevelSegments, geom.curveQuality,
   ].join("|");
   const mesh = getCachedMesh(meshKey, () =>

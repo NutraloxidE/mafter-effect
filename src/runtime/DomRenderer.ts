@@ -2315,7 +2315,8 @@ function updateComponentEl(
     }
     case "text": {
       const fontFamily = typeof props["font"] === "string" ? props["font"] : "sans-serif";
-      const font = fontCache?.getFont(fontFamily) ?? null;
+      const fontWeight = typeof props["weight"] === "number" ? props["weight"] : 400;
+      const font = fontCache?.getFont(fontFamily, fontWeight) ?? null;
       // §5.5f 3D 押し出し（実 MVP 投影・非破壊トグル）。system フォント（アウトライン抽出不可）
       // またはメッシュ生成失敗、あるいは geom3dCamera 未提供（ネスト comp・§ 補足のスコープ外）の
       // ときは既存 2D 描画へフォールバックする（§26.4.1 と同じ制約）。

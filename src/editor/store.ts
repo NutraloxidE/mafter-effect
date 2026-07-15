@@ -1338,10 +1338,12 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const before = get().project;
     if (!before || !isBuiltinFontFamily(font)) return;
     const fam = primaryFontFamily(font);
-    if (before.assets.some((a) => a.kind === "font" && a.meta?.family === fam)) return;
     const def = findBuiltinFontByFamily(fam);
     if (!def) return;
+    // 3D 押し出しは weight ごとに別のアウトライン（別ファイル）を要する。family だけで
+    // 重複判定すると最初に埋め込んだ weight が居座り、以降の weight 変更が効かない。
     const w = nearestBuiltinWeight(def, Number.isFinite(weight) ? weight : 400);
+    if (before.assets.some((a) => a.kind === "font" && a.meta?.family === fam && a.meta?.weight === w.weight)) return;
     let bytes: Uint8Array;
     try {
       const resp = await fetch(publicAssetUrl(`${BUILTIN_FONT_DIR}/${w.file}`));
@@ -1353,7 +1355,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const id = newObjectId();
     const assetPath = `${DIR_ASSETS_FONTS}/${id}.ttf`;
     await fs.write(assetPath, bytes);
-    const asset: AssetEntry = { id, path: assetPath, kind: "font", meta: { family: fam } };
+    const asset: AssetEntry = { id, path: assetPath, kind: "font", meta: { family: fam, weight: w.weight } };
     const after = registerNewProjectItem(
       {
         ...before,
@@ -1370,17 +1372,20 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const ext = file.name.split(".").pop() ?? "ttf";
     const buf = await file.arrayBuffer();
     let family: string;
+    let fontWeight = 400;
     try {
       const font = parseOpentypeFont(buf);
       const names = font.names.fontFamily;
       family = names?.en ?? Object.values(names ?? {})[0] ?? file.name.replace(/\.[^.]+$/, "");
+      const usWeightClass = (font.tables as { os2?: { usWeightClass?: number } }).os2?.usWeightClass;
+      if (typeof usWeightClass === "number" && Number.isFinite(usWeightClass)) fontWeight = usWeightClass;
     } catch {
       family = file.name.replace(/\.[^.]+$/, "");
     }
     const id = newObjectId();
     const assetPath = `${DIR_ASSETS_FONTS}/${id}.${ext}`;
     await fs.write(assetPath, new Uint8Array(buf));
-    const asset: AssetEntry = { id, path: assetPath, kind: "font", meta: { family } };
+    const asset: AssetEntry = { id, path: assetPath, kind: "font", meta: { family, weight: fontWeight } };
     const after = registerNewProjectItem(
       {
         ...before,

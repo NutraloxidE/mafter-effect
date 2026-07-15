@@ -2274,3 +2274,27 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
 - **制限/Next steps**: 拡大は上限 3× まで（それ以上のズームインは僅かに残り得る）。
   ユーザーに >100% ズーム・HTML 書き出しの実機確認を依頼。実エディタ end-to-end の Playwright 追試は未実施
   （harness で実 filter コードパスは検証済み）。commit 未実施。
+
+### 2026-07-15（Claude Opus 4.8）— 3D 押し出しがフォントの weight に追従しない問題を根治 ✅
+- **症状**: text の weight を 700 等にしても、3D 化（geomEnabled）すると既定 weight（400）の字形で押し出される。2D は正しく太る。
+- **真因（5 箇所の連鎖・いずれも「family だけ / 要求 weight だけ」を正としていた）**:
+  1. `ensureBundledFontAsset`（store.ts）が **family だけで重複判定** → 最初に埋め込んだ weight が居座り、以降の weight の実ファイルが取り込まれない。
+  2. font asset の `meta` に weight が無く、family しか記録していなかった。
+  3. `FontOutlineCache` が **family 単独キー**（同 family の複数 weight は last-wins）。
+  4. Inspector の **weight 変更が `ensureBundledFontAsset` を呼んでいなかった**（font 変更・3D トグル時のみ）。
+  5. **`geom3dDomApply` の meshKey に font 由来の識別子が無かった** — これが最後まで残った本丸。
+- **最後の 1 手（計測で判明・推測では出せなかった）**: 上記 1–4 を直しても preview のインクが 1099 のまま不変。実機プローブで
+  「preview の FontOutlineCache は 400/700 両方を保持（advance 639/692）」「weight prop は 700」「なのに canvas は Regular」
+  「リロードすると Bold（1654）」と切り分け → **メッシュキャッシュの毒**と確定。weight を 700 に書いた瞬間、Bold の非同期
+  ロード完了前に描画が走り、**Regular 由来のメッシュが「weight=700」のキーで焼き付く**。以後は同じキーにヒットし続けるため
+  スクラブでも直らず、リロードでのみ直る。
+  → **meshKey は「要求 weight」ではなく「実際に使われた Font インスタンスの同一性」（WeakMap による安定 ID）を含める**よう修正。
+- **修正ファイル**: `fontOutlineCache.ts`(family×weight + 最近傍フォールバック) / `store.ts`(family×weight 重複判定・`meta.weight` 記録・upload 時は os2.usWeightClass) / `InspectorPanel.tsx`(weight 変更で取り込み) / `DomRenderer.ts`(getFont に weight) / `previewViewer.ts`・`PreviewViewerOverlay.tsx`・`PreviewPanel.tsx`(bounds も同 face) / `assetFontFaces.ts`(**`font-weight` 記述子必須** — 同 family 複数 weight 同梱で 2D が壊れる回帰の予防) / `geom3dDomApply.ts`(meshKey = font identity)。
+- **後方互換**: `meta.weight` を持たない旧 project の font asset は 400 扱い（唯一の face なら weight 指定でもそれを返す）。§5 型・直列化形式は不変（`meta` は元々 free-form）。
+- **検証**: typecheck 緑 / `test/fontOutlineCache.test.ts` 新規 5 件（実 TTF で Bold の advance > Regular を固定）/ `npm test` は既存の
+  `effects.test.ts > liquidChrome 再登録` 1 件のみ失敗＝**本変更前から失敗**（stash して確認済み・無関係）/ `npm run build:player` 実行済み /
+  実機 `verify-font-3d-weight.mjs` PASS（ink 1099→1654, ratio 1.505, assets に 400 と 700）/ 既存 `verify-font-3d-extrude.mjs` PASS（無回帰）。
+- **恒久 verify を追加**: `verify-font-3d-weight.mjs`（GL canvas の実インクで weight 追従を測る。修正前は ratio=1.000 で FAIL する）。
+- **spec**: §26.4.1 に「weight は family と対等な識別子」節を追記（meta.weight / family×weight キー / font-weight 記述子必須 / meshKey は font identity）。
+- **Next steps**: browser export（mp4/PNG 連番）と HTML bundle での 3D weight 実機確認は未実施。
+  export 経路は fonts を描画前に一括ロードするため今回の「毒」レースは構造上起きず、family×weight 化の恩恵のみ受ける想定（unit test で固定済み）。

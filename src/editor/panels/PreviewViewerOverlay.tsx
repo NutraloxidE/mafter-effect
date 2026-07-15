@@ -82,7 +82,7 @@ interface PreviewViewerOverlayProps {
   resolveCtx?: ResolveContext;
   onPan: (delta: { x: number; y: number }) => void;
   textQuality?: "draft" | "precise";
-  getFont?: (family: string) => Font | null;
+  getFont?: (family: string, weight?: number) => Font | null;
   getImageSize?: (assetId: string) => { width: number; height: number } | null;
 }
 

@@ -16,12 +16,17 @@ export async function registerAssetFonts(project: Project, fs: FileSystem): Prom
   for (const asset of project.assets) {
     if (asset.kind !== "font") continue;
     const family = typeof asset.meta?.family === "string" ? asset.meta.family : null;
-    if (!family || injected.has(family)) continue;
+    if (!family) continue;
+    // 同 family の複数 weight を同梱しうるため font-weight 記述子が必須。省略すると全 face が
+    // normal を名乗り、ブラウザが誤った face を選ぶ（3D と 2D で別 weight になる）。
+    const weight = typeof asset.meta?.weight === "number" ? asset.meta.weight : 400;
+    const key = `${family}|${weight}`;
+    if (injected.has(key)) continue;
     try {
       const buf = await fs.read(asset.path);
       const url = URL.createObjectURL(new Blob([new Uint8Array(buf)]));
-      style.textContent += `@font-face{font-family:'${family}';src:url('${url}');}\n`;
-      injected.add(family);
+      style.textContent += `@font-face{font-family:'${family}';font-weight:${weight};src:url('${url}');}\n`;
+      injected.add(key);
     } catch {
       /* skip unreadable font */
     }

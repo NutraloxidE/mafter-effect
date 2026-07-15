@@ -1335,7 +1335,7 @@ export function PreviewPanel() {
                   resolveCtx={{ expressions: evaluatorRef.current, previewCamera: previewCamera ?? undefined }}
                   onPan={handlePan}
                   textQuality={effectiveTextQuality}
-                  getFont={(family) => fontCacheRef.current.getFont(family) ?? null}
+                  getFont={(family, weight) => fontCacheRef.current.getFont(family, weight) ?? null}
                   getImageSize={(assetId) => imageCacheRef.current.getSize(assetId)}
                 />
               )}

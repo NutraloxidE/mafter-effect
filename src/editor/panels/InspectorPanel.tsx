@@ -1998,7 +1998,13 @@ function TextComponentFields({
       <Row label="Weight">
         <select
           value={String(weight)}
-          onChange={(e) => writeStatic("weight", Number(e.target.value), "Edit weight")}
+          onChange={(e) => {
+            const next = Number(e.target.value);
+            writeStatic("weight", next, "Edit weight");
+            // 3D 押し出しは weight ごとに別アウトラインを使う。取り込み忘れると 2D だけ太って
+            // 3D は前の weight のままになる。
+            if (props["geomEnabled"] === true) void ensureBundledFontAsset(font, next);
+          }}
           style={selectStyle}
         >
           {(def?.params.find((p) => p.key === "weight")?.options ?? ["400"]).map((w) => (
