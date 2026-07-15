@@ -1258,6 +1258,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
             geomEnabled: false,
             geomDepth: staticProp(50),
             geomBevelSize: staticProp(0),
+            geomBevelStyle: "angular",
             geomBevelSegments: 2,
             geomCurveQuality: "medium",
             geomShading: "lambert",

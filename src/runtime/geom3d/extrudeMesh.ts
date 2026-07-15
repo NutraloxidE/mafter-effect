@@ -1,5 +1,5 @@
 import earcutFn from "earcut";
-import type { MeshData, OutlineGlyph, Vec2 } from "./geom3dTypes";
+import type { BevelStyle, MeshData, OutlineGlyph, Vec2 } from "./geom3dTypes";
 
 /**
  * §5.2 押し出しメッシュ生成（純関数）。P1 スコープ = depth + bevel（lambert 陰影用の法線込み）。
@@ -17,6 +17,8 @@ interface Vec3Local {
 export interface ExtrudeOptions {
   depth: number;
   bevelSize: number;
+  bevelStyle: BevelStyle;
+  /** angular では無視される（1 セグメントで厳密なため）。 */
   bevelSegments: number;
 }
 
@@ -121,11 +123,20 @@ function edgeOutward(a: Vec2, b: Vec2, ringSign: number): Vec2 {
   return ringSign >= 0 ? { x: dy / len, y: -dx / len } : { x: -dy / len, y: dx / len };
 }
 
-/** リングの各頂点を「材料の外から内へ」dist だけオフセットする（ベベルのチャンファ生成用）。 */
-function insetRing(ring: Vec2[], dist: number): Vec2[] {
+/** リング全頂点の外向き法線（プロファイル生成とベベル法線で共有するため一度だけ作る）。 */
+function ringOutwardNormals(ring: Vec2[]): Vec2[] {
   const sign = Math.sign(signedArea(ring)) || 1;
+  return ring.map((_, i) => outwardVertexNormal(ring, i, sign));
+}
+
+/**
+ * リングの各頂点を「材料の外から内へ」dist だけオフセットする（ベベルのチャンファ生成用）。
+ * 法線は呼び出し側が `ringOutwardNormals` で用意する（全プロファイルリングで同じ法線を共有し、
+ * 頂点の 1:1 対応を保つため）。
+ */
+function insetRingWith(ring: Vec2[], normals: Vec2[], dist: number): Vec2[] {
   return ring.map((p, i) => {
-    const n = outwardVertexNormal(ring, i, sign);
+    const n = normals[i]!;
     return { x: p.x - n.x * dist, y: p.y - n.y * dist };
   });
 }
@@ -164,6 +175,19 @@ class MeshBuilder {
     const i1 = this.pushVertex(p1, n, group);
     const i2 = this.pushVertex(p2, n, group);
     const i3 = this.pushVertex(p3, n, group);
+    this.indices.push(i1, i2, i3);
+  }
+
+  /** 頂点ごとに異なる法線を与える（ベベルの解析法線＝スムースシェーディング用）。 */
+  addTriangleSmooth(
+    p1: Vec3Local, n1: Vec3Local,
+    p2: Vec3Local, n2: Vec3Local,
+    p3: Vec3Local, n3: Vec3Local,
+    group: number,
+  ): void {
+    const i1 = this.pushVertex(p1, n1, group);
+    const i2 = this.pushVertex(p2, n2, group);
+    const i3 = this.pushVertex(p3, n3, group);
     this.indices.push(i1, i2, i3);
   }
 
@@ -231,8 +255,76 @@ const FACE_BACK = 1;
 const FACE_SIDE = 2;
 const FACE_BEVEL = 3;
 
+/**
+ * ベベル断面の 1 点（§5.5f「ベベル断面」）。断面座標は (n, z) = (輪郭から外向き, 手前が +)、
+ * 半径 R で正規化した比率で返す。t=0 が cap の縁 (n=-R, z=0)、t=1 が側壁の上端 (n=0, z=-R)
+ * ＝ **3 スタイルは端点を共有し曲線だけが違う**。
+ *
+ * 凸/凹は円弧の中心が材料の内側か外側かで決まる:
+ *   round  中心 (-R,-R) = 材料の内側 → 凸（ラウンドオーバー）
+ *   concave 中心 (0,0)  = 外側の角   → 凹（コーブ）
+ * 中心を輪郭の角 (0,-R) に置くと凹になり、cap も z=0 から後退して「ベベルでなくへこみ」になる
+ * （2026-07-15 に修正した実バグ。extrude.test.ts の凸性テストで固定）。
+ *
+ * `offsetFrac` = 輪郭から内側へ inset する量 / R、`zFrac` = cap 平面から奥へ進む量 / R、
+ * `(nComp, zComp)` = (n, z) 平面の単位法線（|(nComp, zComp)| = 1）。
+ */
+function bevelProfilePoint(
+  style: BevelStyle,
+  t: number,
+): { offsetFrac: number; zFrac: number; nComp: number; zComp: number } {
+  if (style === "angular") {
+    // 直線 45° チャンファ。法線は断面全体で一定なので 1 セグメントで厳密。
+    return { offsetFrac: 1 - t, zFrac: t, nComp: Math.SQRT1_2, zComp: Math.SQRT1_2 };
+  }
+  const theta = t * (Math.PI / 2);
+  const sin = Math.sin(theta);
+  const cos = Math.cos(theta);
+  if (style === "concave") {
+    return { offsetFrac: cos, zFrac: sin, nComp: cos, zComp: sin };
+  }
+  return { offsetFrac: 1 - sin, zFrac: 1 - cos, nComp: sin, zComp: cos };
+}
+
+/** プロファイル 1 段（実座標に落とした断面リング）。 */
+interface ProfileStep {
+  ring: Vec2[];
+  z: number;
+  /** (n, z) 平面の単位法線。back 側は zComp の符号が反転する。 */
+  nComp: number;
+  zComp: number;
+}
+
+/** 断面法線 (nComp, zComp) と頂点の外向き XY から 3D 頂点法線を作る。両者が単位なので結果も単位。 */
+function bevelVertexNormal(outXY: Vec2, nComp: number, zComp: number): Vec3Local {
+  return { x: outXY.x * nComp, y: outXY.y * nComp, z: zComp };
+}
+
+/**
+ * ベベル帯を張る。法線は面ごとの実ジオメトリ法線ではなく**断面の解析法線**を頂点法線として与える
+ * ＝ segments を上げるとファセットが消えて滑らかになる（フラット法線の addBand と対照的）。
+ */
+function addBevelBand(builder: MeshBuilder, a: ProfileStep, b: ProfileStep, outXY: Vec2[]): void {
+  const n = a.ring.length;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const ni = outXY[i]!;
+    const nj = outXY[j]!;
+    const p0: Vec3Local = { x: a.ring[i]!.x, y: a.ring[i]!.y, z: a.z };
+    const p1: Vec3Local = { x: a.ring[j]!.x, y: a.ring[j]!.y, z: a.z };
+    const p2: Vec3Local = { x: b.ring[j]!.x, y: b.ring[j]!.y, z: b.z };
+    const p3: Vec3Local = { x: b.ring[i]!.x, y: b.ring[i]!.y, z: b.z };
+    const n0 = bevelVertexNormal(ni, a.nComp, a.zComp);
+    const n1 = bevelVertexNormal(nj, a.nComp, a.zComp);
+    const n2 = bevelVertexNormal(nj, b.nComp, b.zComp);
+    const n3 = bevelVertexNormal(ni, b.nComp, b.zComp);
+    builder.addTriangleSmooth(p0, n0, p1, n1, p2, n2, FACE_BEVEL);
+    builder.addTriangleSmooth(p0, n0, p2, n2, p3, n3, FACE_BEVEL);
+  }
+}
+
 function extrudeGroup(group: RingGroup, opts: ExtrudeOptions, builder: MeshBuilder): void {
-  const { depth, bevelSize, bevelSegments } = opts;
+  const { depth, bevelSize, bevelSegments, bevelStyle } = opts;
   const bevelExtent = bevelSize > 0 ? Math.min(bevelSize, depth / 2) : 0;
 
   if (bevelExtent <= 0) {
@@ -243,33 +335,40 @@ function extrudeGroup(group: RingGroup, opts: ExtrudeOptions, builder: MeshBuild
     return;
   }
 
-  // ベベル: 四半円プロファイルで角丸チャンファ（cap 側は offset=bevelExtent まで縮んだ内側リング）。
-  const buildProfile = (ring: Vec2[], atFront: boolean): { rings: Vec2[][]; zs: number[] } => {
-    const rings: Vec2[][] = [];
-    const zs: number[] = [];
-    for (let s = 0; s <= bevelSegments; s++) {
-      const angle = (s / bevelSegments) * (Math.PI / 2);
-      const offsetFrac = Math.sin(angle);
-      const zFrac = 1 - Math.cos(angle);
-      const offset = bevelExtent * offsetFrac;
-      const z = atFront ? -bevelExtent * zFrac : -depth + bevelExtent * zFrac;
-      rings.push(offset > 0 ? insetRing(ring, offset) : ring);
-      zs.push(z);
+  // ベベル断面は §5.5f「ベベル断面」＝ 3 スタイルとも「cap の縁 → 側壁の上端」を結び、曲線だけが違う。
+  // angular は法線が一定なので 1 セグメントで厳密（segments を消費しない）。
+  const segs = bevelStyle === "angular" ? 1 : Math.max(1, bevelSegments);
+
+  const buildProfile = (ring: Vec2[], outXY: Vec2[], atFront: boolean): ProfileStep[] => {
+    const steps: ProfileStep[] = [];
+    for (let s = 0; s <= segs; s++) {
+      const pr = bevelProfilePoint(bevelStyle, s / segs);
+      const offset = bevelExtent * pr.offsetFrac;
+      steps.push({
+        ring: offset > 0 ? insetRingWith(ring, outXY, offset) : ring,
+        z: atFront ? -bevelExtent * pr.zFrac : -depth + bevelExtent * pr.zFrac,
+        nComp: pr.nComp,
+        zComp: atFront ? pr.zComp : -pr.zComp,
+      });
     }
-    return { rings, zs };
+    return steps;
   };
 
   const emitContourBevel = (ring: Vec2[]): { frontCapRing: Vec2[]; backCapRing: Vec2[] } => {
-    const front = buildProfile(ring, true);
-    const back = buildProfile(ring, false);
-    for (let s = 0; s < bevelSegments; s++) {
-      addBand(builder, front.rings[s]!, front.zs[s]!, front.rings[s + 1]!, front.zs[s + 1]!, FACE_BEVEL);
-      addBand(builder, back.rings[s]!, back.zs[s]!, back.rings[s + 1]!, back.zs[s + 1]!, FACE_BEVEL);
+    // 外向き法線は元の輪郭から一度だけ作り、全プロファイルリングで共有する
+    // （inset 後のリングから作り直すと頂点対応と法線がずれる）。
+    const outXY = ringOutwardNormals(ring);
+    const front = buildProfile(ring, outXY, true);
+    const back = buildProfile(ring, outXY, false);
+    for (let s = 0; s < segs; s++) {
+      addBevelBand(builder, front[s]!, front[s + 1]!, outXY);
+      addBevelBand(builder, back[s]!, back[s + 1]!, outXY);
     }
-    const frontInner = front.rings[bevelSegments]!;
-    const backInner = back.rings[bevelSegments]!;
-    addBand(builder, frontInner, front.zs[bevelSegments]!, backInner, back.zs[bevelSegments]!, FACE_SIDE);
-    return { frontCapRing: frontInner, backCapRing: backInner };
+    // 側壁: 両ベベルの外周端（= 元の輪郭）どうしを結ぶ＝シルエットは 2D の輪郭と一致する。
+    const frontWall = front[segs]!;
+    const backWall = back[segs]!;
+    addBand(builder, frontWall.ring, frontWall.z, backWall.ring, backWall.z, FACE_SIDE);
+    return { frontCapRing: front[0]!.ring, backCapRing: back[0]!.ring };
   };
 
   const outerBevel = emitContourBevel(group.outer);
@@ -280,8 +379,8 @@ function extrudeGroup(group: RingGroup, opts: ExtrudeOptions, builder: MeshBuild
     outer: [...outerBevel.backCapRing].reverse(),
     holes: holesBevel.map((h) => [...h.backCapRing].reverse()),
   };
-  addCap(builder, frontCapGroup, -bevelExtent, { x: 0, y: 0, z: 1 }, FACE_FRONT);
-  addCap(builder, backCapGroup, -depth + bevelExtent, { x: 0, y: 0, z: -1 }, FACE_BACK);
+  addCap(builder, frontCapGroup, 0, { x: 0, y: 0, z: 1 }, FACE_FRONT);
+  addCap(builder, backCapGroup, -depth, { x: 0, y: 0, z: -1 }, FACE_BACK);
 }
 
 /** OutlineGlyph[]（text の各文字、または shape 1 個）から押し出しメッシュを構築する（決定論）。 */

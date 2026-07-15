@@ -377,7 +377,8 @@ interface Geom3DTextProps {
   geomEnabled:       boolean;                          // 既定 false。animatable: false（構造トグル）
   geomDepth:         AnimatedProp<number>;              // px, >=0。既定 50
   geomBevelSize:      AnimatedProp<number>;              // px, >=0。既定 0（ベベルなし）
-  geomBevelSegments: number;                            // 1..8。既定 2。animatable: false
+  geomBevelStyle:    "angular" | "round" | "concave";    // 既定 "angular"（AE(C4D)/Illustrator と同じ既定）。animatable: false
+  geomBevelSegments: number;                            // 1..8。既定 2。animatable: false。angular では無視（1 面で厳密）
   geomCurveQuality:  "low" | "medium" | "high";          // ベジェ flatten 分割数。既定 "medium"
   geomShading:       "none" | "lambert";                 // 既定 "lambert"
   geomAmbient:       AnimatedProp<number>;               // 0..1。既定 0.35（lambert 時のみ意味を持つ）
@@ -405,6 +406,18 @@ interface Geom3DTextProps {
   - 生アウトラインが下流の前提を満たさない実例: Noto Sans JP の `日` は〈枠をシーム付き 1 輪郭で描いたもの〉+〈横棒 2 本〉の重なりで**穴を 1 つも持たない**。巻き方向を捨てる入れ子深度判定はこの横棒を穴と誤判定する。Roboto の `A`/`B`/`8` でも起き、**フォント依存であって言語依存ではない**（Anton/Tinos/Noto Sans/Cousine のように重なりを持たないフォントは影響を受けない）。
   - 正規化は塗り領域を保存する（nonzero で塗った面積が等価）ため、見た目の意図は変わらない。tesselator が失敗した場合は生リングへフォールバックし描画を止めない。
   - グリフ単位で正規化する（tracking が詰まって文字どうしが重なっても融合させない）。
+- **ベベル断面（確定・2026-07-15 修正）**: 断面を `(n, z)`（`n` = 輪郭から外向き、`z` = 手前が +、`R` = 実効ベベル幅 = `min(geomBevelSize, depth/2)`）で見ると、3 スタイルは**端点を共有し曲線だけが違う**。front 側は必ず「cap の縁 `(n=-R, z=0)`」→「側壁の上端 `(n=0, z=-R)`」を結ぶ（back 側は `z=-depth` 基準の鏡像）。したがって **cap は常に真の `z=0` / `z=-depth` 平面に載り**（本節「front cap z=0 固定」と整合）、側壁は輪郭そのもの＝**シルエットは 2D 描画の輪郭と一致する**（Illustrator の Bevel Extent In 相当）。`t: 0→1`、`θ = t·π/2`。
+
+  | style | 断面形 | 円弧の中心 | `(n,z)` 単位法線 |
+  |---|---|---|---|
+  | `angular` | 直線 45° | —（直線） | `(1,1)/√2`（一定） |
+  | `round` | 四半円 | `(-R,-R)` ＝ **材料の内側** | `(sinθ, cosθ)` |
+  | `concave` | 四半円 | `(0,0)` ＝ 外側の角 | `(cosθ, sinθ)` |
+
+  - **凸/凹の判定基準**: 円弧の中心が材料の**内側**なら凸（`round`）、**外側**なら凹（`concave`）。新しい断面を足すときはこの基準で検算する。
+  - **ベベルの法線は解析法線**（`nComp·outwardXY + zComp·ẑ` を頂点法線として付与。`outwardXY` は**元の輪郭**の頂点法線を全プロファイルリングで共有する）＝ `geomBevelSegments` を上げるとファセットが消えて滑らかになる。cap/側壁は従来どおり面ごとのフラット法線（`round` は `t=0` で法線が `(0,0,1)`＝cap 法線、`t=1` で純水平＝側壁法線に一致するため、cap→ベベル→側壁が自動的に連続する）。
+  - `angular` は 1 セグメントで厳密なため `geomBevelSegments` を無視する（`round`/`concave` のみ有効）。
+  - **既知バグの記録（2026-07-15 修正済み）**: 旧実装は円弧の中心を `(0,-R)`＝**輪郭の角そのもの**に置き `(0,0)→(-R,-R)` を描いていた。中心が材料の外＝凹であるうえ front cap が `z=-R` へ後退し、`z=0` に鋭いフランジが残って断面が鼓（つづみ）型になる＝「ベベルでなくへこみ」に見える。「front cap z=0 固定」違反でもあった。回帰は `test/geom3d/extrude.test.ts` の cap 平面テストと凸性テスト（最前面のベベル頂点法線が `+z` 側を向く）で固定。
 - **メッシュ生成の設計簡略化（既知）**: `depth`/`bevelSize` は uniform ではなく**メッシュ生成時に実座標として焼き込む**（front cap z=0 固定・back cap z=-depth。ベベルの XY オフセット px と Z 比率を正しく釣り合わせるため）。そのため depth/bevel の変更はメッシュキャッシュ（`geom3dMeshCache.ts`、決定論キー）のミス＝再生成を伴う。twist/bend/taper 用に想定していた「アニメ中 uniform のみで再生成ゼロ」は本パスでは未達成（次フェーズの性能最適化課題）。
 - **export（INV-2）**: GL canvas は `preserveDrawingBuffer: true`。mp4/webm/PNG 連番・bundle は既存の canvas インライン化 export 経路に乗る想定（本リビジョンで詳細な export parity verify は未実施・次フェーズで実施）。`exportStrategy` の既定は他の text と同じ `live`（§5.5、GL 描画はブラウザでライブ実行可能なため bake 不要）。
 - **依存追加**: `earcut`（MIT・~2KB、cap の三角形分割）、`libtess`（SGI Free Software License B・~17KB min、輪郭の nonzero 正規化）。`libtess` を選ぶ理由は **nonzero rule での輪郭出力**（`GLU_TESS_BOUNDARY_ONLY`）が必要なため — bevel の inset と側面 band がリングを要求するので三角形しか返さない tesselator では代替できず、既存依存の `polygon-clipping` は even-odd 系 boolean 演算のみで nonzero rule を表現できない。

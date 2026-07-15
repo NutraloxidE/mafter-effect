@@ -2082,6 +2082,7 @@ function Geom3DFields({
   const bevelSizeProp = props["geomBevelSize"];
   const ambientProp = props["geomAmbient"];
   const bevelSegments = typeof props["geomBevelSegments"] === "number" ? props["geomBevelSegments"] : 2;
+  const bevelStyle = props["geomBevelStyle"] === "round" || props["geomBevelStyle"] === "concave" ? props["geomBevelStyle"] : "angular";
   const curveQuality = props["geomCurveQuality"] === "low" || props["geomCurveQuality"] === "high" ? props["geomCurveQuality"] : "medium";
   const shading = props["geomShading"] === "none" ? "none" : "lambert";
 
@@ -2138,16 +2139,30 @@ function Geom3DFields({
         <>
           {numRow("geomDepth", "Depth", depthProp, 0)}
           {numRow("geomBevelSize", "Bevel Size", bevelSizeProp, 0)}
-          <Row label="Bevel Segs">
-            <ScrubNumber
-              value={bevelSegments}
-              onCommit={(v) => writeStatic("geomBevelSegments", Math.round(Math.min(8, Math.max(1, v))), "Edit bevel segments")}
-              min={1}
-              max={8}
-              step={1}
-              style={numInputStyle}
-            />
+          <Row label="Bevel Style">
+            <select
+              value={bevelStyle}
+              onChange={(e) => writeStatic("geomBevelStyle", e.target.value, "Edit bevel style")}
+              style={selectStyle}
+            >
+              <option value="angular">Angular</option>
+              <option value="round">Round</option>
+              <option value="concave">Concave</option>
+            </select>
           </Row>
+          {/* angular は 1 面で厳密＝分割数を持たないので出さない（§5.5f）。 */}
+          {bevelStyle !== "angular" && (
+            <Row label="Bevel Segs">
+              <ScrubNumber
+                value={bevelSegments}
+                onCommit={(v) => writeStatic("geomBevelSegments", Math.round(Math.min(8, Math.max(1, v))), "Edit bevel segments")}
+                min={1}
+                max={8}
+                step={1}
+                style={numInputStyle}
+              />
+            </Row>
+          )}
           <Row label="Curve Quality">
             <select
               value={curveQuality}

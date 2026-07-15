@@ -1,5 +1,24 @@
 # Progress
 
+### 2026-07-15（Claude Opus 4.8）— Bevel が「へこみ」になる断面バグを根治 ＋ `geomBevelStyle` 追加
+
+- **症状（ユーザー報告・スクリーンショット）**: 3D text の Bevel が「Bevel ってよりへこみって感じ」。文字のエッジに沿って暗い溝が彫られたように見え、ベベル特有のハイライトが出ない。
+- **真因（断面 `(n,z)` で特定。`n` = 輪郭から外向き、`z` = 手前が +、`R` = 実効ベベル幅）**: `buildProfile` が**円弧の中心を `(0,-R)`＝輪郭の角そのもの**に置き `(0,0)→(-R,-R)` を描いていた。中心が材料の**外**＝**凹（コーブ）**。加えて front cap が `z=-R` へ後退して `z=0` に鋭いフランジが残り、断面が**鼓（つづみ）型**（front 全幅 → 中央で痩せる → back 全幅）になっていた。**spec §5.5f の「front cap z=0 固定」違反**でもあり、spec 変更なしの適合回復として修正できた。
+  - **凸/凹の判定基準（今後の検算用）**: 円弧の中心が材料の**内側**なら凸、**外側**なら凹。修正後は中心 `(-R,-R)`＝材料の内側。
+  - 旧実装は `offsetFrac = sin θ` → `1 - sin θ` の 1 文字差だが、意味は「凹→凸」かつ「cap 平面の復帰」で別物。
+- **修正（A+B+D。C は見送り＝下記 Next steps）**:
+  - **A. 断面の反転** — 3 スタイルが**端点を共有**する設計へ統一（cap の縁 `(-R,0)` → 側壁の上端 `(0,-R)`、曲線だけが違う）。cap は常に真の `z=0`/`z=-depth`、側壁は輪郭そのもの＝**シルエットが 2D 描画と一致**（Illustrator の Bevel Extent In 相当）。
+  - **B. ベベル法線の解析化** — 面ごとのフラット法線をやめ、断面の解析法線 `nComp·outwardXY + zComp·ẑ` を頂点法線として付与。`geomBevelSegments` を上げるとファセットが消える（実機で同心円状バンディングの消失を確認）。`outwardXY` は**元の輪郭**の頂点法線を全プロファイルリングで共有（inset 後に作り直すと頂点対応がずれる）。`round` は cap 側で法線が `(0,0,1)`、側壁側で純水平になり、**cap→ベベル→側壁が自動的に連続**する。
+  - **D. `geomBevelStyle: "angular" | "round" | "concave"` 追加（既定 `angular`）** — **§5 スキーマ変更につきユーザー確認済み**。AE(C4D) の Bevel Style / Illustrator の Bevel はどちらも既定が直線チャンファで、「Bevel＝45° 面取り」という直感にも一致する（A で凸にしても "丸み" であって "面取り" ではない、が決め手）。`angular` は 1 セグメントで厳密なため `geomBevelSegments` を無視し、Inspector でも Segs 行を出さない。
+  - 配線: `geom3dTypes.ts`(`BevelStyle`) / `geom3dParams.ts`(descriptor + parse) / `extrudeMesh.ts`(`bevelProfilePoint`・`addBevelBand`・`addTriangleSmooth`) / `geom3dDomApply.ts`(**meshKey に style を追加** — 忘れるとスタイル変更が効かない) / `store.ts`(既定) / `InspectorPanel.tsx`。
+  - **Inspector の geom3d セクションは descriptor 駆動ではなく手書き** — descriptor を足すだけでは UI に出ない（`add-layer-component-type` の「配線もれ」と同型。次に param を足す人向けの注意）。
+- **検証**:
+  - `npm run typecheck` ✅ / `npx vitest run` 1281/1282 — 失敗 1 件 `test/effects.test.ts`（プラグイン再登録数）は **clean tree でも再現する既存バグ**で無関係（`git stash` で切り分け済み・前セッションから継続）。
+  - [test/geom3d/extrude.test.ts](test/geom3d/extrude.test.ts) 36 件 ✅。**回帰ゲートが本物であることを確認済み**（旧コードを `git stash pop` で戻すと cap 平面テストと凸性テストが実際に落ちる＝空振りアサーションではない）。3 スタイル × cap 平面 / シルエット / 単位法線を `it.each` で固定、`angular` が segments を無視すること・`round` の法線が `±1` まで連続すること（＝スムース法線が効いていること）も固定。
+  - 実 Chrome（Playwright + 実 WebGL）で **修正前=暗い溝 / 修正後=凸のハイライト**を画像で対比確認。3 スタイルとも意図どおり描き分けられることを確認。
+  - `npm run build:player` ✅ 実行済み（`src/runtime` 変更のため HTML bundle export に必須）。
+- **Next steps（C＝今回見送り分）**: `insetRing` は隣接辺法線の平均を `dist` 倍しているが真の平行オフセットには **`1/cos(φ/2)` のマイター補正**が要る（90° コーナーで約 29% 過小 inset ＝ **角でベベル幅が痩せる**）。また `bevelExtent` の clamp が `depth/2` のみで **XY 方向を見ていない**ため、`bevelSize` が線幅の半分を超えるとリングが自己交差して破綻する。
+
 ### 2026-07-15（Claude Opus 4.8）— 自動生成 ttf を Project パネルの `fonts` フォルダへ集約
 
 - **症状（ユーザー報告・スクリーンショット）**: 3D Extrude でフォントを自動埋め込みするたび、**Project パネルのルートに ttf が直接積み上がる**（Main / Comp 2 / ttf / ttf / Comp 3 / ttf …）。comp と混ざって一覧が汚い。

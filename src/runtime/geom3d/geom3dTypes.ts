@@ -11,11 +11,19 @@ export interface Vec2 {
   y: number;
 }
 
+/**
+ * ベベル断面の形（§5.5f）。3 スタイルは端点を共有し曲線だけが違う（cap の縁 → 側壁の上端）。
+ * 凸/凹は「円弧の中心が材料の内側か外側か」で決まる — extrudeMesh.ts の bevelProfilePoint 参照。
+ */
+export type BevelStyle = "angular" | "round" | "concave";
+
 /** resolved props から読んだ 3D ジオメトリパラメータ（P1 スコープのみ）。 */
 export interface Geom3DParams {
   enabled: boolean;
   depth: number;
   bevelSize: number;
+  bevelStyle: BevelStyle;
+  /** angular では無視される（1 面で厳密なため）。 */
   bevelSegments: number;
   curveQuality: "low" | "medium" | "high";
   shading: "none" | "lambert";

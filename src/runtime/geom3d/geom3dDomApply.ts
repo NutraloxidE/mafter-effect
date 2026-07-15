@@ -148,10 +148,15 @@ export function applyGeom3DText(
   const meshKey = [
     p.text, p.size, p.tracking, p.leading, p.align, p.boxWidth, p.boxHeight,
     fontIdentity(font),
-    geom.depth, geom.bevelSize, geom.bevelSegments, geom.curveQuality,
+    geom.depth, geom.bevelSize, geom.bevelStyle, geom.bevelSegments, geom.curveQuality,
   ].join("|");
   const mesh = getCachedMesh(meshKey, () =>
-    extrudeGeometry(outline.glyphs, { depth: geom.depth, bevelSize: geom.bevelSize, bevelSegments: geom.bevelSegments }),
+    extrudeGeometry(outline.glyphs, {
+      depth: geom.depth,
+      bevelSize: geom.bevelSize,
+      bevelStyle: geom.bevelStyle,
+      bevelSegments: geom.bevelSegments,
+    }),
   );
 
   // outline のグリフ座標は content bbox 基準（font.getPath に -bounds.minX 済み）。
