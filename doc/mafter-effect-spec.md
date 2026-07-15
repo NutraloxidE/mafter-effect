@@ -86,6 +86,9 @@ Project/
 ```
 
 - `git init` してそのまま運用可能。バイナリ以外は全てテキスト diff 可能であること。
+- **フォント配置の移行**: プロジェクト読み込み時（`loadFromFs`）に次の 2 つを移送し、変化があれば保存する。スキーマは変わらない。
+  - **FS**: [migrateFontAssetPaths.ts](../src/editor/migrateFontAssetPaths.ts) が `kind:"font"` かつ `assets/font/` 配下でない asset を `assets/font/<id>.<ext>` へ移し `asset.path` を書き換える（`assets/font/` 導入前のプロジェクト対策）。best-effort（失敗した asset は旧 path のまま参照可能）。
+  - **Project パネル（bin）**: [fontBin.ts](../src/editor/fontBin.ts) の `migrateFontAssetsToBin` が、ルート直下に並んだままの font asset を `fonts` フォルダへ移す（§26.3.2）。
 - **AI 三点ファイルの SSoT 整理（§13）**: `claude.md` のみが正。`copilot-instruction.md` は生成物。`prompt.md` は別 scope。
 
 ---
@@ -2104,8 +2107,15 @@ registerComponent({
 - 文字レイアウト（advance/改行/align/tracking/leading）の算出は**決定論**であること（INV-1）。パーサのメトリクスのみを用い、`Math.random`/`Date.now`/DOM measureText を resolve 経路に持ち込まない。アウトライン生成はレンダラ層（`ResolvedScene` 受領後）で行い、`resolve()` 自体は不変。
 - **§5.5f（3D 押し出し）も同じ制約を継承する（2026-07 更新）**: 3D Extrude はアウトライン抽出可能なフォント（**Bundled 同梱 + assets として取り込んだフォント**）でのみ有効。
   - **Bundled フォント**（[builtinFonts.ts](../src/runtime/builtinFonts.ts) の `BUILTIN_FONTS`）は `geomEnabled` を ON にした瞬間（または 3D ON 中に Bundled family へ変更した瞬間）、`ensureBundledFontAsset`（[store.ts](../src/editor/store.ts)）が `public/fonts/*.ttf` を fetch して自動的に `project.assets`（`kind:"font"`）へ取り込む（FS 書き込み先は `assets/font/<id>.ttf`）。ユーザー操作は不要。
+    - **Project パネル上の置き場**: 自動埋め込みフォントはユーザーが意識して作った素材ではないため、ルート直下に並べず **ルート直下の `fonts` フォルダ（bin）** へ入れる（§11.2b `pre-rendered` と対称。[fontBin.ts](../src/editor/fontBin.ts) の `addFontAssetToProject`）。アップロード（`importFontAsset`）も同じフォルダへ入る。フォルダは最初のフォント取り込み時に自動作成し、以後は再利用する。ユーザーが手動で別フォルダへ移したフォントは移送対象にしない（`binId` を持つため）。
   - **web-safe / システムフォント**（`WEB_SAFE_FONTS`, [fontList.ts](../src/editor/fontList.ts)）は実ファイルをブラウザから取得できず原理的に 3D 化不可。ドロップダウンの label に `(no-3D)` を明示し、`geomEnabled=true` かつ非対応フォント時は Inspector に警告文を表示した上で 2D 描画へフォールバックする（サイレントフォールバックにしない）。`is3DCapableFont(font, project)`（[fontList.ts](../src/editor/fontList.ts)）が判定を持つ。
   - **アップロード済みフォント**は他の asset フォントと同様アウトライン抽出可能なため 3D 化できる。
+  - **weight は family と対等な識別子（2026-07 追記）**: アウトラインは family だけでなく **weight ごとに別ファイル**（`NotoSans-Regular.ttf` / `NotoSans-Bold.ttf` 等）である。したがって次を守る。
+    - font asset は `meta: { family, weight }` を持ち、**重複判定・埋め込みは family×weight 単位**で行う（family だけで判定すると最初に埋め込んだ weight が居座り、以降の weight 変更が 3D に反映されない）。`meta.weight` を持たない旧 project の asset は `400` として扱う。
+    - `FontOutlineCache`（[fontOutlineCache.ts](../src/runtime/fontOutlineCache.ts)）は **family×weight** で引く。完全一致が無い場合のみ同 family の最近傍 weight にフォールバックする。
+    - `ensureBundledFontAsset` は `geomEnabled` ON 中の **weight 変更時にも**呼ぶ（該当 weight の実ファイルを取り込むため）。
+    - 同 family の複数 weight を同梱しうるため、asset の `@font-face` には **`font-weight` 記述子が必須**（省略すると全 face が normal を名乗り 2D 側が誤った face を選ぶ）。
+    - **メッシュキャッシュのキーは「要求 weight」ではなく「実際に使われた font インスタンスの同一性」**とする（[geom3dDomApply.ts](../src/runtime/geom3d/geom3dDomApply.ts)）。asset フォントは非同期ロードのため、要求 weight が未ロードの間は近傍 face で描画されうる。要求 weight をキーにするとその暫定メッシュが本来の weight のキーで焼き付き、後からフォントが届いても永久にキャッシュヒットする。
 
 #### §26.4.2 レンダーキャッシュ（将来・IF のみ今回確保）
 

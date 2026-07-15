@@ -45,6 +45,8 @@ import { IndexedDbFs } from "../fs/IndexedDbFs";
 import { compositionDir, DIR_ASSETS, DIR_ASSETS_FONTS, pluginEntryPath, pluginManifestPath } from "../core/paths";
 import { compLayerDefaultOutPoint, compWouldCreateCycle } from "../runtime/compLayer";
 import { rescaleCompFps, resizeCompCentered } from "./compEdit";
+import { applyFontAssetMigration, planFontAssetMigration, type FontAssetMove } from "./migrateFontAssetPaths";
+import { addFontAssetToProject, migrateFontAssetsToBin } from "./fontBin";
 import { isLayerLocked } from "./layerLock";
 import { registerBuiltinComponents } from "../runtime/builtinComponents";
 import { registerBuiltinEffects } from "../runtime/builtinEffects";
@@ -132,6 +134,30 @@ registerBuiltinEffects();
 const fs = new IndexedDbFs("mafter-effect-fs");
 bindExpressionFs(fs);
 const pluginLoader = new ModuleLoader(fs);
+
+/**
+ * assets/font/ 導入前に取り込まれたフォントを assets/font/ へ移送する（§3）。
+ * コピーに失敗した asset は path を書き換えず、元の場所のまま読めるようにしておく。
+ */
+async function migrateFontAssetsOnFs(project: Project): Promise<Project> {
+  const planned = planFontAssetMigration(project);
+  const done: FontAssetMove[] = [];
+  for (const m of planned) {
+    try {
+      if (!(await fs.exists(m.from))) continue;
+      await fs.write(m.to, await fs.read(m.from));
+      await fs.delete(m.from);
+      done.push(m);
+    } catch {
+      /* best-effort: 失敗したフォントは旧 path のまま維持 */
+    }
+  }
+  const moved = applyFontAssetMigration(project, done);
+  const next = migrateFontAssetsToBin(moved, newBinId());
+  if (next === project) return project;
+  await saveProject(fs, next);
+  return next;
+}
 
 // §12 サンプルプラグイン JS（gradient-rect component）。installSamplePlugin() で FS に書き込む。
 const SAMPLE_PLUGIN_JS = `// Mafter Effect Sample Plugin — gradient-rect component
@@ -419,7 +445,8 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
   loadFromFs: async () => {
     try {
-      const { project: p, missingBlendModes } = await loadProject(fs);
+      const { project: loaded, missingBlendModes } = await loadProject(fs);
+      const p = await migrateFontAssetsOnFs(loaded);
       set({
         project: p,
         currentCompId: p.rootComposition,
@@ -1338,10 +1365,12 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const before = get().project;
     if (!before || !isBuiltinFontFamily(font)) return;
     const fam = primaryFontFamily(font);
-    if (before.assets.some((a) => a.kind === "font" && a.meta?.family === fam)) return;
     const def = findBuiltinFontByFamily(fam);
     if (!def) return;
+    // 3D 押し出しは weight ごとに別のアウトライン（別ファイル）を要する。family だけで
+    // 重複判定すると最初に埋め込んだ weight が居座り、以降の weight 変更が効かない。
     const w = nearestBuiltinWeight(def, Number.isFinite(weight) ? weight : 400);
+    if (before.assets.some((a) => a.kind === "font" && a.meta?.family === fam && a.meta?.weight === w.weight)) return;
     let bytes: Uint8Array;
     try {
       const resp = await fetch(publicAssetUrl(`${BUILTIN_FONT_DIR}/${w.file}`));
@@ -1353,14 +1382,8 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const id = newObjectId();
     const assetPath = `${DIR_ASSETS_FONTS}/${id}.ttf`;
     await fs.write(assetPath, bytes);
-    const asset: AssetEntry = { id, path: assetPath, kind: "font", meta: { family: fam } };
-    const after = registerNewProjectItem(
-      {
-        ...before,
-        assets: [...before.assets, asset].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
-      },
-      { kind: "asset", id },
-    );
+    const asset: AssetEntry = { id, path: assetPath, kind: "font", meta: { family: fam, weight: w.weight } };
+    const after = addFontAssetToProject(before, asset, newBinId());
     get().applyCommand({ label: "Embed font", before, after });
   },
 
@@ -1370,24 +1393,21 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const ext = file.name.split(".").pop() ?? "ttf";
     const buf = await file.arrayBuffer();
     let family: string;
+    let fontWeight = 400;
     try {
       const font = parseOpentypeFont(buf);
       const names = font.names.fontFamily;
       family = names?.en ?? Object.values(names ?? {})[0] ?? file.name.replace(/\.[^.]+$/, "");
+      const usWeightClass = (font.tables as { os2?: { usWeightClass?: number } }).os2?.usWeightClass;
+      if (typeof usWeightClass === "number" && Number.isFinite(usWeightClass)) fontWeight = usWeightClass;
     } catch {
       family = file.name.replace(/\.[^.]+$/, "");
     }
     const id = newObjectId();
     const assetPath = `${DIR_ASSETS_FONTS}/${id}.${ext}`;
     await fs.write(assetPath, new Uint8Array(buf));
-    const asset: AssetEntry = { id, path: assetPath, kind: "font", meta: { family } };
-    const after = registerNewProjectItem(
-      {
-        ...before,
-        assets: [...before.assets, asset].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
-      },
-      { kind: "asset", id },
-    );
+    const asset: AssetEntry = { id, path: assetPath, kind: "font", meta: { family, weight: fontWeight } };
+    const after = addFontAssetToProject(before, asset, newBinId());
     get().applyCommand({ label: "Import font", before, after });
     void registerAssetFonts(after, fs);
     return { assetId: id, family };

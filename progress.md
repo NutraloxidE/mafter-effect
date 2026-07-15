@@ -1,5 +1,20 @@
 # Progress
 
+### 2026-07-15（Claude Opus 4.8）— 自動生成 ttf を Project パネルの `fonts` フォルダへ集約
+
+- **症状（ユーザー報告・スクリーンショット）**: 3D Extrude でフォントを自動埋め込みするたび、**Project パネルのルートに ttf が直接積み上がる**（Main / Comp 2 / ttf / ttf / Comp 3 / ttf …）。comp と混ざって一覧が汚い。
+- **最初の誤読（記録・同型の取り違え防止）**: 「assets/font 以下に入っていない」を **FS パス**の話と読んで path 移行を実装したが、ユーザーが指していたのは **Project パネルのツリー（bin）**だった。FS の書き込み先は b8880c8 の時点で既に `assets/font/` で正しい。**「フォルダ」がユーザー語彙では bin を指すことがある**（`pre-rendered` フォルダと同じバイブス、という言い方が手がかりだった）。
+- **修正**:
+  - 新規 [fontBin.ts](src/editor/fontBin.ts) — §11.2b [preRender.ts](src/editor/preRender.ts) と対称の純関数群。`ensureFontsBin`（ルート直下 `fonts` bin を作成 or 再利用）/ `addFontAssetToProject` / `migrateFontAssetsToBin` / `strayFontAssetIds`。**bin 構成はユーザー確認済み**: 「ルート直下 `fonts`（pre-rendered と同列）」を選択（`assets > fonts` のネストは不採用）。
+  - `ensureBundledFontAsset`（自動埋め込み）と `importFontAsset`（アップロード）が `registerNewProjectItem`（＝ルート末尾）ではなく `addFontAssetToProject` を通る。
+  - `loadFromFs` に読み込み時移送を追加 — ルート直下に残っている font asset を `fonts` へ移す。**ユーザーが自分で別フォルダへ動かしたフォントは対象外**（`binId` を持つものは触らない）。
+  - 併せて FS 側も移行: 新規 [migrateFontAssetPaths.ts](src/editor/migrateFontAssetPaths.ts) が `assets/font/` 配下でない font asset を `assets/font/<id>.<ext>` へ移す（`assets/font/` 導入前のプロジェクト用。best-effort でコピー失敗時は旧 path 維持）。スキーマ・直列化形式は不変。
+- **検証**:
+  - `npm run typecheck` ✅ / `npx vitest run` 1267/1268 — 失敗 1 件 `test/effects.test.ts`（プラグイン再登録数）は **clean tree でも再現する既存バグ**で無関係（`git stash` で切り分け済み）。
+  - 新規 [test/fontBin.test.ts](test/fontBin.test.ts) 6 件・[test/migrateFontAssetPaths.test.ts](test/migrateFontAssetPaths.test.ts) 4 件 ✅。
+  - 新規 [verify-font-bin.mjs](verify-font-bin.mjs) 実 Chrome PASS — 新規埋め込み・旧プロジェクト再読込の両方でルートに `asset:font` が無く `bin:fonts` 配下に入ること、`is3DCapableFont` が bin 移動後も true（family 参照が壊れない）ことを確認。実際の Project パネルのスクリーンショットでも `fonts` フォルダ表示を目視確認。
+  - 新規 [verify-font-asset-migration.mjs](verify-font-asset-migration.mjs) PASS（FS path 移送）。既存 `verify-font-3d-weight.mjs` / `verify-font-3d-extrude.mjs` 無回帰 PASS。
+- **player 再ビルド不要**: 変更は `src/editor/` + `src/core/paths.ts` のみで `src/player` / `src/runtime` の描画・expression 経路に触れていない。
 ### 2026-07-15（Claude Opus 4.8）— 3D Extrude のメッシュ生成破綻を根治（輪郭の nonzero 正規化）
 
 - **症状**: 3D 押し出しテキストで「メッシュが正しく生成されない時がある」。`日本語3DA` で `日`/`本`/`A` が破綻し `3`/`D` は無傷。ユーザー報告どおり **Roboto 等の欧文フォントでも再現**し、**フォントごとに壊れ方が違う**。
@@ -2274,3 +2289,27 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
 - **制限/Next steps**: 拡大は上限 3× まで（それ以上のズームインは僅かに残り得る）。
   ユーザーに >100% ズーム・HTML 書き出しの実機確認を依頼。実エディタ end-to-end の Playwright 追試は未実施
   （harness で実 filter コードパスは検証済み）。commit 未実施。
+
+### 2026-07-15（Claude Opus 4.8）— 3D 押し出しがフォントの weight に追従しない問題を根治 ✅
+- **症状**: text の weight を 700 等にしても、3D 化（geomEnabled）すると既定 weight（400）の字形で押し出される。2D は正しく太る。
+- **真因（5 箇所の連鎖・いずれも「family だけ / 要求 weight だけ」を正としていた）**:
+  1. `ensureBundledFontAsset`（store.ts）が **family だけで重複判定** → 最初に埋め込んだ weight が居座り、以降の weight の実ファイルが取り込まれない。
+  2. font asset の `meta` に weight が無く、family しか記録していなかった。
+  3. `FontOutlineCache` が **family 単独キー**（同 family の複数 weight は last-wins）。
+  4. Inspector の **weight 変更が `ensureBundledFontAsset` を呼んでいなかった**（font 変更・3D トグル時のみ）。
+  5. **`geom3dDomApply` の meshKey に font 由来の識別子が無かった** — これが最後まで残った本丸。
+- **最後の 1 手（計測で判明・推測では出せなかった）**: 上記 1–4 を直しても preview のインクが 1099 のまま不変。実機プローブで
+  「preview の FontOutlineCache は 400/700 両方を保持（advance 639/692）」「weight prop は 700」「なのに canvas は Regular」
+  「リロードすると Bold（1654）」と切り分け → **メッシュキャッシュの毒**と確定。weight を 700 に書いた瞬間、Bold の非同期
+  ロード完了前に描画が走り、**Regular 由来のメッシュが「weight=700」のキーで焼き付く**。以後は同じキーにヒットし続けるため
+  スクラブでも直らず、リロードでのみ直る。
+  → **meshKey は「要求 weight」ではなく「実際に使われた Font インスタンスの同一性」（WeakMap による安定 ID）を含める**よう修正。
+- **修正ファイル**: `fontOutlineCache.ts`(family×weight + 最近傍フォールバック) / `store.ts`(family×weight 重複判定・`meta.weight` 記録・upload 時は os2.usWeightClass) / `InspectorPanel.tsx`(weight 変更で取り込み) / `DomRenderer.ts`(getFont に weight) / `previewViewer.ts`・`PreviewViewerOverlay.tsx`・`PreviewPanel.tsx`(bounds も同 face) / `assetFontFaces.ts`(**`font-weight` 記述子必須** — 同 family 複数 weight 同梱で 2D が壊れる回帰の予防) / `geom3dDomApply.ts`(meshKey = font identity)。
+- **後方互換**: `meta.weight` を持たない旧 project の font asset は 400 扱い（唯一の face なら weight 指定でもそれを返す）。§5 型・直列化形式は不変（`meta` は元々 free-form）。
+- **検証**: typecheck 緑 / `test/fontOutlineCache.test.ts` 新規 5 件（実 TTF で Bold の advance > Regular を固定）/ `npm test` は既存の
+  `effects.test.ts > liquidChrome 再登録` 1 件のみ失敗＝**本変更前から失敗**（stash して確認済み・無関係）/ `npm run build:player` 実行済み /
+  実機 `verify-font-3d-weight.mjs` PASS（ink 1099→1654, ratio 1.505, assets に 400 と 700）/ 既存 `verify-font-3d-extrude.mjs` PASS（無回帰）。
+- **恒久 verify を追加**: `verify-font-3d-weight.mjs`（GL canvas の実インクで weight 追従を測る。修正前は ratio=1.000 で FAIL する）。
+- **spec**: §26.4.1 に「weight は family と対等な識別子」節を追記（meta.weight / family×weight キー / font-weight 記述子必須 / meshKey は font identity）。
+- **Next steps**: browser export（mp4/PNG 連番）と HTML bundle での 3D weight 実機確認は未実施。
+  export 経路は fonts を描画前に一括ロードするため今回の「毒」レースは構造上起きず、family×weight 化の恩恵のみ受ける想定（unit test で固定済み）。
