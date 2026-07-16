@@ -15,7 +15,7 @@ import { htmlCompositionsInProject, timelineCompositionsInProject } from "../run
 import { BundleAudioClock } from "./BundleAudioClock";
 import { collectBundleFootageAudioSources } from "./bundleFootageAudio";
 import { assetUrlForBundle, buildBundleFs } from "./BundleFs";
-import { applyFitTransform } from "./bundleFit";
+import { applyFitTransform, computeFitZoom } from "./bundleFit";
 import { collectVideoClipsFromComp } from "../runtime/videoLookaheadWarmup";
 import { runPreviewPlaybackLoop } from "../runtime/previewPlaybackLoop";
 import {
@@ -49,6 +49,8 @@ export class BundlePlayer {
   private audioClock: BundleAudioClock | null = null;
   private comp: TimelineComposition | null = null;
   private currentFrame = 0;
+  /** pixelStretch 動的解像度: 最後に DomRenderer へ渡した実効レンダースケール（fit 変化検出用）。 */
+  private appliedRenderScale = 1;
   private playing = false;
   private stopLoop: (() => void) | null = null;
   /** §11.4 双方向同期（no-audio 経路）— editor Preview パネルと同じ判定関数を使う。 */
@@ -413,6 +415,17 @@ export class BundlePlayer {
     const vh = host.clientHeight;
     if (vw <= 0 || vh <= 0) return;
     applyFitTransform(this.stageEl, vw, vh, this.comp.width, this.comp.height);
+    // pixelStretch 動的解像度（preview と同型）: fit の実効表示スケール(zoom×dpr)を DomRenderer へ。
+    // 拡大時は live displacement のマップをデバイス解像度へ細分化してスパイクを消す。
+    // 縮小時は stage を合成レイヤー化（will-change）してネイティブ→GPU 縮小させる。
+    const zoom = computeFitZoom(vw, vh, this.comp.width, this.comp.height);
+    const dpr = typeof window !== "undefined" && window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
+    const prevScale = this.appliedRenderScale;
+    this.appliedRenderScale = Math.max(1, zoom) * dpr;
+    this.stageEl.style.willChange = zoom <= 1 ? "transform" : "";
+    this.renderer.setRenderScale(this.appliedRenderScale);
+    // スケールが変わったら現在フレームを描き直す（マップ再生成を反映）。
+    if (prevScale !== this.appliedRenderScale) this.renderFrame(this.currentFrame);
   }
 
   private renderFrame(frame: number): void {

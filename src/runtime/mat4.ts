@@ -309,3 +309,23 @@ export function invert(m: Mat4): Mat4 | null {
   det = 1.0 / det;
   return inv.map((v) => v * det) as Mat4;
 }
+
+/** 転置行列（column-major m[c*4+r] → out[r*4+c]）。 */
+export function transpose(m: Mat4): Mat4 {
+  const out = new Array<number>(16) as Mat4;
+  for (let c = 0; c < 4; c++) {
+    for (let r = 0; r < 4; r++) {
+      out[r * 4 + c] = m[c * 4 + r]!;
+    }
+  }
+  return out;
+}
+
+/**
+ * §5.5f 法線を world 空間へ運ぶ行列（非一様スケールでも法線が歪まないよう world の逆転置を使う）。
+ * world が非可逆（scale=0 等）のときは identity にフォールバック（法線計算が壊れるより見た目が無害な方を選ぶ）。
+ */
+export function normalMatrix(world: Mat4): Mat4 {
+  const inv = invert(world);
+  return inv ? transpose(inv) : identity();
+}

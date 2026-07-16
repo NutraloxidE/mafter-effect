@@ -51,7 +51,7 @@ export interface LocalBounds {
 }
 
 export interface LayerBoundsContext {
-  getFont?: (family: string) => import("opentype.js").Font | null;
+  getFont?: (family: string, weight?: number) => import("opentype.js").Font | null;
   getImageSize?: (assetId: string) => { width: number; height: number } | null;
   textQuality?: "draft" | "precise";
 }
@@ -384,7 +384,7 @@ function boundsForComponent(
     }
     case "text": {
       const p = parseTextProps(resolveTextPropsAtFrame(props, frame));
-      const font = boundsCtx?.getFont?.(p.font) ?? null;
+      const font = boundsCtx?.getFont?.(p.font, p.weight) ?? null;
       const useFontMetrics = boundsCtx?.textQuality === "precise";
       return computeTextBoundsForHandles(p, font, useFontMetrics);
     }

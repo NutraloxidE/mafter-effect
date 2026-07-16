@@ -461,7 +461,11 @@ async function buildAudioMix(
 ): Promise<AudioMixResult | null> {
   if (typeof AudioContext === "undefined") return null;
 
-  const mixSources = collectFootageAudioSources(comp);
+  const resolveComp = (compId: string): TimelineComposition | undefined => {
+    const c = project.compositions.find((c) => c.id === compId);
+    return c && c.kind === "timeline" ? c : undefined;
+  };
+  const mixSources = collectFootageAudioSources(comp, resolveComp);
   if (mixSources.length === 0) return null;
   // §11.5.2 カット端 declick の抑制判定（シームレス境界の二重フェード防止）。preview と同一純関数。
   const fadeSuppression = computeFadeSuppression(collectFadeClips(comp));
@@ -472,7 +476,7 @@ async function buildAudioMix(
   const tmpCtx = new AudioContext();
 
   let anyLoaded = false;
-  for (const { obj, assetId, trimStart, gainProp, componentType } of mixSources) {
+  for (const { obj, assetId, inPoint, outPoint, trimStart, gainProp, componentType } of mixSources) {
     const asset = project.assets.find((a) => a.id === assetId);
     if (!asset) continue;
 
@@ -495,11 +499,11 @@ async function buildAudioMix(
       continue;
     }
 
-    const objStartSec = Math.max(0, (obj.inPoint - startFrame) / fps);
+    const objStartSec = Math.max(0, (inPoint - startFrame) / fps);
     const trimStartSec = trimStart / fps;
     // サブレンジ export 時: inPoint < startFrame の場合、レイヤーはすでに再生途中。
     // buffer の読み出し開始位置を (startFrame - inPoint) / fps 分だけ前進させる。
-    const alreadyElapsedSec = Math.max(0, (startFrame - obj.inPoint) / fps);
+    const alreadyElapsedSec = Math.max(0, (startFrame - inPoint) / fps);
     const effectiveTrimSec = trimStartSec + alreadyElapsedSec;
 
     const src = offCtx.createBufferSource();
@@ -515,7 +519,7 @@ async function buildAudioMix(
 
     const outDuration = Math.min(
       decoded.duration - effectiveTrimSec,
-      (obj.outPoint - Math.max(obj.inPoint, startFrame)) / fps,
+      (outPoint - Math.max(inPoint, startFrame)) / fps,
     );
     // §11.5.2 declick: ユーザー gain 自動化とは別の fadeGain を直列に挿し、サンプル精度のフェードを打つ。
     // preview（PreviewAudioClock）と同一の長さ・抑制で INV-2 を保つ。
@@ -525,7 +529,7 @@ async function buildAudioMix(
       startSec: objStartSec,
       durSec: Math.max(0, outDuration),
       fadeSec: fadeComp && isAutoFadeEnabled(fadeComp.props) ? fadeSec() : 0,
-      fadeInActive: obj.inPoint >= startFrame, // サブレンジ export で途中再生開始なら in フェード無し
+      fadeInActive: inPoint >= startFrame, // サブレンジ export で途中再生開始なら in フェード無し
       suppression: fadeSuppression.get(obj.id),
     });
     src.connect(fadeGain);

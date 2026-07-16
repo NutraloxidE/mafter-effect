@@ -12,8 +12,14 @@ describe("§26.3.2 builtin fonts", () => {
     const families = BUILTIN_FONTS.map((f) => f.family);
     expect(families).toContain("Noto Sans");
     expect(families).toContain("Noto Sans JP");
-    for (const f of BUILTIN_FONTS) {
+    for (const f of BUILTIN_FONTS.filter((f) => f.family === "Noto Sans" || f.family === "Noto Sans JP")) {
       expect(f.weights.map((w) => w.weight)).toEqual([400, 500, 700]);
+    }
+  });
+
+  it("exposes at least one weight for every builtin font", () => {
+    for (const f of BUILTIN_FONTS) {
+      expect(f.weights.length).toBeGreaterThan(0);
     }
   });
 

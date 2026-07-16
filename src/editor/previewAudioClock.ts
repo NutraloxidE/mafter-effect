@@ -34,14 +34,23 @@ export interface PreparedLayer {
   suppression: FadeSuppression;
 }
 
+/** project の comp id → TimelineComposition 解決関数（ネスト precomp 探索用）。 */
+function makeCompResolver(project: Project): (compId: string) => TimelineComposition | undefined {
+  return (compId) => {
+    const c = project.compositions.find((c) => c.id === compId);
+    return c && c.kind === "timeline" ? c : undefined;
+  };
+}
+
 /**
  * Phase B: この comp に standalone audio または video 内蔵音声「候補」（enabled かつ asset 設定済み）が
  * 1 つでもあるか — PreviewAudioClock を試す価値があるかの軽量ゲート。asset が実際に project に存在するか、
  * video に音声トラックが実在するかはここでは判定しない（prepareAudioLayers の decode 側の責務。
  * 候補が無ければ AudioContext を作らず従来の rAF クロックへフォールバックする）。
+ * ネストされた precomp（`comp` コンポーネント）の中身も再帰的に見る（§23）。
  */
-export function hasPreviewAudioCandidates(comp: TimelineComposition): boolean {
-  return collectFootageAudioSources(comp).length > 0;
+export function hasPreviewAudioCandidates(comp: TimelineComposition, project?: Project): boolean {
+  return collectFootageAudioSources(comp, project ? makeCompResolver(project) : undefined).length > 0;
 }
 
 /** Phase B: prepared レイヤーのうち video 内蔵音声を抽出したもの（表示 <video> の持続ミュート対象）の objectId 集合。 */
@@ -91,7 +100,7 @@ export async function prepareAudioLayers(
 ): Promise<PreparedLayer[]> {
   const layers: PreparedLayer[] = [];
   const suppression = computeFadeSuppression(collectFadeClips(comp)); // §11.5.2 シームレス境界の二重フェード抑制
-  for (const source of collectFootageAudioSources(comp)) {
+  for (const source of collectFootageAudioSources(comp, makeCompResolver(project))) {
     const asset = project.assets.find((a) => a.id === source.assetId);
     if (!asset) continue;
     // プリロード済みの共有バッファを使う（再生レイテンシ回避）。未デコードならここで decode。

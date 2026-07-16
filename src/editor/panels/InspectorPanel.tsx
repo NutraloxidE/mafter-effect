@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { sampleAny, sampleScalar, sampleVec3 } from "../../runtime/interpolate";
-import type { AnimatedProp, BlendMode, BooleanMergeInput, BooleanOp, Component, Easing, EffectInstance, ExpressionPresetInstance, ParamDescriptor, RGBA, SceneObject, ShapeVertex, ThreeDMode, TrackMatteMode, Transform, Vec3 } from "../../core/schema";
+import type { AnimatedProp, BlendMode, BooleanMergeInput, BooleanOp, Component, Easing, EffectInstance, ExpressionPresetInstance, ParamDescriptor, Project, RGBA, SceneObject, ShapeVertex, ThreeDMode, TrackMatteMode, Transform, Vec3 } from "../../core/schema";
 import { BLEND_MODES, TRACK_MATTE_MODES } from "../../core/schema";
 import { formatMissingBlendModeLabel } from "../../core/blendMode";
 import { isTrackMatteIneligible, resolveTrackMattePairs } from "../../core/trackMatte";
@@ -14,7 +14,7 @@ import { EXPRESSED_VALUE_COLOR, isPropExpressed, staticProp, vec3 } from "../../
 import { newVertexId } from "../../core/ids";
 import { pulseCycleT, pulseModulation } from "../../runtime/pulseScaleWave";
 import { ColorSwatch, isRgba } from "../ColorSwatch";
-import { BUNDLED_FONTS, WEB_SAFE_FONTS, isKnownFont } from "../fontList";
+import { BUNDLED_FONTS, WEB_SAFE_FONTS, isKnownFont, is3DCapableFont } from "../fontList";
 import { ScrubNumber } from "../ScrubNumber";
 import { TimecodeScrub } from "../TimecodeScrub";
 import { applyLinkedScaleDelta, applyLinkedScaleValue } from "../linkedScale";
@@ -1698,6 +1698,10 @@ function TextComponentFields({
   // §26.3.3 ボックスギズモ編集モード（hooks は早期 return より前に呼ぶ）。
   const boxGizmoEnabled = useEditorStore((s) => s.boxGizmoEnabled);
   const setBoxGizmoEnabled = useEditorStore((s) => s.setBoxGizmoEnabled);
+  // §5.5f 3D Extrude 用フォント自動アセット化・アップロード。
+  const project = useEditorStore((s) => s.project);
+  const ensureBundledFontAsset = useEditorStore((s) => s.ensureBundledFontAsset);
+  const importFontAsset = useEditorStore((s) => s.importFontAsset);
   const comp = obj.components[compIdx];
   if (!comp || comp.type !== "text") return null;
   const def = globalPluginRegistry.getComponentDef("text");
@@ -1795,7 +1799,12 @@ function TextComponentFields({
       <Row label="Font">
         <FontField
           font={font}
-          onChange={(v) => writeStatic("font", v, "Edit font")}
+          project={project}
+          importFontAsset={importFontAsset}
+          onChange={(v) => {
+            writeStatic("font", v, "Edit font");
+            if (props["geomEnabled"] === true) void ensureBundledFontAsset(v, weight);
+          }}
           onEditFocus={onEditFocus}
           onEditBlur={onEditBlur}
         />
@@ -1989,7 +1998,13 @@ function TextComponentFields({
       <Row label="Weight">
         <select
           value={String(weight)}
-          onChange={(e) => writeStatic("weight", Number(e.target.value), "Edit weight")}
+          onChange={(e) => {
+            const next = Number(e.target.value);
+            writeStatic("weight", next, "Edit weight");
+            // 3D 押し出しは weight ごとに別アウトラインを使う。取り込み忘れると 2D だけ太って
+            // 3D は前の weight のままになる。
+            if (props["geomEnabled"] === true) void ensureBundledFontAsset(font, next);
+          }}
           style={selectStyle}
         >
           {(def?.params.find((p) => p.key === "weight")?.options ?? ["400"]).map((w) => (
@@ -2005,6 +2020,20 @@ function TextComponentFields({
           {italic ? "On" : "Off"}
         </button>
       </Row>
+      <Geom3DFields
+        props={props}
+        frame={frame}
+        font={font}
+        weight={weight}
+        project={project}
+        ensureBundledFontAsset={ensureBundledFontAsset}
+        writeStatic={writeStatic}
+        writeAnim={writeAnim}
+        previewAnim={previewAnim}
+        toggleKf={toggleKf}
+        onFocus={onEditFocus}
+        onBlur={onEditBlur}
+      />
       <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 4 }}>
         <button
           onClick={onDecomposeNull}
@@ -2023,6 +2052,163 @@ function TextComponentFields({
       </div>
     </>
   );
+}
+
+/**
+ * §5.5f 3D 押し出し（P1: depth/bevel/shading のみ・非破壊トグル）。
+ * text の Content フォールドアウト内に直接ぶら下げる（既存 "3D" フォールドアウト＝§5.4b per-layer
+ * 3D レイヤースイッチとは別概念のため独立フォールドアウトは作らず、混同を避ける）。
+ * twist/bend/taper・グラデーション面塗りは未実装（doc/cloudplan/3d-text-extrusion-plan.md 次フェーズ）。
+ */
+function Geom3DFields({
+  props, frame, font, weight, project, ensureBundledFontAsset, writeStatic, writeAnim, previewAnim, toggleKf, onFocus, onBlur,
+}: {
+  props: Component["props"];
+  frame: number;
+  font: string;
+  weight: number;
+  project: Project | null;
+  ensureBundledFontAsset: (font: string, weight: number) => Promise<void>;
+  writeStatic: (key: string, value: unknown, label: string) => void;
+  writeAnim: (key: string, next: AnimatedProp<number>, label: string) => void;
+  previewAnim: (key: string, next: AnimatedProp<number>) => void;
+  toggleKf: (key: string, prop: AnimatedProp<unknown>) => void;
+  onFocus: () => void;
+  onBlur: () => void;
+}) {
+  const enabled = props["geomEnabled"] === true;
+  const canExtrude = is3DCapableFont(font, project);
+  const depthProp = props["geomDepth"];
+  const bevelSizeProp = props["geomBevelSize"];
+  const ambientProp = props["geomAmbient"];
+  const bevelSegments = typeof props["geomBevelSegments"] === "number" ? props["geomBevelSegments"] : 2;
+  const bevelStyle = props["geomBevelStyle"] === "round" || props["geomBevelStyle"] === "concave" ? props["geomBevelStyle"] : "angular";
+  const curveQuality = props["geomCurveQuality"] === "low" || props["geomCurveQuality"] === "high" ? props["geomCurveQuality"] : "medium";
+  const shading = props["geomShading"] === "none" ? "none" : "lambert";
+
+  const numRow = (key: string, label: string, prop: unknown, min?: number, max?: number): ReactNode => {
+    if (!isAnimated(prop)) return null;
+    const value = typeof sampleAny(prop, frame) === "number" ? (sampleAny(prop, frame) as number) : 0;
+    return (
+      <AnimScalarRow
+        label={label}
+        prop={prop as AnimatedProp<number>}
+        value={value}
+        frame={frame}
+        onToggle={() => toggleKf(key, prop)}
+        onCommit={(v) => {
+          if (prop.keyframes.length > 0) writeAnim(key, setKeyframe(prop as AnimatedProp<number>, frame, v), `Edit ${key}`);
+          else writeAnim(key, { ...(prop as AnimatedProp<number>), value: v }, `Edit ${key}`);
+        }}
+        onLiveChange={(v) => {
+          if (prop.keyframes.length > 0) previewAnim(key, setKeyframe(prop as AnimatedProp<number>, frame, v));
+          else previewAnim(key, { ...(prop as AnimatedProp<number>), value: v });
+        }}
+        onFocus={onFocus}
+        onBlur={onBlur}
+        min={min}
+        max={max}
+      />
+    );
+  };
+
+  return (
+    <>
+      <Row label="3D Extrude">
+        <button
+          type="button"
+          onClick={() => {
+            const next = !enabled;
+            writeStatic("geomEnabled", next, "Toggle 3D extrude");
+            if (next) void ensureBundledFontAsset(font, weight);
+          }}
+          style={{ ...btnStyle, background: enabled ? "#2f5a44" : "#2a2a2a", color: enabled ? "#9fe8c4" : "#ccc" }}
+          title="押し出し・ベベルで立体化する（テキストは編集可能なまま・非破壊。フォントが asset として取り込まれていない場合は 2D のまま — §26.4.1 と同じ制約）"
+        >
+          {enabled ? "ON" : "OFF"}
+        </button>
+      </Row>
+      {enabled && !canExtrude && (
+        <Row label="">
+          <span style={{ color: "#e0a94a", fontSize: 11 }}>
+            このフォントは 3D 化できません（Bundled フォントを選ぶかアップロードしてください）
+          </span>
+        </Row>
+      )}
+      {enabled && (
+        <>
+          {numRow("geomDepth", "Depth", depthProp, 0)}
+          {numRow("geomBevelSize", "Bevel Size", bevelSizeProp, 0)}
+          <Row label="Bevel Style">
+            <select
+              value={bevelStyle}
+              onChange={(e) => writeStatic("geomBevelStyle", e.target.value, "Edit bevel style")}
+              style={selectStyle}
+            >
+              <option value="angular">Angular</option>
+              <option value="round">Round</option>
+              <option value="concave">Concave</option>
+            </select>
+          </Row>
+          {/* angular は 1 面で厳密＝分割数を持たないので出さない（§5.5f）。 */}
+          {bevelStyle !== "angular" && (
+            <Row label="Bevel Segs">
+              <ScrubNumber
+                value={bevelSegments}
+                onCommit={(v) => writeStatic("geomBevelSegments", Math.round(Math.min(8, Math.max(1, v))), "Edit bevel segments")}
+                min={1}
+                max={8}
+                step={1}
+                style={numInputStyle}
+              />
+            </Row>
+          )}
+          <Row label="Curve Quality">
+            <select
+              value={curveQuality}
+              onChange={(e) => writeStatic("geomCurveQuality", e.target.value, "Edit curve quality")}
+              style={selectStyle}
+            >
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+            </select>
+          </Row>
+          <Row label="Shading">
+            <select
+              value={shading}
+              onChange={(e) => writeStatic("geomShading", e.target.value, "Edit shading")}
+              style={selectStyle}
+            >
+              <option value="lambert">Lambert</option>
+              <option value="none">None</option>
+            </select>
+          </Row>
+          {shading === "lambert" && numRow("geomAmbient", "Ambient", ambientProp, 0, 1)}
+          {shading === "lambert" && (
+            <Row label="Light Dir">
+              {(["x", "y", "z"] as const).map((axis) => {
+                const dir = isVec3Value(props["geomLightDir"]) ? props["geomLightDir"] : { x: -0.5, y: -0.7, z: -0.5 };
+                return (
+                  <ScrubNumber
+                    key={axis}
+                    value={dir[axis]}
+                    onCommit={(v) => writeStatic("geomLightDir", { ...dir, [axis]: v }, `Edit light dir ${axis}`)}
+                    step={0.1}
+                    style={numInputStyle}
+                  />
+                );
+              })}
+            </Row>
+          )}
+        </>
+      )}
+    </>
+  );
+}
+
+function isVec3Value(v: unknown): v is Vec3 {
+  return typeof v === "object" && v !== null && "x" in v && "y" in v && "z" in v;
 }
 
 /** §31.1 Solid content — Fill 色のみ。Text の Fill 行と同型（ColorSwatch + ◇）。 */
@@ -2635,41 +2821,39 @@ function ShapeVertexRow({
   );
 }
 
-/** §26.3.1 Font — 一般 web フォントのプルダウン + 「Custom…」で任意 family 入力。 */
+/** §26.3.1 Font — Bundled / Web safe / Uploaded のプルダウン + フォントファイルアップロード。 */
 function FontField({
   font,
+  project,
+  importFontAsset,
   onChange,
   onEditFocus,
   onEditBlur,
 }: {
   font: string;
+  project: Project | null;
+  importFontAsset: (file: File) => Promise<{ assetId: string; family: string } | null>;
   onChange: (value: string) => void;
   onEditFocus: () => void;
   onEditBlur: () => void;
 }) {
-  const known = isKnownFont(font);
-  const [customMode, setCustomMode] = useState(!known);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const uploadedFonts = (project?.assets ?? [])
+    .filter((a) => a.kind === "font" && typeof a.meta?.family === "string")
+    .map((a) => a.meta!.family as string)
+    .filter((fam, i, arr) => arr.indexOf(fam) === i);
+  const known = isKnownFont(font) || uploadedFonts.includes(font);
 
-  // 外部から font が変わり既知値になったら custom を解除（KF やプリセット適用に追従）。
-  useEffect(() => {
-    if (isKnownFont(font)) setCustomMode(false);
-  }, [font]);
-
-  const selectVal = customMode || !known ? "__custom__" : font;
+  const onUpload = async (file: File) => {
+    const result = await importFontAsset(file);
+    if (result) onChange(result.family);
+  };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 4, flex: 1 }}>
       <select
-        value={selectVal}
-        onChange={(e) => {
-          const v = e.target.value;
-          if (v === "__custom__") {
-            setCustomMode(true);
-          } else {
-            setCustomMode(false);
-            onChange(v);
-          }
-        }}
+        value={known ? font : "__unknown__"}
+        onChange={(e) => onChange(e.target.value)}
         style={selectStyle}
       >
         <optgroup label="Bundled">
@@ -2682,18 +2866,35 @@ function FontField({
             <option key={f.value} value={f.value} style={{ fontFamily: f.value }}>{f.label}</option>
           ))}
         </optgroup>
-        <option value="__custom__">Custom…</option>
+        {uploadedFonts.length > 0 && (
+          <optgroup label="Uploaded">
+            {uploadedFonts.map((fam) => (
+              <option key={fam} value={fam} style={{ fontFamily: fam }}>{fam}</option>
+            ))}
+          </optgroup>
+        )}
+        {!known && <option value="__unknown__">{font}</option>}
       </select>
-      {(customMode || !known) && (
-        <input
-          value={font}
-          placeholder="font-family (例: 'My Font', sans-serif)"
-          onChange={(e) => onChange(e.target.value)}
-          onFocus={onEditFocus}
-          onBlur={onEditBlur}
-          style={{ ...textInputStyle, flex: 1 }}
-        />
-      )}
+      <button
+        type="button"
+        onClick={() => fileInput.current?.click()}
+        onFocus={onEditFocus}
+        onBlur={onEditBlur}
+        style={{ ...btnStyle, fontSize: 10 }}
+      >
+        ⬆ Upload font…
+      </button>
+      <input
+        ref={fileInput}
+        type="file"
+        accept=".ttf,.otf,.woff,.woff2"
+        style={{ display: "none" }}
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) void onUpload(f);
+          e.target.value = "";
+        }}
+      />
     </div>
   );
 }

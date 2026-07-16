@@ -42,8 +42,12 @@ export function collectBundleFootageAudioSources(
   comp: TimelineComposition,
 ): BundleFootageAudioSpec[] {
   const suppression = computeFadeSuppression(collectFadeClips(comp));
+  const resolveComp = (compId: string): TimelineComposition | undefined => {
+    const c = project.compositions.find((c) => c.id === compId);
+    return c && c.kind === "timeline" ? c : undefined;
+  };
   const out: BundleFootageAudioSpec[] = [];
-  for (const source of collectFootageAudioSources(comp)) {
+  for (const source of collectFootageAudioSources(comp, resolveComp)) {
     const asset = project.assets.find((a) => a.id === source.assetId);
     if (!asset) continue;
     const cmp = source.obj.components.find((c) => c.type === source.componentType);

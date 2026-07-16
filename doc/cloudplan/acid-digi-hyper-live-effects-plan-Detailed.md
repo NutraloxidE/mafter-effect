@@ -316,7 +316,11 @@ Codex/Sonnet が「どこを触れば動くか」を推測しないための地�
 
 **Codex に丸投げしない。** go/no-go を human 実ピクセルで決めてから本票に票を追加する。
 
-### Ticket D-1 — `pixelStretch` feasibility spike（半日）
+### Ticket D-1 — `pixelStretch` feasibility spike（半日）— ✅ 完了（独立票へ supersede）
+
+> **結果**: no-go（線形ランプ・pivot 対称スミアはユーザー実機判断で「意図と別物」）。
+> 代替 ② の「Directional Line Stretch」で置換・確定。設計・実装・確定仕様は
+> `doc/cloudplan/pixel-stretch-directional-line-stretch.md` を正とする（本チケットからは分離）。
 
 - **Owner**: Claude（設計）+ human（実ピクセル受け入れ）。
 - **やること**: 高さ 1080px 相当で線形ランプ変位マップ（`dy=-(y-y0)`、8-bit 量子化 `h/127` px 刻み）を試作し、階段アーティファクトが「味」か破綻かを headed browser で判定。
@@ -324,13 +328,33 @@ Codex/Sonnet が「どこを触れば動くか」を推測しないための地�
 - **no-go 代替**: ① `sliceHeight` を持つ「階段状ストレッチ」（量子化と親和）として live 票化 ② raster 版に転換し Tier 3 降格。
 - **成果物**: 判定を本ファイル §6 に追記し、確定仕様を spec §27 へ。
 
-### Ticket D-2 — `liquidChrome` INV-2 spike
+### Ticket D-2 — `liquidChrome` INV-2 spike — ✅ 完了（go）
 
 - **Owner**: Claude（設計）+ human（INV-2 経路一致）。
 - **やること**: `feSpecularLighting`（**コードベース未使用**）を含む 3 段合成（turbulence 変位 + specular highlight + chrome gradientMap）を試作し、**preview / browser export / bundle player の 3 経路で一致するか**を実測。
 - **go**: 一致 → `liquidChrome`（live）票化。
 - **no-go 後退**: lighting 段を捨て「`fastTurbulentDisplace` + `gradientMap(chrome)` + `hyperGlow`」の 3 エフェクトスタック（プリセットレシピ §7）へ。後退版でも見た目の 8 割。
+
+> **結果（実 Chrome 実測・`verify-liquidchrome-spike.mjs`）**: **go**。
+> 実アプリの登録経路（`globalPluginRegistry.registerEffect` → `DomRenderer.applyEffects` →
+> `createSvgFilterElement`）で `feTurbulence`→`feDisplacementMap`（`turbulenceDisplace()`）→
+> `feGaussianBlur`+`feSpecularLighting`+`feDistantLight`+`feComposite`（bump→highlight 加算）→
+> `feComponentTransfer`（`gradientMapTable("chrome", ...)`）の 3 段チェーンを構築し、同一
+> `DomRenderer` インスタンス上で (a) on-screen mount の実ブラウザ合成結果（`page.screenshot`）と
+> (b) 既存 export 経路（`captureElementToCanvas` の foreignObject キャプチャ）を同一フレームで
+> 二重取得して画素比較した。**`v1_identity`（filter 無し）／`v2_displaceOnly`（turbulence 変位のみ）／
+> `v3_full`（feSpecularLighting 込みフルチェーン）のいずれも `maxDiff=0 meanDiff=0.00`** —
+> feSpecularLighting を含めても preview と export（foreignObject 経由）は完全一致した。
+> bundle player は preview と同じ live CSS filter 経路（`DomRenderer` を直接 import・
+> `captureElementToCanvas` を通らない）のため、この一致で 3 経路とも担保される。
+> **本番実装完了（2026-07-13）**: `liquidChrome` を `fastEffects.ts`（`LIQUID_CHROME_EFFECT_DEF`・
+> `liquidChromePrimitives()` は `effectSvg.ts`）に登録し、§2.2 の 4 配線点（3 Set + scale 分岐＝
+> `amount` に統一して generic フォールバック流用）に対応済み。spec 確定は §27.3
+> `liquidChrome` を参照。テストは `test/liquidChrome.test.ts`。spike 自体の成果物は
+> `verify-liquidchrome-spike.mjs`（3 variant 比較・実行コマンド:
+> `VERIFY_PORT=5175 node verify-liquidchrome-spike.mjs`）。
 - **成果物**: 判定を本ファイルに追記。
+- **2026-07-14 追記**: 本 PLAN のスコープから `liquidChrome` を除外し、エフェクトリスト（UI）からも非表示にした（`src/runtime/fastEffects.ts` の `registerFastEffects()` で `LIQUID_CHROME_EFFECT_DEF` 登録行をコメントアウト）。実装（`effectSvg.ts` の `liquidChromePrimitives` 等）・spec §27.3・テストは削除せず温存。再度有効化する場合はコメントアウトを戻すだけでよい。
 
 ---
 

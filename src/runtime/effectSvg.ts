@@ -25,6 +25,300 @@ export function displacementPadFromScale(scale: number): number {
   return Math.ceil(Math.max(0, scale) * 0.5) + 2;
 }
 
+/**
+ * `feImage`+`feTile` タイルの縮退方向（変化しない軸）の最小ピクセル数。
+ *
+ * §27.3 改定1（2026-07-13・重大バグ修正）: `scanlineTilePng` は当初、変化しない軸を
+ * 1px に切り詰めていた（`glitchSlice` の「冗長軸は 1px に潰して軽量化」と同じ発想）。
+ * しかし実 Chrome で検証したところ、**1px 幅の `feImage` を `feTile` で反復し、さらに
+ * その要素が祖先の CSS `transform: scale(...)` で縮小表示される**（Preview パネルの
+ * "Fit" ズームは常にこの状態）と、GPU のテクスチャ縮小サンプリングが破綻し、縞が
+ * 一切描画されない（多重化/モアレの上、実質透明になり `feBlend multiply` が no-op と
+ * 化して原色がそのまま透過する）。`mosaicGridSnapFilter` が同じ `feImage`+`feTile` 構成で
+ * `MOSAIC_TILE_MIN_DIM = 16` を最小タイル寸法として使っているのは同じ理由（この定数は
+ * 既存の対策を再利用の発想）。1px 幅と比べデータ量はわずかに増えるが 16×64 でも数十 KB
+ * 程度に収まり、§2.5 の「生 PNG + feTile」自体の軽さは変わらない。
+ * （`MOSAIC_TILE_MIN_DIM` はこのファイル後方で定義されるため値を直接複製する。同じ規約。）
+ */
+const SCANLINE_TILE_MIN_STATIC_DIM = 16;
+
+/**
+ * §27.3 Scanlines — 1 タイル分の明暗バンドを RGBA バッファへ焼く（§2.5: 生 PNG + native feTile）。
+ *
+ * `<pattern>` を `feImage` に渡すネスト SVG 文書構成は毎フレーム再ラスタライズされ致命的に重い
+ * （implement-visual-effect §7c 実測）。ここでは 1 本の帯だけを生 PNG に焼き、呼び出し側で
+ * `feTile` によりフィルタグラフ内でネイティブに全域反復する。
+ * horizontal は縦方向（Y）に周期を持つため tile は `SCANLINE_TILE_MIN_STATIC_DIM`×lineHeight、
+ * vertical はその転置（変化しない軸を 1px にはしない・改定1参照）。
+ */
+export function scanlineTilePng(
+  lineHeight: number,
+  duty: number,
+  opacity: number,
+  direction: "horizontal" | "vertical",
+): { uri: string; w: number; h: number } {
+  const lh = Math.max(1, Math.round(lineHeight));
+  const d = Math.min(0.95, Math.max(0.05, duty));
+  const op = Math.min(1, Math.max(0, opacity));
+  const darkLen = Math.min(lh, Math.max(0, Math.round(lh * d)));
+  const darkGray = Math.round(255 * (1 - op));
+  const horizontal = direction !== "vertical";
+  const tw = horizontal ? SCANLINE_TILE_MIN_STATIC_DIM : lh;
+  const th = horizontal ? lh : SCANLINE_TILE_MIN_STATIC_DIM;
+  const rgba = new Uint8Array(tw * th * 4);
+  for (let y = 0; y < th; y++) {
+    for (let x = 0; x < tw; x++) {
+      const bandIdx = horizontal ? y : x;
+      const gray = bandIdx < darkLen ? darkGray : 255;
+      const o = (y * tw + x) * 4;
+      rgba[o] = gray;
+      rgba[o + 1] = gray;
+      rgba[o + 2] = gray;
+      rgba[o + 3] = 255;
+    }
+  }
+  return { uri: rgbaToPngDataUri(rgba, tw, th), w: tw, h: th };
+}
+
+/**
+ * §27.3 Glitch Slice — 水平スライスの変位マップを生 PNG に焼く（§2.2/§2.5・改定1: 1 列化）。
+ *
+ * スライスごとに変位が異なるためタイル化不可（`feTile` は使わず、`feImageLayer` で
+ * レイヤー実寸 `(0,0,w,h)` へ引き伸ばして渡す）。R チャンネルに正規化変位（0.5=無変位）、
+ * G は中立 0.5 固定（水平スライスなので Y 変位は使わない）。`seededRandom` +
+ * `phaseToSeed(evolution)` で INV-1 決定論。
+ *
+ * **改定1（重さ対策）**: 初版は `w×h` フル解像度でバッファを埋めていたが、値は各行内で
+ * x に依存しない（水平スライスは行内一様）ため **x 方向は完全に冗長**だった。1920×1080 なら
+ * 8.3MB の raw buffer を毎 apply() で生成・PNG エンコード・base64 化しており、これが
+ * 「重すぎる」の実体（JS 側の生成コストであって §2.5 の feImage ネスト文書コストとは別軸）。
+ * `feImage`(1×h の生 PNG) を `width="{w}"` で水平方向にのみ引き伸ばす（1 列を複製するだけ
+ * なので拡大縮小補間の余地がなく exact）。垂直方向は h=h の 1:1（スケーリングなし）を維持し、
+ * スライス境界の離散性（グリッチは離散が正）を崩さない。w×h → 1×h で ~w 倍軽量。
+ */
+export function glitchSliceDisplaceMapPng(opts: {
+  w: number;
+  h: number;
+  sliceHeight: number;
+  maxShift: number;
+  density: number;
+  seed: number;
+  evolution: number;
+}): { uri: string; scale: number } {
+  const h = Math.max(1, Math.round(opts.h));
+  const sliceHeight = Math.max(2, Math.round(opts.sliceHeight));
+  const maxShift = Math.max(0, opts.maxShift);
+  const density = Math.min(1, Math.max(0, opts.density));
+  const baseSeed = Math.max(0, Math.floor(opts.seed)) % 100000;
+  const evoSeed = phaseToSeed(opts.evolution);
+  const rgba = new Uint8Array(1 * h * 4);
+  const numSlices = Math.ceil(h / sliceHeight);
+  for (let k = 0; k < numSlices; k++) {
+    const rng = seededRandom((baseSeed * 1000003 + k * 97 + evoSeed) >>> 0);
+    const jumpRoll = rng();
+    const shiftRoll = rng();
+    const jumps = jumpRoll < density;
+    const shiftNorm = jumps ? shiftRoll * 2 - 1 : 0; // -1..1、未変位帯は 0
+    const rVal = Math.min(255, Math.max(0, Math.round(255 * (0.5 + shiftNorm * 0.5))));
+    const y0 = k * sliceHeight;
+    const y1 = Math.min(h, y0 + sliceHeight);
+    for (let y = y0; y < y1; y++) {
+      const o = y * 4;
+      rgba[o] = rVal;
+      rgba[o + 1] = 128;
+      rgba[o + 2] = 0;
+      rgba[o + 3] = 255;
+    }
+  }
+  return { uri: rgbaToPngDataUri(rgba, 1, h), scale: maxShift };
+}
+
+/**
+ * §27.3 Pixel Stretch（Directional Line Stretch・改定2）— ライン起点の一方向ストレッチ変位マップ。
+ *
+ * あるライン（`right`/`left` は列 `linePos·w`、`down`/`up` は行 `linePos·h`）を境に、その**ライン上の
+ * 色を一方向へそのまま塗り延ばす**（参照画像そのもの）。`feDisplacementMap` は pull 型（出力ピクセル
+ * `p` は入力 `p + scale·(ch − 0.5)` をサンプル）なので、帯内の全ピクセルが厳密に `line` をサンプルする
+ * よう `ch = 0.5 + (line − p)/(2·length)` を焼く（`feDisplacementMap` の変位量は `scale·(C−0.5)` で
+ * `(C−0.5)∈[−0.5,+0.5]` のため、`length` px を届かせるには `scale = 2·length`）。帯の外は `ch = 0.5`（無変位）。
+ *
+ * `displaceWithMap` は `xChannelSelector="R" yChannelSelector="G"` 固定のため、**横ストレッチは R・
+ * 縦ストレッチは G** に書く（旧 D-1 spike のチャンネル取り違えバグをこの規約で再発不能に）。
+ * 値は変位軸のみに依存するため生 PNG は横 `w×1` / 縦 `1×h` に圧縮（もう一方の軸は `feImage` の
+ * width/height 引き伸ばしに委譲・1 列/行複製なので補間誤差ゼロ）。plain `feImage` stretch のため
+ * feTile-1px 縮小罠には非該当（[[svg-fetile-1px-source-vanishes-under-css-scale]] 非該当・
+ * [[svg-displacement-map-collapse-redundant-axis]]）。
+ *
+ * 精度と改定3（`density` + 2 段残差補正）: 1 階調あたりの変位 = `scale1/255 = 2·length/255` px。
+ * `length > 128` では量子化プラトー（同一コード連続域）がプラトー内剛体コピー＝スライス反復に見える。
+ * `density` はこれを逆手に取り、`sliceW = max(1, round((1−density)·64))` 幅のストリップ反復をターゲット
+ * `t(i) = line ± (|i−line| mod sliceW)` として明示的に焼く（density=1 → sliceW=1 → 全ピクセルが line
+ * を狙う完全ストレッチ）。8-bit 1 枚では `t(i)` に届かないため、stage1 の実 8-bit 到達位置
+ * `achieved(y) = y + scale1·(c1(y)/255 − 0.5)` を JS で厳密計算し、`|achieved(y) − t(i)|` 最小の**整数** y
+ * への小変位 `δ2(i) = y − i` を第 2 マップに焼いて連結する（整数着地＝stage2 の線形補間が異なるソース
+ * 由来のピクセルをブレンドするのを回避）。`scale1 ≤ 255` または全 δ2=0 なら stage2 省略。
+ *
+ * 前回フィードバックの「ランダム長・複数ライン・残像/前フレーム混合＝datamosh 系」は別エフェクト
+ * （`pixelSmear` 候補・保留）へ分離。独立票 doc/cloudplan/pixel-stretch-directional-line-stretch.md 参照。
+ */
+export const PIXEL_STRETCH_MAX_SLICE = 64;
+
+/**
+ * pixelStretch 動的解像度スーパーサンプルのマップ最大寸法(px)。
+ * supersample は preview / html export の実効表示スケール(zoom×dpr)に**連続で追従**し
+ * 「いま画面に表示されている実解像度」に変位マップを一致させる。上限はズーム率(%)ではなく
+ * この寸法予算で決める（k_max = MAX_MAP_DIM / ストレッチ軸のレイヤー実寸）。
+ * 小さいレイヤーは高倍率まで、大きいレイヤーは寸法上限まで、常に表示解像度へ一致させる。
+ * 8192 はブラウザの canvas/SVG filter テクスチャ上限と毎 apply の PNG エンコード負荷の安全弁。
+ */
+export const PIXEL_STRETCH_MAX_MAP_DIM = 8192;
+
+export interface PixelStretchOpts {
+  w: number;
+  h: number;
+  direction: "right" | "left" | "down" | "up";
+  linePos: number;
+  length: number;
+  /** 1=完全ストレッチ（帯全域がライン 1 列）/ 下げるとスライス反復（0 → 64px スライス）。 */
+  density: number;
+  /**
+   * サンプル元のラインに対する手動オフセット(px, 符号付き)。
+   * 帯（エフェクトが適用される領域）の位置は linePos + length のみで決まり、
+   * lineBias は「どのソース列/行の色をその帯内に引き伸ばすか」だけをずらす（任意位置サンプル）。
+   * 未指定=0。
+   */
+  lineBias?: number;
+  /**
+   * 実効レンダースケール（デバイス解像度 / レイヤー表示解像度、>=1）。
+   * preview の zoom>1 や bundle player の拡大表示では、Chrome が live CSS filter を
+   * スケール後のデバイス解像度で再ラスタライズするため、この係数ぶん変位マップを細分化
+   * （grid を k 倍）してテクセルと出力ピクセルを 1:1 化し、帯のスパイク（ガタガタ）を消す。
+   * feDisplacementMap の scale は userSpace px 据え置き（返り値で k を割り戻す）。未指定/1 で従来と等価。
+   */
+  superSample?: number;
+}
+
+export function pixelStretchDisplaceMaps(opts: PixelStretchOpts): {
+  stage1: { uri: string; scale: number };
+  stage2: { uri: string; scale: number } | null;
+} {
+  const horiz = opts.direction === "right" || opts.direction === "left";
+  // 表示解像度(userSpace px)と grid 解像度(=表示×supersample)。全ての空間量は grid 単位で計算し、
+  // feDisplacementMap へ渡す変位量だけ userSpace px へ割り戻す（g で割る）。g=1 で従来と厳密一致。
+  const dispN = Math.max(1, Math.round(horiz ? opts.w : opts.h));
+  const n = Math.max(dispN, Math.round(dispN * Math.max(1, opts.superSample ?? 1)));
+  const g = n / dispN; // 実効 supersample 係数（丸め込み反映）
+  const len = Math.max(1, Math.round(opts.length * g));
+  // base: エフェクト帯（ストレッチ領域）の開始位置。linePos + length のみで決まる。
+  // src : 実際に色をサンプルするソースライン。lineBias はここだけをずらす（帯位置は動かさない）。
+  const base = Math.round(clamp01(opts.linePos) * n);
+  const src = Math.max(0, Math.min(n - 1, Math.round(base + (opts.lineBias ?? 0) * g)));
+  // right/down は base の後方（index 増加側）へ、left/up は前方（index 減少側）へ帯を張る。
+  const forward = opts.direction === "right" || opts.direction === "down";
+  const sliceW = Math.max(1, Math.round((1 - clamp01(opts.density)) * PIXEL_STRETCH_MAX_SLICE * g));
+  const scale1 = 2 * len; // grid 単位での変位量 = scale·(C−0.5) ∈ [−len, +len]（userSpace は scale1/g）
+
+  // 中立バイアス補正（pixelStretchPrimitives の feOffset）は出力全体を +neutralBiasPx ずらす。
+  // 帯外（実体）はそれで正しくなるが、帯（ストレッチ部）も一緒に +bias ドリフトしてしまう。
+  // 対策: 帯のメンバーシップだけを bias 分だけ手前に符号化し、feOffset 後にちょうど base へ戻す。
+  // src（サンプル色元・lineBias）は不変＝直交。スライス反復は整数のまま保つ（小数残差は feOffset が吸収）。
+  const bandShift = Math.round(scale1 / 510); // ≈ len/255
+  const bandBase = base - bandShift;
+
+  // ターゲット: 帯内の各ピクセルは「src」を起点とした sliceW 幅ストリップを反復サンプルする。
+  // ただし帯の範囲（inBand）は bandBase からの距離で決める（feOffset 後の開始位置は linePos のまま）。
+  const target = new Float64Array(n);
+  const inBand = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    const signedD = forward ? i - bandBase : bandBase - i;
+    if (signedD >= 0 && signedD <= len) {
+      inBand[i] = 1;
+      const offset = signedD % sliceW;
+      target[i] = forward ? src + offset : src - offset;
+    } else {
+      target[i] = i; // 帯外は無変位
+    }
+  }
+
+  // stage1: 8-bit 量子化マップ（従来と同型）。achieved は実 8-bit 値での到達位置。
+  const c1 = new Uint8Array(n);
+  const achieved = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    c1[i] = inBand[i] ? Math.round(clamp01(0.5 + (target[i]! - i) / scale1) * 255) : 128;
+    achieved[i] = i + scale1 * (c1[i]! / 255 - 0.5);
+  }
+
+  const encode = (codes: Uint8Array): string => {
+    const rgba = new Uint8Array(n * 4);
+    for (let i = 0; i < n; i++) {
+      const o = i * 4;
+      rgba[o] = horiz ? codes[i]! : 128; // R = X 変位
+      rgba[o + 1] = horiz ? 128 : codes[i]!; // G = Y 変位
+      rgba[o + 2] = 0;
+      rgba[o + 3] = 255;
+    }
+    return horiz ? rgbaToPngDataUri(rgba, n, 1) : rgbaToPngDataUri(rgba, 1, n);
+  };
+
+  // 返す scale は feDisplacementMap の userSpace px。grid 単位 scale1 を g で割り戻す。
+  const stage1 = { uri: encode(c1), scale: scale1 / g };
+
+  // stage2（残差補正）: scale1 ≤ 255 なら量子化誤差 ≤0.5px で不要。
+  if (scale1 <= 255) return { stage1, stage2: null };
+  const window = Math.max(Math.ceil(scale1 / 255) + 2, sliceW);
+  const d2 = new Int32Array(n);
+  let maxAbs = 0;
+  for (let i = 0; i < n; i++) {
+    if (!inBand[i]) continue;
+    let best = 0;
+    let bestErr = Math.abs(achieved[i]! - target[i]!);
+    for (let dy = -window; dy <= window; dy++) {
+      const y = i + dy;
+      if (y < 0 || y >= n || !inBand[y]) continue;
+      const err = Math.abs(achieved[y]! - target[i]!);
+      if (err < bestErr - 1e-9 || (err < bestErr + 1e-9 && Math.abs(dy) < Math.abs(best))) {
+        best = dy;
+        bestErr = err;
+      }
+    }
+    d2[i] = best;
+    const a = Math.abs(best);
+    if (a > maxAbs) maxAbs = a;
+  }
+  if (maxAbs === 0) return { stage1, stage2: null };
+  const scale2 = 2 * (maxAbs + 1); // grid 単位（エンコードに使用）
+  const c2 = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    c2[i] = Math.round(clamp01(0.5 + d2[i]! / scale2) * 255);
+  }
+  return { stage1, stage2: { uri: encode(c2), scale: scale2 / g } };
+}
+
+/** pixelStretch の SVG primitives（feImage+feDisplacementMap の 1〜2 段チェーン）。 */
+export function pixelStretchPrimitives(opts: PixelStretchOpts): string {
+  const { stage1, stage2 } = pixelStretchDisplaceMaps(opts);
+  const w = Math.max(1, Math.round(opts.w));
+  const h = Math.max(1, Math.round(opts.h));
+  const parts = [
+    feImageLayer(stage1.uri, w, h, "psA"),
+    `<feDisplacementMap in="SourceGraphic" in2="psA" scale="${stage1.scale}" xChannelSelector="R" yChannelSelector="G" result="ps1"/>`,
+  ];
+  if (stage2) {
+    parts.push(
+      feImageLayer(stage2.uri, w, h, "psB"),
+      `<feDisplacementMap in="ps1" in2="psB" scale="${stage2.scale}" xChannelSelector="R" yChannelSelector="G" result="ps1"/>`,
+    );
+  }
+  // 中立バイアス補正（length 比例ドリフト根治）:
+  // feDisplacementMap の真の中立は C=0.5 だが 8bit では 127.5 を表せず、帯外/未使用チャネルの
+  // 中立コード 128 が `scale·(128/255−0.5)=scale/510` の一様変位を全ピクセルの両軸に与える。
+  // 結果、レイヤー全体が原点方向へ (Σscale)/510 = len/255 ドリフトする（帯外は stage2 で補正されない）。
+  // 逆方向の feOffset でこの一様バイアスを打ち消す（帯内は一様 smear のため見た目不変）。
+  const neutralBiasPx = (stage1.scale + (stage2 ? stage2.scale : 0)) * (128 / 255 - 0.5);
+  parts.push(`<feOffset in="ps1" dx="${neutralBiasPx}" dy="${neutralBiasPx}"/>`);
+  return parts.join("");
+}
+
 /** displacement filter region 属性（userSpaceOnUse）。 */
 export function svgDisplaceFilterMarkup(
   id: string,
@@ -53,6 +347,9 @@ export const DISPLACEMENT_EFFECT_TYPES = new Set([
   "fastWave",
   "fastRipple",
   "fastTurbulentDisplace",
+  "glitchSlice",
+  "pixelStretch",
+  "liquidChrome",
 ]);
 
 /** §27.12 Draft Preview Fast Path 対象。 */
@@ -61,9 +358,12 @@ export const FAST_DISPLACEMENT_EFFECT_TYPES = new Set([
   "fastWave",
   "fastRipple",
   "fastTurbulentDisplace",
+  "glitchSlice",
+  "pixelStretch",
+  "liquidChrome",
 ]);
 
-/** §27.3 — live CSS filter 完結 displacement（raster capture 対象外）。Fast* + opticsCompensation。 */
+/** §27.3 — live CSS filter 完結 displacement（raster capture 対象外）。Fast* + opticsCompensation + glitchSlice。 */
 export const LIVE_DISPLACEMENT_EFFECT_TYPES = new Set([
   ...FAST_DISPLACEMENT_EFFECT_TYPES,
   "opticsCompensation",
@@ -1014,4 +1314,317 @@ export function lightPixelSortFilter(
     `<feMergeNode in="streak"/>`,
     `</feMerge>`,
   ].join("");
+}
+
+/** chromaSplit のオフセット（px）。INV-1 純関数。 */
+export function chromaOffsetPx(amount: number, angleDeg: number): { dx: number; dy: number } {
+  const rad = (angleDeg * Math.PI) / 180;
+  return { dx: amount * Math.cos(rad), dy: amount * Math.sin(rad) };
+}
+
+/**
+ * chromaSplit — RGB Split / Chromatic Aberration（§27.3）
+ * 指定角度方向へ R/B チャンネルをオフセットして色収差風の効果を出す。
+ * mode="rgb": R を +offset、B を -offset、G は固定（AE 標準）
+ * mode="rb": R/B のみ動き、G は SourceGraphic のまま
+ * @returns SVG primitives string
+ */
+export function chromaSplitFilter(
+  amount: number, // px
+  angleDeg: number, // deg
+  mode: "rgb" | "rb",
+): string {
+  if (amount === 0) return "";
+
+  const { dx, dy } = chromaOffsetPx(amount, angleDeg);
+
+  const primitives: string[] = [];
+
+  if (mode === "rgb") {
+    // R/G/B を個別に抽出
+    // R チャンネル抽出（G/B=0、アルファ=1）
+    primitives.push(`<feComponentTransfer in="SourceGraphic" result="r">`);
+    primitives.push(`<feFuncR type="linear" slope="1"/><feFuncG type="linear" slope="0"/><feFuncB type="linear" slope="0"/><feFuncA type="linear" slope="1"/>`);
+    primitives.push(`</feComponentTransfer>`);
+
+    // G チャンネル抽出（R/B=0、アルファ=1）
+    primitives.push(`<feComponentTransfer in="SourceGraphic" result="g">`);
+    primitives.push(`<feFuncR type="linear" slope="0"/><feFuncG type="linear" slope="1"/><feFuncB type="linear" slope="0"/><feFuncA type="linear" slope="1"/>`);
+    primitives.push(`</feComponentTransfer>`);
+
+    // B チャンネル抽出（R/G=0、アルファ=1）
+    primitives.push(`<feComponentTransfer in="SourceGraphic" result="b">`);
+    primitives.push(`<feFuncR type="linear" slope="0"/><feFuncG type="linear" slope="0"/><feFuncB type="linear" slope="1"/><feFuncA type="linear" slope="1"/>`);
+    primitives.push(`</feComponentTransfer>`);
+
+    // R を +offset
+    primitives.push(`<feOffset in="r" dx="${dx}" dy="${dy}" result="rOff"/>`);
+
+    // B を -offset
+    primitives.push(`<feOffset in="b" dx="${-dx}" dy="${-dy}" result="bOff"/>`);
+
+    // 加算合成（screen mode）で RGB チャンネルを再合成
+    // R offset と G を screen で加算
+    primitives.push(`<feBlend in="rOff" in2="g" mode="screen" result="rg"/>`);
+    // RG と B offset を screen で加算
+    primitives.push(`<feBlend in="rg" in2="bOff" mode="screen" result="rgb"/>`);
+
+    // アルファを SourceGraphic から取る（透明レイヤー縁の色暴れ防止）
+    primitives.push(`<feComposite in="rgb" in2="SourceGraphic" operator="in"/>`);
+  } else {
+    // mode === "rb": G は SourceGraphic から取り、R/B のみオフセット
+    // R チャンネル抽出（アルファ透過）
+    primitives.push(`<feComponentTransfer in="SourceGraphic" result="r">`);
+    primitives.push(`<feFuncR type="linear" slope="1"/><feFuncG type="linear" slope="0"/><feFuncB type="linear" slope="0"/><feFuncA type="linear" slope="1"/>`);
+    primitives.push(`</feComponentTransfer>`);
+
+    // B チャンネル抽出（アルファ透過）
+    primitives.push(`<feComponentTransfer in="SourceGraphic" result="b">`);
+    primitives.push(`<feFuncR type="linear" slope="0"/><feFuncG type="linear" slope="0"/><feFuncB type="linear" slope="1"/><feFuncA type="linear" slope="1"/>`);
+    primitives.push(`</feComponentTransfer>`);
+
+    // オフセット
+    primitives.push(`<feOffset in="r" dx="${dx}" dy="${dy}" result="rOff"/>`);
+    primitives.push(`<feOffset in="b" dx="${-dx}" dy="${-dy}" result="bOff"/>`);
+
+    // R offset と SourceGraphic (G 含む) を screen で加算
+    primitives.push(`<feBlend in="rOff" in2="SourceGraphic" mode="screen" result="rg"/>`);
+    // RG と B offset を screen で加算
+    primitives.push(`<feBlend in="rg" in2="bOff" mode="screen" result="rgb"/>`);
+
+    // アルファを SourceGraphic から取る（screen ブレンドのエッジ色暴れ防止）
+    primitives.push(`<feComposite in="rgb" in2="SourceGraphic" operator="in"/>`);
+  }
+
+  return primitives.join("");
+}
+
+// ---------------------------------------------------------------------------
+// gradientMap — 輝度 → グラデーション写像（§27.3 / acid-digi Ticket A-2）
+// ---------------------------------------------------------------------------
+
+export type GradientMapStop = { stop: number; r: number; g: number; b: number };
+
+/** thermal / acid / cyber / chrome の stop 定義（値 0..1）。duotone は colorA/B から動的生成。 */
+export const GRADIENT_MAP_PRESETS: Record<string, GradientMapStop[]> = {
+  // サーモグラフィ: 黒 → 紫 → 赤 → 黄 → 白
+  thermal: [
+    { stop: 0, r: 0, g: 0, b: 0 },
+    { stop: 0.25, r: 0.45, g: 0, b: 0.55 },
+    { stop: 0.5, r: 1, g: 0.05, b: 0 },
+    { stop: 0.75, r: 1, g: 0.9, b: 0 },
+    { stop: 1, r: 1, g: 1, b: 1 },
+  ],
+  // Acid green
+  acid: [
+    { stop: 0, r: 0, g: 0, b: 0 },
+    { stop: 0.3, r: 0.05, g: 0.35, b: 0 },
+    { stop: 0.55, r: 0.15, g: 0.95, b: 0.1 },
+    { stop: 0.8, r: 0.75, g: 1, b: 0.15 },
+    { stop: 1, r: 0.95, g: 1, b: 0.7 },
+  ],
+  // Cyberpunk: 暗青 → マゼンタ → シアン → ホットピンク
+  cyber: [
+    { stop: 0, r: 0.02, g: 0, b: 0.12 },
+    { stop: 0.35, r: 0.55, g: 0, b: 0.85 },
+    { stop: 0.65, r: 0, g: 0.9, b: 1 },
+    { stop: 1, r: 1, g: 0.15, b: 0.85 },
+  ],
+  // 金属クローム: 暗→明→暗→明の非単調
+  chrome: [
+    { stop: 0, r: 0.08, g: 0.08, b: 0.1 },
+    { stop: 0.22, r: 0.88, g: 0.9, b: 0.95 },
+    { stop: 0.48, r: 0.18, g: 0.2, b: 0.22 },
+    { stop: 0.72, r: 0.96, g: 0.97, b: 1 },
+    { stop: 1, r: 0.35, g: 0.37, b: 0.4 },
+  ],
+};
+
+const GRADIENT_MAP_SAMPLE_COUNT = 17;
+
+function lerpChannel(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
+/** stop 配列上で t∈[0,1] を線形補間サンプル。 */
+export function sampleGradientStops(
+  stops: GradientMapStop[],
+  t: number,
+): { r: number; g: number; b: number } {
+  if (stops.length === 0) return { r: 0, g: 0, b: 0 };
+  if (stops.length === 1) return { r: stops[0]!.r, g: stops[0]!.g, b: stops[0]!.b };
+  const u = clamp01(t);
+  if (u <= stops[0]!.stop) return { r: stops[0]!.r, g: stops[0]!.g, b: stops[0]!.b };
+  const last = stops[stops.length - 1]!;
+  if (u >= last.stop) return { r: last.r, g: last.g, b: last.b };
+  for (let i = 0; i < stops.length - 1; i++) {
+    const a = stops[i]!;
+    const b = stops[i + 1]!;
+    if (u >= a.stop && u <= b.stop) {
+      const span = b.stop - a.stop;
+      const local = span <= 1e-12 ? 0 : (u - a.stop) / span;
+      return {
+        r: lerpChannel(a.r, b.r, local),
+        g: lerpChannel(a.g, b.g, local),
+        b: lerpChannel(a.b, b.b, local),
+      };
+    }
+  }
+  return { r: last.r, g: last.g, b: last.b };
+}
+
+/**
+ * 輝度→RGB の feComponentTransfer table 値（各 17 点・スペース区切り）。
+ * phaseDeg/360 分だけサンプル位置を巡回シフト。duotone のみ colorA→colorB。
+ */
+export function gradientMapTable(
+  preset: string,
+  phaseDeg: number,
+  colorA: { r: number; g: number; b: number },
+  colorB: { r: number; g: number; b: number },
+): { r: string; g: string; b: string } {
+  const stops: GradientMapStop[] =
+    preset === "duotone"
+      ? [
+          { stop: 0, r: colorA.r, g: colorA.g, b: colorA.b },
+          { stop: 1, r: colorB.r, g: colorB.g, b: colorB.b },
+        ]
+      : (GRADIENT_MAP_PRESETS[preset] ?? GRADIENT_MAP_PRESETS["thermal"]!);
+
+  // 負の phase も正規化（mod 1）。phase=0 のときは端点 t=1 を保持（1%1→0 を避ける）。
+  const phaseFrac = ((phaseDeg / 360) % 1 + 1) % 1;
+  const n = GRADIENT_MAP_SAMPLE_COUNT;
+  const rs: number[] = [];
+  const gs: number[] = [];
+  const bs: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const base = i / (n - 1);
+    // phase=0: base をそのまま（最終サンプル = 1.0 → 末尾 stop）。
+    // phase>0: [0,1) へ wrap（s===1 → 0。hue cycle の巡回）。
+    let sampleT: number;
+    if (phaseFrac === 0) {
+      sampleT = base;
+    } else {
+      const s = base + phaseFrac;
+      sampleT = s >= 1 ? s - Math.floor(s) : s;
+    }
+    const c = sampleGradientStops(stops, sampleT);
+    rs.push(c.r);
+    gs.push(c.g);
+    bs.push(c.b);
+  }
+  return {
+    r: rs.join(" "),
+    g: gs.join(" "),
+    b: bs.join(" "),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// liquidChrome — 金属環境の縞グラデを流体 turbulence で歪ませる「fill 方式」
+// (§27.3 / acid-digi Ticket D-2。旧「コンテンツ displace + feSpecularLighting +
+//  gradientMap」は下地が主役のパステル雲になり pic1 の液体クロームにならなかったため作り直し。)
+// ---------------------------------------------------------------------------
+
+/**
+ * 金属環境の 1 周期グラデ stop（0..1）。黒(青み) → スチール → 鋭い白ハイライト →
+ * ピンク(イリデッセンス) → 暗紫 → 黒。両端が同色で縦タイル seam レス。
+ */
+const CHROME_STRIP_STOPS: { t: number; r: number; g: number; b: number }[] = [
+  { t: 0.0, r: 0x0a, g: 0x0c, b: 0x14 },
+  { t: 0.28, r: 0x4a, g: 0x55, b: 0x70 },
+  { t: 0.45, r: 0xe6, g: 0xec, b: 0xff },
+  { t: 0.5, r: 0xff, g: 0xff, b: 0xff },
+  { t: 0.57, r: 0xd8, g: 0xc2, b: 0xd8 },
+  { t: 0.72, r: 0x2a, g: 0x26, b: 0x36 },
+  { t: 1.0, r: 0x0a, g: 0x0c, b: 0x14 },
+];
+
+const CHROME_STRIP_HEIGHT = 512;
+
+/** liquidChrome の金属縞グラデ縦ストリップを生 PNG data URI に焼く（純関数・DOM 非依存）。 */
+export function chromeStripPng(periods: number): string {
+  const bands = Math.max(1, Math.round(periods));
+  const H = CHROME_STRIP_HEIGHT;
+  const W = 2;
+  const rgba = new Uint8Array(W * H * 4);
+  const periodH = H / bands;
+  for (let y = 0; y < H; y++) {
+    const local = (y % periodH) / periodH; // [0,1) 周期内位置
+    // stop 区間を線形補間
+    let a = CHROME_STRIP_STOPS[0]!;
+    let b = CHROME_STRIP_STOPS[CHROME_STRIP_STOPS.length - 1]!;
+    for (let i = 0; i < CHROME_STRIP_STOPS.length - 1; i++) {
+      if (local >= CHROME_STRIP_STOPS[i]!.t && local <= CHROME_STRIP_STOPS[i + 1]!.t) {
+        a = CHROME_STRIP_STOPS[i]!;
+        b = CHROME_STRIP_STOPS[i + 1]!;
+        break;
+      }
+    }
+    const span = b.t - a.t;
+    const u = span <= 1e-9 ? 0 : (local - a.t) / span;
+    const r = Math.round(a.r + (b.r - a.r) * u);
+    const g = Math.round(a.g + (b.g - a.g) * u);
+    const bl = Math.round(a.b + (b.b - a.b) * u);
+    for (let x = 0; x < W; x++) {
+      const o = (y * W + x) * 4;
+      rgba[o] = r;
+      rgba[o + 1] = g;
+      rgba[o + 2] = bl;
+      rgba[o + 3] = 255;
+    }
+  }
+  return rgbaToPngDataUri(rgba, W, H);
+}
+
+/**
+ * liquidChrome primitives（`{kind:"svg"}` の中身・fill 方式）。
+ * 1) feTurbulence（生成域 (0,0,w,h) 固定・stitch）→ feTile 3×3 → feOffset で evolution パン
+ *    （動く四角枠対策の tile+mod 方式を踏襲）。
+ * 2) `chromeStripPng(bands)` の金属縞グラデを feImage で敷き、seamless に 3×3 タイル展開。
+ * 3) 縞を 2 段 feDisplacementMap で歪ませる（warp=大きく折る骨格 + detail=細かい turbulence で
+ *    渦/eddy を作る）→ 鋭い反射線が流れる液体クローム。
+ * 4) feComposite operator="in" で SourceAlpha（レイヤー形状）に閉じ込め、下地の色は捨てる。
+ */
+export function liquidChromePrimitives(opts: {
+  size: number;
+  warp: number;
+  detail: number;
+  bands: number;
+  evolution: number;
+  seed: number;
+  quality: number;
+  w: number;
+  h: number;
+}): string {
+  const { size, warp, detail, bands, evolution, seed, quality, w, h } = opts;
+  const freq = sizeToFrequency(size);
+  const freq2 = sizeToFrequency(Math.max(1, size * 0.45)); // curl 用の細かい turbulence
+  const octaves = quality >= 0.5 ? 3 : 2;
+  const { dx: evoDx, dy: evoDy } = evolutionToOffsetPx(evolution, size);
+  const s = Math.max(0, Math.floor(seed)) % 4096;
+  const s2 = (s + 977) % 4096;
+  const lw = Math.max(1, w);
+  const lh = Math.max(1, h);
+  // 動く四角枠対策（tile+mod 方式）: 生成域固定＋seamless タイル、パンは周期で畳む。
+  const panX = ((evoDx % lw) + lw) % lw;
+  const panY = ((evoDy % lh) + lh) % lh;
+  const strip = chromeStripPng(bands);
+
+  const parts: string[] = [
+    `<feTurbulence type="fractalNoise" baseFrequency="${freq} ${freq}" numOctaves="${octaves}" seed="${s}" stitchTiles="stitch" x="0" y="0" width="${lw}" height="${lh}" result="noiseRaw"/>`,
+    `<feTile in="noiseRaw" x="${-lw}" y="${-lh}" width="${3 * lw}" height="${3 * lh}" result="noiseTiled"/>`,
+    `<feOffset in="noiseTiled" dx="${panX}" dy="${panY}" result="noise"/>`,
+    // 金属縞グラデ（(0,0,w,h) に敷いて seamless 3×3 タイル → displacement が端で透明を引かない）
+    `<feImage href="${strip}" x="0" y="0" width="${lw}" height="${lh}" preserveAspectRatio="none" result="stripOne"/>`,
+    `<feTile in="stripOne" x="${-lw}" y="${-lh}" width="${3 * lw}" height="${3 * lh}" result="stripField"/>`,
+    // 1 段目: 大きく折る（渦の骨格）
+    `<feDisplacementMap in="stripField" in2="noise" scale="${warp}" xChannelSelector="R" yChannelSelector="G" result="warp1"/>`,
+    // 2 段目: 細かい turbulence で更に curl させ閉ループ/eddy を作る
+    `<feTurbulence type="turbulence" baseFrequency="${freq2} ${freq2}" numOctaves="2" seed="${s2}" stitchTiles="stitch" x="0" y="0" width="${lw}" height="${lh}" result="noise2"/>`,
+    `<feDisplacementMap in="warp1" in2="noise2" scale="${detail}" xChannelSelector="R" yChannelSelector="G" result="warped"/>`,
+    // レイヤー形状に閉じ込め（下地の色は捨てる）
+    `<feComposite in="warped" in2="SourceAlpha" operator="in"/>`,
+  ];
+  return parts.join("");
 }

@@ -1,5 +1,15 @@
 import { create } from "zustand";
+import { parse as parseOpentypeFont } from "opentype.js";
 import { createProject } from "../core/createProject";
+import {
+  BUILTIN_FONT_DIR,
+  findBuiltinFontByFamily,
+  isBuiltinFontFamily,
+  nearestBuiltinWeight,
+  primaryFontFamily,
+} from "../runtime/builtinFonts";
+import { publicAssetUrl } from "../runtime/publicAssetUrl";
+import { registerAssetFonts } from "../runtime/assetFontFaces";
 import { newBinId, newCompId, newObjectId } from "../core/ids";
 import { loadProject, saveProject } from "../core/projectFs";
 import {
@@ -32,9 +42,11 @@ import type {
   TimelineComposition,
 } from "../core/schema";
 import { IndexedDbFs } from "../fs/IndexedDbFs";
-import { compositionDir, DIR_ASSETS, pluginEntryPath, pluginManifestPath } from "../core/paths";
+import { compositionDir, DIR_ASSETS, DIR_ASSETS_FONTS, pluginEntryPath, pluginManifestPath } from "../core/paths";
 import { compLayerDefaultOutPoint, compWouldCreateCycle } from "../runtime/compLayer";
 import { rescaleCompFps, resizeCompCentered } from "./compEdit";
+import { applyFontAssetMigration, planFontAssetMigration, type FontAssetMove } from "./migrateFontAssetPaths";
+import { addFontAssetToProject, migrateFontAssetsToBin } from "./fontBin";
 import { isLayerLocked } from "./layerLock";
 import { registerBuiltinComponents } from "../runtime/builtinComponents";
 import { registerBuiltinEffects } from "../runtime/builtinEffects";
@@ -122,6 +134,30 @@ registerBuiltinEffects();
 const fs = new IndexedDbFs("mafter-effect-fs");
 bindExpressionFs(fs);
 const pluginLoader = new ModuleLoader(fs);
+
+/**
+ * assets/font/ 導入前に取り込まれたフォントを assets/font/ へ移送する（§3）。
+ * コピーに失敗した asset は path を書き換えず、元の場所のまま読めるようにしておく。
+ */
+async function migrateFontAssetsOnFs(project: Project): Promise<Project> {
+  const planned = planFontAssetMigration(project);
+  const done: FontAssetMove[] = [];
+  for (const m of planned) {
+    try {
+      if (!(await fs.exists(m.from))) continue;
+      await fs.write(m.to, await fs.read(m.from));
+      await fs.delete(m.from);
+      done.push(m);
+    } catch {
+      /* best-effort: 失敗したフォントは旧 path のまま維持 */
+    }
+  }
+  const moved = applyFontAssetMigration(project, done);
+  const next = migrateFontAssetsToBin(moved, newBinId());
+  if (next === project) return project;
+  await saveProject(fs, next);
+  return next;
+}
 
 // §12 サンプルプラグイン JS（gradient-rect component）。installSamplePlugin() で FS に書き込む。
 const SAMPLE_PLUGIN_JS = `// Mafter Effect Sample Plugin — gradient-rect component
@@ -291,6 +327,10 @@ export interface EditorStore {
   addAudioLayer: (assetId: string, name?: string) => string | null;
   // 画像アセットをインポートして project.assets に追加する
   importImageAsset: (file: File) => Promise<string | null>;
+  // §5.5f 3D Extrude ON 時、Bundled フォントをまだ asset 化していなければ自動で取り込む
+  ensureBundledFontAsset: (font: string, weight: number) => Promise<void>;
+  // カスタムフォントファイルをインポートして project.assets(kind:"font") に追加する
+  importFontAsset: (file: File) => Promise<{ assetId: string; family: string } | null>;
   // image component を持つ SceneObject を追加する
   addImageLayer: (assetId: string, name?: string) => string | null;
   // 動画アセットをインポートして project.assets に追加する
@@ -405,7 +445,8 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
   loadFromFs: async () => {
     try {
-      const { project: p, missingBlendModes } = await loadProject(fs);
+      const { project: loaded, missingBlendModes } = await loadProject(fs);
+      const p = await migrateFontAssetsOnFs(loaded);
       set({
         project: p,
         currentCompId: p.rootComposition,
@@ -1213,6 +1254,16 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
             align: "left",
             weight: 400,
             italic: false,
+            // §5.5f 3D 押し出し（P1: depth+bevel+lambert）。既定 OFF・非破壊（§4.1）。
+            geomEnabled: false,
+            geomDepth: staticProp(50),
+            geomBevelSize: staticProp(0),
+            geomBevelStyle: "angular",
+            geomBevelSegments: 2,
+            geomCurveQuality: "medium",
+            geomShading: "lambert",
+            geomAmbient: staticProp(0.35),
+            geomLightDir: vec3(-0.5, -0.7, -0.5),
           },
         },
       ],
@@ -1309,6 +1360,58 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     );
     get().applyCommand({ label: "Import Image", before, after });
     return id;
+  },
+
+  ensureBundledFontAsset: async (font, weight) => {
+    const before = get().project;
+    if (!before || !isBuiltinFontFamily(font)) return;
+    const fam = primaryFontFamily(font);
+    const def = findBuiltinFontByFamily(fam);
+    if (!def) return;
+    // 3D 押し出しは weight ごとに別のアウトライン（別ファイル）を要する。family だけで
+    // 重複判定すると最初に埋め込んだ weight が居座り、以降の weight 変更が効かない。
+    const w = nearestBuiltinWeight(def, Number.isFinite(weight) ? weight : 400);
+    if (before.assets.some((a) => a.kind === "font" && a.meta?.family === fam && a.meta?.weight === w.weight)) return;
+    let bytes: Uint8Array;
+    try {
+      const resp = await fetch(publicAssetUrl(`${BUILTIN_FONT_DIR}/${w.file}`));
+      if (!resp.ok) return;
+      bytes = new Uint8Array(await resp.arrayBuffer());
+    } catch {
+      return;
+    }
+    const id = newObjectId();
+    const assetPath = `${DIR_ASSETS_FONTS}/${id}.ttf`;
+    await fs.write(assetPath, bytes);
+    const asset: AssetEntry = { id, path: assetPath, kind: "font", meta: { family: fam, weight: w.weight } };
+    const after = addFontAssetToProject(before, asset, newBinId());
+    get().applyCommand({ label: "Embed font", before, after });
+  },
+
+  importFontAsset: async (file) => {
+    const before = get().project;
+    if (!before) return null;
+    const ext = file.name.split(".").pop() ?? "ttf";
+    const buf = await file.arrayBuffer();
+    let family: string;
+    let fontWeight = 400;
+    try {
+      const font = parseOpentypeFont(buf);
+      const names = font.names.fontFamily;
+      family = names?.en ?? Object.values(names ?? {})[0] ?? file.name.replace(/\.[^.]+$/, "");
+      const usWeightClass = (font.tables as { os2?: { usWeightClass?: number } }).os2?.usWeightClass;
+      if (typeof usWeightClass === "number" && Number.isFinite(usWeightClass)) fontWeight = usWeightClass;
+    } catch {
+      family = file.name.replace(/\.[^.]+$/, "");
+    }
+    const id = newObjectId();
+    const assetPath = `${DIR_ASSETS_FONTS}/${id}.${ext}`;
+    await fs.write(assetPath, new Uint8Array(buf));
+    const asset: AssetEntry = { id, path: assetPath, kind: "font", meta: { family, weight: fontWeight } };
+    const after = addFontAssetToProject(before, asset, newBinId());
+    get().applyCommand({ label: "Import font", before, after });
+    void registerAssetFonts(after, fs);
+    return { assetId: id, family };
   },
 
   addImageLayer: (assetId, name) => {

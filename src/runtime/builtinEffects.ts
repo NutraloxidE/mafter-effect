@@ -2,16 +2,19 @@ import type { RGBA } from "../core/schema";
 import type { EffectDef, EffectRenderCtx, RasterBuffer } from "./plugin";
 import { globalPluginRegistry } from "./pluginRegistry";
 import {
+  chromaSplitFilter,
   displaceWithMap,
   angularWipeMask,
   ditherDissolveMask,
   ditherEffectiveReveal,
   evolutionToOffsetPx,
+  gradientMapTable,
   lightPixelSortFilter,
   linearWipeMask,
   opticsCompensationDisplaceMap,
   phaseToSeed,
   rippleDisplaceMap,
+  scanlineTilePng,
   sizeToFrequency,
   turbulenceDisplace,
   waveDisplaceMapSvg,
@@ -104,6 +107,224 @@ const TINT_EFFECT_DEF: EffectDef = {
       `<feMergeNode in="SourceGraphic"/>`,
       `<feMergeNode in="tintedAlpha"/>`,
       `</feMerge>`,
+    ].join("");
+    return { kind: "svg", primitives };
+  },
+};
+
+/** Posterize discrete tableValues: levels equally spaced values in [0,1]. L<2 → clamp to 2. */
+export function posterizeTable(levels: number): string {
+  const L = Math.max(2, Math.round(levels));
+  const values: number[] = [];
+  for (let i = 0; i < L; i++) {
+    values.push(i / (L - 1));
+  }
+  return values.join(" ");
+}
+
+const POSTERIZE_EFFECT_DEF: EffectDef = {
+  type: "posterize",
+  label: "Posterize",
+  category: "カラー補正",
+  previewBakeRequired: false,
+  executionPath: "live",
+  params: [
+    { key: "levels", label: "Levels", kind: "scalar", default: 6, animatable: true, min: 2, max: 32, step: 1 },
+  ],
+  apply(props) {
+    const levels = Math.max(2, Math.round(num(props["levels"], 6)));
+    const t = posterizeTable(levels);
+    const primitives = [
+      `<feComponentTransfer in="SourceGraphic">`,
+      `<feFuncR type="discrete" tableValues="${t}"/>`,
+      `<feFuncG type="discrete" tableValues="${t}"/>`,
+      `<feFuncB type="discrete" tableValues="${t}"/>`,
+      `</feComponentTransfer>`,
+    ].join("");
+    return { kind: "svg", primitives };
+  },
+};
+
+const CHROMASPLIT_EFFECT_DEF: EffectDef = {
+  type: "chromaSplit",
+  label: "Chroma Split",
+  category: "スタイライズ",
+  previewBakeRequired: false,
+  executionPath: "live",
+  params: [
+    { key: "amount", label: "Amount", kind: "scalar", default: 4, animatable: true, min: 0, max: 100, step: 0.1 },
+    { key: "angle", label: "Angle", kind: "scalar", default: 0, animatable: true, step: 1 },
+    { key: "mode", label: "Mode", kind: "enum", default: "rgb", animatable: false, options: ["rgb", "rb"] },
+  ],
+  apply(props, _ctx: EffectRenderCtx) {
+    const amount = Math.max(0, num(props["amount"], 4));
+    if (amount === 0) return null;
+    const angle = num(props["angle"], 0);
+    const mode = (props["mode"] as string) ?? "rgb";
+    const primitives = chromaSplitFilter(amount, angle, mode as "rgb" | "rb");
+    return { kind: "svg", primitives };
+  },
+};
+
+const GRADIENT_MAP_EFFECT_DEF: EffectDef = {
+  type: "gradientMap",
+  label: "Gradient Map",
+  category: "カラー補正",
+  previewBakeRequired: false,
+  executionPath: "live",
+  params: [
+    {
+      key: "preset",
+      label: "Preset",
+      kind: "enum",
+      default: "thermal",
+      animatable: false,
+      options: ["thermal", "acid", "cyber", "chrome", "duotone"],
+    },
+    { key: "colorA", label: "Color A", kind: "color", default: { r: 0, g: 0, b: 0, a: 1 }, animatable: true },
+    { key: "colorB", label: "Color B", kind: "color", default: { r: 1, g: 1, b: 1, a: 1 }, animatable: true },
+    { key: "phase", label: "Phase", kind: "scalar", default: 0, animatable: true, min: 0, max: 360, step: 1 },
+    { key: "amount", label: "Amount", kind: "scalar", default: 1, animatable: true, min: 0, max: 1, step: 0.01 },
+  ],
+  apply(props, _ctx: EffectRenderCtx) {
+    const amount = Math.min(1, Math.max(0, num(props["amount"], 1)));
+    if (amount === 0) return null;
+    const preset = str(props["preset"], "thermal");
+    const phase = num(props["phase"], 0);
+    const colorA = rgba(props["colorA"], { r: 0, g: 0, b: 0, a: 1 });
+    const colorB = rgba(props["colorB"], { r: 1, g: 1, b: 1, a: 1 });
+    const { r, g, b } = gradientMapTable(preset, phase, colorA, colorB);
+    const k2 = amount;
+    const k3 = 1 - amount;
+    const primitives = [
+      `<feColorMatrix in="SourceGraphic" type="saturate" values="0" result="gray"/>`,
+      `<feComponentTransfer in="gray" result="mapped">`,
+      `<feFuncR type="table" tableValues="${r}"/>`,
+      `<feFuncG type="table" tableValues="${g}"/>`,
+      `<feFuncB type="table" tableValues="${b}"/>`,
+      `</feComponentTransfer>`,
+      `<feComposite in="mapped" in2="SourceGraphic" operator="arithmetic" k1="0" k2="${k2}" k3="${k3}" k4="0"/>`,
+    ].join("");
+    return { kind: "svg", primitives };
+  },
+};
+
+const NOISE_GRAIN_EFFECT_DEF: EffectDef = {
+  type: "noiseGrain",
+  label: "Noise Grain",
+  category: "スタイライズ",
+  previewBakeRequired: false,
+  executionPath: "live",
+  params: [
+    { key: "amount", label: "Amount", kind: "scalar", default: 0.15, animatable: true, min: 0, max: 1, step: 0.01 },
+    { key: "size", label: "Size", kind: "scalar", default: 1, animatable: true, min: 0.5, max: 8, step: 0.1 },
+    { key: "animated", label: "Animated", kind: "bool", default: false, animatable: false },
+    { key: "monochrome", label: "Monochrome", kind: "bool", default: true, animatable: false },
+    { key: "seed", label: "Seed", kind: "scalar", default: 0, animatable: false, min: 0, max: 9999, step: 1 },
+  ],
+  apply(props, ctx: EffectRenderCtx) {
+    const amount = Math.min(1, Math.max(0, num(props["amount"], 0.15)));
+    if (amount === 0) return null;
+    const size = Math.min(8, Math.max(0.5, num(props["size"], 1)));
+    const animated = bool(props["animated"], false);
+    const monochrome = bool(props["monochrome"], true);
+    const baseSeed = Math.max(0, Math.floor(num(props["seed"], 0))) % 10000;
+    const seed = animated ? (baseSeed + Math.floor(ctx.frame)) % 65536 : baseSeed;
+    const bf = 1 / Math.max(0.5, size);
+    const primitives = [
+      `<feTurbulence type="fractalNoise" baseFrequency="${bf}" numOctaves="1" seed="${seed}" stitchTiles="stitch" result="noise"/>`,
+      monochrome
+        ? `<feColorMatrix in="noise" type="matrix" values="0.33 0.33 0.33 0 0  0.33 0.33 0.33 0 0  0.33 0.33 0.33 0 0  0 0 0 0 1" result="mono"/>`
+        : `<feColorMatrix in="noise" type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 0 1" result="mono"/>`,
+      `<feComposite in="mono" in2="SourceGraphic" operator="arithmetic" k1="0" k2="${amount}" k3="1" k4="${-0.5 * amount}" result="grained"/>`,
+      `<feComposite in="grained" in2="SourceGraphic" operator="in"/>`,
+    ].join("");
+    return { kind: "svg", primitives };
+  },
+};
+
+/** Threshold linear transfer: t→0, 1→1 output; clamps to 0 below t. t>=1 guarded by epsilon. */
+export function thresholdTransfer(t: number): { slope: number; intercept: number } {
+  const clamped = Math.min(1 - 1e-6, Math.max(0, t));
+  const slope = 1 / (1 - clamped);
+  const intercept = -clamped / (1 - clamped);
+  return { slope, intercept };
+}
+
+const HYPER_GLOW_EFFECT_DEF: EffectDef = {
+  type: "hyperGlow",
+  label: "Hyper Glow",
+  category: "スタイライズ",
+  previewBakeRequired: false,
+  executionPath: "live",
+  params: [
+    { key: "threshold", label: "Threshold", kind: "scalar", default: 0.7, animatable: true, min: 0, max: 1, step: 0.01 },
+    { key: "radius", label: "Radius", kind: "scalar", default: 24, animatable: true, min: 0, max: 200, step: 0.1 },
+    { key: "intensity", label: "Intensity", kind: "scalar", default: 1.5, animatable: true, min: 0, max: 8, step: 0.01 },
+    { key: "tint", label: "Tint", kind: "color", default: { r: 1, g: 1, b: 1, a: 1 }, animatable: true },
+    { key: "quality", label: "Quality", kind: "scalar", default: 1, animatable: true, min: 0.1, max: 1, step: 0.05 },
+  ],
+  apply(props) {
+    const radius = Math.max(0, num(props["radius"], 24));
+    const intensity = Math.max(0, num(props["intensity"], 1.5));
+    if (radius === 0 || intensity === 0) return null;
+    const threshold = Math.min(1, Math.max(0, num(props["threshold"], 0.7)));
+    const { slope, intercept } = thresholdTransfer(threshold);
+    const stdDeviation = radius * quality(props);
+    const tint = rgba(props["tint"], { r: 1, g: 1, b: 1, a: 1 });
+    const primitives = [
+      `<feComponentTransfer in="SourceGraphic" result="bright">`,
+      `<feFuncR type="linear" slope="${slope}" intercept="${intercept}"/>`,
+      `<feFuncG type="linear" slope="${slope}" intercept="${intercept}"/>`,
+      `<feFuncB type="linear" slope="${slope}" intercept="${intercept}"/>`,
+      `</feComponentTransfer>`,
+      `<feGaussianBlur in="bright" stdDeviation="${stdDeviation}" result="blur"/>`,
+      `<feComponentTransfer in="blur" result="glow">`,
+      `<feFuncR type="linear" slope="${intensity}"/>`,
+      `<feFuncG type="linear" slope="${intensity}"/>`,
+      `<feFuncB type="linear" slope="${intensity}"/>`,
+      `</feComponentTransfer>`,
+      tint.r === 1 && tint.g === 1 && tint.b === 1
+        ? ``
+        : `<feColorMatrix in="glow" type="matrix" values="${tint.r} 0 0 0 0  0 ${tint.g} 0 0 0  0 0 ${tint.b} 0 0  0 0 0 1 0" result="glow"/>`,
+      `<feBlend in="SourceGraphic" in2="glow" mode="screen"/>`,
+    ].join("");
+    return { kind: "svg", primitives };
+  },
+};
+
+const SCANLINES_EFFECT_DEF: EffectDef = {
+  type: "scanlines",
+  label: "Scanlines",
+  category: "スタイライズ",
+  previewBakeRequired: false,
+  executionPath: "live",
+  params: [
+    { key: "lineHeight", label: "Line Height", kind: "scalar", default: 3, animatable: true, min: 1, max: 64, step: 1 },
+    { key: "duty", label: "Duty", kind: "scalar", default: 0.5, animatable: true, min: 0.05, max: 0.95, step: 0.01 },
+    { key: "opacity", label: "Opacity", kind: "scalar", default: 0.35, animatable: true, min: 0, max: 1, step: 0.01 },
+    { key: "direction", label: "Direction", kind: "enum", default: "horizontal", animatable: false, options: ["horizontal", "vertical"] },
+    { key: "phase", label: "Phase", kind: "scalar", default: 0, animatable: true, min: 0, max: 360, step: 1 },
+  ],
+  apply(props, ctx: EffectRenderCtx) {
+    const opacity = Math.min(1, Math.max(0, num(props["opacity"], 0.35)));
+    if (opacity === 0) return null;
+    const lineHeight = Math.min(64, Math.max(1, Math.round(num(props["lineHeight"], 3))));
+    const duty = Math.min(0.95, Math.max(0.05, num(props["duty"], 0.5)));
+    const direction = str(props["direction"], "horizontal") === "vertical" ? "vertical" : "horizontal";
+    const phase = num(props["phase"], 0);
+    const w = Math.max(1, ctx.width);
+    const h = Math.max(1, ctx.height);
+    const { uri, w: tw, h: th } = scanlineTilePng(lineHeight, duty, opacity, direction);
+    const period = lineHeight;
+    const phaseOffset = (((phase / 360) * period) % period + period) % period;
+    const offX = direction === "vertical" ? -phaseOffset : 0;
+    const offY = direction === "horizontal" ? -phaseOffset : 0;
+    const primitives = [
+      `<feImage href="${uri}" x="${offX}" y="${offY}" width="${tw}" height="${th}" preserveAspectRatio="none" result="tile"/>`,
+      `<feTile in="tile" x="0" y="0" width="${w}" height="${h}" result="lines"/>`,
+      `<feBlend in="SourceGraphic" in2="lines" mode="multiply" result="mult"/>`,
+      `<feComposite in="mult" in2="SourceGraphic" operator="in"/>`,
     ].join("");
     return { kind: "svg", primitives };
   },
@@ -416,6 +637,12 @@ const PIXEL_SORT_LITE_EFFECT_DEF: EffectDef = {
 export function registerBuiltinEffects(): void {
   globalPluginRegistry.registerEffect(BLUR_EFFECT_DEF);
   globalPluginRegistry.registerEffect(TINT_EFFECT_DEF);
+  globalPluginRegistry.registerEffect(CHROMASPLIT_EFFECT_DEF);
+  globalPluginRegistry.registerEffect(GRADIENT_MAP_EFFECT_DEF);
+  globalPluginRegistry.registerEffect(POSTERIZE_EFFECT_DEF);
+  globalPluginRegistry.registerEffect(NOISE_GRAIN_EFFECT_DEF);
+  globalPluginRegistry.registerEffect(HYPER_GLOW_EFFECT_DEF);
+  globalPluginRegistry.registerEffect(SCANLINES_EFFECT_DEF);
   globalPluginRegistry.registerEffect(WAVE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(TURBULENT_DISPLACE_EFFECT_DEF);
   globalPluginRegistry.registerEffect(RIPPLE_EFFECT_DEF);
@@ -432,6 +659,12 @@ export function registerBuiltinEffects(): void {
 export {
   BLUR_EFFECT_DEF,
   TINT_EFFECT_DEF,
+  CHROMASPLIT_EFFECT_DEF,
+  GRADIENT_MAP_EFFECT_DEF,
+  POSTERIZE_EFFECT_DEF,
+  NOISE_GRAIN_EFFECT_DEF,
+  HYPER_GLOW_EFFECT_DEF,
+  SCANLINES_EFFECT_DEF,
   WAVE_EFFECT_DEF,
   TURBULENT_DISPLACE_EFFECT_DEF,
   RIPPLE_EFFECT_DEF,

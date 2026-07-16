@@ -5,10 +5,10 @@
 
 ---
 
-## Codex 起動時の追加ルール
+## AI Agent 起動時の追加ルール
 
-- Codex は本ファイルに加えて、リポジトリ直下の `CLAUDE.md` / `claude.md` が存在する場合は必ず読み、プロジェクト指示として遵守する。矛盾がある場合は、システム指示・ユーザー指示・本ファイルの SSoT 優先順位を壊さない範囲で、より厳格な指示を採用する。
-- Codex は Codex 専用 skill だけでなく、Cursor / Claude 向けに用意された skill・plan・handoff 文書も利用してよい。該当タスクで有用なら `.agents/skills/`、`.claude/skills/`、`.codex/skills/` 等の `SKILL.md` を読んでから適用する。
+- opencode および Codex は、本ファイルに加えて、リポジトリ直下の `CLAUDE.md` / `claude.md` が存在する場合は必ず読み、プロジェクト指示として遵守する。矛盾がある場合は、システム指示・ユーザー指示・本ファイルの SSoT 優先順位を壊さない範囲で、より厳格な指示を採用する。
+- opencode / Codex は Codex 専用 skill だけでなく、Cursor / Claude 向けに用意された skill・plan・handoff 文書も利用してよい。該当タスクで有用なら `.agents/skills/`、`.claude/skills/`、`.codex/skills/` 等の `SKILL.md` を読んでから適用する。
 - 共有運用ルールを変更するときは、必要に応じて `AGENTS.md` と `CLAUDE.md` の両方を同期し、エージェント間で指示が分岐しないようにする。
 
 ---

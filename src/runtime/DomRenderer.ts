@@ -14,6 +14,9 @@ import type { NestedCompRasterizer } from "./compFrameCapture";
 import { resolve, type ExpressionEvaluator } from "./resolve";
 import { resolveVideoGainForFrame } from "./videoGainOnly";
 import { applyTextEl, rgbaCss } from "./textRender";
+import { parseGeom3DParams } from "./geom3d/geom3dParams";
+import { applyGeom3DText, clearGeom3DCanvas, GEOM3D_CANVAS_CLASS } from "./geom3d/geom3dDomApply";
+import { releaseGeom3DGl } from "./geom3d/geom3dGl";
 import { buildMultiRingPathD, buildShapePathD, type ResolvedShapeVertex } from "./shapePath";
 import { composeRings, multiPolygonToPathD } from "./shapePathBoolean";
 import type { Ring } from "polygon-clipping";
@@ -196,6 +199,17 @@ export class DomRenderer implements Renderer {
   // mount 後に setHtmlPlayer() で差し替え可。
   private htmlPlayer: HtmlCompPlayer | null = null;
 
+  /**
+   * pixelStretch 動的解像度用の実効レンダースケール（デバイス解像度 / 表示解像度、>=1）。既定 1。
+   * preview は zoom>1 のとき PreviewPanel が zoom×dpr を注入、bundle player は表示サイズから導出。
+   * export(mp4/webm/PNG) は 1:1 なので既定 1 のまま。live filter の再ラスタ解像度に追随して
+   * 変位マップを細分化するためだけに使う（scene 解決値・INV-2 には影響しない）。
+   */
+  private renderScale = 1;
+  setRenderScale(scale: number): void {
+    this.renderScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
+  }
+
   // §26.4 テキスト品質モード
   private textQuality: "draft" | "precise" = "precise";
   private fontCache: FontOutlineCache | null = null;
@@ -209,6 +223,8 @@ export class DomRenderer implements Renderer {
   private frameHasNestedComposite = false;
   /** §6.5b per-object カメラ前置行列 = translate(cx,cy,P)·view。3D 層にのみ掛ける。null = カメラなし。 */
   private cameraPre: Mat4 | null = null;
+  /** §5.5f 3D-extrude text の実 MVP 投影用。cameraPre と対の fov（度）。カメラなし時は null。 */
+  private cameraFov: number | null = null;
   /** §27.12 hold-last raster（full displacement 用）。 */
   private holdLastRaster = false;
   /** §27.4 auto_raster_mp4 — mp4/png export 時に Live調整も comp 背面 capture へ回す
@@ -370,6 +386,7 @@ export class DomRenderer implements Renderer {
 
     // camera / perspective (§6.5 / §6.5b)
     this.cameraPre = this.setupCameraRig(this.root, scene);
+    this.cameraFov = scene.camera?.fov ?? null;
 
     // §5.4f: matteId → fill（マット源を fillHost 内へ載せるため）
     const fillByMatteId = new Map<string, ResolvedObject>();
@@ -492,6 +509,10 @@ export class DomRenderer implements Renderer {
     }
     for (const canvas of root.querySelectorAll(`canvas.${PACKED_ALPHA_CANVAS_CLASS}`)) {
       if (canvas instanceof HTMLCanvasElement) releasePackedAlphaGlCompositor(canvas);
+    }
+    // §5.5f geom3d — オブジェクト削除時に per-layer WebGL context を明示解放（リーク防止）。
+    for (const canvas of root.querySelectorAll(`canvas.${GEOM3D_CANVAS_CLASS}`)) {
+      if (canvas instanceof HTMLCanvasElement) releaseGeom3DGl(canvas);
     }
   }
 
@@ -1155,7 +1176,17 @@ export class DomRenderer implements Renderer {
           forceSeek = true;
         }
         const persistentlyMuted = this.persistentlyMutedVideoIds?.has(obj.id) ?? false;
-        updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, frame, hostInPoint, fps, this.previewVideoPlayback, this.exportVideoStep, forceSeek, this.playbackPauseForSync, this.muteVideoPlayback, this.playbackRateForSync, persistentlyMuted);
+        // §6.5b: 2D 層（threeD=false）はカメラ免除 — CSS 側の objectWorldTransformWithCamera と同じ規約を
+        // GL の mvp にも適用する（でないと 3D OFF の extrude text だけカメラに捕まる）。
+        const use3D = obj.threeD === true;
+        const geom3dCamera = {
+          cameraPre: use3D ? this.cameraPre : null,
+          fov: use3D ? this.cameraFov : null,
+          world: obj.worldTransform,
+          compW,
+          compH,
+        };
+        updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, frame, hostInPoint, fps, this.previewVideoPlayback, this.exportVideoStep, forceSeek, this.playbackPauseForSync, this.muteVideoPlayback, this.playbackRateForSync, persistentlyMuted, geom3dCamera);
       }
 
       // Plugin component: registry から ComponentDef.render を呼ぶ（組み込み型は未登録でスキップ）
@@ -1316,12 +1347,13 @@ export class DomRenderer implements Renderer {
     }
     const layerOpacity = obj.opacity;
     const ctx = obj.isAdjustment
-      ? { width: compW, height: compH, frame, layerOpacity }
+      ? { width: compW, height: compH, frame, layerOpacity, renderScale: this.renderScale }
       : {
           width: layerW || entry.div.offsetWidth || compW,
           height: layerH || entry.div.offsetHeight || compH,
           frame,
           layerOpacity,
+          renderScale: this.renderScale,
         };
 
     const chain = resolveEffectChain(effects, ctx, `fx-${obj.id}`);
@@ -1925,6 +1957,11 @@ export class DomRenderer implements Renderer {
     this.pendingCompEvaluators = evaluators;
   }
 
+  // §5.5f/§23.3b — ネスト comp コンテナごとの「持ち越す el」（key → el）。
+  // 毎フレーム作り直すと WebGL context が枯渇する geom3d text と、再帰コンテナのみを保持する。
+  // container が捨てられれば Map ごと GC される（WeakMap）。
+  private nestedElReuse = new WeakMap<HTMLElement, Map<string, HTMLElement>>();
+
   /**
    * §6.5b / §23.3b — コンテナに perspective を設定し、3D 層用の cameraPre を返す。
    * カメラ無しの場合は perspective をクリアし null を返す（ネスト無カメラ comp の無回帰）。
@@ -1974,7 +2011,13 @@ export class DomRenderer implements Renderer {
     // §23.3b: ネスト comp は自身のカメラを live で適用（§6.5b と同一リグ）。
     const cameraPre = this.setupCameraRig(container, childScene);
 
-    // 毎フレーム再描画（Phase 1 簡易実装。html/plugin comp は対象外）
+    // 毎フレーム再描画（Phase 1 簡易実装。html/plugin comp は対象外）。
+    // §5.5f: ただし GL コンテキストを抱える el（geom3d text・再帰コンテナ）だけは前フレームの
+    // 実体を key で持ち越す。innerHTML="" で作り直すと canvas ごと WebGL context が毎フレーム
+    // 生まれ、Chrome の同時コンテキスト上限（~16）を数十フレームで超えて
+    // "Too many active WebGL contexts. Oldest context will be lost." → 3D が消える。
+    const prevEls = this.nestedElReuse.get(container) ?? new Map<string, HTMLElement>();
+    const nextEls = new Map<string, HTMLElement>();
     container.innerHTML = "";
     // §23.3d export — この comp（再帰的に）に調整レイヤーがあれば子座標系で1枚へ確定する必要がある。
     let needsComposite = false;
@@ -1991,13 +2034,18 @@ export class DomRenderer implements Renderer {
         div.style.cssText = `position:absolute;top:0;left:0;transform-origin:0 0;transform:${mat4ToCss(xform)};opacity:${nestedOpacity};z-index:${Math.round(obj.zOrder * BASE_Z)};width:${childComp.width}px;height:${childComp.height}px;background:transparent;pointer-events:none`;
       } else {
         div.style.cssText = `position:absolute;top:0;left:0;transform-origin:0 0;transform:${mat4ToCss(xform)};opacity:${nestedOpacity};z-index:${Math.round(obj.zOrder * BASE_Z)}`;
-        for (const c of obj.components) {
+        for (const [ci, c] of obj.components.entries()) {
+          // 型まで含めた key。components の並び替え・型変更で誤再利用しない。
+          const reuseKey = `${obj.id}:${ci}:${c.type}`;
           if (c.type === "comp") {
             // ネストされた comp は再帰描画（深度制限付き）
             const nestedCompId = c.props["compId"] as string | undefined;
             const nestedComp = this.pendingTimelineComps?.get(nestedCompId ?? "");
             if (nestedComp) {
-              const innerEl = document.createElement("div");
+              // コンテナを持ち越す＝深い階層（depth 2+）の geom3d canvas も生き延びる。
+              // renderNestedComp は container の style/children を毎フレーム全書き換えするため再利用は無害。
+              const innerEl = prevEls.get(reuseKey) ?? document.createElement("div");
+              nextEls.set(reuseKey, innerEl);
               const inPoint = (c.props["_inPoint"] as number) ?? 0;
               const trimStart = (c.props["trimStart"] as number) ?? 0;
               const parentFps = (c.props["_parentFps"] as number) ?? childComp.fps;
@@ -2009,14 +2057,32 @@ export class DomRenderer implements Renderer {
             }
             continue;
           }
-          const el = createComponentEl(c.type);
+          // text/video だけ el を持ち越す。text は geom3d canvas（WebGL context）の宿主。
+          // video は毎フレーム新規要素にすると <video> の decode/再生状態が全て失われ、
+          // 再生が一切進まなくなる（トップレベルの acquireVideoFromPool 相当をネストにも適用）。
+          // updateComponentEl が中身を毎フレーム全書き換えする（text: 3D=applyGeom3DText /
+          // 2D=clearGeom3DCanvas+applyTextEl、video: src/seek/syncVideoElementTime）ため、
+          // 再利用しても描画結果は変わらない。他型は従来どおり毎フレーム新規。
+          const persistsAcrossFrames = c.type === "text" || c.type === "video";
+          const el = (persistsAcrossFrames ? prevEls.get(reuseKey) : undefined) ?? createComponentEl(c.type);
+          if (persistsAcrossFrames) nextEls.set(reuseKey, el);
           const hostInPoint = (c.props["_hostInPoint"] as number | undefined) ?? 0;
           // §16.2 split alpha: ensureSplitAlphaCompanion は video.parentElement に依存するため、
           // updateComponentEl より先に append する（順序を変えると nested comp 内の split alpha
           // video が「parent なし」で例外を投げる）。
           div.appendChild(el);
           const nestedPersistentlyMuted = this.persistentlyMutedVideoIds?.has(obj.id) ?? false;
-          updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, childFrame, hostInPoint, childComp.fps, this.previewVideoPlayback, this.exportVideoStep, false, this.playbackPauseForSync, this.muteVideoPlayback, this.playbackRateForSync, nestedPersistentlyMuted);
+          // §5.5f/§23.3b: ネスト comp でも 3D-extrude text を実投影する。カメラ・comp 寸法は
+          // 「子 comp のもの」を渡す — precomp 内の 3D は子の座標系で解決され、外側の変換は
+          // container 側の CSS transform が担う（AE collapse OFF 相当）。
+          const nestedGeom3dCamera = {
+            cameraPre: obj.threeD === true ? cameraPre : null,
+            fov: obj.threeD === true ? (childScene.camera?.fov ?? null) : null,
+            world: obj.worldTransform,
+            compW: childComp.width,
+            compH: childComp.height,
+          };
+          updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, childFrame, hostInPoint, childComp.fps, this.previewVideoPlayback, this.exportVideoStep, false, this.playbackPauseForSync, this.muteVideoPlayback, this.playbackRateForSync, nestedPersistentlyMuted, nestedGeom3dCamera);
         }
       }
       container.appendChild(div);
@@ -2066,6 +2132,14 @@ export class DomRenderer implements Renderer {
       }
     }
 
+    // 今フレーム使われなかった持ち越し el（レイヤー削除・3D OFF・型変更）は明示的に解放する。
+    for (const [key, el] of prevEls) {
+      if (nextEls.get(key) === el) continue;
+      this.releaseAlphaGlCompositorsUnder(el);
+      if (el instanceof HTMLVideoElement) this.teardownVideoElement(el);
+    }
+    this.nestedElReuse.set(container, nextEls);
+
     if (this.exportCompositeMode) {
       const meta: NestedCompositeMeta = {
         needsComposite,
@@ -2103,7 +2177,7 @@ export class DomRenderer implements Renderer {
     const isAdj = obj.isAdjustment === true;
     const w = isAdj ? Math.max(1, Math.round(compW)) : Math.max(1, Math.round(div.offsetWidth || compW || 0));
     const h = isAdj ? Math.max(1, Math.round(compH)) : Math.max(1, Math.round(div.offsetHeight || compH || 0));
-    const ctx = { width: w, height: h, frame, layerOpacity: obj.opacity };
+    const ctx = { width: w, height: h, frame, layerOpacity: obj.opacity, renderScale: this.renderScale };
     const tokens: string[] = [];
     const svgFilters: { id: string; primitives: string }[] = [];
     let i = 0;
@@ -2223,6 +2297,8 @@ function updateComponentEl(
   playbackRateForSync = 1,
   /** fix-plan-v2plus (bundle 専用): 音声抽出済み video は gesture unmute 後も常時ミュート維持。 */
   persistentlyMuted = false,
+  /** §5.5f 3D-extrude text の実 MVP 投影に必要なカメラ/world/comp サイズ（text 以外は未使用）。 */
+  geom3dCamera: { cameraPre: Mat4 | null; fov: number | null; world: Mat4; compW: number; compH: number } | null = null,
 ): void {
   switch (type) {
     case "solid": {
@@ -2290,8 +2366,21 @@ function updateComponentEl(
     }
     case "text": {
       const fontFamily = typeof props["font"] === "string" ? props["font"] : "sans-serif";
-      const font = fontCache?.getFont(fontFamily) ?? null;
-      applyTextEl(el, props, textQuality, font);
+      const fontWeight = typeof props["weight"] === "number" ? props["weight"] : 400;
+      const font = fontCache?.getFont(fontFamily, fontWeight) ?? null;
+      // §5.5f 3D 押し出し（実 MVP 投影・非破壊トグル）。system フォント（アウトライン抽出不可）
+      // またはメッシュ生成失敗、あるいは geom3dCamera 未提供のときは既存 2D 描画へフォールバック
+      // する（§26.4.1 と同じ制約）。ネスト comp も §23.3b で子 comp のカメラを渡す＝3D のまま描く。
+      const geom3d = parseGeom3DParams(props);
+      const usedGeom3D = geom3d.enabled && geom3dCamera !== null && applyGeom3DText(el, props, font, geom3d, geom3dCamera);
+      if (usedGeom3D) {
+        // 親 div（entry.div）に applyObject が焼いた CSS 3D 傾け（matrix3d）を打ち消す。
+        // GL 側の mvp が実投影を担うため、el/canvas はスクリーン空間 2D 配置のままでよい。
+        if (el.parentElement) el.parentElement.style.transform = "";
+      } else {
+        clearGeom3DCanvas(el);
+        applyTextEl(el, props, textQuality, font);
+      }
       break;
     }
     case "image": {

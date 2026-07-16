@@ -11,6 +11,8 @@ export interface EffectChainCtx {
   height: number;
   frame: number;
   layerOpacity?: number;
+  /** 実効レンダースケール（>=1）。preview zoom>1 / player 拡大で pixelStretch のマップ細分化に使う。既定 1。 */
+  renderScale?: number;
 }
 
 export type RasterChainItem = {
@@ -79,7 +81,13 @@ export function resolveEffectChain(
               typeof p["centerX"] === "number" ? p["centerX"] : 0.5,
               typeof p["centerY"] === "number" ? p["centerY"] : 0.5,
             )
-          : Math.max(0, typeof p["amount"] === "number" ? p["amount"] : 0);
+          : effect.type === "glitchSlice"
+            ? Math.max(0, typeof p["maxShift"] === "number" ? p["maxShift"] : 0)
+            : effect.type === "pixelStretch"
+              ? Math.max(0, typeof p["length"] === "number" ? p["length"] : 0)
+            : effect.type === "liquidChrome"
+              ? Math.max(0, typeof p["warp"] === "number" ? p["warp"] : 0)
+              : Math.max(0, typeof p["amount"] === "number" ? p["amount"] : 0);
     fxMaxDisplaceScale = Math.max(fxMaxDisplaceScale, scale);
   }
 
