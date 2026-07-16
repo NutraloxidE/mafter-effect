@@ -75,7 +75,7 @@ export interface Geom3DCameraContext {
   compH: number;
   /**
    * §5.5f-1 canvas 共有: このレイヤーのメッシュを描く group canvas。null/未指定なら
-   * 従来どおり `el` 内に per-layer canvas を確保する（ネスト comp 経路は常にこちら）。
+   * 従来どおり `el` 内に per-layer canvas を確保する（geomShareCanvas=false の終端レイヤー）。
    */
   canvas?: HTMLCanvasElement | null;
   /** `canvas` 指定時のみ意味を持つ。true = この el が canvas の宿主。false = member（el は空にする）。 */

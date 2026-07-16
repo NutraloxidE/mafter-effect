@@ -2003,6 +2003,10 @@ export class DomRenderer implements Renderer {
   // container が捨てられれば Map ごと GC される（WeakMap）。
   private nestedElReuse = new WeakMap<HTMLElement, Map<string, HTMLElement>>();
 
+  // §5.5f-1 — ネスト comp コンテナごとの group canvas（host レイヤー id → canvas）。
+  // container 単位に分ける＝同じ precomp を 2 回置いても canvas を取り違えない（レイヤー id は共通のため）。
+  private nestedGeom3dGroups = new WeakMap<HTMLElement, Map<string, HTMLCanvasElement>>();
+
   /**
    * §6.5b / §23.3b — コンテナに perspective を設定し、3D 層用の cameraPre を返す。
    * カメラ無しの場合は perspective をクリアし null を返す（ネスト無カメラ comp の無回帰）。
@@ -2060,6 +2064,24 @@ export class DomRenderer implements Renderer {
     const prevEls = this.nestedElReuse.get(container) ?? new Map<string, HTMLElement>();
     const nextEls = new Map<string, HTMLElement>();
     container.innerHTML = "";
+
+    // §5.5f-1 canvas 共有はネストでも効かせる（トップレベルと同じ純関数で host を解く）。
+    // 効かせないと per-layer 1 context のままで、3D text を十数枚積んだ precomp を親から呼んだ瞬間に
+    // Chrome の同時 WebGL context 上限（~16）を超え、古い context から黙って破棄＝ちらつく。
+    const geom3dHosts = resolveGeom3DCanvasHosts(childScene.objects.map(toGeom3DLayerInfo));
+    let geom3dGroups = this.nestedGeom3dGroups.get(container);
+    if (!geom3dGroups) {
+      geom3dGroups = new Map<string, HTMLCanvasElement>();
+      this.nestedGeom3dGroups.set(container, geom3dGroups);
+    }
+    const liveGeom3dHosts = new Set(geom3dHosts.values());
+    for (const [hostId, canvas] of geom3dGroups) {
+      if (liveGeom3dHosts.has(hostId)) continue;
+      releaseGeom3DGl(canvas);
+      canvas.remove();
+      geom3dGroups.delete(hostId);
+    }
+    const geom3dCleared = new Set<HTMLCanvasElement>();
     // §23.3d export — この comp（再帰的に）に調整レイヤーがあれば子座標系で1枚へ確定する必要がある。
     let needsComposite = false;
     for (const obj of childScene.objects) {
@@ -2116,12 +2138,21 @@ export class DomRenderer implements Renderer {
           // §5.5f/§23.3b: ネスト comp でも 3D-extrude text を実投影する。カメラ・comp 寸法は
           // 「子 comp のもの」を渡す — precomp 内の 3D は子の座標系で解決され、外側の変換は
           // container 側の CSS transform が担う（AE collapse OFF 相当）。
+          const nestedHostId = geom3dHosts.get(obj.id);
+          let nestedGroupCanvas: HTMLCanvasElement | null = null;
+          if (nestedHostId) {
+            nestedGroupCanvas = geom3dGroups.get(nestedHostId) ?? createGeom3DCanvas();
+            geom3dGroups.set(nestedHostId, nestedGroupCanvas);
+          }
           const nestedGeom3dCamera = {
             cameraPre: obj.threeD === true ? cameraPre : null,
             fov: obj.threeD === true ? (childScene.camera?.fov ?? null) : null,
             world: obj.worldTransform,
             compW: childComp.width,
             compH: childComp.height,
+            canvas: nestedGroupCanvas,
+            isHost: nestedHostId === obj.id,
+            clearedCanvases: geom3dCleared,
           };
           updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, childFrame, hostInPoint, childComp.fps, this.previewVideoPlayback, this.exportVideoStep, false, this.playbackPauseForSync, this.muteVideoPlayback, this.playbackRateForSync, nestedPersistentlyMuted, nestedGeom3dCamera);
         }

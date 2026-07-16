@@ -2404,3 +2404,14 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
   - 実機 Playwright（ユーザーの実 zip・`Comp 2` を import）: 修正前相当（`resolveComp` 省略）は `hasPreviewAudioCandidates` = `false`（音声ゼロ扱い）、修正後（`project` を渡す）は `true` で `video`(内蔵音声) + `audio` の 2 ソースを正しい root frame 写像で検出。`PreviewAudioClock.start()` を実際に呼ぶと `started: true` / `nodeCount: 1`（decode 可能だった音声トラックがスケジュールされた）/ ネスト video の内蔵音声は `getMutedVideoObjectIds()` に含まれ二重発音を防止（native `<video>` 側は自動でミュート）。
   - 無回帰: `tsc --noEmit` 緑 / `npm test` 1288 passed（唯一の失敗 `effects.test.ts > liquidChrome 再登録` は前回セッション同様 stash 済みで本変更前から失敗・無関係）/ `npm run build:player` 実行済み（`footageAudio.ts`/`previewAudioClock.ts`/`bundleFootageAudio.ts` は player import 範囲＝必須）。
 - **branch**: `fix/nested-comp-video-playback`（video 再生修正と同一ブランチで継続。コミット・PR は未実施、ユーザー確認待ち）。
+
+### 2026-07-16（Claude Opus 4.8）— ネスト comp 内の 3D text が親コンポ 9 秒あたりでちらつく問題を根治（§5.5f-1）✅
+
+- **症状（ユーザー報告）**: 最新 DL の pj（`mafter-project (10) (1).zip`）で、ネスト comp `2-もう一人じゃないよって` を親 `main` から呼ぶと **親の 9 秒あたりでちらつく**。子 comp を単独で開くと出ない。
+- **真因**: `renderNestedComp` が `updateComponentEl` に **`canvas` / `isHost` / `clearedCanvases` を渡していなかった**（トップレベル `applyObject` は渡す）。結果ネスト経路だけ `geomShareCanvas=true` を無視して **per-layer 1 canvas = 1 GL context** を作り、Chrome の同時 WebGL context 上限（~16）を超過 → `Too many active WebGL contexts. Oldest context will be lost.` → 3D が消えてちらつく。[[nested-comp-separate-render-path]] と同型の未配線（§23.3e で geom3dCamera を配線したときと**同じ関数の同じ引数**が、新機能追加時にまた片側だけ配線された）。
+- **9 秒の理由（数値で一致）**: 子の 3D text は 20 枚あり in が段階的（0,2,4,5,9,11,13,15,17,19,21,24,26,33,36,45,47,53,55,57）。親 frame 135（=9.0s / 15fps）は子 frame 51 で **同時に生きる 3D text = 17 枚 > 16**。実測の修正前 canvas 枚数も **17** で一致。
+- **修正**（`src/runtime/DomRenderer.ts` のみ・ネスト経路に閉じた最小 diff）: トップレベルと同じ `resolveGeom3DCanvasHosts` を子 scene に回して host を解き、group canvas を **`nestedGeom3dGroups: WeakMap<container, Map<hostId, canvas>>`** で保持（**コンテナ単位**＝同じ precomp を 2 回置いても canvas を取り違えない）。host でなくなった canvas は `releaseGeom3DGl` + `remove()` で明示解放。
+- **検証（実機 Playwright・ユーザーの実 zip から巨大 media(546MB mkv/63MB wav) だけ除いた fixture）**: 新規恒久 verify `verify-nested-geom3d-share.mjs` — **修正前 nested=17 canvas + GL 警告多数（FAIL）→ 修正後 nested=1 canvas / 警告 0 / ink は standalone と同値 60013・ratio 1.000（PASS）**。ゲートに歯があることを stash して確認済み。親は実 `main` ではなく専用 `Outer` を作る（main は 3D text 持ち precomp を 2 つ載せる＝canvas 2 枚が正しく、畳み込みを測れない）。fps 差（子 15 / Outer 30）は §23.2 秒ベース換算で親 frame を逆算し同一子 frame を比較。
+- **無回帰**: `tsc --noEmit` 緑 / `npm test` 1307 passed（唯一の失敗 `effects.test.ts > liquidChrome 再登録` は本変更前から失敗・無関係）/ `verify-nested-geom3d` `verify-geom3d-neutral` `verify-font-3d-extrude` PASS / `npm run build:player` 実行済み（player が DomRenderer を import）。
+- **既知の失敗（本変更と無関係・要対応）**: `verify-geom3d-mvp.mjs` が FAIL。**stash して本変更前から FAIL を確認済み**＝ share-canvas 機能（5a20764）導入時からの回帰と思われる（per-layer canvas 前提の assert が畳み込みで崩れた疑い）。**次セッションで要調査**。
+- **Next steps**: mp4/webm/HTML bundle でのネスト共有 parity は未確認（preview と `compFrameCapture` 経路のみ確認）。`verify-geom3d-mvp` の FAIL 調査。
