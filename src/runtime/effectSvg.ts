@@ -1023,6 +1023,11 @@ function allBlackMaskSvg(w: number, h: number): string {
 
 /**
  * §27.3 Dither Dissolve — 8×8 Bayer pattern を敷いた layer 寸法マスク SVG。
+ *
+ * タイル内は黒背景 1 枚 + 可視（white）セルのみ emit する（Opt 4）。視覚的には
+ * 全セル emit 版と同一（黒背景の上に白セルを重ねるのと、全面塗ってから黒/白で
+ * 上書きするのは同じ結果）。reveal が低いほど white セル数が減るため、キャッシュ
+ * ミス時（初回生成）の rect 数・文字列長を reveal に応じて削減する。
  */
 function ditherPatternMaskSvg(
   w: number,
@@ -1033,11 +1038,12 @@ function ditherPatternMaskSvg(
   const t = quantizeDitherReveal(reveal);
   const tile = pattern === "blueNoise" ? 64 : 8;
   const patternId = pattern === "blueNoise" ? "blueNoise" : "bayer";
-  const cells: string[] = [];
+  const cells: string[] = [`<rect width="${tile}" height="${tile}" fill="black"/>`];
   for (let y = 0; y < tile; y++) {
     for (let x = 0; x < tile; x++) {
-      const on = ditherVisibleAt(pattern, x, y, t);
-      cells.push(`<rect x="${x}" y="${y}" width="1" height="1" fill="${on ? "white" : "black"}"/>`);
+      if (ditherVisibleAt(pattern, x, y, t)) {
+        cells.push(`<rect x="${x}" y="${y}" width="1" height="1" fill="white"/>`);
+      }
     }
   }
   return [
