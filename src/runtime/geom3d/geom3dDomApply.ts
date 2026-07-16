@@ -29,15 +29,21 @@ function fontIdentity(font: Font): number {
   return id;
 }
 
+/** §5.5f-1 group canvas も同じ規約で作る（DomRenderer が host 単位でプールする）。 */
+export function createGeom3DCanvas(): HTMLCanvasElement {
+  const canvas = document.createElement("canvas");
+  canvas.className = GEOM3D_CANVAS_CLASS;
+  canvas.style.cssText = "position:absolute;top:0;left:0;pointer-events:none";
+  return canvas;
+}
+
 function ensureCanvas(el: HTMLElement): HTMLCanvasElement {
   let canvas = el.querySelector(`canvas.${GEOM3D_CANVAS_CLASS}`) as HTMLCanvasElement | null;
   if (!canvas) {
     // 2D（draft span / precise svg）の残置を掃除してから canvas を追加する
     // （renderPreciseText が draft→precise で行う textContent="" 全消去と同じ規約）。
     el.textContent = "";
-    canvas = document.createElement("canvas");
-    canvas.className = GEOM3D_CANVAS_CLASS;
-    canvas.style.cssText = "position:absolute;top:0;left:0;pointer-events:none";
+    canvas = createGeom3DCanvas();
     el.appendChild(canvas);
   }
   return canvas;
@@ -67,6 +73,18 @@ export interface Geom3DCameraContext {
   world: Mat4;
   compW: number;
   compH: number;
+  /**
+   * §5.5f-1 canvas 共有: このレイヤーのメッシュを描く group canvas。null/未指定なら
+   * 従来どおり `el` 内に per-layer canvas を確保する（ネスト comp 経路は常にこちら）。
+   */
+  canvas?: HTMLCanvasElement | null;
+  /** `canvas` 指定時のみ意味を持つ。true = この el が canvas の宿主。false = member（el は空にする）。 */
+  isHost?: boolean;
+  /**
+   * このフレームで既に clear 済みの canvas 集合（呼び出し側がフレーム頭で作り直す）。
+   * グループで最初に描いたメンバーだけが clear し、以降は depth buffer ごと追記する。
+   */
+  clearedCanvases?: Set<HTMLCanvasElement> | null;
 }
 
 /**
@@ -123,7 +141,23 @@ export function applyGeom3DText(
   );
   if (!outline) return false;
 
-  const canvas = ensureCanvas(el);
+  // §5.5f-1 共有時、canvas は host レイヤーの el だけが宿す。member の el は空にして何も描かない
+  // （ピクセルは host の div の z-index に出る — チェーンは連続する描画レイヤーに限られるため合成順は保たれる）。
+  let canvas: HTMLCanvasElement;
+  if (camera.canvas) {
+    canvas = camera.canvas;
+    if (camera.isHost) {
+      if (canvas.parentElement !== el) {
+        el.textContent = ""; // 2D（draft span / precise svg）の残置を掃除してから canvas を載せる
+        el.appendChild(canvas);
+      }
+    } else if (el.firstChild) {
+      el.textContent = "";
+    }
+  } else {
+    canvas = ensureCanvas(el);
+  }
+
   // el 自体は comp 原点に固定（親 div の CSS 3D transform は呼び出し側が打ち消す）。
   // 投影は GL 側の mvp が一手に担うため、el/canvas はスクリーン空間 2D 配置のみでよい。
   el.style.left = "0px";
@@ -175,12 +209,18 @@ export function applyGeom3DText(
   }
 
   const color = p.color ?? DEFAULT_RGBA;
-  renderGeom3D(canvas, mesh, {
+  // clear の消費は「実際に描けたとき」だけ行う（フォント未ロード等で false 復帰したメンバーが
+  // clear 権を持ち逃げすると、次のメンバーが前フレームの残像の上に描いてしまう）。
+  const clear = !camera.clearedCanvases?.has(canvas);
+  const drawn = renderGeom3D(canvas, mesh, {
     mvp,
     normalMatrix: normalMatrix(meshWorld),
     baseColor: [color.r, color.g, color.b, color.a],
     lightDirWorld: [geom.lightDir.x, geom.lightDir.y, geom.lightDir.z],
     ambient: geom.ambient,
+    clear,
   });
+  if (!drawn) return false;
+  camera.clearedCanvases?.add(canvas);
   return true;
 }

@@ -1,5 +1,24 @@
 # Progress
 
+### 2026-07-16（Claude Opus 4.8）— §5.5f-1 WebGL canvas 共有トグル（`geomShareCanvas`）
+
+**完了:**
+- spec §5.5f に `geomShareCanvas` と host 解決規則を追記（§5.5f-1）。ユーザー確認済みの確定事項: ① Null / 音声のみのレイヤーは透過スキップ、非 WebGL の**描画**レイヤーでチェーン切断（AE の 3D 連続グループ準拠）② 共有時は host canvas に **depth buffer 共有**で合成（3D 同士が相互貫入）。
+- `src/runtime/geom3d/geom3dCanvasGroup.ts` 新規 — `resolveGeom3DCanvasHosts()` 純関数（zOrder 昇順・上向き走査・推移解決）＋ `geom3dWebglComponentIndex()` / `toGeom3DLayerInfo()`。**Inspector 表示と DomRenderer の描き先は必ずこの 1 関数群を通す**（ズレ防止）。`test/geom3d/canvasGroup.test.ts` 14 件緑。
+- **UI は 3D フォールドに置いた**（text の Content ではない）— `geomShareCanvas` は text 固有ではなく「レイヤーが WebGL 描画か」に紐づく設定のため。WebGL レイヤーのときだけ表示。将来 shape 等の押し出しを足すときは **`geom3dWebglComponentIndex` を広げるだけ**で Inspector にも DomRenderer にも伝播する（UI 側に型分岐を増やさない）。
+- `geom3dGl.renderGeom3D` に `clear?: boolean`。グループ内で最初に描く（＝最下位の）メンバーだけ clear。
+- `geom3dDomApply`: `Geom3DCameraContext` に `canvas` / `isHost` / `clearedCanvases`。canvas は host の el が宿し member の el は空。clear の消費は**実際に描けたときだけ**（描画失敗メンバーの clear 持ち逃げ防止）。
+- `DomRenderer`: `geom3dGroupCanvases`（host id → canvas・フレーム跨ぎ保持）＋ host でなくなった canvas の `releaseGeom3DGl` GC。member は host の el より先に処理されるが、canvas は DOM 未接続でも描画でき host が同フレームで adopt するため問題なし。
+- Inspector: `Share Canvas` トグル ＋ `Canvas Host` 行（最上位なら「自分（最上位）」表示）。
+- `npm run build:player` 実行済み（`src/runtime` 変更のため必須）。
+
+**既知の制約・残タスク:**
+- **ネスト comp（`renderNestedComp`）は共有しない**（従来の per-layer canvas）。spec §5.5f-1「未対応」に明記済み。
+- メンバー個別の `opacity` / `blendMode` / effects は host の div にまとまるため個別には効かない（設計どおり・spec 記載済み）。
+- `geom3dGl` の `lastMesh` は 1 スロットキャッシュ。共有グループでは毎フレーム全メッシュ再アップロードになる（`ponytail:` コメントあり）。実測で問題化したら mesh キー Map + 複数 VBO へ。
+- **実機（Playwright）での目視 verify は未実施** — 相互貫入・z-index・context 数の確認が残っている。
+- 既存の `test/effects.test.ts` `liquidChrome` 失敗は**本変更以前から main で失敗**（無関係）。
+
 ### 2026-07-15（Claude Opus 4.8）— Bevel が「へこみ」になる断面バグを根治 ＋ `geomBevelStyle` 追加
 
 - **症状（ユーザー報告・スクリーンショット）**: 3D text の Bevel が「Bevel ってよりへこみって感じ」。文字のエッジに沿って暗い溝が彫られたように見え、ベベル特有のハイライトが出ない。

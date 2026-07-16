@@ -383,6 +383,7 @@ interface Geom3DTextProps {
   geomShading:       "none" | "lambert";                 // 既定 "lambert"
   geomAmbient:       AnimatedProp<number>;               // 0..1。既定 0.35（lambert 時のみ意味を持つ）
   geomLightDir:      Vec3;                                // comp/world 空間の平行光方向。既定 {x:-0.5,y:-0.7,z:-0.5}。animatable: false
+  geomShareCanvas:   boolean;                             // 既定 false。上の WebGL レイヤーと canvas を共有（§5.5f-1）。animatable: false
 }
 ```
 
@@ -402,6 +403,20 @@ interface Geom3DTextProps {
   ネスト comp（`renderNestedComp`）内の 3D-extrude text も**同じ実 MVP 投影で描く**（2026-07-16 実装・§23.3e）。
   渡すカメラ・comp 寸法は **子 comp のもの**（precomp 内の 3D は子の座標系で閉じ、外側の変換はコンテナの
   CSS transform が担う＝ collapse OFF と整合）。
+- **§5.5f-1 WebGL canvas 共有（`geomShareCanvas`・確定 2026-07-16）**: 既定は per-layer 1 canvas（= 1 GL context）で、レイヤー間の前後は DOM の z-order が決める。そのため **3D レイヤー同士は相互貫入できず**、3D text を積むほど context が増える（Chrome の上限 ~16・§webgl-context-limit）。`geomShareCanvas=true` のレイヤーは、自分より**上（zOrder 大）で最も近い WebGL レイヤー**の canvas へ自分のメッシュを描き込む。
+
+  - **host 解決規則（純関数 `resolveGeom3DCanvasHosts`）**: zOrder 昇順に並べ、対象レイヤーから**上へ**走査する。`isNull` の Null レイヤーと**音声のみのレイヤー**（全 component が `audio`）は**描画に寄与しないため透過**してスキップする。最初に当たった描画レイヤーが
+    - WebGL レイヤー（`geomEnabled=true`）なら → **その層の host**（推移的に解決）が自分の host。
+    - WebGL でない（solid / image / 2D text / shape 等）なら → **チェーンはそこで切れ**、自分が host（＝グループの最上位）。
+    - 何も無い（自分が comp の最上位）→ 自分が host。
+
+    非 WebGL 描画レイヤーでチェーンを切るのは AE の「連続する 3D レイヤーが 1 つのレンダリンググループになる」規約に合わせるため — 間に 2D レイヤーを挟んだまま共有すると、その 2D レイヤーの重なり順が壊れる。`geomShareCanvas=false` のレイヤーは常に自分が host（＝グループの終端）。走査は zOrder 昇順で厳密に上向きのため循環しない。
+  - **描画**: グループのメッシュは 1 canvas に **zOrder 昇順・depth buffer 共有**で描かれる（グループ内で最初に描画される＝最下位のメンバーだけが `clear` する）。結果 **3D レイヤー同士が正しく相互貫入し**、GL context はグループあたり 1 個に減る。canvas は host レイヤーの `el` が宿し、メンバーの `el` は空になる（ピクセルは host の div の z-index に出る — チェーンが連続描画レイヤーに限られるため合成順は保たれる）。
+  - **既知の帰結**: メンバー個別の `opacity` / `blendMode` / effects は host の div にまとめて掛かるため、メンバー個別には効かなくなる。
+  - **UI 配置（確定）**: 本設定は text 固有ではなく「**そのレイヤーが WebGL 描画か**」に紐づくため、Inspector の Content(text) ではなく **3D フォールド**に置き、WebGL レイヤーのときだけ表示する（将来 shape 等の押し出しが増えても `geom3dWebglComponentIndex` を広げるだけで出る）。解決された host レイヤー名を併せて表示し、自分が最上位のときは「自分（最上位）」と表示する。
+  - **「レイヤーが WebGL か」の判定は `geom3dWebglComponentIndex` が唯一の正**（現状 = `geomEnabled=true` の `text`）。押し出し可能な型を増やすときはここだけを広げる — Inspector / DomRenderer 双方が同じ関数（`toGeom3DLayerInfo`）経由で読むため、判定を分岐先へコピーしてはならない（表示している host と実際の描き先がズレる）。
+  - **未対応**: ネスト comp 内（`renderNestedComp`）は従来どおり per-layer canvas（共有しない）。
+
 - **描画経路（案 B・確定）**: per-layer の**素の WebGL canvas**（three.js 不使用）。`entry.contentRoot`（= `el`）内の 1 DOM 要素として座り、blend/filter/matte/export のレイヤー列挙には一切関与しない（[webgl-video-layer-plan.md](../doc/cloudplan/webgl-video-layer-plan.md) §1 の確立原則を踏襲）。実装: `src/runtime/geom3d/`（`geom3dTypes.ts`/`geom3dParams.ts`/`outlineProvider.ts`/`normalizeRings.ts`/`extrudeMesh.ts`（earcut 使用）/`geom3dGl.ts`/`geom3dMeshCache.ts`/`geom3dDomApply.ts`）、配線は `DomRenderer.ts` の `case "text"` 内のみ（型別オプトイン）。
 - **輪郭の nonzero 正規化（確定・2026-07-15 修正）**: フォントのアウトラインは **nonzero winding rule** 前提で作られ、**輪郭どうしが重なってよい**（画 = stroke ごとの独立輪郭）。押し出しパイプラインの下流（`groupRingsByNesting` の入れ子深度判定・earcut・bevel の inset・側面 band）はいずれも「交差しない外周 + 真の穴」しか扱えないため、`OutlineProvider` は**リングをグリフ単位で nonzero rule により再構築してから**下流へ渡す（`normalizeRings.ts` の `normalizeRingsNonzero`）。正規化後のリングが互いに交差しないことは `OutlineGlyph` の不変条件であり、生アウトラインを下流へ直接渡してはならない。
   - 生アウトラインが下流の前提を満たさない実例: Noto Sans JP の `日` は〈枠をシーム付き 1 輪郭で描いたもの〉+〈横棒 2 本〉の重なりで**穴を 1 つも持たない**。巻き方向を捨てる入れ子深度判定はこの横棒を穴と誤判定する。Roboto の `A`/`B`/`8` でも起き、**フォント依存であって言語依存ではない**（Anton/Tinos/Noto Sans/Cousine のように重なりを持たないフォントは影響を受けない）。

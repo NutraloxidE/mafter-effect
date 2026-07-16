@@ -15,8 +15,9 @@ import { resolve, type ExpressionEvaluator } from "./resolve";
 import { resolveVideoGainForFrame } from "./videoGainOnly";
 import { applyTextEl, rgbaCss } from "./textRender";
 import { parseGeom3DParams } from "./geom3d/geom3dParams";
-import { applyGeom3DText, clearGeom3DCanvas, GEOM3D_CANVAS_CLASS } from "./geom3d/geom3dDomApply";
+import { applyGeom3DText, clearGeom3DCanvas, createGeom3DCanvas, GEOM3D_CANVAS_CLASS, type Geom3DCameraContext } from "./geom3d/geom3dDomApply";
 import { releaseGeom3DGl } from "./geom3d/geom3dGl";
+import { resolveGeom3DCanvasHosts, toGeom3DLayerInfo } from "./geom3d/geom3dCanvasGroup";
 import { buildMultiRingPathD, buildShapePathD, type ResolvedShapeVertex } from "./shapePath";
 import { composeRings, multiPolygonToPathD } from "./shapePathBoolean";
 import type { Ring } from "polygon-clipping";
@@ -225,6 +226,15 @@ export class DomRenderer implements Renderer {
   private cameraPre: Mat4 | null = null;
   /** §5.5f 3D-extrude text の実 MVP 投影用。cameraPre と対の fov（度）。カメラなし時は null。 */
   private cameraFov: number | null = null;
+  /** §5.5f-1 WebGL レイヤー id → canvas を宿す host レイヤー id（毎フレーム純関数で解き直す）。 */
+  private geom3dHosts = new Map<string, string>();
+  /**
+   * §5.5f-1 host レイヤー id → group canvas。フレームをまたいで保持する（毎フレーム作り直すと
+   * GL context が枯渇する）。host でなくなったら renderFrame の GC で releaseGeom3DGl する。
+   */
+  private geom3dGroupCanvases = new Map<string, HTMLCanvasElement>();
+  /** §5.5f-1 現フレームで既に clear 済みの group canvas（最初に描くメンバーだけが clear する）。 */
+  private geom3dClearedCanvases = new Set<HTMLCanvasElement>();
   /** §27.12 hold-last raster（full displacement 用）。 */
   private holdLastRaster = false;
   /** §27.4 auto_raster_mp4 — mp4/png export 時に Live調整も comp 背面 capture へ回す
@@ -411,6 +421,10 @@ export class DomRenderer implements Renderer {
     // 離脱オブジェクトの削除は入場処理より前に行う。
     // §11.4 カット境界（離脱と入場が同一フレーム）で、入場レイヤーが子 <video> を生成する前に
     // 離脱レイヤーの <video> をプールへ退避しておかないと再利用できない（順序が肝）。
+    // §5.5f-1 canvas 共有: この frame の host 割り当てを先に解く（Inspector 表示と同じ純関数）。
+    this.geom3dHosts = resolveGeom3DCanvasHosts(scene.objects.map(toGeom3DLayerInfo));
+    this.geom3dClearedCanvases = new Set();
+
     for (const [id, entry] of this.entries) {
       if (!seen.has(id)) {
         this.restoreAdjustmentSuppression(id);
@@ -423,6 +437,16 @@ export class DomRenderer implements Renderer {
         this.entries.delete(id);
         this.htmlPlayer?.unmountObject(id);
       }
+    }
+
+    // §5.5f-1 host でなくなった group canvas の GL context を明示解放する（entry 削除ループの後に
+    // 置く＝離脱レイヤーは既に hosts から消えている）。canvas を DOM から外すだけでは解放されない。
+    const liveGeom3DHosts = new Set(this.geom3dHosts.values());
+    for (const [hostId, canvas] of this.geom3dGroupCanvases) {
+      if (liveGeom3DHosts.has(hostId)) continue;
+      releaseGeom3DGl(canvas);
+      canvas.remove();
+      this.geom3dGroupCanvases.delete(hostId);
     }
 
     const compW = scene.width;
@@ -497,6 +521,16 @@ export class DomRenderer implements Renderer {
     // §11.4 異なるアセット間カット境界 — 再生中のみ in 点が近い clip を offscreen で先読み prime しプールへ投入。
     this.scheduleVideoLookaheadWarmup(frame);
     this.lastRenderedFrame = frame;
+  }
+
+  /** §5.5f-1 host レイヤーの group canvas を取得（無ければ作る）。GL context ごとフレーム間で持ち越す。 */
+  private ensureGeom3DGroupCanvas(hostId: string): HTMLCanvasElement {
+    let canvas = this.geom3dGroupCanvases.get(hostId);
+    if (!canvas) {
+      canvas = createGeom3DCanvas();
+      this.geom3dGroupCanvases.set(hostId, canvas);
+    }
+    return canvas;
   }
 
   /**
@@ -1179,12 +1213,19 @@ export class DomRenderer implements Renderer {
         // §6.5b: 2D 層（threeD=false）はカメラ免除 — CSS 側の objectWorldTransformWithCamera と同じ規約を
         // GL の mvp にも適用する（でないと 3D OFF の extrude text だけカメラに捕まる）。
         const use3D = obj.threeD === true;
+        // §5.5f-1 canvas 共有: メンバーは host の canvas へ描く。host の el がまだ処理されていなくても
+        // （host は zOrder が上＝このループでは後）canvas は先に作れる — 描画に DOM 接続は要らず、
+        // host が自分の番で adopt するのでペイント前には必ず正しい z-index の div に載る。
+        const geom3dHostId = this.geom3dHosts.get(obj.id);
         const geom3dCamera = {
           cameraPre: use3D ? this.cameraPre : null,
           fov: use3D ? this.cameraFov : null,
           world: obj.worldTransform,
           compW,
           compH,
+          canvas: geom3dHostId ? this.ensureGeom3DGroupCanvas(geom3dHostId) : null,
+          isHost: geom3dHostId === obj.id,
+          clearedCanvases: this.geom3dClearedCanvases,
         };
         updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, frame, hostInPoint, fps, this.previewVideoPlayback, this.exportVideoStep, forceSeek, this.playbackPauseForSync, this.muteVideoPlayback, this.playbackRateForSync, persistentlyMuted, geom3dCamera);
       }
@@ -2298,7 +2339,7 @@ function updateComponentEl(
   /** fix-plan-v2plus (bundle 専用): 音声抽出済み video は gesture unmute 後も常時ミュート維持。 */
   persistentlyMuted = false,
   /** §5.5f 3D-extrude text の実 MVP 投影に必要なカメラ/world/comp サイズ（text 以外は未使用）。 */
-  geom3dCamera: { cameraPre: Mat4 | null; fov: number | null; world: Mat4; compW: number; compH: number } | null = null,
+  geom3dCamera: Geom3DCameraContext | null = null,
 ): void {
   switch (type) {
     case "solid": {
