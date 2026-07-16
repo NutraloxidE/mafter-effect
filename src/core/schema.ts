@@ -323,4 +323,6 @@ export interface ExportConfig {
    * "quality" = 画質優先 / "realtime" = 速度優先。
    */
   encodeLatencyMode?: "quality" | "realtime";
+  /** 音声エンコード bitrate（bps）。未指定 = 192_000。mp4(AAC)/webm(Opus) のみ。clamp 32_000..320_000。 */
+  audioBitrate?: number;
 }

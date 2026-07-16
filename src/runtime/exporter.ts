@@ -316,7 +316,7 @@ async function runMp4(
     if (hasAudio && audioMix) {
       onProgress({ phase: "audio", frame: totalFrames, totalFrames, message: "Encoding audio…" });
       try {
-        await encodeAudioToMuxer(audioMix, (chunk, meta) => muxer.addAudioChunk(chunk, meta ?? undefined), "mp4a.40.2", signal);
+        await encodeAudioToMuxer(audioMix, (chunk, meta) => muxer.addAudioChunk(chunk, meta ?? undefined), "mp4a.40.2", config.audioBitrate, signal);
       } catch {
         // 音声 encode 失敗時も映像だけは書き出す（PNG-seq フォールバックは避ける）
       }
@@ -380,7 +380,7 @@ async function runWebm(
     if (hasAudio && audioMix) {
       onProgress({ phase: "audio", frame: totalFrames, totalFrames, message: "Encoding audio…" });
       try {
-        await encodeAudioToMuxer(audioMix, (chunk, meta) => muxer.addAudioChunk(chunk, meta ?? undefined), "opus", signal);
+        await encodeAudioToMuxer(audioMix, (chunk, meta) => muxer.addAudioChunk(chunk, meta ?? undefined), "opus", config.audioBitrate, signal);
       } catch {
         // 音声 encode 失敗時も映像だけは書き出す
       }
@@ -553,6 +553,7 @@ export async function encodeAudioToMuxer(
   mix: AudioMixResult,
   addChunk: (chunk: EncodedAudioChunk, meta: EncodedAudioChunkMetadata | undefined) => void,
   codec: string,
+  bitrate: number | undefined,
   signal?: AbortSignal,
 ): Promise<void> {
   if (typeof AudioEncoder === "undefined") return;
@@ -565,7 +566,7 @@ export async function encodeAudioToMuxer(
     codec,
     numberOfChannels: mix.numberOfChannels,
     sampleRate: mix.sampleRate,
-    bitrate: 128_000,
+    bitrate: resolveAudioBitrate(bitrate),
   });
 
   const buf = mix.buffer;
@@ -596,6 +597,12 @@ export async function encodeAudioToMuxer(
   }
 
   await encoder.flush();
+}
+
+/** ExportConfig.audioBitrate を有効域に収める（未指定 = 192k）。 */
+export function resolveAudioBitrate(raw: number | undefined): number {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return 192_000;
+  return Math.max(32_000, Math.min(320_000, Math.round(raw)));
 }
 
 // ─── Utilities ────────────────────────────────────────────────────────────────

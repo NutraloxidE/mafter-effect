@@ -47,6 +47,7 @@ export function ExportDialog({ project, compId, mode = "download", onClose }: Pr
   const [videoQuality, setVideoQuality] = useState<ExportVideoQuality>(isPrerender ? "max" : "high");
   const [customBitrateKbps, setCustomBitrateKbps] = useState(Math.round(DEFAULT_VIDEO_BITRATE / 1000));
   const [encodeLatencyMode, setEncodeLatencyMode] = useState<"quality" | "realtime">("quality");
+  const [audioBitrateKbps, setAudioBitrateKbps] = useState(192);
 
   const [progress, setProgress] = useState<ExportProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -60,6 +61,7 @@ export function ExportDialog({ project, compId, mode = "download", onClose }: Pr
   const isExporting = progress !== null && progress.phase !== "done" && progress.phase !== "error";
   const isHtmlBundle = !isPrerender && format === "html-bundle";
   const showVideoQuality = format === "mp4" || format === "webm" || isHtmlBundle;
+  const showAudioQuality = format === "mp4" || format === "webm";
 
   const bakeTargetCount = tl && isHtmlBundle
     ? findBakeTargets(
@@ -111,10 +113,13 @@ export function ExportDialog({ project, compId, mode = "download", onClose }: Pr
       if (videoQuality === "custom") cfg.videoBitrate = customBitrateKbps * 1000;
       cfg.encodeLatencyMode = encodeLatencyMode;
     }
+    if (cfg.format === "mp4" || cfg.format === "webm") {
+      cfg.audioBitrate = audioBitrateKbps * 1000;
+    }
     return cfg;
   }, [
     startFrame, endFrame, fps, scale, format, alpha, textRenderMode, bundleLoop,
-    videoQuality, customBitrateKbps, encodeLatencyMode, isPrerender,
+    videoQuality, customBitrateKbps, encodeLatencyMode, audioBitrateKbps, isPrerender,
   ]);
 
   const onExport = useCallback(async () => {
@@ -124,6 +129,8 @@ export function ExportDialog({ project, compId, mode = "download", onClose }: Pr
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     const cfg = buildConfig();
+    const startTime = performance.now();
+    let succeeded = false;
 
     try {
       const ensureProxyTier = useEditorStore.getState().ensureProxyTier;
@@ -206,6 +213,7 @@ export function ExportDialog({ project, compId, mode = "download", onClose }: Pr
         useEditorStore.getState().applyCommand({ label: "Pre-render", before, after });
         useEditorStore.getState().selectObjects([layerId]);
         setProgress({ phase: "done", frame: 1, totalFrames: 1, message: "Pre-render applied" });
+        succeeded = true;
         return;
       }
 
@@ -213,6 +221,7 @@ export function ExportDialog({ project, compId, mode = "download", onClose }: Pr
         const result = await exportBundle(exportProject, compId, useEditorStore.getState().getFs(), cfg, setProgress, ctrl.signal);
         const name = `${tl.name.replace(/\s+/g, "_")}_bundle.zip`;
         triggerDownload(result.blob, name);
+        succeeded = true;
         return;
       }
       const result = await exportComposition(exportProject, compId, useEditorStore.getState().getFs(), cfg, setProgress, ctrl.signal);
@@ -232,6 +241,7 @@ export function ExportDialog({ project, compId, mode = "download", onClose }: Pr
         );
         feedbackCollector.onExportFallback();
       }
+      succeeded = true;
     } catch (e) {
       if (e instanceof DOMException && e.name === "AbortError") {
         setProgress(null);
@@ -243,6 +253,12 @@ export function ExportDialog({ project, compId, mode = "download", onClose }: Pr
       }
     } finally {
       abortRef.current = null;
+      if (succeeded) {
+        const elapsed = (performance.now() - startTime) / 1000;
+        const elapsedStr = `${elapsed.toFixed(1)}s`;
+        console.log(`[export] ${format} 完了 — 書き出し時間 ${elapsedStr}`);
+        setProgress((p) => (p ? { ...p, message: `${p.message}（${elapsedStr}）` } : p));
+      }
     }
   }, [project, compId, tl, format, startFrame, endFrame, buildConfig, isPrerender]);
 
@@ -376,6 +392,22 @@ export function ExportDialog({ project, compId, mode = "download", onClose }: Pr
                 </select>
               </Row>
             </>
+          )}
+          {showAudioQuality && (
+            <Row label="Audio">
+              <select
+                value={audioBitrateKbps}
+                onChange={(e) => setAudioBitrateKbps(Number(e.target.value))}
+                style={selectStyle}
+                disabled={isExporting}
+              >
+                <option value={96}>96 kbps</option>
+                <option value={128}>128 kbps</option>
+                <option value={192}>192 kbps</option>
+                <option value={256}>256 kbps</option>
+                <option value={320}>320 kbps</option>
+              </select>
+            </Row>
           )}
           <Row label="Text">
             <select

@@ -285,6 +285,7 @@ async function encodeRgbaFramesToMp4H264(
           audio,
           (chunk, meta) => muxer.addAudioChunk(chunk, meta ?? undefined),
           "mp4a.40.2",
+          undefined,
           signal,
         );
       } catch {
