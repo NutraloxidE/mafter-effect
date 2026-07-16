@@ -42,7 +42,7 @@ import type {
   TimelineComposition,
 } from "../core/schema";
 import { IndexedDbFs } from "../fs/IndexedDbFs";
-import { compositionDir, DIR_ASSETS, DIR_ASSETS_FONTS, pluginEntryPath, pluginManifestPath } from "../core/paths";
+import { compositionDir, DIR_ASSETS, DIR_ASSETS_FONTS, pluginEntryPath, pluginManifestPath, PROJECT_JSON } from "../core/paths";
 import { compLayerDefaultOutPoint, compWouldCreateCycle } from "../runtime/compLayer";
 import { rescaleCompFps, resizeCompCentered } from "./compEdit";
 import { applyFontAssetMigration, planFontAssetMigration, type FontAssetMove } from "./migrateFontAssetPaths";
@@ -396,6 +396,14 @@ export interface EditorStore {
   missingBlendModes: Record<string, string>;
 }
 
+let autosaveFailureReported = false;
+function reportAutosaveFailure(e: unknown): void {
+  console.error("autosave failed", e);
+  if (autosaveFailureReported) return;
+  autosaveFailureReported = true;
+  alert(`自動保存に失敗しました。編集内容が保存されていません。\nzip 書き出しでバックアップを取ってください。\n\n${String(e)}`);
+}
+
 export const useEditorStore = create<EditorStore>((set, get) => ({
   project: null,
   currentCompId: "",
@@ -444,8 +452,26 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   },
 
   loadFromFs: async () => {
+    let loadedResult;
     try {
-      const { project: loaded, missingBlendModes } = await loadProject(fs);
+      loadedResult = await loadProject(fs);
+    } catch (e) {
+      // project.json が本当に無いときだけ新規作成。読み込みが一時的に失敗した
+      // （IDB transaction エラー等）ケースで newProject に落ちると FS を全削除して
+      // ユーザーのプロジェクトが消える。exists 自体が落ちたら「有る」側に倒す。
+      let hasProject = true;
+      try {
+        hasProject = await fs.exists(PROJECT_JSON);
+      } catch { /* 判定不能 → 消さない */ }
+      if (hasProject) {
+        alert(`プロジェクトの読み込みに失敗しました。データは保持されています。ページを再読み込みしてください。\n\n${String(e)}`);
+        return;
+      }
+      get().newProject();
+      return;
+    }
+    try {
+      const { project: loaded, missingBlendModes } = loadedResult;
       const p = await migrateFontAssetsOnFs(loaded);
       set({
         project: p,
@@ -462,9 +488,9 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       await ensureAllPresetScripts(fs);
       // §11.4b zip re-import 後など、animated-raster の medium proxy が無ければ再生成。
       void get().rehydrateAnimatedRasters();
-    } catch {
-      // FS に project.json が無い場合など: 新規作成
-      get().newProject();
+    } catch (e) {
+      // project は読めている。plugin/preset/migration の失敗で FS を消さない。
+      console.error("loadFromFs: post-load step failed", e);
     }
   },
 
@@ -524,8 +550,9 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       projectRevision: s.projectRevision + 1,
       previewOverride: null,
     }));
-    // バックグラウンドで自動保存
-    void saveProject(fs, cmd.after);
+    // バックグラウンドで自動保存。失敗を握りつぶすと「編集し続けたのに何も保存されていない」
+    // 状態に気づけないので、1 度だけ表面化する。
+    void saveProject(fs, cmd.after).catch(reportAutosaveFailure);
   },
 
   undo: () => {

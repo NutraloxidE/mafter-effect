@@ -22,7 +22,11 @@ function openDb(dbName: string): Promise<IDBDatabase> {
         db.createObjectStore(STORE);
       }
     };
-    req.onsuccess = () => resolve(req.result);
+    req.onsuccess = () => {
+      // 他タブの upgrade をブロックしない。閉じた接続は tx() が再オープンする。
+      req.result.onversionchange = () => req.result.close();
+      resolve(req.result);
+    };
     req.onerror = () => reject(req.error);
   });
 }
@@ -36,14 +40,25 @@ function promisifyRequest<T>(req: IDBRequest<T>): Promise<T> {
 
 export class IndexedDbFs implements FileSystem {
   private dbPromise: Promise<IDBDatabase>;
+  private readonly dbName: string;
 
   constructor(dbName: string = DEFAULT_DB) {
+    this.dbName = dbName;
     this.dbPromise = openDb(dbName);
   }
 
   private async tx(mode: IDBTransactionMode): Promise<IDBObjectStore> {
     const db = await this.dbPromise;
-    return db.transaction(STORE, mode).objectStore(STORE);
+    try {
+      return db.transaction(STORE, mode).objectStore(STORE);
+    } catch {
+      // "Failed to execute 'transaction' on 'IDBDatabase'" — 接続が閉じている
+      // （versionchange / 大きい blob でのブラウザ強制クローズ / abort 後）。
+      // 再オープンせずに握ると以後の write が全部落ち、自動保存が黙って死ぬ。
+      this.dbPromise = openDb(this.dbName);
+      const db2 = await this.dbPromise;
+      return db2.transaction(STORE, mode).objectStore(STORE);
+    }
   }
 
   async read(path: string): Promise<Uint8Array> {

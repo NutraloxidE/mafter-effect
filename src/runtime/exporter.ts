@@ -459,7 +459,7 @@ async function buildAudioMix(
   fps: number,
   fs: FileSystem,
 ): Promise<AudioMixResult | null> {
-  if (typeof AudioContext === "undefined") return null;
+  if (typeof OfflineAudioContext === "undefined") return null;
 
   const resolveComp = (compId: string): TimelineComposition | undefined => {
     const c = project.compositions.find((c) => c.id === compId);
@@ -471,9 +471,11 @@ async function buildAudioMix(
   const fadeSuppression = computeFadeSuppression(collectFadeClips(comp));
 
   const durationSec = (endFrame - startFrame) / fps;
-  const sampleRate = 44100;
+  // 48kHz 固定 + offCtx 自身で decode する。別 context で decode すると buffer.sampleRate が
+  // offCtx と食い違い、AudioBufferSourceNode が Chrome の低品質補間リサンプラを通って
+  // 音がこもる（decodeAudioData 側は高品質 sinc）。Opus はネイティブ 48k、AAC も 48k が正準。
+  const sampleRate = 48000;
   const offCtx = new OfflineAudioContext(2, Math.ceil(durationSec * sampleRate), sampleRate);
-  const tmpCtx = new AudioContext();
 
   let anyLoaded = false;
   for (const { obj, assetId, inPoint, outPoint, trimStart, gainProp, componentType } of mixSources) {
@@ -493,7 +495,7 @@ async function buildAudioMix(
     let decoded: AudioBuffer;
     try {
       const sliced = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
-      decoded = await tmpCtx.decodeAudioData(sliced as ArrayBuffer);
+      decoded = await offCtx.decodeAudioData(sliced as ArrayBuffer);
     } catch {
       // 無音動画・非対応コンテナは best-effort でスキップ（§11.4）。
       continue;
@@ -540,7 +542,6 @@ async function buildAudioMix(
     anyLoaded = true;
   }
 
-  await tmpCtx.close();
   if (!anyLoaded) return null;
 
   const rendered = await offCtx.startRendering();
