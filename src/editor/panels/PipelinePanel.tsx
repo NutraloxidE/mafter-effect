@@ -1,6 +1,12 @@
 import { useMemo, useState } from "react";
 import { useEditorStore } from "../store";
-import { pipelineAnalysis, type PipelineSegment } from "../pipelineAnalysis";
+import {
+  pipelineAnalysis,
+  WEBGL_CONTEXT_LIMIT,
+  WEBGL_CONTEXT_WARN_AT,
+  type PipelineGlLayers,
+  type PipelineSegment,
+} from "../pipelineAnalysis";
 import type { TimelineComposition } from "../../core/schema";
 
 const TONE_COLORS = {
@@ -14,6 +20,46 @@ const KIND_BADGE = {
   live: { label: "Live", bg: "#2a3a4a", color: "#8cf" },
   raster: { label: "Raster", bg: "#3a2a2a", color: "#f8a" },
 } as const;
+
+/**
+ * §5.5f — WebGL context を消費する canvas 数の表示（応急的な指標）。
+ *
+ * Chrome の同時 WebGL context 上限は **1 ドキュメント ~16**。超えると古い context から黙って
+ * 破棄され、**先に描いたレイヤーの絵が消える**（例外は飛ばない＝ユーザーには原因不明のバグに見える）。
+ * `geom3d` は予算なしで per-layer 1 context を作るため、ここが上限へ効く主因。
+ *
+ * 表示は project データからの**静的な目安**（実 context 数ではない）。frame 依存の in/out 点や
+ * alpha video の予算超過時 CPU フォールバックは見ていないため、実数と一致しないことがある。
+ */
+function GlBadge({ gl }: { gl: PipelineGlLayers }) {
+  const over = gl.total >= WEBGL_CONTEXT_LIMIT;
+  const near = gl.total >= WEBGL_CONTEXT_WARN_AT;
+  const tone = over
+    ? { bg: "#4a1a1a", color: "#ff9090" }
+    : near
+      ? { bg: "#3a2f1a", color: "#e0c070" }
+      : { bg: "#1a2f3a", color: "#7fc0e0" };
+  const detail = [
+    `3D text ${gl.geom3d}`,
+    gl.alphaVideo > 0 ? `透過動画 ${gl.alphaVideo}` : null,
+  ].filter(Boolean).join(" / ");
+  const title = over
+    ? `WebGL canvas ${gl.total}（${detail}）— ブラウザの同時 context 上限(~${WEBGL_CONTEXT_LIMIT})に達しています。`
+      + "古いレイヤーから描画が消える場合があります（3D Extrude を減らす / canvas 共有する / precomp を pre-render してください）"
+    : near
+      ? `WebGL canvas ${gl.total}（${detail}）— 上限(~${WEBGL_CONTEXT_LIMIT})が近づいています。`
+        + "超えると古いレイヤーの描画が消える場合があります"
+      : `WebGL canvas ${gl.total}（${detail}）— 上限 ~${WEBGL_CONTEXT_LIMIT}。canvas 共有したレイヤー群は 1 canvas。precomp の中身も再帰カウント（静的な目安）`;
+  return (
+    <span
+      title={title}
+      style={{ fontSize: 9, fontWeight: 700, padding: "1px 4px", borderRadius: 2, background: tone.bg, color: tone.color }}
+    >
+      GL×{gl.total}
+      {near && "!"}
+    </span>
+  );
+}
 
 export function PipelinePanel() {
   const project = useEditorStore((s) => s.project);
@@ -73,6 +119,7 @@ export function PipelinePanel() {
             α×{analysis.alphaWarnings.length}
           </span>
         )}
+        {analysis.glLayers.total > 0 && <GlBadge gl={analysis.glLayers} />}
         <span style={{ marginLeft: "auto", color: "#666", fontSize: 10 }}>{expanded ? "▾" : "▸"}</span>
       </button>
 

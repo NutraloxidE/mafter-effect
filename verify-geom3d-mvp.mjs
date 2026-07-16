@@ -35,6 +35,10 @@ const report = await page.evaluate(async () => {
   const comp = () => S().project.compositions.find((c) => c.id === S().currentCompId);
 
   const id = S().addText("3dtext");
+  // §6.5b: カメラが効くのは threeD=true の層だけ（2D 層はカメラ免除）。camera/dolly を測る前に
+  // 3D 化しておく — でないと 2) 3) の bbox が neutral と同一になり、「dolly で拡大するか」を
+  // 測れない（免除仕様どおりの挙動を回帰と誤検出する）。
+  S().updateObject(id, { threeD: true }, "verify setup: 3D layer");
   const findObj = () => comp().objects.find((o) => o.id === id);
   const setTextProp = (patch) => {
     const obj = findObj();
@@ -87,7 +91,7 @@ const report = await page.evaluate(async () => {
   await new Promise((r) => setTimeout(r, 400));
   out.afterDolly = readCanvasBBox();
 
-  // 3) object を threeD 化して Y 回転 45deg。
+  // 3) object を Y 回転 45deg（threeD は setup 済み）。
   const obj = findObj();
   S().updateObject(id, {
     threeD: true,

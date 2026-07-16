@@ -20,6 +20,7 @@ import { TimecodeScrub } from "../TimecodeScrub";
 import { applyLinkedScaleDelta, applyLinkedScaleValue } from "../linkedScale";
 import { formatBarBeat } from "../beatTimecode";
 import { globalPluginRegistry } from "../../runtime/pluginRegistry";
+import { geom3dWebglComponentIndex, resolveGeom3DCanvasHosts, toGeom3DLayerInfo } from "../../runtime/geom3d/geom3dCanvasGroup";
 import { QUALITY_UI_GROUPS, footageQualityLabel, isProxyTier, normalizeFootageQuality, type FootageQuality } from "../../runtime/footageQuality";
 import { evictPreviewMediaAsset } from "../../runtime/imageAssetCache";
 import { groupEffectsForPicker } from "../effectCategories";
@@ -708,6 +709,7 @@ export function InspectorPanel() {
               </select>
             </Row>
           )}
+          <Geom3DShareCanvasRows obj={obj} objects={comp?.objects ?? []} updateObject={updateObject} />
         </InspectorFoldout>
       ) : null}
 
@@ -2202,6 +2204,66 @@ function Geom3DFields({
             </Row>
           )}
         </>
+      )}
+    </>
+  );
+}
+
+/**
+ * §5.5f-1 WebGL canvas 共有トグル ＋ 解決された host 表示。
+ *
+ * text 固有の設定ではなく「このレイヤーが WebGL 描画か」に紐づくため、Content(text) フォールドではなく
+ * **3D フォールド**に置き、WebGL レイヤーのときだけ出す。将来 shape 等の押し出しが増えても
+ * `geom3dWebglComponentIndex` を広げるだけでここに出る（UI 側の分岐は増やさない）。
+ * host 判定は DomRenderer と同じ純関数 — 表示と実際の描き先がズレないための唯一の担保。
+ */
+function Geom3DShareCanvasRows({
+  obj,
+  objects,
+  updateObject,
+}: {
+  obj: SceneObject;
+  objects: readonly SceneObject[];
+  updateObject: (id: string, patch: Partial<SceneObject>, label?: string) => void;
+}) {
+  const webglIdx = geom3dWebglComponentIndex(obj.components);
+  if (webglIdx < 0) return null;
+
+  const shareCanvas = obj.components[webglIdx]?.props["geomShareCanvas"] === true;
+  const hostId = resolveGeom3DCanvasHosts(objects.map(toGeom3DLayerInfo)).get(obj.id);
+  const hostIsSelf = hostId === undefined || hostId === obj.id;
+  const hostName = objects.find((o) => o.id === hostId)?.name;
+
+  const toggle = () => {
+    updateObject(
+      obj.id,
+      {
+        components: obj.components.map((c, i) =>
+          i === webglIdx ? { ...c, props: { ...c.props, geomShareCanvas: !shareCanvas } } : c,
+        ),
+      },
+      "Toggle share WebGL canvas",
+    );
+  };
+
+  return (
+    <>
+      <Row label="Share Canvas">
+        <button
+          type="button"
+          onClick={toggle}
+          style={{ ...btnStyle, background: shareCanvas ? "#2f5a44" : "#2a2a2a", color: shareCanvas ? "#9fe8c4" : "#ccc" }}
+          title="§5.5f-1 上の WebGL レイヤー（3D Extrude text 等）と WebGL canvas を共有する。3D 同士が正しく相互貫入し、GL context も節約できる。Null / 音声のみのレイヤーは透過してスキップし、間に 2D の描画レイヤーがあるとチェーンは切れる（＝自分が最上位）。共有すると opacity / 描画モード / エフェクトは host レイヤー側にまとめて掛かる"
+        >
+          {shareCanvas ? "ON" : "OFF"}
+        </button>
+      </Row>
+      {shareCanvas && (
+        <Row label="Canvas Host">
+          <span style={{ color: hostIsSelf ? "#9fe8c4" : "#8ab4f8", fontSize: 11 }}>
+            {hostIsSelf ? "自分（最上位）" : (hostName ?? "自分（最上位）")}
+          </span>
+        </Row>
       )}
     </>
   );

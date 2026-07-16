@@ -29,6 +29,8 @@ export interface Geom3DParams {
   shading: "none" | "lambert";
   lightDir: Vec3;
   ambient: number;
+  /** §5.5f-1 上の WebGL レイヤーと canvas（＝ depth buffer / GL context）を共有する。 */
+  shareCanvas: boolean;
 }
 
 /**

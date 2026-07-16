@@ -18,7 +18,7 @@ import { EXPRESSED_VALUE_COLOR, isPropExpressed } from "../../core/props";
 import { framesToTimecode } from "../timecode";
 import { formatTimeWithBeat } from "../beatTimecode";
 import { isRgba } from "../ColorSwatch";
-import { getLayerSourceExtent, shiftFootageSourceOffset, type LayerSourceExtent } from "../layerSourceOffset";
+import { getLayerSourceExtent, rescaleFootageSourceOffset, shiftFootageSourceOffset, type LayerSourceExtent } from "../layerSourceOffset";
 import { DRAG_MIME } from "./dragMime";
 import { ScrubNumber } from "../ScrubNumber";
 import { labelBarColor, labelColorTitle, labelRowTint, LAYER_LABEL_COLORS, timelineBarFill } from "../layerLabels";
@@ -206,7 +206,7 @@ export function TimelinePanel() {
   // P1-9: クリップボード（AE 同様、KF 選択中は KF を / それ以外はレイヤーを対象）。
   const clipboardRef = useRef<
     | { kind: "kf"; data: CopiedKf[] }
-    | { kind: "layers"; data: SceneObject[] }
+    | { kind: "layers"; data: SceneObject[]; fps: number }
     | null
   >(null);
   // P1-6: レイヤーバードラッグ（trim/slide）をパネルにリフトアップ。複数選択を一括移動するため。
@@ -401,7 +401,7 @@ export function TimelinePanel() {
   // P1-9: 選択レイヤーをクリップボードへ。コピー数を返す。
   const copySelectedLayersToClipboard = (): number => {
     const layers = objects.filter((o) => selectedIds.includes(o.id)).map((o) => cloneObject(o));
-    clipboardRef.current = { kind: "layers", data: layers };
+    clipboardRef.current = { kind: "layers", data: layers, fps };
     return layers.length;
   };
 
@@ -512,6 +512,10 @@ export function TimelinePanel() {
       const c = cloneObject(o);
       c.inPoint = Math.max(0, Math.min(duration, o.inPoint + delta));
       c.outPoint = Math.max(c.inPoint + 1, Math.min(duration, o.outPoint + delta));
+      // fps の違うコンプから持ち込んだ footage は、trimStart を貼り付け先の fps 単位へ換算する
+      // （生の frame 数のままだと fps 比の分だけ違う位置から再生される）。
+      const rescaled = rescaleFootageSourceOffset(c.components, clip.fps, fps);
+      if (rescaled) c.components = rescaled;
       // スライドと同様、キーフレームもレイヤーと一緒に移動（footage 源オフセットは変えない）。
       Object.assign(c, shiftObjectKeyframes(c, delta));
       return c;

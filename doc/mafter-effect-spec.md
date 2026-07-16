@@ -383,6 +383,7 @@ interface Geom3DTextProps {
   geomShading:       "none" | "lambert";                 // 既定 "lambert"
   geomAmbient:       AnimatedProp<number>;               // 0..1。既定 0.35（lambert 時のみ意味を持つ）
   geomLightDir:      Vec3;                                // comp/world 空間の平行光方向。既定 {x:-0.5,y:-0.7,z:-0.5}。animatable: false
+  geomShareCanvas:   boolean;                             // 既定 false。上の WebGL レイヤーと canvas を共有（§5.5f-1）。animatable: false
 }
 ```
 
@@ -399,8 +400,24 @@ interface Geom3DTextProps {
   **描画方式**: per-object canvas（3D レイヤーごとに 1 canvas）。canvas は **comp 全域**を `devicePixelRatio` 解像度で覆い、
   親 div（`entry.div`）の CSS `matrix3d` 傾けは打ち消す（投影は GL の `mvp` が一手に担う。§ AABB 最適化は次フェーズ）。
   レイヤー間の合成は既存 z-order（DOM）、オブジェクト内の自己遮蔽は GL depth buffer が担う。
-  ネスト comp（`renderNestedComp`）内の 3D-extrude text は本リビジョンの対象外（`geom3dCamera=null` で従来の
-  CSS `matrix3d` 傾け近似のまま・既知のギャップ、次フェーズ）。
+  ネスト comp（`renderNestedComp`）内の 3D-extrude text も**同じ実 MVP 投影で描く**（2026-07-16 実装・§23.3e）。
+  渡すカメラ・comp 寸法は **子 comp のもの**（precomp 内の 3D は子の座標系で閉じ、外側の変換はコンテナの
+  CSS transform が担う＝ collapse OFF と整合）。
+- **§5.5f-1 WebGL canvas 共有（`geomShareCanvas`・確定 2026-07-16）**: 既定は per-layer 1 canvas（= 1 GL context）で、レイヤー間の前後は DOM の z-order が決める。そのため **3D レイヤー同士は相互貫入できず**、3D text を積むほど context が増える（Chrome の上限 ~16・§webgl-context-limit）。`geomShareCanvas=true` のレイヤーは、自分より**上（zOrder 大）で最も近い WebGL レイヤー**の canvas へ自分のメッシュを描き込む。
+
+  - **host 解決規則（純関数 `resolveGeom3DCanvasHosts`）**: zOrder 昇順に並べ、対象レイヤーから**上へ**走査する。`isNull` の Null レイヤーと**音声のみのレイヤー**（全 component が `audio`）は**描画に寄与しないため透過**してスキップする。最初に当たった描画レイヤーが
+    - WebGL レイヤー（`geomEnabled=true`）なら → **その層の host**（推移的に解決）が自分の host。
+    - WebGL でない（solid / image / 2D text / shape 等）なら → **チェーンはそこで切れ**、自分が host（＝グループの最上位）。
+    - 何も無い（自分が comp の最上位）→ 自分が host。
+
+    非 WebGL 描画レイヤーでチェーンを切るのは AE の「連続する 3D レイヤーが 1 つのレンダリンググループになる」規約に合わせるため — 間に 2D レイヤーを挟んだまま共有すると、その 2D レイヤーの重なり順が壊れる。`geomShareCanvas=false` のレイヤーは常に自分が host（＝グループの終端）。走査は zOrder 昇順で厳密に上向きのため循環しない。
+  - **描画**: グループのメッシュは 1 canvas に **zOrder 昇順・depth buffer 共有**で描かれる（グループ内で最初に描画される＝最下位のメンバーだけが `clear` する）。結果 **3D レイヤー同士が正しく相互貫入し**、GL context はグループあたり 1 個に減る。canvas は host レイヤーの `el` が宿し、メンバーの `el` は空になる（ピクセルは host の div の z-index に出る — チェーンが連続描画レイヤーに限られるため合成順は保たれる）。
+  - **既知の帰結**: メンバー個別の `opacity` / `blendMode` / effects は host の div にまとめて掛かるため、メンバー個別には効かなくなる。
+  - **UI 配置（確定）**: 本設定は text 固有ではなく「**そのレイヤーが WebGL 描画か**」に紐づくため、Inspector の Content(text) ではなく **3D フォールド**に置き、WebGL レイヤーのときだけ表示する（将来 shape 等の押し出しが増えても `geom3dWebglComponentIndex` を広げるだけで出る）。解決された host レイヤー名を併せて表示し、自分が最上位のときは「自分（最上位）」と表示する。
+  - **「レイヤーが WebGL か」の判定は `geom3dWebglComponentIndex` が唯一の正**（現状 = `geomEnabled=true` の `text`）。押し出し可能な型を増やすときはここだけを広げる — Inspector / DomRenderer 双方が同じ関数（`toGeom3DLayerInfo`）経由で読むため、判定を分岐先へコピーしてはならない（表示している host と実際の描き先がズレる）。
+  - **ネスト comp（`renderNestedComp`）でも同じ規則で共有する**（2026-07-16 実装）。host 解決は同じ純関数（`resolveGeom3DCanvasHosts`）を子 comp の `ResolvedScene` に対して回す。**group canvas はネストコンテナ単位に持つ** — レイヤー id は precomp 内で共通のため、同じ precomp を 2 箇所に置くとコンテナ間で canvas を取り違える。グループは **precomp 単位**で閉じる（親 comp が 3D text を持つ precomp を 2 つ載せれば canvas は 2 枚が正しい）。
+    共有しないと per-layer 1 context のままとなり、**3D text を十数枚積んだ comp を親から呼んだ瞬間に Chrome の同時 context 上限（~16）を超えて古い context から黙って破棄され、ちらつく**（実測: 単独 1 枚 → ネスト 17 枚 + `Too many active WebGL contexts`）。回帰は `verify-nested-geom3d-share.mjs` が押さえる。
+
 - **描画経路（案 B・確定）**: per-layer の**素の WebGL canvas**（three.js 不使用）。`entry.contentRoot`（= `el`）内の 1 DOM 要素として座り、blend/filter/matte/export のレイヤー列挙には一切関与しない（[webgl-video-layer-plan.md](../doc/cloudplan/webgl-video-layer-plan.md) §1 の確立原則を踏襲）。実装: `src/runtime/geom3d/`（`geom3dTypes.ts`/`geom3dParams.ts`/`outlineProvider.ts`/`normalizeRings.ts`/`extrudeMesh.ts`（earcut 使用）/`geom3dGl.ts`/`geom3dMeshCache.ts`/`geom3dDomApply.ts`）、配線は `DomRenderer.ts` の `case "text"` 内のみ（型別オプトイン）。
 - **輪郭の nonzero 正規化（確定・2026-07-15 修正）**: フォントのアウトラインは **nonzero winding rule** 前提で作られ、**輪郭どうしが重なってよい**（画 = stroke ごとの独立輪郭）。押し出しパイプラインの下流（`groupRingsByNesting` の入れ子深度判定・earcut・bevel の inset・側面 band）はいずれも「交差しない外周 + 真の穴」しか扱えないため、`OutlineProvider` は**リングをグリフ単位で nonzero rule により再構築してから**下流へ渡す（`normalizeRings.ts` の `normalizeRingsNonzero`）。正規化後のリングが互いに交差しないことは `OutlineGlyph` の不変条件であり、生アウトラインを下流へ直接渡してはならない。
   - 生アウトラインが下流の前提を満たさない実例: Noto Sans JP の `日` は〈枠をシーム付き 1 輪郭で描いたもの〉+〈横棒 2 本〉の重なりで**穴を 1 つも持たない**。巻き方向を捨てる入れ子深度判定はこの横棒を穴と誤判定する。Roboto の `A`/`B`/`8` でも起き、**フォント依存であって言語依存ではない**（Anton/Tinos/Noto Sans/Cousine のように重なりを持たないフォントは影響を受けない）。
@@ -427,7 +444,10 @@ interface Geom3DTextProps {
 P2（2026-07-14, `verify-geom3d-neutral.mjs`/`verify-geom3d-mvp.mjs`）= camera 無し・回転無し・depth=0 で 2D と実機ピクセル一致（中立性）、
 camera dolly（POI 固定で距離を詰める）で投影後 bbox が拡大、`Transform.rotation.y` 回転で bbox が変化（旧固定カメラ実装は camera/rotation 無応答だった）、
 非 3D-extrude の 3D solid/image が引き続き CSS `matrix3d` 経路で無回帰（`cameraPre` 応答・console error 0）を確認。
-**mp4/webm/bundle export の実 parity verify、shape への適用（P4）、ネスト comp 内 3D-extrude text の実 MVP 化、Inspector の system フォント警告表示は未実施・次フェーズ**。
+P3（2026-07-16, `verify-nested-geom3d.mjs`）= **ネスト comp 内 3D-extrude text の実 MVP 化**（§23.3e）。precomp として呼ばれても
+単独 comp と同じ GL インク量になること、長時間スクラブでも canvas 実体が持ち越され WebGL context を毎フレーム作らないこと、
+export（`compFrameCapture`）が単独 comp と**バイト等価**の PNG を出すこと（INV-2）を確認。
+**mp4/webm/bundle export の実 parity verify、shape への適用（P4）、Inspector の system フォント警告表示は未実施・次フェーズ**。
 
 **MVP built-in component types:**
 
@@ -654,9 +674,21 @@ L = T(position) · R(rotation) · S(scale) · T(-anchor)
   3D-extrude text の `entry.div` は CSS `matrix3d` 傾けを**適用しない**（GL の `mvp` が投影を一手に担うため）。
   canvas は comp 全域を `devicePixelRatio` 解像度で覆う（per-object の AABB クロップ最適化は次フェーズ）。
 - **中立性**: camera 無し・回転無し・`depth=0` は既存 2D 描画とスクリーン位置/サイズが一致する（実機 verify 済み）。
-- **既知のギャップ（次フェーズ）**: ネスト comp（`renderNestedComp`）内の 3D-extrude text は本リビジョンの対象外
-  （nested cameraPre が `DomRenderer` インスタンスの `this` に保持されないため未配線・従来の CSS 傾け近似のまま）。
-  per-object 方式のため 3D レイヤー同士の**真の相互貫通**は非対応（レイヤー間合成は既存 z-order）。
+- **ネスト comp**: 2026-07-16 に配線済み（§23.3e）。`renderNestedComp` はローカルの `cameraPre` と子 comp 寸法を
+  `geom3dCamera` として渡す（`this.cameraPre` は**親 comp のもの**なので使ってはならない）。
+- **既知のリスク — GL context 数の上限（2026-07-16 記録・未対応）**: **Chrome の同時 WebGL context は
+  1 ドキュメント ~16 が上限**で、超えると `Too many active WebGL contexts. Oldest context will be lost.` を出し
+  **古い context から黙って破棄される**（例外は飛ばず、先に描いたレイヤーの絵が消える）。
+  **この上限はページ全体で共有**され、Mafter Effect では次が消費する:
+  - `geom3d`（3D-extrude text）= **per-layer 1 context。予算・上限なし（無制限）**
+  - split/packed alpha 合成 = `MAX_GL_ALPHA_CONTEXTS = 8` の**予算＋キルスイッチあり**（`videoAlphaGl.ts`）
+
+  → **3D テキストを多数積む／alpha 動画と併用すると上限に届きうる**。geom3d に予算が無いのが弱点。
+  必要になったら `shouldCreateGlAlphaCompositor()` と同型の予算ロジック＋2D フォールバックを geom3d にも入れる。
+  **検出は GC 依存で不安定**（短いスクラブでは上限に届かず素通りする）ため、**警告メッセージの有無を
+  回帰ゲートの合否条件にしてはならない**（§23.3e）。明示解放は `releaseAlphaGlCompositorsUnder(root)`。
+- **既知のギャップ（次フェーズ）**: per-object 方式のため 3D レイヤー同士の**真の相互貫通**は非対応
+  （レイヤー間合成は既存 z-order）。
 
 ---
 
@@ -1794,6 +1826,17 @@ childFrame     = clamp(round(parentTimeSec * childFps) + trimStart, 0, childComp
 
 > **既知の制約（ユーザー了承済み「全力 Live・破綻許容」）**
 > - `backdrop-filter` は `transform-style:preserve-3d`（カメラ・§23.3b）/ `mix-blend-mode`（§23.3a）と CSS 仕様上 相互に flatten しうる。調整 + カメラ + 3D + blend が同一 comp に混在すると AE と差が出る場合がある。破綻ケースは将来の collapse ON / 強制ラスタライズ opt-in で受ける。
+
+### §23.3e ネスト comp 内の 3D-extrude text と GL リソース（確定 2026-07-16）
+
+ネスト comp 内の **3D-extrude text（§5.5f）** は、トップレベルと**同じ実 MVP 投影**で描く。precomp として呼ばれた瞬間に 2D フォールバックへ落ちてはならない（`Main` を別 comp に置くと押し出しが消える回帰の再発防止）。
+
+- **カメラは「子 comp のもの」**: `renderNestedComp` はローカルの `cameraPre`（`setupCameraRig(container, childScene)` の返り値）と `childScene.camera?.fov`、`childComp.width/height` を `geom3dCamera` として渡す。`this.cameraPre` / `this.cameraFov` は**親 comp の値**なので使ってはならない（precomp 内の 3D は子の座標系で閉じ、外側の変換はコンテナの CSS transform が担う＝ §23.3a の collapse OFF と整合）。
+- **GL コンテキストの持ち越し（必須）**: `renderNestedComp` は毎フレーム `container.innerHTML = ""` で作り直す非 reconcile 実装のため、**素直に描くと geom3d canvas ごと WebGL context が毎フレーム生成される**。Chrome の同時コンテキスト上限（~16）を数十フレームで超え、`Too many active WebGL contexts. Oldest context will be lost.` で 3D が消える。よって:
+  - **`text` の el と、再帰ネストのコンテナ（`comp`）は key（`objId:index:type`）で前フレームの実体を持ち越す**（他の型は従来どおり毎フレーム新規で無害）。持ち越しにより canvas＝context が生き続ける。
+  - **今フレーム使われなかった持ち越し el は `releaseAlphaGlCompositorsUnder()` で GL を明示解放**する（レイヤー削除・3D OFF・型変更）。持ち越しと解放は**対で必要**（解放だけでも上限超過は防げるが、毎フレーム context 再生成＝シェーダ再コンパイルで重い）。
+- **export（INV-2）**: GL canvas は `preserveDrawingBuffer: true` かつ `inlineCanvasBitmaps` が DOM 全体を deep query するため、ネスト comp の canvas も foreignObject 経路へそのまま乗る。`compFrameCapture` で捕捉したネスト comp の PNG は**単独 comp の PNG とバイト等価**になること（`verify-nested-geom3d.mjs`）。
+- **回帰ゲート**: 「canvas 要素の同一性がスクラブ後も保たれる」ことを検証する。`Too many active WebGL contexts` 警告の観測は **GC 依存で不安定**なため、単独の合否条件にしてはならない。
 
 ### §23.4 循環参照制御
 

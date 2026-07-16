@@ -5,6 +5,7 @@
 import type { AnimatedProp, Frame, SceneObject, TimelineComposition } from "../core/schema";
 import { staticProp } from "../core/props";
 import { sampleScalar } from "./interpolate";
+import { isCompNestDepthAllowed } from "./compLayer";
 
 /** footage 音声 mix 対象（audio コンポーネント or 内蔵音声付き video コンポーネント）の純データ。 */
 export interface FootageAudioSource {
@@ -13,8 +14,12 @@ export interface FootageAudioSource {
   assetId: string;
   inPoint: Frame;
   outPoint: Frame;
-  /** 現状どおり plain number 読み取り（animated trimStart は既存未対応・本タスク非変更）。 */
-  trimStart: Frame;
+  /**
+   * **ルート comp の fps 単位**へ換算済み（消費側は一律 `trimStart / rootFps` で media 秒を得る）。
+   * fps の異なるネスト由来では非整数になりうる（媒体内オフセットであり timeline frame ではない）。
+   * 現状どおり plain number 読み取り（animated trimStart は既存未対応）。
+   */
+  trimStart: number;
   gainProp: AnimatedProp<number>;
   componentType: "audio" | "video";
 }
@@ -51,11 +56,46 @@ export function sampleGain(raw: unknown, frame: Frame): number {
   return Math.max(0, Math.min(1, v));
 }
 
+/** nested comp の frame（自身の comp 上の単位）をルート comp の frame 単位へ写像する関数。 */
+type FrameMapper = (frame: Frame) => Frame;
+
+const identityFrameMapper: FrameMapper = (f) => f;
+
+/** gainProp の keyframe.frame をルート frame 空間へ写像した複製を返す（value/easing は不変）。 */
+function remapGainProp(prop: AnimatedProp<number>, toRoot: FrameMapper): AnimatedProp<number> {
+  if (prop.keyframes.length === 0) return prop;
+  return { ...prop, keyframes: prop.keyframes.map((k) => ({ ...k, frame: toRoot(k.frame) })) };
+}
+
 /**
  * timeline から音声 mix 対象レイヤー（enabled な audio / video）を列挙する純関数。
  * gainProp は readGainProp で正規化済み。trimStart は現状どおり plain number 読み取り。
+ *
+ * resolveComp を渡すと、ネストされた `comp` コンポーネント（precomp）の中身も再帰的に集める
+ * （§23）。inPoint/outPoint/gainProp の keyframe.frame はすべて **ルート comp の frame 単位**へ
+ * 写像済みで返す — 呼び出し側（PreviewAudioClock.schedule 等）はネストの有無を意識せず
+ * `(rootFrame - source.inPoint) / rootFps` のような既存の単純な式をそのまま使える。
+ * fps の異なるネストは compChildFrame と同じ秒ベース換算（§23.2）。trimStart も同様に
+ * ルート fps 単位へ換算して返す（子 comp の fps のまま返すと、消費側の `trimStart / rootFps` が
+ * fps 比の分だけ誤った media 位置から再生してしまう）。
+ * resolveComp 省略時はトップレベルのみ（既存呼び出し元との後方互換）。
  */
-export function collectFootageAudioSources(comp: TimelineComposition): FootageAudioSource[] {
+export function collectFootageAudioSources(
+  comp: TimelineComposition,
+  resolveComp?: (compId: string) => TimelineComposition | undefined,
+): FootageAudioSource[] {
+  return collectFootageAudioSourcesRec(comp, resolveComp, identityFrameMapper, 0, comp.fps, comp.fps);
+}
+
+function collectFootageAudioSourcesRec(
+  comp: TimelineComposition,
+  resolveComp: ((compId: string) => TimelineComposition | undefined) | undefined,
+  toRoot: FrameMapper,
+  depth: number,
+  rootFps: number,
+  ownFps: number,
+): FootageAudioSource[] {
+  if (!isCompNestDepthAllowed(depth)) return [];
   const sources: FootageAudioSource[] = [];
   for (const obj of comp.objects) {
     if (!obj.enabled) continue;
@@ -69,13 +109,27 @@ export function collectFootageAudioSources(comp: TimelineComposition): FootageAu
         objectId: obj.id,
         obj,
         assetId,
-        inPoint: obj.inPoint,
-        outPoint: obj.outPoint,
-        trimStart: typeof rawTrim === "number" ? rawTrim : 0,
-        gainProp: readGainProp(cmp.props["gain"]),
+        inPoint: toRoot(obj.inPoint),
+        outPoint: toRoot(obj.outPoint),
+        trimStart: (typeof rawTrim === "number" ? rawTrim : 0) * (rootFps / ownFps),
+        gainProp: remapGainProp(readGainProp(cmp.props["gain"]), toRoot),
         componentType,
       });
     }
+    if (!resolveComp) continue;
+    const compCmp = obj.components.find((c) => c.type === "comp");
+    if (!compCmp) continue;
+    const nestedCompId = compCmp.props["compId"] as string | undefined;
+    const nested = nestedCompId ? resolveComp(nestedCompId) : undefined;
+    if (!nested) continue;
+    const layerTrimStart = typeof compCmp.props["trimStart"] === "number" ? (compCmp.props["trimStart"] as number) : 0;
+    const parentFps = comp.fps;
+    const childFps = nested.fps;
+    const layerInPoint = obj.inPoint;
+    // §23.2 と同じ秒ベース換算の逆写像: nestedFrame → このレベルの frame → さらに親へ。
+    const childToRoot: FrameMapper = (childFrame) =>
+      toRoot(Math.round(layerInPoint + ((childFrame - layerTrimStart) * parentFps) / childFps));
+    sources.push(...collectFootageAudioSourcesRec(nested, resolveComp, childToRoot, depth + 1, rootFps, childFps));
   }
   return sources;
 }

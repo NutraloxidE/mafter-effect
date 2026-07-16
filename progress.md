@@ -1,5 +1,40 @@
 # Progress
 
+### 2026-07-16（Claude Opus 4.8）— ネスト共有 canvas の mp4/webm/HTML bundle parity を verify ＋ bundle の 3D text 消失を修正
+
+- **やったこと**: 8a79b28 で残っていた「mp4/webm/HTML bundle でのネスト共有 parity 未確認」を実機で潰した。新規 [verify-nested-geom3d-share-export.mjs](verify-nested-geom3d-share-export.mjs)。
+- **ゲートの立て方**: 「同じ 3D text 群を standalone comp で書き出した絵」vs「それを precomp として親から書き出した絵」のインク比（両方 comp 解像度 PNG ＝ 自己正規化）。preview DOM と export を直接比べると zoom 倍率が混ざって偽 FAIL する。
+- **結果（実 Chrome headed / headless 両方 PASS）**:
+  - PNG 連番: standalone ink == nested ink（**ratio 1.000・完全一致**）。mp4/webm は `compositeExportFrame` を PNG 連番と共有し encode だけが違うため、これで画の parity は担保。
+  - mp4: 実 Chrome で `format=mp4 / 16430 bytes / fallbackReason=null` ＝ H.264 encode も実際に通る。**headless Chromium では WebCodecs encode がメインスレッドを掴んだまま返らず in-page の setTimeout すら発火しない**（＝中断不能）。そのため mp4 は `VERIFY_MP4=1`（headed 実 Chrome）でのみ実行し、スクリプトの**最後**に置いてある。順序を変えると後続が全滅する。
+  - bundle: canvases=1 / ink 一致。
+- **発見して直したバグ（bundle で 3D text が丸ごと消える・ネスト無関係の全 bundle）**: `BundlePlayer.loadBuiltinFonts` が zip 同梱 ttf を **FontFace（CSS 2D 用）にしか登録せず** `FontOutlineCache` に入れていなかった。§5.5f の押し出しは outline を引くため `getFont()` が null ＝ mesh 無し ＝ canvas ごと出ない（**console error 0 で無音**）。built-in font は `project.assets` に載らない（`bundleCollect` は text の `font` を family 文字列としてしか見ず asset 参照を集めない → `pruneProjectToBundleScope` で消える）ため、ここで入れないと bundle だけ 3D が死ぬ。修正は同じ ttf を `fontCache.parseBuffer` にも通すだけ。`npm run build:player` 実行済み。
+- **無回帰**: `npm run typecheck` ✅ / `verify-bundle-export.mjs` 2/2 PASS（このスクリプトは `http://` 固定で今の dev（https）では動かない → `MAFTER_DEV_HTTP1=1 npx vite --port 5176` で実行した）。
+- **Next steps（未修正・本セッションでは触っていない）**: **bundle export が worker チャンクを同梱していない**。bundle player が `assets/rasterProcess.worker-*.js` を 404 で取り逃す。
+  - **真因**: Vite は `player.js` の**隣**に worker チャンク（`public/assets/rasterProcess.worker-*.js` / `videoBlob.worker-*.js`）を出すが、[bundleExporter.ts](src/runtime/bundleExporter.ts) の `loadPlayerScript` は **`player.js` しか zip しない**。
+  - **想定影響**: raster effect を使う bundle は worker 経路が死んでいる可能性（要確認）。今回の fixture は raster effect 非使用でも pool が eager に spawn するため 404 が出た＝**404 の有無は「effect を使ったか」を意味しない**。フォールバックが効いて絵は出ているのか、無音で劣化/停止するのかは未調査。
+  - **再現**: `VERIFY_MP4=1 node verify-nested-geom3d-share-export.mjs` の出力末尾 `既知・本件と無関係な 404` 行。同スクリプトは worker 404 を `unrelated404` として合否から外しているので、**直したらこの除外を消すこと**。
+  - geom3d canvas 共有とは無関係（本件の verify は PASS 済み）。
+
+### 2026-07-16（Claude Opus 4.8）— §5.5f-1 WebGL canvas 共有トグル（`geomShareCanvas`）
+
+**完了:**
+- spec §5.5f に `geomShareCanvas` と host 解決規則を追記（§5.5f-1）。ユーザー確認済みの確定事項: ① Null / 音声のみのレイヤーは透過スキップ、非 WebGL の**描画**レイヤーでチェーン切断（AE の 3D 連続グループ準拠）② 共有時は host canvas に **depth buffer 共有**で合成（3D 同士が相互貫入）。
+- `src/runtime/geom3d/geom3dCanvasGroup.ts` 新規 — `resolveGeom3DCanvasHosts()` 純関数（zOrder 昇順・上向き走査・推移解決）＋ `geom3dWebglComponentIndex()` / `toGeom3DLayerInfo()`。**Inspector 表示と DomRenderer の描き先は必ずこの 1 関数群を通す**（ズレ防止）。`test/geom3d/canvasGroup.test.ts` 14 件緑。
+- **UI は 3D フォールドに置いた**（text の Content ではない）— `geomShareCanvas` は text 固有ではなく「レイヤーが WebGL 描画か」に紐づく設定のため。WebGL レイヤーのときだけ表示。将来 shape 等の押し出しを足すときは **`geom3dWebglComponentIndex` を広げるだけ**で Inspector にも DomRenderer にも伝播する（UI 側に型分岐を増やさない）。
+- `geom3dGl.renderGeom3D` に `clear?: boolean`。グループ内で最初に描く（＝最下位の）メンバーだけ clear。
+- `geom3dDomApply`: `Geom3DCameraContext` に `canvas` / `isHost` / `clearedCanvases`。canvas は host の el が宿し member の el は空。clear の消費は**実際に描けたときだけ**（描画失敗メンバーの clear 持ち逃げ防止）。
+- `DomRenderer`: `geom3dGroupCanvases`（host id → canvas・フレーム跨ぎ保持）＋ host でなくなった canvas の `releaseGeom3DGl` GC。member は host の el より先に処理されるが、canvas は DOM 未接続でも描画でき host が同フレームで adopt するため問題なし。
+- Inspector: `Share Canvas` トグル ＋ `Canvas Host` 行（最上位なら「自分（最上位）」表示）。
+- `npm run build:player` 実行済み（`src/runtime` 変更のため必須）。
+
+**既知の制約・残タスク:**
+- **ネスト comp（`renderNestedComp`）は共有しない**（従来の per-layer canvas）。spec §5.5f-1「未対応」に明記済み。
+- メンバー個別の `opacity` / `blendMode` / effects は host の div にまとまるため個別には効かない（設計どおり・spec 記載済み）。
+- `geom3dGl` の `lastMesh` は 1 スロットキャッシュ。共有グループでは毎フレーム全メッシュ再アップロードになる（`ponytail:` コメントあり）。実測で問題化したら mesh キー Map + 複数 VBO へ。
+- **実機（Playwright）での目視 verify は未実施** — 相互貫入・z-index・context 数の確認が残っている。
+- 既存の `test/effects.test.ts` `liquidChrome` 失敗は**本変更以前から main で失敗**（無関係）。
+
 ### 2026-07-15（Claude Opus 4.8）— Bevel が「へこみ」になる断面バグを根治 ＋ `geomBevelStyle` 追加
 
 - **症状（ユーザー報告・スクリーンショット）**: 3D text の Bevel が「Bevel ってよりへこみって感じ」。文字のエッジに沿って暗い溝が彫られたように見え、ベベル特有のハイライトが出ない。
@@ -2332,6 +2367,70 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
 - **spec**: §26.4.1 に「weight は family と対等な識別子」節を追記（meta.weight / family×weight キー / font-weight 記述子必須 / meshKey は font identity）。
 - **Next steps**: browser export（mp4/PNG 連番）と HTML bundle での 3D weight 実機確認は未実施。
   export 経路は fonts を描画前に一括ロードするため今回の「毒」レースは構造上起きず、family×weight 化の恩恵のみ受ける想定（unit test で固定済み）。
+
+### 2026-07-16（Claude Opus 4.8）— ネスト comp 内の 3D-extrude text が 2D に落ちる問題を根治（§23.3e）✅
+
+- **症状（ユーザー報告）**: DL にある新しい pj（`mafter-pj-3Dtext-with-pixelstretch.zip`）の **`Main` を他のコンポジションから呼び出すと正しく動作しない**。実測すると 3D 押し出しが完全に消え、フラットな 2D テキストになる（さらに pixelStretch が平面テキストに掛かって `語` が崩れる）。
+- **真因（2 つ。1 つ目だけ直すと 2 つ目で壊れる）**:
+  1. **`renderNestedComp` が `updateComponentEl` に `geom3dCamera` を渡していなかった**（トップレベル `applyObject` は渡す）。`updateComponentEl` は `geom3dCamera === null` で 2D フォールバックする仕様のため、precomp として呼ばれた瞬間 3D が消えていた。当時のコメント自体が「ネスト comp はスコープ外」と明記＝**意図的な未配線が仕様の穴として残っていた**。
+  2. **`renderNestedComp` は毎フレーム `container.innerHTML = ""` する非 reconcile 実装**。1 を直すだけだと geom3d canvas が毎フレーム作り直され、**WebGL context が毎フレーム生成 → Chrome の同時上限(~16)を数十フレームで超過**し `Too many active WebGL contexts. Oldest context will be lost.` で 3D が消える（実機 70 フレームスクラブで再現・15 フレームでは出ないため短い検証だと見逃す）。
+- **修正**（`src/runtime/DomRenderer.ts` のみ・ネスト経路に閉じた最小 diff）:
+  - `geom3dCamera` に**子 comp のカメラ**（ローカル `cameraPre` / `childScene.camera?.fov` / `childComp.width/height`）を渡す。`this.cameraPre` は親 comp の値なので使わない。
+  - `nestedElReuse: WeakMap<container, Map<key, el>>` を追加し、**`text` の el と再帰コンテナ（`comp`）だけ**を key（`objId:index:type`）で持ち越す（他型は従来どおり毎フレーム新規＝無回帰）。
+  - 今フレーム使われなかった持ち越し el は既存の `releaseAlphaGlCompositorsUnder()` で GL を明示解放（持ち越しと解放は対で必要）。
+- **検証（実機 Playwright・ユーザーの実 zip を import して Main を Outer にネスト）**:
+  - 新規恒久 verify `verify-nested-geom3d.mjs`: 修正前 nested=**0 canvas / ink 0**（FAIL）→ 修正後 **3 canvas / ink 176920・standalone と ratio 1.000**（PASS）。
+  - GL 持ち越しゲート: canvas 実体の同一性を見る（`kept === total`）。reuse を外すと `kept 0/3` で FAIL することを確認済み＝**ゲートに歯がある**。`Too many active WebGL contexts` 警告の観測は **GC 依存で不安定**なため合否条件にしない（実測で確認済み）。
+  - **INV-2**: `compFrameCapture` の export PNG が 修正前 `outer(1cd74c…) ≠ main(81cb54…)` → 修正後 **両者バイト等価(81cb54…)**。preview だけでなく export も直った。
+  - 無回帰: `typecheck` 緑 / `npm test` 1281 passed（唯一の失敗 `effects.test.ts > liquidChrome 再登録` は **stash して本変更前から失敗を確認済み・無関係**）/ `verify-font-3d-extrude` `verify-font-3d-weight` `verify-geom3d-mvp` `verify-geom3d-neutral` すべて PASS / `npm run build:player` 実行済み（player が DomRenderer を import するため必須）+ `playerBuildFreshness` 緑。
+- **spec**: §5.5f の「ネスト comp は対象外」記述 3 箇所を更新し、**§23.3e**（ネスト comp 内 3D-extrude text と GL リソース持ち越し規約）を新設。§5 型・INV 変更なし（散文のみ）。
+- **調査で判明した他の未配線（今回は未修正・要判断）**: `renderNestedComp` はトップレベル `applyObject` と比べて次が未配線 —
+  (a) **track matte**（ネスト内マット無効）、(b) **plugin component の `ComponentDef.render`**（プラグイン型がネスト内で描画されない）、(c) **video プール/ループ warmup**（ネスト video は毎フレーム新規要素＝decode churn）。(d) html comp と raster 系 effect は既知の Phase 1 除外（§28.11 のラスタ経路で反映）。
+  今回の pj には track matte / plugin / video が無いため症状は出ない。**着手はユーザー判断待ち**。
+- **issue 化**: [doc/issue/nested-comp-3d-text-fallback.md](doc/issue/nested-comp-3d-text-fallback.md) に本件の調査・修正・検証をまとめた。
+- **既知のリスク（今回記録・未対応）**: **WebGL context は 1 ドキュメント ~16 が上限でページ全体で共有**。`geom3d` は **per-layer 1 context を予算なしで作る（無制限）**一方、split/packed alpha は `MAX_GL_ALPHA_CONTEXTS = 8` の予算＋キルスイッチを持つ（`videoAlphaGl.ts`）。**3D テキストを多数積む／alpha 動画と併用すると上限に届き、古い context から黙って破棄される＝絵が消える**。対処が要るようになったら `shouldCreateGlAlphaCompositor()` と同型の予算ロジック＋2D フォールバックを geom3d に入れる。spec §5.5f / `geom3dGl.ts` の `createState` 冒頭にも記録済み。**issue 化: [doc/issue/webgl-context-limit.md](doc/issue/webgl-context-limit.md)**（症状・原因の非対称性・検出が GC 依存で不安定な点・根治案3種と推奨＝geom3d へ予算＋2D フォールバック）。
+- **応急処置（2026-07-16 実装）**: Pipeline パネル（左下）に **`GL×N` バッジ**を追加。project データからの静的な目安で、**precomp を再帰カウント**（同じ precomp を 2 回置けば 2 倍・無効レイヤーは除外）。`>=12` で琥珀 `GL×N!`、`>=16` で赤、tooltip に内訳と対処。実装は `pipelineAnalysis.ts` の `collectGlLayers`（純関数・`test/pipelineAnalysis.test.ts` に 4 件追加）と `PipelinePanel.tsx` の `GlBadge`。実機確認: Main 単独 `GL×3` → Outer に Main×1 で `GL×3`（再帰カウント動作）→ Main×5 で琥珀 `GL×15!`。**破綻を防ぐものではなく気付けるようにするだけ**（根治は上記 issue の案1）。
+- **Next steps**: 上記 (a)(b)(c) の要否をユーザーに確認。geom3d の GL context 予算の要否判断（3D text を大量に積む使い方が出てきたら）。mp4/webm/HTML bundle の実機 3D parity（今回は `compFrameCapture` バイト等価まで確認）。
+
+### 2026-07-16（Claude Sonnet 5）— ネスト comp 内 video の再生が進まない問題を根治（上記 (c) の未配線を着手）✅
+
+- **症状（ユーザー報告）**: DL にあるサンプルプロジェクト（`purini-23mafter-project.zip`。`Comp 2` が `music and screen`（video レイヤーあり）を precomp として nest）で、**nested comp 内の動画の再生が行かない**。
+- **真因**: `renderNestedComp` は毎フレーム `container.innerHTML = ""` する非 reconcile 実装で、既存の持ち越し対象は `text`（geom3d canvas）と再帰コンテナ（`comp`）のみ。**`video` は対象外**だったため、トップレベルの `acquireVideoFromPool` 相当が無く、**毎フレーム新規 `<video>` 要素を生成していた**（同一 asset でも `<video src>` を持たない素の要素からやり直し）。上記 §23.3e 修正セッションで「(c) 未配線・要判断」として記録済みだった項目そのもの。
+- **修正**（`src/runtime/DomRenderer.ts` のみ・ネスト経路に閉じた最小 diff）:
+  - `text` に加え **`video` も** `reuseKey`（`objId:index:type`）で `nestedElReuse` に持ち越す。`updateComponentEl` が video の中身（src/seek/`syncVideoElementTime`）を毎フレーム全書き換えするため、要素を再利用しても描画結果は変わらない。
+  - 今フレーム使われなかった持ち越し video は既存の GL 解放に加え **`teardownVideoElement()`（pause + removeAttribute("src") + load）** で明示的に破棄する（トップレベルの離脱時 teardown と同じ後始末）。
+- **検証（実機 Playwright・ユーザーの実 zip を import して `Comp 2` を再生）**:
+  - 素朴な currentTime 前進チェックは**修正前後どちらも PASS してしまい偽陰性**だった（毎フレーム新規要素でも `video.currentTime` は JS 側の seek 代入で見かけ上前進するため）。**歯のあるゲート**は `<video>` 要素の**参照同一性**で判定: 2 秒間・約120サンプルで **修正前 recreateCount=45（毎フレーム新規） → 修正後 recreateCount=1（初回のみ）**。
+  - readyState/描画ピクセルでの検証は本サンプル（500MB・多数の proxy 動画資産）特有の非同期資産パイプラインが絡み確定的な結果を得られず（別要因の疑い、本修正の scope 外）、上記の要素同一性ゲートを正としている。
+  - 無回帰: `tsc --noEmit` 緑 / `npm test` 1285 passed（唯一の失敗 `effects.test.ts > liquidChrome 再登録` は **stash して本変更前から失敗を確認済み・無関係**）/ `npm run build:player` は git hook が自動実行（`public/player.js` 更新済み）・`playerBuildFreshness` 緑。
+- **調査で判明した残りの未配線（今回は未修正）**: (a) track matte、(b) plugin component の `ComponentDef.render` は引き続き未配線。今回のサンプルには該当しないため症状は出ない。**着手はユーザー判断待ち**。
+
+### 2026-07-16（Claude Sonnet 5）— ネスト comp 内オーディオが再生されない問題を根治 ✅
+
+- **症状（ユーザー報告）**: 上記 video 再生修正と同じ実 zip（`purini-23mafter-project.zip`。`Comp 2` が `music and screen`（video の内蔵音声＋standalone `audio` レイヤー）を precomp として nest）で、**video の再生は進むが音声が一切鳴らない**。
+- **真因（`wire-feature-into-nested-comp` の N1 で発見）**: 音声パイプラインの共有関数 `collectFootageAudioSources`（`src/runtime/footageAudio.ts`）は `comp.objects` を**トップレベルのみ**走査し、`c.type === "comp"` のネスト precomp の中身を再帰しない。**preview（`PreviewAudioClock`）・mp4/webm export（`exporter.ts` の `buildAudioMix`）・HTML bundle export（`bundleFootageAudio.ts`）の 3 経路全てがこの同じ関数を共有**しており、3 経路とも「ネストされた comp 内の audio/video 内蔵音声は存在しないものとして扱われる」バグを共有していた（このコードベースで繰り返し起きる「共有関数がトップレベルしか見ない」型の未配線・[[nested-comp-separate-render-path]] と同型）。standalone `audio` コンポーネントは DOM 描画パスを持たない（`DomRenderer` に `case "audio"` が無い）ため、この Web Audio 経路が**唯一の再生手段**であり、ネストで完全に無音になっていた。
+- **修正（`src/runtime/footageAudio.ts` を中心に、3 呼び出し元へ resolveComp を配線・型/経路スコープを閉じた最小 diff）**:
+  1. `collectFootageAudioSources(comp, resolveComp?)` — `resolveComp?: (compId) => TimelineComposition | undefined` を追加。省略時は従来どおりトップレベルのみ（既存呼び出し元・既存テスト全 33 件は無変更で緑のまま＝後方互換）。渡すと `c.type === "comp"` を再帰し、ネスト先の `audio`/`video` レイヤーを収集する。
+  2. **frame 空間の写像**: 収集した `inPoint`/`outPoint`、および `gainProp` の `keyframe.frame` を、`compChildFrame`（§23.2 秒ベース換算）の逆写像で**ルート comp の frame 単位**へ変換して返す。呼び出し側（`PreviewAudioClock.schedule` 等）はネストの有無を意識せず既存の `(rootFrame - source.inPoint) / rootFps` 式をそのまま使える。多重ネストも `FrameMapper` の合成で depth 4 まで対応（`isCompNestDepthAllowed` 共有）。
+  3. `previewAudioClock.ts`（`hasPreviewAudioCandidates`/`prepareAudioLayers`）・`exporter.ts`（`buildAudioMix`）・`bundleFootageAudio.ts`（`collectBundleFootageAudioSources`）の 3 箇所に `project.compositions` から comp を引く `resolveComp` を配線。`PreviewPanel.tsx` の呼び出しに `project` を追加で渡すだけ（呼び出し側の分岐ロジックは無変更）。
+  4. `exporter.ts` の `buildAudioMix` は元々 `source.obj.inPoint/outPoint`（写像前の生値）を直接読んでいたため、`source.inPoint/outPoint`（写像後）を使うよう修正（ここを直さないと mp4/webm export だけネスト音声のタイミングがズレる）。
+- **意図的に対象外（トラック matte 同様ユーザー要否確認事項ではなく、影響が軽微なため）**: (a) `collectFadeClips`（cut 境界 declick 判定）はトップレベルのみのまま — ネスト音声のカット境界で declick フェード抑制が効かず、本来シームレスなはずの継ぎ目に短いフェードが入りうる（無音にはならない・実害は音質の軽微な劣化のみ）。(b) `PreviewAudioClock.updateLiveGains`（再生中の gain スライダーのライブ反映）もトップレベルのみ — ネスト音声は再生中に Volume を動かしても即時反映されない（次回 stop/start で反映）。将来必要になれば同じ resolveComp パターンで拡張可能。
+- **検証**:
+  - 単体テスト追加（`test/footageAudioMix.test.ts`）: ネスト精 comp の inPoint オフセット写像、animated gain keyframe の写像、`resolveComp` 省略時の後方互換の 3 件。既存 33 件 + 新規 3 件 = 36 件全緑。
+  - 実機 Playwright（ユーザーの実 zip・`Comp 2` を import）: 修正前相当（`resolveComp` 省略）は `hasPreviewAudioCandidates` = `false`（音声ゼロ扱い）、修正後（`project` を渡す）は `true` で `video`(内蔵音声) + `audio` の 2 ソースを正しい root frame 写像で検出。`PreviewAudioClock.start()` を実際に呼ぶと `started: true` / `nodeCount: 1`（decode 可能だった音声トラックがスケジュールされた）/ ネスト video の内蔵音声は `getMutedVideoObjectIds()` に含まれ二重発音を防止（native `<video>` 側は自動でミュート）。
+  - 無回帰: `tsc --noEmit` 緑 / `npm test` 1288 passed（唯一の失敗 `effects.test.ts > liquidChrome 再登録` は前回セッション同様 stash 済みで本変更前から失敗・無関係）/ `npm run build:player` 実行済み（`footageAudio.ts`/`previewAudioClock.ts`/`bundleFootageAudio.ts` は player import 範囲＝必須）。
+- **branch**: `fix/nested-comp-video-playback`（video 再生修正と同一ブランチで継続。コミット・PR は未実施、ユーザー確認待ち）。
+
+### 2026-07-16（Claude Opus 4.8）— ネスト comp 内の 3D text が親コンポ 9 秒あたりでちらつく問題を根治（§5.5f-1）✅
+
+- **症状（ユーザー報告）**: 最新 DL の pj（`mafter-project (10) (1).zip`）で、ネスト comp `2-もう一人じゃないよって` を親 `main` から呼ぶと **親の 9 秒あたりでちらつく**。子 comp を単独で開くと出ない。
+- **真因**: `renderNestedComp` が `updateComponentEl` に **`canvas` / `isHost` / `clearedCanvases` を渡していなかった**（トップレベル `applyObject` は渡す）。結果ネスト経路だけ `geomShareCanvas=true` を無視して **per-layer 1 canvas = 1 GL context** を作り、Chrome の同時 WebGL context 上限（~16）を超過 → `Too many active WebGL contexts. Oldest context will be lost.` → 3D が消えてちらつく。[[nested-comp-separate-render-path]] と同型の未配線（§23.3e で geom3dCamera を配線したときと**同じ関数の同じ引数**が、新機能追加時にまた片側だけ配線された）。
+- **9 秒の理由（数値で一致）**: 子の 3D text は 20 枚あり in が段階的（0,2,4,5,9,11,13,15,17,19,21,24,26,33,36,45,47,53,55,57）。親 frame 135（=9.0s / 15fps）は子 frame 51 で **同時に生きる 3D text = 17 枚 > 16**。実測の修正前 canvas 枚数も **17** で一致。
+- **修正**（`src/runtime/DomRenderer.ts` のみ・ネスト経路に閉じた最小 diff）: トップレベルと同じ `resolveGeom3DCanvasHosts` を子 scene に回して host を解き、group canvas を **`nestedGeom3dGroups: WeakMap<container, Map<hostId, canvas>>`** で保持（**コンテナ単位**＝同じ precomp を 2 回置いても canvas を取り違えない）。host でなくなった canvas は `releaseGeom3DGl` + `remove()` で明示解放。
+- **検証（実機 Playwright・ユーザーの実 zip から巨大 media(546MB mkv/63MB wav) だけ除いた fixture）**: 新規恒久 verify `verify-nested-geom3d-share.mjs` — **修正前 nested=17 canvas + GL 警告多数（FAIL）→ 修正後 nested=1 canvas / 警告 0 / ink は standalone と同値 60013・ratio 1.000（PASS）**。ゲートに歯があることを stash して確認済み。親は実 `main` ではなく専用 `Outer` を作る（main は 3D text 持ち precomp を 2 つ載せる＝canvas 2 枚が正しく、畳み込みを測れない）。fps 差（子 15 / Outer 30）は §23.2 秒ベース換算で親 frame を逆算し同一子 frame を比較。
+- **無回帰**: `tsc --noEmit` 緑 / `npm test` 1307 passed（唯一の失敗 `effects.test.ts > liquidChrome 再登録` は本変更前から失敗・無関係）/ `verify-nested-geom3d` `verify-geom3d-neutral` `verify-font-3d-extrude` PASS / `npm run build:player` 実行済み（player が DomRenderer を import）。
+- **ついでに修正: `verify-geom3d-mvp.mjs` の FAIL は「テストが stale」だった（コードは正常）** — 当初 share-canvas 由来の回帰と推測したが**誤り**。真因は `0dfc7cf fix(geom3d): 2D層(threeD=false)はカメラ免除`（share-canvas の 6 コミット前）。この verify は text を `threeD=false` のまま camera 追加 → dolly して「bbox が 1.15 倍以上に拡大するか」を assert するが、§6.5b でカメラ免除になったため bbox が neutral と完全に同一（142×86 で不変）になり FAIL していた＝**免除仕様どおりの正しい挙動を回帰と誤検出**。setup で `threeD: true` を立てる 1 行を追加して PASS（withCameraDefault 84×50 → afterDolly 120×70 で dolly が効くことを確認）。**このスクリプトの本来の役目（実 MVP 投影＝固定カメラでないことの証明）が赤いまま放置されると「既知の失敗」として無視され、本物のカメラ回帰を検出できなくなる**ため、赤を残さず直した。
+- **Next steps**: mp4/webm/HTML bundle でのネスト共有 parity は未確認（preview と `compFrameCapture` 経路のみ確認）。
 
 ### 2026-07-15（Claude Sonnet 5）— ditherDissolve の毎フレーム再計算を軽量化（メモ化）✅
 - **調査**: `ditherDissolve` は live エフェクトとして毎フレーム `ditherDissolveMask()` → `ditherPatternMaskSvg()` を再実行し、
