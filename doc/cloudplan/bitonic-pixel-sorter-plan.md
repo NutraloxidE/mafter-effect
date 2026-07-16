@@ -182,6 +182,9 @@ bitonic network そのものは CPU では無意味だが、本家の高速化�
 
 ### Phase 2: WebGPU compute 経路（3〜5 日・オプトイン・Phase 1 の実測を見てから着手判断）
 
+> **前段の基盤設計を別セッションで先行させる方針**（2026-07-16 決定）: WebGPU の device 初期化・可用性検出・CPU フォールバック配線・`RasterBuffer⇄GPU` バッファ契約といったアルゴリズム非依存の「配管」を別セッションで先に設計・実装し、その契約が確定してから本プランの §3.A / §4 / spec §27.3 をそれに合わせて refine する。handoff メモ: [webgpu-raster-foundation-handoff.md](webgpu-raster-foundation-handoff.md)。**GPU 種別は WebGPU で確定**（WebGL2 は §3.B 却下のまま）。
+
+
 1. `src/runtime/gpu/pixelSortGpu.ts`: adapter/device 初期化、feature/limit 検出、失敗時は例外でなく `null` を返して CPU へフォールバック
 2. WGSL カーネル群（本家パイプラインの移植）: (a) キー計算 + しきい値マスク、(b) スパン検出 scan（prefix-max / suffix-min）、(c) workgroup 内 bitonic（≤2048px、必要なら 4096 variant）、(d) gather。`length`/`offset`/`feather` はスパン境界調整と後段ブレンドパスで表現
 3. 統合: [rasterProcessAsync.ts](../../src/runtime/rasterProcessAsync.ts) の分岐を「GPU 可用 && `angle % 90 === 0` && モード ≠ random → GPU、それ以外 → worker(CPU)」に拡張。browser export も同じ分岐を通す（経路統一）

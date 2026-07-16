@@ -9,6 +9,14 @@
 - **プラン**: [doc/cloudplan/bitonic-pixel-sorter-plan.md](doc/cloudplan/bitonic-pixel-sorter-plan.md)。Phase 0（ベンチ/golden 固定）→ Phase 1（CPU コア typed array + radix 化、全経路共通・低リスク・単独で preview 実用域見込み）→ Phase 2（WebGPU compute、オプトイン+CPU フォールバック、Phase 1 実測後に着手判断）→ Phase 3（export/bundle 横断回帰 + `npm run build:player`）。
 - **今回のコード変更・spec 変更: なし**（調査・計測・プラン文書のみ）。ベンチはコンテナ内 scratchpad で実施（リポジトリ未追加、Phase 0 で verify スクリプトとして固定予定）。
 - **Next steps**: プラン §6 の承認 4 点（輝度キー整数化 / random 据え置き / GPU angle 制約 / Phase 2 着手判断）をユーザーに確認 → 承認後 Phase 0-1 から着手。
+- **追記（同日・後続やり取り）**: (1) Phase 1 を単発エージェント向け実行チケット [bitonic-pixel-sorter-phase1-ticket.md](doc/cloudplan/bitonic-pixel-sorter-phase1-ticket.md) に分解（bit-exact 限定・承認不要）。(2) **bit-exact 制約下の実測を追加**し当初の「3.5x」が整数キー化（＝承認事項）込みだったことを訂正: 段A(bit-exact) のみでは 1080p angle0 **1.3x**（354→278ms）・angle45 2.3x（1460→646ms）に留まり、angle0 の高速化主因は段B(整数キー数値ソート・要承認)。「WebGPU 無しでどこまで速いか」は階層的（bit-exactのみ1.3-2.3x / 整数キー4x級 / +worker並列25-40ms＝preview実用域 / 真のrealtimeはWebGPU）とプラン §3.C に明記。(3) チケットの速度 soft target を実測に合わせ angle0 ≥1.25x へ下方修正。
+
+### 2026-07-16（Claude Code）— WebGPU raster 基盤を別セッション先行させる方針決定 + handoff メモ作成（コード変更なし）
+
+- **やり取り**: ユーザーから「WebGPU を受け入れる機構を別セッションで先に作ってから、その設計に合わせてこのプランの spec を変える」順序の提案。→ 順序は妥当（基盤 API が上位 spec を制約する依存方向を正しく認めるため、spec 先行より手戻りが少ない）と合意。GPU 種別は一度「WebGL」と誤入力があったが **WebGPU で確定**（プラン §3.A 推奨のまま・§3.B WebGL2 却下も維持）。
+- **役割分担を確定**: 基盤セッションには「アルゴリズム非依存の配管」だけ渡す＝(1)device初期化/可用性検出/CPUフォールバック配線、(2)`RasterBuffer⇄GPU`バッファ契約（単発オフロード型 vs チェーン持ち回り型）、(3)他エフェクト(mosaic/wave等)への汎用性スコープ、(4)f32/u32の決定論保証範囲。**pixelSorter 固有の parity/INV-2（整数キー permutation 化）・§6 承認4点・spec §27.3・bitonic カーネル本体は本ブランチに残す**（契約確定後にここで確定）。
+- **成果物**: handoff メモ [doc/cloudplan/webgpu-raster-foundation-handoff.md](doc/cloudplan/webgpu-raster-foundation-handoff.md)。プラン §Phase 2 冒頭からリンク。
+- **Next steps**: 別セッションで §2 の4点（特に WebGPU バッファ契約 (a)/(b)）を確定 → 本ブランチに戻り §5 手順で §3.A/§4/spec §27.3 を refine、Phase 2 実装チケット PS-P2 を起こす。
 
 ### 2026-07-11（Claude Sonnet 5）— mosaicLite（Mosaic Live）軽量化 Phase A: 毎フレーム無条件の filter DOM 再構築を解消
 
