@@ -261,6 +261,20 @@ describe("glLayers（§5.5f WebGL context 上限の目安）", () => {
     expect(gl.total).toBe(2);
   });
 
+  it("canvas 共有したレイヤー群は 1 canvas として数える（§5.5f-1）", () => {
+    const p = createProject({ now: "2026-01-01T00:00:00.000Z" });
+    const shared = (id: string, zOrder: number) =>
+      baseObj(id, {
+        zOrder,
+        components: [
+          { type: "text", props: { text: staticProp("hi"), geomEnabled: true, geomShareCanvas: true } },
+        ],
+      });
+    timeline(p).objects = [text3d("01A", true), shared("01B", 1), shared("01C", 2)];
+
+    expect(pipelineAnalysis(timeline(p), p).glLayers.geom3d).toBe(2);
+  });
+
   it("無効レイヤーは context を作らないので数えない", () => {
     const p = createProject({ now: "2026-01-01T00:00:00.000Z" });
     timeline(p).objects = [text3d("01A", true), text3d("01B", true, { enabled: false })];

@@ -22,7 +22,7 @@ const KIND_BADGE = {
 } as const;
 
 /**
- * §5.5f — WebGL context を消費するレイヤー数の表示（応急的な指標）。
+ * §5.5f — WebGL context を消費する canvas 数の表示（応急的な指標）。
  *
  * Chrome の同時 WebGL context 上限は **1 ドキュメント ~16**。超えると古い context から黙って
  * 破棄され、**先に描いたレイヤーの絵が消える**（例外は飛ばない＝ユーザーには原因不明のバグに見える）。
@@ -44,12 +44,12 @@ function GlBadge({ gl }: { gl: PipelineGlLayers }) {
     gl.alphaVideo > 0 ? `透過動画 ${gl.alphaVideo}` : null,
   ].filter(Boolean).join(" / ");
   const title = over
-    ? `WebGL レイヤー ${gl.total}（${detail}）— ブラウザの同時 context 上限(~${WEBGL_CONTEXT_LIMIT})に達しています。`
-      + "古いレイヤーから描画が消える場合があります（3D Extrude を減らす / precomp を pre-render してください）"
+    ? `WebGL canvas ${gl.total}（${detail}）— ブラウザの同時 context 上限(~${WEBGL_CONTEXT_LIMIT})に達しています。`
+      + "古いレイヤーから描画が消える場合があります（3D Extrude を減らす / canvas 共有する / precomp を pre-render してください）"
     : near
-      ? `WebGL レイヤー ${gl.total}（${detail}）— 上限(~${WEBGL_CONTEXT_LIMIT})が近づいています。`
+      ? `WebGL canvas ${gl.total}（${detail}）— 上限(~${WEBGL_CONTEXT_LIMIT})が近づいています。`
         + "超えると古いレイヤーの描画が消える場合があります"
-      : `WebGL レイヤー ${gl.total}（${detail}）— 上限 ~${WEBGL_CONTEXT_LIMIT}。precomp の中身も再帰カウント（静的な目安）`;
+      : `WebGL canvas ${gl.total}（${detail}）— 上限 ~${WEBGL_CONTEXT_LIMIT}。canvas 共有したレイヤー群は 1 canvas。precomp の中身も再帰カウント（静的な目安）`;
   return (
     <span
       title={title}

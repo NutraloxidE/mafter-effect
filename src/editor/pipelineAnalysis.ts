@@ -4,6 +4,7 @@ import type { Project, SceneObject, TimelineComposition } from "../core/schema";
 import { hasEnabledFullDisplacement, needsSvgDisplaceCapture } from "../runtime/effectRouting";
 import { isPackedAlphaVideoMeta, isSplitAlphaVideoMeta } from "../runtime/imageAssetCache";
 import { globalPluginRegistry } from "../runtime/pluginRegistry";
+import { resolveGeom3DCanvasHosts, toGeom3DLayerInfo } from "../runtime/geom3d/geom3dCanvasGroup";
 
 export type PipelineSegmentKind = "live" | "raster";
 
@@ -36,9 +37,9 @@ export interface PipelineAlphaWarning {
   message: string;
 }
 
-/** §5.5f — WebGL context を消費するレイヤー数の**静的な目安**（precomp を再帰集約）。 */
+/** §5.5f — WebGL context を消費する **canvas 数**の静的な目安（precomp を再帰集約）。 */
 export interface PipelineGlLayers {
-  /** 3D-extrude text（per-layer 1 context・予算なし＝上限に効く主因） */
+  /** 3D-extrude text の canvas 数（§5.5f-1 geomShareCanvas のグループは 1 canvas） */
   geom3d: number;
   /** split / packed alpha video（GL 合成器・予算 8 でそれ以上は CPU フォールバック） */
   alphaVideo: number;
@@ -128,11 +129,11 @@ function collectAlphaWarnings(
 }
 
 /**
- * §5.5f 既知のリスク — WebGL context を消費するレイヤーを precomp まで再帰カウントする。
+ * §5.5f 既知のリスク — WebGL context を消費する **canvas** を precomp まで再帰カウントする。
  *
  * Chrome の同時 WebGL context は **1 ドキュメント ~16** が上限で、超えると古い context から
- * 黙って破棄される（＝先に描いたレイヤーの絵が消える）。`geom3d`（3D-extrude text）は
- * **per-layer 1 context を予算なしで作る**ため、積むほど上限に近づく。
+ * 黙って破棄される（＝先に描いたレイヤーの絵が消える）。`geom3d` は canvas ごとに 1 context で、
+ * §5.5f-1 の geomShareCanvas で合流したグループは**まとめて 1 canvas**＝1 context。
  *
  * **これは静的な目安**（実際の context 数ではない）。frame 依存の in/out 点や、
  * alpha video の予算超過時の CPU フォールバックまでは見ない。上限に近づいたことを
@@ -143,15 +144,12 @@ function collectGlLayers(
   project: Project,
   depth: number,
 ): { geom3d: number; alphaVideo: number } {
-  let geom3d = 0;
   let alphaVideo = 0;
-  for (const obj of comp.objects) {
-    // 無効レイヤーは描画されない＝ context を作らない。
-    if (obj.enabled === false) continue;
-    for (const c of obj.components) {
-      // geomEnabled は animatable:false の素の bool（§5.5f）。
-      if (c.type === "text" && c.props["geomEnabled"] === true) geom3d += 1;
-    }
+  const enabled = comp.objects.filter((o) => o.enabled !== false);
+  // 共有チェーンは DomRenderer と同じ host 解決を通す＝distinct host 数がそのまま canvas 数。
+  const hosts = resolveGeom3DCanvasHosts(enabled.map(toGeom3DLayerInfo));
+  let geom3d = new Set(hosts.values()).size;
+  for (const obj of enabled) {
     if (hasAlphaGlVideo(obj, project)) alphaVideo += 1;
 
     if (depth >= MAX_PRECOMP_DEPTH) continue;
