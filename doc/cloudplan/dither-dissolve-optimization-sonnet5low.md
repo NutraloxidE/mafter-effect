@@ -3,13 +3,14 @@
 > 対象: `ditherDissolve` エフェクト（live 経路）の毎フレーム再計算コスト削減。
 > spec §5 / INV は変更しない（純関数のメモ化のみ・出力バイト等価）。
 >
-> **ステータス（2026-07-15 更新）:**
+> **ステータス（2026-07-16 更新）:**
 > - ✅ **Opt 1（メモ化）実装・検証・push 済み** — commit `c533a96`（`src/runtime/effectSvg.ts`）。
-> - ⬜ Opt 4（白セルのみ emit）— 任意・未着手。
+> - ✅ **Opt 4（白セルのみ emit）実装・検証・push 済み** — commit `bc089bd`（`src/runtime/effectSvg.ts`）。
 > - ❌ Opt 3（feTile 化）— スコープ外（据え置き）。
 >
-> 元は Sonnet 5 low 向けの逐語手順書として書いた。Opt 1 は実装済みだが、手順・パッチ・
-> 検証コマンドは Opt 4 に着手する場合や将来の追随実装で再利用できるよう残す。
+> ditherDissolve の軽量化タスクは Opt 1 + Opt 4 でここまで打ち止め（Opt 3 は方針として据え置き）。
+> 元は Sonnet 5 low 向けの逐語手順書として書いたが、両 Opt とも実装済みのため、以下は主に
+> **実装記録・再現手順・将来の類似タスク（他エフェクトのメモ化等）のテンプレート**として読む。
 
 ---
 
@@ -134,16 +135,16 @@ export function ditherDissolveMask(
 
 ---
 
-### ⭕ Opt 4（任意・小リスク）: blueNoise で「白セルのみ」emit
+### ✅ Opt 4（実装済み・commit `bc089bd`）: blueNoise で「白セルのみ」emit
 
-`ditherPatternMaskSvg` は黒背景の上に全セルの `<rect>` を敷いているが、背景を黒 1 枚にして **可視（白）セルだけ** rect を出せば、reveal が低いときの rect 数が激減する（reveal≈0.5 で約半分、低 reveal でさらに少）。
+`ditherPatternMaskSvg` は黒背景の上に全セルの `<rect>` を敷いていたが、背景を黒 1 枚にして **可視（白）セルだけ** rect を出すよう変更した（reveal が低いときの rect 数が激減する — reveal≈0.5 で約半分、低 reveal でさらに少）。
 
-- 出力は**視覚的に同一**（黒背景 + 白セル）だが**文字列は変わる**ため、Opt 1 のキャッシュとは独立に verify のスクリーンショット無回帰確認が要る。
-- Opt 1 を入れれば毎フレームコストはほぼ消えるので、**Opt 4 は「初回生成（キャッシュミス）も軽くしたい」ときだけ**やる。**判断に迷うなら Opt 1 のみで確定してよい。**
-- やる場合の `ditherPatternMaskSvg` 変更点のみ:
+- 出力は**視覚的に同一**（黒背景 + 白セル）だが**文字列は変わる**ため、Opt 1 のキャッシュとは独立に verify のスクリーンショット無回帰確認を実施し、**ピクセル解析値が Opt 1 単独時と完全一致**することを確認した（§4 参照）。
+- Opt 1 でキャッシュヒット時のコストはほぼゼロ化していたが、**completion 自体をアニメート中は 64 段の量子化ステップを毎回通過しキャッシュミスが残る**ため、その初回生成コストを下げる狙いで実施。
+- 適用済み `ditherPatternMaskSvg` の変更点:
 
 ```ts
-const cells: string[] = [];
+const cells: string[] = [`<rect width="${tile}" height="${tile}" fill="black"/>`];
 for (let y = 0; y < tile; y++) {
   for (let x = 0; x < tile; x++) {
     if (ditherVisibleAt(pattern, x, y, t)) {
@@ -151,11 +152,10 @@ for (let y = 0; y < tile; y++) {
     }
   }
 }
-// pattern 内に黒背景を 1 枚敷いてから白セルを重ねる:
-// `<rect width="${tile}" height="${tile}" fill="black"/>` を cells の先頭に置く。
 ```
 
-> ⚠️ Opt 4 を入れるなら `test/ditherMask.test.ts` の単調性テストは純関数 `ditherVisible*` を見ているので影響なし。ただし `verify-dither-dissolve.mjs` のスクリーンショット判定（純色ピクセル数）が閾値で通ることを必ず再確認。
+- **実測（vite-node ベンチ・1920×1080・全 65 量子化ステップのコールドキャッシュ生成）**: blueNoise 74.37ms→29.13ms（**約61%減**）、ordered 1.47ms→0.83ms（**約43%減**）。
+- `test/ditherMask.test.ts` の単調性テストは純関数 `ditherVisible*` を見ているため影響なし（実際 unaffected のまま緑）。`verify-dither-dissolve.mjs` のピクセル解析（純色ピクセル数・blueShare）は Opt 1 単独時と完全一致を確認済み。
 
 ---
 
@@ -238,10 +238,16 @@ node verify-dither-dissolve.mjs    # 純色/混色ピクセル署名で判定
 3. ✅ `progress.md` 追記 — 「2026-07-15（Claude Sonnet 5）— ditherDissolve のメモ化」節 / commit `d002291`。
 4. ✅ `git push` 済み（`claude/dither-dissolve-optimization-kysf3s`）。
 
-**残タスク（任意・未着手）:**
+**Opt 4 も完了済み（2026-07-16）:**
 
-- ⬜ Opt 4（blueNoise で白セルのみ emit）。初回生成（キャッシュミス時）も軽くしたい場合のみ。§2 の手順を参照。着手時は `verify-dither-dissolve.mjs` のスクショ無回帰を必ず再確認。
-- ❌ Opt 3（feTile 化）は据え置き（§2 スコープ外の理由参照）。
+1. ✅ 実装: `ditherPatternMaskSvg` 白セルのみ emit — commit `bc089bd`。
+2. ✅ `npm run build:player` → `public/player.js` 更新（同 commit に同梱）。
+3. ✅ `progress.md` 追記 — 「2026-07-16（Claude Sonnet 5）— ditherDissolve Opt 4」節。
+4. ✅ `git push` 済み（`claude/dither-dissolve-optimization-kysf3s`）。
+
+**残タスク:**
+
+- ❌ Opt 3（feTile 化）は据え置き（§2 スコープ外の理由参照）。ditherDissolve の軽量化タスクは Opt 1 + Opt 4 で完了とし、追加着手は現状予定なし。
 
 ---
 

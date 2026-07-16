@@ -2349,4 +2349,21 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
     出力バイト等価・無回帰を実測で確認。スクリプトが報告した FAIL は favicon.ico の 404（コンソールエラー収集の環境ノイズ）で
     baseline でも同一に再現する既知の無関係事象。
 - **doc**: 調査結果と Sonnet 5 low 向け修整手順を `doc/cloudplan/dither-dissolve-optimization-sonnet5low.md` に記録済み（Opt 1 実装済み・Opt 3 feTile化はスコープ外のまま）。
-- **Next steps**: Opt 4（blueNoise で白セルのみ emit）は任意。今回はやっていない。
+- **定量計測（vite-node ベンチ・1920×1080）**:
+  - completion アニメート中（300フレーム相当・64段量子化を通過）: ordered 47.7ms→2.4ms（**約95%減**）、blueNoise 835.3ms→295.0ms（**約65%減**、量子化ステップ通過ごとのキャッシュミスが残る）。
+  - completion 固定（一時停止・他プロパティ編集中の再描画）: ordered 9.9ms→0.24ms（**約97%減**）、blueNoise 685.3ms→0.19ms（**約3600倍減・実質ゼロ**、キャッシュヒット率100%）。
+
+### 2026-07-16（Claude Sonnet 5）— ditherDissolve Opt 4（白セルのみ emit）実装 ✅
+- **背景**: 上記 Opt 1（メモ化）でキャッシュヒット時のコストはほぼゼロ化したが、completion 自体をアニメートしている最中は
+  64 段の量子化ステップを毎回通過するためキャッシュミスが残り、blueNoise はまだ 2〜3 割のコストが残っていた
+  （`doc/cloudplan/dither-dissolve-optimization-sonnet5low.md` §2 Opt 4 として計画済み・任意タスク）。
+- **修正**: `ditherPatternMaskSvg`（`src/runtime/effectSvg.ts`）を、黒背景 1 枚 + 可視（white）セルのみ emit するよう変更。
+  視覚的には全セル emit 版と同一（黒背景の上に白セルを重ねるのと、全面塗ってから黒/白で上書きするのは同じ結果）。
+  reveal が低いほど white セル数が減るため、**キャッシュミス時（初回生成）の rect 数・文字列長を reveal に応じて削減**する。
+- **検証**:
+  - `npm run typecheck` 緑 / `npm test` — 既存の pre-existing 失敗（`liquidChrome` 再登録）のみ、Opt 1 と同じで無関係。
+  - `npm run build:player` 実行済み。
+  - 実機 `verify-dither-dissolve.mjs` — ピクセル解析値が Opt 1 単独時と**完全一致**（pureRed 3269 / pureBlue 3459 / blended 113272 / blueShare 0.5141）＝無回帰。
+  - vite-node ベンチ（1920×1080・全 65 量子化ステップのコールドキャッシュ生成）: blueNoise 74.37ms→29.13ms（**約61%減**）、ordered 1.47ms→0.83ms（**約43%減**）。
+- **doc**: `doc/cloudplan/dither-dissolve-optimization-sonnet5low.md` の Opt 4 節・完了状況を更新予定。
+- **Next steps**: Opt 3（feTile 化）は引き続きスコープ外（共有キャプチャ経路への影響のため）。ditherDissolve の残タスクは現状これで打ち止め。
