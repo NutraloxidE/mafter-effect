@@ -1176,7 +1176,16 @@ export class DomRenderer implements Renderer {
           forceSeek = true;
         }
         const persistentlyMuted = this.persistentlyMutedVideoIds?.has(obj.id) ?? false;
-        const geom3dCamera = { cameraPre: this.cameraPre, fov: this.cameraFov, world: obj.worldTransform, compW, compH };
+        // §6.5b: 2D 層（threeD=false）はカメラ免除 — CSS 側の objectWorldTransformWithCamera と同じ規約を
+        // GL の mvp にも適用する（でないと 3D OFF の extrude text だけカメラに捕まる）。
+        const use3D = obj.threeD === true;
+        const geom3dCamera = {
+          cameraPre: use3D ? this.cameraPre : null,
+          fov: use3D ? this.cameraFov : null,
+          world: obj.worldTransform,
+          compW,
+          compH,
+        };
         updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, frame, hostInPoint, fps, this.previewVideoPlayback, this.exportVideoStep, forceSeek, this.playbackPauseForSync, this.muteVideoPlayback, this.playbackRateForSync, persistentlyMuted, geom3dCamera);
       }
 
@@ -2063,8 +2072,8 @@ export class DomRenderer implements Renderer {
           // 「子 comp のもの」を渡す — precomp 内の 3D は子の座標系で解決され、外側の変換は
           // container 側の CSS transform が担う（AE collapse OFF 相当）。
           const nestedGeom3dCamera = {
-            cameraPre,
-            fov: childScene.camera?.fov ?? null,
+            cameraPre: obj.threeD === true ? cameraPre : null,
+            fov: obj.threeD === true ? (childScene.camera?.fov ?? null) : null,
             world: obj.worldTransform,
             compW: childComp.width,
             compH: childComp.height,
