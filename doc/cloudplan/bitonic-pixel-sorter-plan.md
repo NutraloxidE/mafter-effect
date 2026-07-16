@@ -166,6 +166,10 @@ bitonic network そのものは CPU では無意味だが、本家の高速化�
 
 ### Phase 1: CPU コア書き換え（1〜2 日）— 最優先・単独でも価値あり
 
+> **単発エージェント向け実行チケット**: [bitonic-pixel-sorter-phase1-ticket.md](bitonic-pixel-sorter-phase1-ticket.md)
+> （Phase 1 のうち「出力バイト完全一致を保証する typed-array リファクタ」だけに絞った、Sonnet 5 low がワンショットで完遂できる粒度の作業票。整数キー化・radix・worker 並列は含めず承認不要）。
+
+
 1. `sortHorizontalScanlines` の typed array 化: 行キー precompute（`Int32Array`）→ スパン検出インライン → キーパック（承認可否で分岐: 承認済みなら整数 `K`、未承認なら現行 float `lum` を `Float64Array` パック）→ radix / 数値ソート → `Uint32Array` gather
 2. `rotateBuffer` の割り当て排除（タプル廃止・チャネル直書き・bilinear インライン化）
 3. `blockAverage` / feather / highlights / shadows / random の同意味論 typed array 化
