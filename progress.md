@@ -2431,3 +2431,38 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
 - **無回帰**: `tsc --noEmit` 緑 / `npm test` 1307 passed（唯一の失敗 `effects.test.ts > liquidChrome 再登録` は本変更前から失敗・無関係）/ `verify-nested-geom3d` `verify-geom3d-neutral` `verify-font-3d-extrude` PASS / `npm run build:player` 実行済み（player が DomRenderer を import）。
 - **ついでに修正: `verify-geom3d-mvp.mjs` の FAIL は「テストが stale」だった（コードは正常）** — 当初 share-canvas 由来の回帰と推測したが**誤り**。真因は `0dfc7cf fix(geom3d): 2D層(threeD=false)はカメラ免除`（share-canvas の 6 コミット前）。この verify は text を `threeD=false` のまま camera 追加 → dolly して「bbox が 1.15 倍以上に拡大するか」を assert するが、§6.5b でカメラ免除になったため bbox が neutral と完全に同一（142×86 で不変）になり FAIL していた＝**免除仕様どおりの正しい挙動を回帰と誤検出**。setup で `threeD: true` を立てる 1 行を追加して PASS（withCameraDefault 84×50 → afterDolly 120×70 で dolly が効くことを確認）。**このスクリプトの本来の役目（実 MVP 投影＝固定カメラでないことの証明）が赤いまま放置されると「既知の失敗」として無視され、本物のカメラ回帰を検出できなくなる**ため、赤を残さず直した。
 - **Next steps**: mp4/webm/HTML bundle でのネスト共有 parity は未確認（preview と `compFrameCapture` 経路のみ確認）。
+
+### 2026-07-15（Claude Sonnet 5）— ditherDissolve の毎フレーム再計算を軽量化（メモ化）✅
+- **調査**: `ditherDissolve` は live エフェクトとして毎フレーム `ditherDissolveMask()` → `ditherPatternMaskSvg()` を再実行し、
+  blueNoise パターンでは 64×64=4096 個の `<rect>` 文字列生成 + `encodeURIComponent` を毎フレームやり直していた。
+  `reveal` は `quantizeDitherReveal` で 64 段に量子化・`w/h/pattern` はレイヤー内固定なので、取りうる mask 文字列は
+  1 レイヤーにつき最大 64 通りしかない（`.cursor/plans/dither-pattern-modes.plan.md` でも予定されていたが未実装だった）。
+- **修正**: `src/runtime/effectSvg.ts` の `ditherDissolveMask()` を `pattern|qStep|w|h` キーの module-level `Map` でメモ化。
+  ロジック・戻り値は不変（純関数のまま・`Math.random`/`Date.now`/DOM 追加なし → INV-1 不変）。
+- **検証**:
+  - `npm run typecheck` 緑。
+  - `npm test` — 既存失敗 1 件（`effects.test.ts > liquidChrome 再登録`）のみ、stash して確認済みで**本変更と無関係の pre-existing 失敗**。
+  - `npm run build:player` 実行済み（`effectSvg.ts` は player import 対象のランタイム側）。
+  - 実機 `verify-dither-dissolve.mjs`（Playwright, `/opt/pw-browsers/chromium` を一時指定して実行・スクリプト自体は未変更のままコミット）:
+    変更前後で **pixel 解析値が完全に同一**（pureRed 3269 / pureBlue 3459 / blended 113272 / blueShare 0.5141 — 両方とも一致）＝
+    出力バイト等価・無回帰を実測で確認。スクリプトが報告した FAIL は favicon.ico の 404（コンソールエラー収集の環境ノイズ）で
+    baseline でも同一に再現する既知の無関係事象。
+- **doc**: 調査結果と Sonnet 5 low 向け修整手順を `doc/cloudplan/dither-dissolve-optimization-sonnet5low.md` に記録済み（Opt 1 実装済み・Opt 3 feTile化はスコープ外のまま）。
+- **定量計測（vite-node ベンチ・1920×1080）**:
+  - completion アニメート中（300フレーム相当・64段量子化を通過）: ordered 47.7ms→2.4ms（**約95%減**）、blueNoise 835.3ms→295.0ms（**約65%減**、量子化ステップ通過ごとのキャッシュミスが残る）。
+  - completion 固定（一時停止・他プロパティ編集中の再描画）: ordered 9.9ms→0.24ms（**約97%減**）、blueNoise 685.3ms→0.19ms（**約3600倍減・実質ゼロ**、キャッシュヒット率100%）。
+
+### 2026-07-16（Claude Sonnet 5）— ditherDissolve Opt 4（白セルのみ emit）実装 ✅
+- **背景**: 上記 Opt 1（メモ化）でキャッシュヒット時のコストはほぼゼロ化したが、completion 自体をアニメートしている最中は
+  64 段の量子化ステップを毎回通過するためキャッシュミスが残り、blueNoise はまだ 2〜3 割のコストが残っていた
+  （`doc/cloudplan/dither-dissolve-optimization-sonnet5low.md` §2 Opt 4 として計画済み・任意タスク）。
+- **修正**: `ditherPatternMaskSvg`（`src/runtime/effectSvg.ts`）を、黒背景 1 枚 + 可視（white）セルのみ emit するよう変更。
+  視覚的には全セル emit 版と同一（黒背景の上に白セルを重ねるのと、全面塗ってから黒/白で上書きするのは同じ結果）。
+  reveal が低いほど white セル数が減るため、**キャッシュミス時（初回生成）の rect 数・文字列長を reveal に応じて削減**する。
+- **検証**:
+  - `npm run typecheck` 緑 / `npm test` — 既存の pre-existing 失敗（`liquidChrome` 再登録）のみ、Opt 1 と同じで無関係。
+  - `npm run build:player` 実行済み。
+  - 実機 `verify-dither-dissolve.mjs` — ピクセル解析値が Opt 1 単独時と**完全一致**（pureRed 3269 / pureBlue 3459 / blended 113272 / blueShare 0.5141）＝無回帰。
+  - vite-node ベンチ（1920×1080・全 65 量子化ステップのコールドキャッシュ生成）: blueNoise 74.37ms→29.13ms（**約61%減**）、ordered 1.47ms→0.83ms（**約43%減**）。
+- **doc**: `doc/cloudplan/dither-dissolve-optimization-sonnet5low.md` の Opt 4 節・完了状況を更新予定。
+- **Next steps**: Opt 3（feTile 化）は引き続きスコープ外（共有キャプチャ経路への影響のため）。ditherDissolve の残タスクは現状これで打ち止め。
