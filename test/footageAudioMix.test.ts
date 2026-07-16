@@ -109,4 +109,60 @@ describe("collectFootageAudioSources (§11.4 / §11.5)", () => {
     expect(sources[0]).toMatchObject({ trimStart: 0 });
     expect(sampleGain(sources[0]!.gainProp, 0)).toBe(1);
   });
+
+  it("recurses into nested comp layers when resolveComp is given, mapping inPoint/outPoint into root frames", () => {
+    const inner = comp([obj("a", [{ type: "audio", props: { asset: "snd", gain: 1 } }])]);
+    inner.id = "inner";
+    // outer places the precomp at root inPoint=10 (same fps, no trim).
+    const outerLayer: SceneObject = {
+      ...obj("nested", [{ type: "comp", props: { compId: "inner" } }]),
+      inPoint: 10,
+      outPoint: 60,
+    };
+    const outer = comp([outerLayer]);
+    const sources = collectFootageAudioSources(outer, (id) => (id === "inner" ? inner : undefined));
+    expect(sources).toHaveLength(1);
+    // inner audio's own inPoint=0/outPoint=100 shifted by the precomp layer's root inPoint=10,
+    // then clamped by nothing here (test keeps it simple: same fps, trimStart=0).
+    expect(sources[0]).toMatchObject({ assetId: "snd", inPoint: 10, outPoint: 110 });
+  });
+
+  it("remaps animated gain keyframes of a nested layer into root frames", () => {
+    const inner = comp([
+      obj("a", [
+        {
+          type: "audio",
+          props: {
+            asset: "snd",
+            gain: {
+              value: 0,
+              keyframes: [
+                { frame: 0, value: 0, easing: { type: "linear" } },
+                { frame: 30, value: 1, easing: { type: "linear" } },
+              ],
+            },
+          },
+        },
+      ]),
+    ]);
+    inner.id = "inner";
+    const outerLayer: SceneObject = {
+      ...obj("nested", [{ type: "comp", props: { compId: "inner" } }]),
+      inPoint: 10,
+      outPoint: 60,
+    };
+    const outer = comp([outerLayer]);
+    const sources = collectFootageAudioSources(outer, (id) => (id === "inner" ? inner : undefined));
+    // keyframe frame=0 (inner-local) is at root frame 10; frame=30 is at root frame 40.
+    expect(sampleGain(sources[0]!.gainProp, 10)).toBe(0);
+    expect(sampleGain(sources[0]!.gainProp, 40)).toBe(1);
+    expect(sampleGain(sources[0]!.gainProp, 25)).toBeCloseTo(0.5, 6);
+  });
+
+  it("does not recurse into nested comps when resolveComp is omitted (backward compat)", () => {
+    const inner = comp([obj("a", [{ type: "audio", props: { asset: "snd" } }])]);
+    inner.id = "inner";
+    const outer = comp([obj("nested", [{ type: "comp", props: { compId: "inner" } }])]);
+    expect(collectFootageAudioSources(outer)).toHaveLength(0);
+  });
 });

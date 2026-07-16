@@ -2057,11 +2057,15 @@ export class DomRenderer implements Renderer {
             }
             continue;
           }
-          // text だけ el を持ち越す（geom3d canvas = WebGL context の宿主）。他型は従来どおり毎フレーム新規。
-          // updateComponentEl が text の中身を毎フレーム全書き換えする（3D: applyGeom3DText /
-          // 2D: clearGeom3DCanvas + applyTextEl）ため、再利用しても描画結果は変わらない。
-          const el = (c.type === "text" ? prevEls.get(reuseKey) : undefined) ?? createComponentEl(c.type);
-          if (c.type === "text") nextEls.set(reuseKey, el);
+          // text/video だけ el を持ち越す。text は geom3d canvas（WebGL context）の宿主。
+          // video は毎フレーム新規要素にすると <video> の decode/再生状態が全て失われ、
+          // 再生が一切進まなくなる（トップレベルの acquireVideoFromPool 相当をネストにも適用）。
+          // updateComponentEl が中身を毎フレーム全書き換えする（text: 3D=applyGeom3DText /
+          // 2D=clearGeom3DCanvas+applyTextEl、video: src/seek/syncVideoElementTime）ため、
+          // 再利用しても描画結果は変わらない。他型は従来どおり毎フレーム新規。
+          const persistsAcrossFrames = c.type === "text" || c.type === "video";
+          const el = (persistsAcrossFrames ? prevEls.get(reuseKey) : undefined) ?? createComponentEl(c.type);
+          if (persistsAcrossFrames) nextEls.set(reuseKey, el);
           const hostInPoint = (c.props["_hostInPoint"] as number | undefined) ?? 0;
           // §16.2 split alpha: ensureSplitAlphaCompanion は video.parentElement に依存するため、
           // updateComponentEl より先に append する（順序を変えると nested comp 内の split alpha
@@ -2128,10 +2132,11 @@ export class DomRenderer implements Renderer {
       }
     }
 
-    // 今フレーム使われなかった持ち越し el（レイヤー削除・3D OFF・型変更）は GL を明示解放する。
+    // 今フレーム使われなかった持ち越し el（レイヤー削除・3D OFF・型変更）は明示的に解放する。
     for (const [key, el] of prevEls) {
       if (nextEls.get(key) === el) continue;
       this.releaseAlphaGlCompositorsUnder(el);
+      if (el instanceof HTMLVideoElement) this.teardownVideoElement(el);
     }
     this.nestedElReuse.set(container, nextEls);
 

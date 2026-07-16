@@ -690,7 +690,7 @@ export function PreviewPanel() {
       // だけでなく video 内蔵音声「候補」があれば PreviewAudioClock を試す（実際に音声トラックが
       // あるかは prepareAudioLayers の decode 側で判定・無ければ start() が false を返し rAF へ
       // フォールバックする）。
-      if (!project || !hasPreviewAudioCandidates(comp)) {
+      if (!project || !hasPreviewAudioCandidates(comp, project)) {
         stop = startRafClock();
         return;
       }
