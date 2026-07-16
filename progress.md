@@ -1,5 +1,21 @@
 # Progress
 
+### 2026-07-16（Claude Opus 4.8）— ネスト共有 canvas の mp4/webm/HTML bundle parity を verify ＋ bundle の 3D text 消失を修正
+
+- **やったこと**: 8a79b28 で残っていた「mp4/webm/HTML bundle でのネスト共有 parity 未確認」を実機で潰した。新規 [verify-nested-geom3d-share-export.mjs](verify-nested-geom3d-share-export.mjs)。
+- **ゲートの立て方**: 「同じ 3D text 群を standalone comp で書き出した絵」vs「それを precomp として親から書き出した絵」のインク比（両方 comp 解像度 PNG ＝ 自己正規化）。preview DOM と export を直接比べると zoom 倍率が混ざって偽 FAIL する。
+- **結果（実 Chrome headed / headless 両方 PASS）**:
+  - PNG 連番: standalone ink == nested ink（**ratio 1.000・完全一致**）。mp4/webm は `compositeExportFrame` を PNG 連番と共有し encode だけが違うため、これで画の parity は担保。
+  - mp4: 実 Chrome で `format=mp4 / 16430 bytes / fallbackReason=null` ＝ H.264 encode も実際に通る。**headless Chromium では WebCodecs encode がメインスレッドを掴んだまま返らず in-page の setTimeout すら発火しない**（＝中断不能）。そのため mp4 は `VERIFY_MP4=1`（headed 実 Chrome）でのみ実行し、スクリプトの**最後**に置いてある。順序を変えると後続が全滅する。
+  - bundle: canvases=1 / ink 一致。
+- **発見して直したバグ（bundle で 3D text が丸ごと消える・ネスト無関係の全 bundle）**: `BundlePlayer.loadBuiltinFonts` が zip 同梱 ttf を **FontFace（CSS 2D 用）にしか登録せず** `FontOutlineCache` に入れていなかった。§5.5f の押し出しは outline を引くため `getFont()` が null ＝ mesh 無し ＝ canvas ごと出ない（**console error 0 で無音**）。built-in font は `project.assets` に載らない（`bundleCollect` は text の `font` を family 文字列としてしか見ず asset 参照を集めない → `pruneProjectToBundleScope` で消える）ため、ここで入れないと bundle だけ 3D が死ぬ。修正は同じ ttf を `fontCache.parseBuffer` にも通すだけ。`npm run build:player` 実行済み。
+- **無回帰**: `npm run typecheck` ✅ / `verify-bundle-export.mjs` 2/2 PASS（このスクリプトは `http://` 固定で今の dev（https）では動かない → `MAFTER_DEV_HTTP1=1 npx vite --port 5176` で実行した）。
+- **Next steps（未修正・本セッションでは触っていない）**: **bundle export が worker チャンクを同梱していない**。bundle player が `assets/rasterProcess.worker-*.js` を 404 で取り逃す。
+  - **真因**: Vite は `player.js` の**隣**に worker チャンク（`public/assets/rasterProcess.worker-*.js` / `videoBlob.worker-*.js`）を出すが、[bundleExporter.ts](src/runtime/bundleExporter.ts) の `loadPlayerScript` は **`player.js` しか zip しない**。
+  - **想定影響**: raster effect を使う bundle は worker 経路が死んでいる可能性（要確認）。今回の fixture は raster effect 非使用でも pool が eager に spawn するため 404 が出た＝**404 の有無は「effect を使ったか」を意味しない**。フォールバックが効いて絵は出ているのか、無音で劣化/停止するのかは未調査。
+  - **再現**: `VERIFY_MP4=1 node verify-nested-geom3d-share-export.mjs` の出力末尾 `既知・本件と無関係な 404` 行。同スクリプトは worker 404 を `unrelated404` として合否から外しているので、**直したらこの除外を消すこと**。
+  - geom3d canvas 共有とは無関係（本件の verify は PASS 済み）。
+
 ### 2026-07-16（Claude Opus 4.8）— §5.5f-1 WebGL canvas 共有トグル（`geomShareCanvas`）
 
 **完了:**
