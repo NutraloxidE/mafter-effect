@@ -1,7 +1,7 @@
 import { shouldForceOpaqueForDither } from "./ditherReveal";
 import { DISPLACEMENT_EFFECT_TYPES, LIVE_DISPLACEMENT_EFFECT_TYPES } from "./effectSvg";
 import { needsSvgDisplaceCapture } from "./effectRouting";
-import type { CompositionMeta, Frame, HtmlComposition, RGBA, TimelineComposition } from "../core/schema";
+import type { CompositionMeta, Frame, HtmlComposition, ObjectId, RGBA, TimelineComposition } from "../core/schema";
 import type { FontOutlineCache } from "./fontOutlineCache";
 import type { ImageAssetCache } from "./imageAssetCache";
 import type { FrameRenderCache } from "./frameRenderCache";
@@ -154,6 +154,15 @@ interface ObjectEntry {
   isTrackMatteSource: boolean;
   /** §5.4f トラックマット塗り（full-comp host + mask） */
   hasTrackMatte: boolean;
+  /**
+   * 通常経路（非 matte・非 matte-source）ホスト style の同値書込抑制用 last-value。
+   * matte/matte-source/childrenRebuilt に入るフレームで null 化し、通常経路へ戻った初回に
+   * 必ず書き直させる（モード切替後に古い transform/opacity/zIndex が残るのを防ぐ）。
+   * 値の計算式自体は変えない・出力は従来と等価（WP-4・INV-2 不変）。
+   */
+  lastTransform: string | null;
+  lastOpacity: string | null;
+  lastZ: string | null;
 }
 
 interface RasterWorkItem {
@@ -487,6 +496,9 @@ export class DomRenderer implements Renderer {
           exportChain: null,
           isTrackMatteSource: false,
           hasTrackMatte: false,
+          lastTransform: null,
+          lastOpacity: null,
+          lastZ: null,
         };
         this.entries.set(obj.id, entry);
       }
@@ -1113,6 +1125,11 @@ export class DomRenderer implements Renderer {
       entry.contentRoot = entry.div;
       entry.blendMode = "normal";
       applyMatteSourceLayout(entry.div, mat4ToCss(xform), Number(opacity));
+      // WP-4: このモードでは通常経路の style を書かない。通常経路へ戻った初回に必ず
+      // 書き直させるため last-value を無効化する（古い transform/opacity/zIndex 残留防止）。
+      entry.lastTransform = null;
+      entry.lastOpacity = null;
+      entry.lastZ = null;
     } else if (obj.trackMatte) {
       // §5.4f: full-comp host + inner + result canvas（正準 = applyTrackMatte）。
       const inner = ensureTrackMatteFillStructure(entry.div, compW, compH);
@@ -1124,15 +1141,33 @@ export class DomRenderer implements Renderer {
       this.applyBlendMode(entry, obj.blendMode);
       markTrackMatteFillHost(entry.div, obj.id);
       ensureTrackMatteResultCanvas(entry.div, compW, compH);
+      // WP-4: 同上。entry.div.style.transform 自体はこの分岐で書かないが、opacity/zIndex は
+      // 通常経路と異なる値（"1" / matte 専用計算）を書くため last-value を無効化する。
+      entry.lastTransform = null;
+      entry.lastOpacity = null;
+      entry.lastZ = null;
     } else {
       entry.contentRoot = entry.div;
       // §5.4f 後始末を先に行う（matte source 用の zIndex 等を消してから現在値を設定する。
       // 逆順だと clearMatteSourceStyle の zIndex="" が直後の設定を上書きしてしまう）。
       clearTrackMatteFillHost(entry.div);
       clearMatteSourceStyle(entry.div);
-      entry.div.style.transform = mat4ToCss(xform);
-      entry.div.style.opacity = opacity;
-      entry.div.style.zIndex = String(Math.round(obj.zOrder * BASE_Z));
+      // WP-4: 同値なら書かない（値の計算式は不変・出力は等価。同値 style 代入による
+      // invalidation/compositor 再判定コストを避ける）。
+      const tf = mat4ToCss(xform);
+      if (tf !== entry.lastTransform) {
+        entry.div.style.transform = tf;
+        entry.lastTransform = tf;
+      }
+      if (opacity !== entry.lastOpacity) {
+        entry.div.style.opacity = opacity;
+        entry.lastOpacity = opacity;
+      }
+      const z = String(Math.round(obj.zOrder * BASE_Z));
+      if (z !== entry.lastZ) {
+        entry.div.style.zIndex = z;
+        entry.lastZ = z;
+      }
       this.applyBlendMode(entry, obj.blendMode);
       this.trackMatteSigByFillId.delete(obj.id);
       // host 構造から通常へ戻るとき inner を畳む（マット子は先に外へ）
@@ -2003,6 +2038,12 @@ export class DomRenderer implements Renderer {
   // container が捨てられれば Map ごと GC される（WeakMap）。
   private nestedElReuse = new WeakMap<HTMLElement, Map<string, HTMLElement>>();
 
+  // WP-2 — ネスト comp コンテナごとの「オブジェクトラッパ div」永続化（objectId → div）。
+  // トップレベル entries（renderFrame の Map<ObjectId, ObjectEntry>）と同じ reconcile モデルを
+  // ネストへ移植したもの。container.innerHTML="" による毎フレーム全破棄を廃止する（§23.3e）。
+  // container が捨てられれば Map ごと GC される（WeakMap）。
+  private nestedWrappers = new WeakMap<HTMLElement, Map<ObjectId, HTMLDivElement>>();
+
   // §5.5f-1 — ネスト comp コンテナごとの group canvas（host レイヤー id → canvas）。
   // container 単位に分ける＝同じ precomp を 2 回置いても canvas を取り違えない（レイヤー id は共通のため）。
   private nestedGeom3dGroups = new WeakMap<HTMLElement, Map<string, HTMLCanvasElement>>();
@@ -2056,14 +2097,30 @@ export class DomRenderer implements Renderer {
     // §23.3b: ネスト comp は自身のカメラを live で適用（§6.5b と同一リグ）。
     const cameraPre = this.setupCameraRig(container, childScene);
 
-    // 毎フレーム再描画（Phase 1 簡易実装。html/plugin comp は対象外）。
-    // §5.5f: ただし GL コンテキストを抱える el（geom3d text・再帰コンテナ）だけは前フレームの
-    // 実体を key で持ち越す。innerHTML="" で作り直すと canvas ごと WebGL context が毎フレーム
-    // 生まれ、Chrome の同時コンテキスト上限（~16）を数十フレームで超えて
-    // "Too many active WebGL contexts. Oldest context will be lost." → 3D が消える。
+    // WP-2（§23.3e 改訂）: オブジェクトラッパ div を objectId で永続化し、トップレベル
+    // entries と同じ reconcile モデルで扱う。以前は毎フレーム container.innerHTML="" で
+    // 全ラッパを破棄していたため、text/video/geom3d canvas・再帰コンテナだけを個別に
+    // prevEls/nextEls で持ち越す特殊対応が必要だった。ラッパ自体を永続化することで
+    // その必要が無くなる（持ち越し対象の一般化）。GL コンテキストを抱える el を毎フレーム
+    // 作り直すと Chrome の同時コンテキスト上限（~16）を数十フレームで超えて
+    // "Too many active WebGL contexts. Oldest context will be lost." → 3D が消えるため、
+    // 離脱したオブジェクトのラッパは GL/video を明示解放してから削除する（順序が肝）。
     const prevEls = this.nestedElReuse.get(container) ?? new Map<string, HTMLElement>();
     const nextEls = new Map<string, HTMLElement>();
-    container.innerHTML = "";
+
+    let wrappers = this.nestedWrappers.get(container);
+    if (!wrappers) {
+      wrappers = new Map<ObjectId, HTMLDivElement>();
+      this.nestedWrappers.set(container, wrappers);
+    }
+    const seenObjIds = new Set<ObjectId>();
+    for (const obj of childScene.objects) seenObjIds.add(obj.id);
+    for (const [id, wrapperDiv] of wrappers) {
+      if (seenObjIds.has(id)) continue;
+      this.releaseAlphaGlCompositorsUnder(wrapperDiv);
+      wrapperDiv.remove();
+      wrappers.delete(id);
+    }
 
     // §5.5f-1 canvas 共有はネストでも効かせる（トップレベルと同じ純関数で host を解く）。
     // 効かせないと per-layer 1 context のままで、3D text を十数枚積んだ precomp を親から呼んだ瞬間に
@@ -2085,7 +2142,16 @@ export class DomRenderer implements Renderer {
     // §23.3d export — この comp（再帰的に）に調整レイヤーがあれば子座標系で1枚へ確定する必要がある。
     let needsComposite = false;
     for (const obj of childScene.objects) {
-      const div = document.createElement("div");
+      let div = wrappers.get(obj.id);
+      if (!div) {
+        div = document.createElement("div");
+        div.dataset.objectId = obj.id; // トップレベル entries と同じ規約（デバッグ・テスト用の識別子。描画に影響しない）。
+        wrappers.set(obj.id, div);
+      }
+      // WP-2: このフレームで touch しない旧子要素（isAdj トグル・component 型変更で
+      // 孤立した el）を検出するため、処理前の子ノード集合を控えておく。
+      const beforeChildren = new Set<ChildNode>(div.childNodes);
+      const touchedChildren = new Set<ChildNode>();
       const xform = objectWorldTransformWithCamera(cameraPre, obj);
       const isAdj = obj.isAdjustment === true;
       const nestedOpacity = shouldForceOpaqueForDither(obj.effects, obj.opacity)
@@ -2117,6 +2183,7 @@ export class DomRenderer implements Renderer {
               // §23.3d: 深い子に調整があれば、この comp も親の単一 capture では焼けない（再帰合成へ）。
               if ((innerEl as ExportTaggedElement).__nestedComposite?.needsComposite) needsComposite = true;
               div.appendChild(innerEl);
+              touchedChildren.add(innerEl);
             }
             continue;
           }
@@ -2134,6 +2201,7 @@ export class DomRenderer implements Renderer {
           // updateComponentEl より先に append する（順序を変えると nested comp 内の split alpha
           // video が「parent なし」で例外を投げる）。
           div.appendChild(el);
+          touchedChildren.add(el);
           const nestedPersistentlyMuted = this.persistentlyMutedVideoIds?.has(obj.id) ?? false;
           // §5.5f/§23.3b: ネスト comp でも 3D-extrude text を実投影する。カメラ・comp 寸法は
           // 「子 comp のもの」を渡す — precomp 内の 3D は子の座標系で解決され、外側の変換は
@@ -2156,6 +2224,15 @@ export class DomRenderer implements Renderer {
           };
           updateComponentEl(el, c.type, c.props, this.textQuality, this.fontCache, this.imageCache, childFrame, hostInPoint, childComp.fps, this.previewVideoPlayback, this.exportVideoStep, false, this.playbackPauseForSync, this.muteVideoPlayback, this.playbackRateForSync, nestedPersistentlyMuted, nestedGeom3dCamera);
         }
+      }
+      // WP-2: このフレーム touch しなかった旧子要素を除去する（isAdj トグルで content div から
+      // 調整 div へ切り替わった・component 型が変わって別 el に切り替わった等）。GL/video の
+      // 明示解放は「型ごと・key ごと」の prevEls/nextEls 差分（関数末尾）が責務を持つため、ここでは
+      // DOM からの除去のみ行い二重 teardown を避ける（text/video/comp 以外の型は resource を
+      // 保持しないため node.remove() のみで十分）。
+      for (const child of beforeChildren) {
+        if (touchedChildren.has(child)) continue;
+        child.remove();
       }
       container.appendChild(div);
       // §23.3a: トップレベルと挙動を揃える（ラスタ無し・append 後に実測サイズで filter region 決定）。

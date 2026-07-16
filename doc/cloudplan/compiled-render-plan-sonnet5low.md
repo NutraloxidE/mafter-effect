@@ -1,5 +1,12 @@
 # Compiled RenderPlan / 差分更新ランタイム — 実現可能性評価 & Sonnet 5 low 向け実装 PLAN
 
+> **ステータス（2026-07-16 更新）:**
+> - ✅ **Phase A（WP-4・同値 style 書込抑制）実装・検証・完了** — `src/runtime/DomRenderer.ts`（`ObjectEntry.lastTransform/lastOpacity/lastZ` + `applyObject` 通常経路）。
+> - ✅ **Phase B（WP-2・nested comp reconcile 化）実装・検証・完了** — `renderNestedComp` の `container.innerHTML=""` 毎フレーム全破棄を廃止し、`nestedWrappers: WeakMap<container, Map<ObjectId, HTMLDivElement>>` でオブジェクトラッパ div を永続化。§23.3e 更新済み。
+> - ❌ WP-3/WP-5/WP-6 は計画どおりスコープ外のまま（未着手）。
+>
+> 実装記録・検証結果は本書末尾の「実装記録（2026-07-16）」節を参照。以下の §1-§4 は元の計画本文（実装前に書いたもの）としてそのまま残す。
+>
 > 対象: 「resolve → ResolvedScene 全生成 → DomRenderer 全走査を毎フレーム」構造の軽量化。
 > 出典: 他エージェントからのフィードバック（"Compiled RenderPlan + Dirty Property Patching"）。
 > 本書は **① フィードバックを実際の spec / 実装と突き合わせた実現可能性評価** と、
@@ -237,3 +244,46 @@ Phase B（WP-2）:
 - 回帰ゲート verify（該当）: `verify-blend-mode.mjs` / `verify-track-matte.mjs` / `verify-export-adjustment.mjs` / `verify-comp19-nested-export.mjs` / `verify-nested-*` / bundle export 系。
 - 参考ドキュメント: `doc/rendering-pipeline-current.md`（1 frame の全経路） / `doc/mafter-effect-spec.md` §8, §23, §5.4d。
 - 手順の正本: `.claude/skills/implementation-loop/SKILL.md`（Phase 4c 横断回帰） / `.claude/skills/add-layer-component-type/SKILL.md`（§E export 無回帰） / CLAUDE.md「bundle player の再ビルド」。
+
+---
+
+## 実装記録（2026-07-16・Claude Sonnet 5）
+
+### Phase A（WP-4）実装内容
+
+- `ObjectEntry`（`DomRenderer.ts`）に `lastTransform: string | null` / `lastOpacity: string | null` / `lastZ: string | null` を追加。
+- `applyObject` の通常経路（非 matte・非 matte-source）で、`transform`/`opacity`/`zIndex` を前回値と比較し、同値なら `style` 代入をスキップ。値の計算式（`mat4ToCss(xform)` 等）は無変更。
+- matte / matte-source 分岐、および通常経路へ戻る際の後始末では last-value を `null` にリセットし、モード切替後に古い値が残らないようにした。
+
+### Phase B（WP-2）実装内容
+
+- `renderNestedComp` の `container.innerHTML = ""`（毎フレーム全ラッパ破棄）を撤去。
+- 新規 `nestedWrappers: WeakMap<HTMLElement, Map<ObjectId, HTMLDivElement>>` を container ごとに保持し、オブジェクトラッパ div を objectId で永続化。
+- フレーム冒頭で「今フレーム `childScene.objects` に無い id」のラッパを GC（`releaseAlphaGlCompositorsUnder()` → `remove()` の順、トップレベル `entries` の GC と同じ順序）。
+- 各オブジェクトのラッパ div 処理前に `beforeChildren`（既存子ノード集合）を記録し、処理中に touch した子（text/video/comp の持ち越し el、新規生成 el）と比較。touch されなかった旧子ノード（isAdj トグル・component 型変更で孤立した el）はフレーム末で `remove()`。実体の GL/video teardown は既存の `prevEls`/`nextEls` 差分ループ（関数末尾）に委譲し、二重 teardown を避けた。
+- デバッグ・テスト用に、新規ラッパ div 作成時 `div.dataset.objectId = obj.id` を付与（トップレベル `entries` と同じ規約。描画には影響しない）。
+- 既存の text/video/comp 持ち越し（`nestedElReuse`）、geom3d canvas 共有（`nestedGeom3dGroups`）、export composite タグ付け、blend mode 適用は無変更（reconcile化は「ラッパ div 自体を永続化する」層にのみ閉じた）。
+
+### 検証結果
+
+| 項目 | 結果 |
+|---|---|
+| `npm run typecheck` | ✅ 緑 |
+| `npm test`（vitest full run） | ✅ 1311/1312 passed（唯一の失敗 `effects.test.ts > liquidChrome 再登録` は stash して baseline でも同一に再現する pre-existing 不良・無関係）。`playerBuildFreshness` 含め全緑 |
+| `npm run build:player` | ✅ 実行済み（`DomRenderer.ts` は player import 対象） |
+| 新規 `verify-nested-reconcile.mjs`（外部アセット不要・store API で synthetic project 構築） | ✅ PASS。参照同一性（30フレームスクラブ後も div 実体 4/4 持ち越し）・レイヤー削除で孤立要素ゼロ（4→3、削除分だけ減少）・adjustment ON で content 子要素ゼロ化・深いネスト（Outer2→Outer→Inner）で崩れない、を確認 |
+| 同スクリプトを **baseline（変更前コード）** に対して実行 | ✅ FAIL を確認（`identity.kept=0/4` — 毎フレーム新規 div のため参照が保たれない）。**ゲートに歯があることを実測で確認済み** |
+| 既存 `verify-blend-mode.mjs` | ✅ PASS（`mix-blend-mode` 検出・無回帰） |
+| 既存 `verify-track-matte.mjs` | 8/9 チェック PASS。唯一の FAIL（`page errors: 404`）は favicon.ico の環境ノイズで **baseline でも同一に再現**（stash して確認済み・無関係）。track matte 本体のチェック（fill host / coverage / matte 反映 / clear）は全て PASS |
+| 既存 `verify-export-adjustment.mjs` | ✅ PASS（adjustment layer の export bake parity・無回帰） |
+
+### スコープ確認
+
+- `resolve()` / `ResolvedScene` / spec §5 型 / INV-1〜6 / `project.json` 直列化は無変更。
+- doc/mafter-effect-spec.md §23.3e を更新（散文のみ・スキーマ非変更）— reconcile 化後の実装に合わせて記述を訂正。
+- `verify-nested-reconcile.mjs` は外部アセット非依存の恒久 verify として残す（他の nested 系 verify は巨大な実ユーザー zip 依存でこの環境では実行不可なため、代替の無回帰ゲートとして有用）。
+
+### 残タスク
+
+- WP-3/WP-5/WP-6（Compiled RenderPlan 本体・DirtyMask・tree-shaken bundle）は未着手のまま（計画どおりスコープ外）。着手する場合は §5/INV 変更を伴わない範囲でも、`resolve()` と並行する解決経路を持ち込む設計判断になるため、着手前にユーザーへ選択肢提示すること。
+- 実測ベンチ（before/after のフレーム時間計測）は未実施。nested precomp を多用する実プロジェクトでの体感計測は次のステップとして残る。
