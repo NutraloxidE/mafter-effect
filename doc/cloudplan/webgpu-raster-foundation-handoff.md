@@ -42,13 +42,19 @@
 
 ---
 
-## 2-5. スコープ外（この基盤が触らない既存 GPU/3D サブシステム・混同注意）
+## 2-5. スコープ外だが GPU 予算を共有する既存 WebGL サブシステム（3D extrude text / video alpha）
 
-WebGPU raster 基盤は **`RasterBuffer` の buffer→buffer エフェクト経路だけ**を対象とする。以下は**別サブシステムであり本基盤の対象外**（コードで確認済み・2026-07-16）:
+WebGPU raster 基盤は **`RasterBuffer` の buffer→buffer エフェクト経路だけ**を対象とする。以下は**別サブシステムであり本基盤の描画対象外**だが、**GPU リソース（context 予算）を共有する**ため基盤設計時に認識が要る（コードで確認済み・2026-07-16、main マージ後の実態）:
 
-- **「3D（extrude 含む）テキスト」= CSS `matrix3d` 変換**。`DomRenderer` が各オブジェクトを `matrix3d(worldTransform)+opacity+z-index` で並べるブラウザコンポジタ処理であり、WebGL/WebGPU を一切通らない（そもそも真の押し出しメッシュ 3D は未実装・`extrude` の実装は存在しない）。**GPU 最適化とは無関係**。
-- **`src/runtime/videoAlphaGl.ts`（唯一の生 WebGL 使用箇所）= split/packed alpha 動画合成専用**。「canvas のピクセルを作る手段」以外の用途を持たず、DOM レイヤー構造・matrix3d・blend/filter に非関与・THREE.js 不使用。raster エフェクト経路とは独立。
-- **注意（新規 GPU context の共存）**: 本基盤が導入する WebGPU device と、既存 WebGL context（`videoAlphaGl`）は**独立したコンテキスト**。共存自体は問題ないが、リソース共有はせず別物として扱う（両者を1つに統合しようとしない）。
+**既存の生 WebGL 使用箇所は2つ**（どちらも `getContext("webgl")`・three.js 不使用・「canvas はピクセルを作る手段」原則で DOM レイヤー構造/matrix3d/blend/filter に非関与）:
+
+- **`src/runtime/geom3d/geom3dGl.ts` = 3D extrude テキスト/シェイプの押し出しメッシュ描画**。per-layer に WebGL canvas を1枚作り、頂点/法線バッファ + ライティングシェーダ（`uMVP`/`uNormalMatrix`/平行光）で実メッシュを描く。**「3D extrude テキストは WebGL 依存」は正しい**（当初の handoff の「CSS matrix3d・WebGL 非経由」記述は誤り＝マージ前ツリーを見ていた・訂正）。
+- **`src/runtime/videoAlphaGl.ts` = split/packed alpha 動画合成**。context 予算 `MAX_GL_ALPHA_CONTEXTS = 8`。
+
+**raster エフェクト経路との関係**: 3D メッシュ描画自体は WebGPU 基盤の対象外（基盤が触るのは描画済みピクセルに対する `RasterBuffer` エフェクトだけ）。ただし「3D text レイヤーに pixelSorter をかける」場合は *geom3d が canvas に描く → その canvas を raster 化 → エフェクト経路* という**別ステージの連結**であり、WebGPU 化はエフェクト側だけに効く（geom3d の描画は変えない）。
+
+- **注意①（GPU context 予算の食い合い）**: `geom3dGl.ts` §5.5f 既知リスク（2026-07-16）の通り、**Chrome の同時 WebGL context は 1ドキュメント ~16 が上限・ページ全体で共有**。`geom3d` は 3D text レイヤーごとに予算なしで context を1つ作る（積むほど増える）＋`videoAlphaGl`（予算8）とこの枠を食い合う。超過すると古い context から黙って破棄され描画が消える。
+- **注意②（WebGPU device の追加）**: 本基盤が導入する WebGPU device は上記2つの WebGL context とは**独立したコンテキスト**（一般に WebGL の ~16 枠とは別カウント）だが、**ページ全体の GPU リソース圧**という観点では3つ目の消費者になる。リソース共有・統合はしない（別物として扱う）が、大量の 3D text ＋ alpha 動画 ＋ WebGPU raster を同時に走らせる際の総 GPU 負荷は基盤の可用性/フォールバック判断（§2-1）で考慮する。
 
 ## 3. 基盤セッションに**渡さない**（本ブランチに残す）もの
 
