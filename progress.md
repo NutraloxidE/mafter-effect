@@ -2369,4 +2369,19 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
   - readyState/描画ピクセルでの検証は本サンプル（500MB・多数の proxy 動画資産）特有の非同期資産パイプラインが絡み確定的な結果を得られず（別要因の疑い、本修正の scope 外）、上記の要素同一性ゲートを正としている。
   - 無回帰: `tsc --noEmit` 緑 / `npm test` 1285 passed（唯一の失敗 `effects.test.ts > liquidChrome 再登録` は **stash して本変更前から失敗を確認済み・無関係**）/ `npm run build:player` は git hook が自動実行（`public/player.js` 更新済み）・`playerBuildFreshness` 緑。
 - **調査で判明した残りの未配線（今回は未修正）**: (a) track matte、(b) plugin component の `ComponentDef.render` は引き続き未配線。今回のサンプルには該当しないため症状は出ない。**着手はユーザー判断待ち**。
-- **branch**: `fix/nested-comp-video-playback`（コミット・PR は未実施、ユーザー確認待ち）。
+
+### 2026-07-16（Claude Sonnet 5）— ネスト comp 内オーディオが再生されない問題を根治 ✅
+
+- **症状（ユーザー報告）**: 上記 video 再生修正と同じ実 zip（`purini-23mafter-project.zip`。`Comp 2` が `music and screen`（video の内蔵音声＋standalone `audio` レイヤー）を precomp として nest）で、**video の再生は進むが音声が一切鳴らない**。
+- **真因（`wire-feature-into-nested-comp` の N1 で発見）**: 音声パイプラインの共有関数 `collectFootageAudioSources`（`src/runtime/footageAudio.ts`）は `comp.objects` を**トップレベルのみ**走査し、`c.type === "comp"` のネスト precomp の中身を再帰しない。**preview（`PreviewAudioClock`）・mp4/webm export（`exporter.ts` の `buildAudioMix`）・HTML bundle export（`bundleFootageAudio.ts`）の 3 経路全てがこの同じ関数を共有**しており、3 経路とも「ネストされた comp 内の audio/video 内蔵音声は存在しないものとして扱われる」バグを共有していた（このコードベースで繰り返し起きる「共有関数がトップレベルしか見ない」型の未配線・[[nested-comp-separate-render-path]] と同型）。standalone `audio` コンポーネントは DOM 描画パスを持たない（`DomRenderer` に `case "audio"` が無い）ため、この Web Audio 経路が**唯一の再生手段**であり、ネストで完全に無音になっていた。
+- **修正（`src/runtime/footageAudio.ts` を中心に、3 呼び出し元へ resolveComp を配線・型/経路スコープを閉じた最小 diff）**:
+  1. `collectFootageAudioSources(comp, resolveComp?)` — `resolveComp?: (compId) => TimelineComposition | undefined` を追加。省略時は従来どおりトップレベルのみ（既存呼び出し元・既存テスト全 33 件は無変更で緑のまま＝後方互換）。渡すと `c.type === "comp"` を再帰し、ネスト先の `audio`/`video` レイヤーを収集する。
+  2. **frame 空間の写像**: 収集した `inPoint`/`outPoint`、および `gainProp` の `keyframe.frame` を、`compChildFrame`（§23.2 秒ベース換算）の逆写像で**ルート comp の frame 単位**へ変換して返す。呼び出し側（`PreviewAudioClock.schedule` 等）はネストの有無を意識せず既存の `(rootFrame - source.inPoint) / rootFps` 式をそのまま使える。多重ネストも `FrameMapper` の合成で depth 4 まで対応（`isCompNestDepthAllowed` 共有）。
+  3. `previewAudioClock.ts`（`hasPreviewAudioCandidates`/`prepareAudioLayers`）・`exporter.ts`（`buildAudioMix`）・`bundleFootageAudio.ts`（`collectBundleFootageAudioSources`）の 3 箇所に `project.compositions` から comp を引く `resolveComp` を配線。`PreviewPanel.tsx` の呼び出しに `project` を追加で渡すだけ（呼び出し側の分岐ロジックは無変更）。
+  4. `exporter.ts` の `buildAudioMix` は元々 `source.obj.inPoint/outPoint`（写像前の生値）を直接読んでいたため、`source.inPoint/outPoint`（写像後）を使うよう修正（ここを直さないと mp4/webm export だけネスト音声のタイミングがズレる）。
+- **意図的に対象外（トラック matte 同様ユーザー要否確認事項ではなく、影響が軽微なため）**: (a) `collectFadeClips`（cut 境界 declick 判定）はトップレベルのみのまま — ネスト音声のカット境界で declick フェード抑制が効かず、本来シームレスなはずの継ぎ目に短いフェードが入りうる（無音にはならない・実害は音質の軽微な劣化のみ）。(b) `PreviewAudioClock.updateLiveGains`（再生中の gain スライダーのライブ反映）もトップレベルのみ — ネスト音声は再生中に Volume を動かしても即時反映されない（次回 stop/start で反映）。将来必要になれば同じ resolveComp パターンで拡張可能。
+- **検証**:
+  - 単体テスト追加（`test/footageAudioMix.test.ts`）: ネスト精 comp の inPoint オフセット写像、animated gain keyframe の写像、`resolveComp` 省略時の後方互換の 3 件。既存 33 件 + 新規 3 件 = 36 件全緑。
+  - 実機 Playwright（ユーザーの実 zip・`Comp 2` を import）: 修正前相当（`resolveComp` 省略）は `hasPreviewAudioCandidates` = `false`（音声ゼロ扱い）、修正後（`project` を渡す）は `true` で `video`(内蔵音声) + `audio` の 2 ソースを正しい root frame 写像で検出。`PreviewAudioClock.start()` を実際に呼ぶと `started: true` / `nodeCount: 1`（decode 可能だった音声トラックがスケジュールされた）/ ネスト video の内蔵音声は `getMutedVideoObjectIds()` に含まれ二重発音を防止（native `<video>` 側は自動でミュート）。
+  - 無回帰: `tsc --noEmit` 緑 / `npm test` 1288 passed（唯一の失敗 `effects.test.ts > liquidChrome 再登録` は前回セッション同様 stash 済みで本変更前から失敗・無関係）/ `npm run build:player` 実行済み（`footageAudio.ts`/`previewAudioClock.ts`/`bundleFootageAudio.ts` は player import 範囲＝必須）。
+- **branch**: `fix/nested-comp-video-playback`（video 再生修正と同一ブランチで継続。コミット・PR は未実施、ユーザー確認待ち）。
