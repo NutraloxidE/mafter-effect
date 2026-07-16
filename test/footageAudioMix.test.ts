@@ -127,6 +127,17 @@ describe("collectFootageAudioSources (§11.4 / §11.5)", () => {
     expect(sources[0]).toMatchObject({ assetId: "snd", inPoint: 10, outPoint: 110 });
   });
 
+  it("converts a nested layer's trimStart into root fps units so media seek stays fps-independent", () => {
+    // inner is 60fps, root is 30fps. trimStart=120 inner frames = 2.0s into the source.
+    const inner = comp([obj("a", [{ type: "audio", props: { asset: "snd", gain: 1, trimStart: 120 } }])]);
+    inner.id = "inner";
+    inner.fps = 60;
+    const outer = comp([obj("nested", [{ type: "comp", props: { compId: "inner" } }])]);
+    const sources = collectFootageAudioSources(outer, (id) => (id === "inner" ? inner : undefined));
+    // consumers all compute media seconds as trimStart / rootFps — must land on 2.0s, not 4.0s.
+    expect(sources[0]!.trimStart / outer.fps).toBeCloseTo(2, 6);
+  });
+
   it("remaps animated gain keyframes of a nested layer into root frames", () => {
     const inner = comp([
       obj("a", [
