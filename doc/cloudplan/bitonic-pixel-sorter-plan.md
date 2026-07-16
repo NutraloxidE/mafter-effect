@@ -103,28 +103,30 @@ clone → (sortBlocks>1 なら blockAverage) → rotateBuffer(-angle)
 
 ### 3.C CPU への「思想」移植（キーパック + gather + オブジェクト排除）— 可能・実証済み・最低リスク
 
-bitonic network そのものは CPU では無意味だが、本家の高速化要素 (2)(3) は CPU でもそのまま効く:
+bitonic network そのものは CPU では無意味だが、本家の高速化要素 (2)(3) は CPU でもそのまま効く。**ただし高速化には 2 段あり、片方は承認が要る**点が重要（下表・実測で確定）:
 
-- 行輝度キーの precompute（`Int32Array`）、スパン検出のインライン化
-- **キーパック**: `K * 8192 + spanIndex` を `Float64Array`（整数は 2^53 まで正確）に詰めて comparator なし数値ソート → 下位 bit の spanIndex が現行 stable sort と同じ安定性を与え、ソート後は spanIndex で u32 RGBA を gather
-- `Uint32Array` ビューで RGBA を 1 word として移動（チャネル別コピー廃止）
+- **段A（bit-exact・承認不要）**: オブジェクト/タプル割り当ての排除（`SpanPixel`廃止・`Uint32Array` で whole-pixel 移動・`rotateBuffer` の bilinear インライン化）。**ソートは現行の stable comparator を維持**（float 輝度のまま）。→ 出力バイト完全一致。
+- **段B（承認必要・出力が僅かに変わる）**: `K * 8192 + spanIndex` を `Float64Array` に詰めて **comparator なし数値ソート**（＋将来 radix）。整数キー化で近傍同輝度のタイブレークが現行 float と変わりうる（§6-1）。
 
-**プロトタイプ実測**（simple / angle 0、上と同一条件・同一入力）:
+**実測で判明した重要な事実: 最頻ケース（angle 0）の高速化の主因は段B（数値ソート）であり、段A だけでは伸びが小さい。**（1080p・同一入力・現行と bit-exact 一致を確認したプロトタイプ）:
 
-| ケース | 現行 | プロトタイプ | 倍率 |
+| ケース | 現行 | 段A のみ（bit-exact） | 段B 込み（整数キー・要承認） |
 |---|---|---|---|
-| 1080p デフォルト | 270 ms | **78 ms** | 3.5x |
-| 1080p 全面ソート | 763 ms | **177 ms** | 4.3x |
-| 720p デフォルト | 192 ms | 34 ms | 5.6x |
+| 1080p simple / angle0（最頻） | 354 ms | **278 ms（1.3x）** | ~78 ms（4.5x） |
+| 1080p simple / angle45 | 1460 ms | **646 ms（2.3x）** | （回転が支配・radix 無関係） |
+| 1080p simple / 全面 len0 | 877 ms | **733 ms（1.2x）** | ~177 ms（4.3x） |
 
-さらに残っている伸びしろ（プロトタイプ未実施分）:
+→ **段A（承認不要）の実利得は angle0 で 1.3x・angle45 で 2.3x** と控えめ。angle45 は回転のタプル排除が効くので bit-exact でも 2x 取れるが、angle0 は**ソート自体が支配的**で、整数キー数値ソート（段B・要承認）を入れないと大きく縮まない。
 
-- `Float64Array.sort()`（比較ソート）→ **LSD radix sort**（22bit キーなら 11bit×2 パス、O(n)）
-- `rotateBuffer` の typed array 化（B3。angle45 の 1299ms の大半はここ）
-- **行バンド worker 並列**: 回転後の行は完全独立なので、既存 pool の 4 worker に行バンドを分配して合流するだけで ~3x
-- 合計で **10〜20x（1080p simple ≈ 15〜30ms、angle45 ≈ 60〜130ms）** が現実的な着地点
+さらに残っている伸びしろ:
 
-決定論は JS のまま（float 演算も V8 の IEEE754 で全経路一致）なので **INV-2 は現行同様「同一コード」で自動成立**。全経路（preview worker / export / bundle player）が同じ関数を呼ぶ構造も不変。
+- 段B の `Float64Array.sort()` → **LSD radix sort**（22bit キーなら 11bit×2 パス、O(n)）で段B をさらに短縮
+- **行バンド worker 並列**: 回転後の行は完全独立なので、既存 pool の 4 worker に行バンドを分配して合流するだけで ~3x（段A/B と直交・stack 可）
+- **現実的な着地の見立て（1080p simple / angle0）**: 段A のみ ≈ 280ms（realtime 未達）／段B ≈ 78ms／段B + radix + worker4 ≈ **25〜40ms（ようやく 30fps preview 実用域）**。**CPU だけで GPU の <10ms 級には届かない** — そこは Phase 2（WebGPU）が要る。
+
+決定論は JS のまま（段A は float 演算も V8 の IEEE754 で全経路一致・段B は整数演算で一致）なので **INV-2 は現行同様「同一コード」で自動成立**。全経路（preview worker / export / bundle player）が同じ関数を呼ぶ構造も不変。
+
+> **戦略的含意**: 「WebGPU を使わずどこまで速くできるか」の答えは階層的。①bit-exact のみ = 1.3〜2.3x（承認不要・低リスクだが realtime 未達）／②整数キー承認で 4x 級／③＋worker 並列で 25〜40ms＝preview 実用域／④真の realtime は WebGPU。**段A 単独では preview のカクつきは緩和するが解消はしない**ことを承知の上でスコープを選ぶこと。
 
 ---
 
