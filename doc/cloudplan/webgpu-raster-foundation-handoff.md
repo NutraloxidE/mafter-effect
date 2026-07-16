@@ -42,6 +42,14 @@
 
 ---
 
+## 2-5. スコープ外（この基盤が触らない既存 GPU/3D サブシステム・混同注意）
+
+WebGPU raster 基盤は **`RasterBuffer` の buffer→buffer エフェクト経路だけ**を対象とする。以下は**別サブシステムであり本基盤の対象外**（コードで確認済み・2026-07-16）:
+
+- **「3D（extrude 含む）テキスト」= CSS `matrix3d` 変換**。`DomRenderer` が各オブジェクトを `matrix3d(worldTransform)+opacity+z-index` で並べるブラウザコンポジタ処理であり、WebGL/WebGPU を一切通らない（そもそも真の押し出しメッシュ 3D は未実装・`extrude` の実装は存在しない）。**GPU 最適化とは無関係**。
+- **`src/runtime/videoAlphaGl.ts`（唯一の生 WebGL 使用箇所）= split/packed alpha 動画合成専用**。「canvas のピクセルを作る手段」以外の用途を持たず、DOM レイヤー構造・matrix3d・blend/filter に非関与・THREE.js 不使用。raster エフェクト経路とは独立。
+- **注意（新規 GPU context の共存）**: 本基盤が導入する WebGPU device と、既存 WebGL context（`videoAlphaGl`）は**独立したコンテキスト**。共存自体は問題ないが、リソース共有はせず別物として扱う（両者を1つに統合しようとしない）。
+
 ## 3. 基盤セッションに**渡さない**（本ブランチに残す）もの
 
 Phase 2 の pixelSorter 統合時に、確定した基盤契約の上でここで決める:
