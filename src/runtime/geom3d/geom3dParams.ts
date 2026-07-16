@@ -16,6 +16,7 @@ export const GEOM3D_PARAM_DESCRIPTORS: ParamDescriptor[] = [
   { key: "geomShading", label: "Shading", kind: "enum", default: "lambert", animatable: false, options: ["none", "lambert"] },
   { key: "geomAmbient", label: "Ambient", kind: "scalar", default: 0.35, animatable: true, min: 0, max: 1 },
   { key: "geomLightDir", label: "Light Dir", kind: "vec3", default: { x: -0.5, y: -0.7, z: -0.5 }, animatable: false },
+  { key: "geomShareCanvas", label: "Share WebGL Canvas", kind: "bool", default: false, animatable: false },
 ];
 
 const DEFAULT_LIGHT_DIR: Vec3 = { x: -0.5, y: -0.7, z: -0.5 };
@@ -50,6 +51,7 @@ export function parseGeom3DParams(props: Record<string, unknown>): Geom3DParams 
     shading: shadingRaw === "none" ? "none" : "lambert",
     lightDir: isVec3(props["geomLightDir"]) ? props["geomLightDir"] : DEFAULT_LIGHT_DIR,
     ambient: typeof props["geomAmbient"] === "number" ? clamp(props["geomAmbient"], 0, 1) : 0.35,
+    shareCanvas: props["geomShareCanvas"] === true,
   };
 }
 

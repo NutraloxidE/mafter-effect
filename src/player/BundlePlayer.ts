@@ -268,12 +268,24 @@ export class BundlePlayer {
   /** §26.3.2 zip 同梱の built-in フォントを family×weight で登録する。 */
   private async loadBuiltinFonts(urlForPath: (path: string) => string): Promise<void> {
     for (const f of this.manifest.builtinFonts ?? []) {
+      const url = urlForPath(f.path);
       try {
-        const face = new FontFace(f.family, `url(${urlForPath(f.path)})`, {
+        const face = new FontFace(f.family, `url(${url})`, {
           weight: String(f.weight),
         });
         await face.load();
         document.fonts.add(face);
+      } catch {
+        /* skip */
+      }
+      // FontFace は CSS 2D 描画にしか効かない。§5.5f の 3D 押し出しは FontOutlineCache の
+      // opentype パース結果を引くため、同じ ttf をアウトラインとしても登録する。built-in font は
+      // project.assets に載らない（bundleCollect は font 参照を集めないので prune で消える）ため、
+      // ここで入れないと bundle だけ 3D text が無音で消える。
+      try {
+        const resp = await fetch(url);
+        if (!resp.ok) continue;
+        this.fontCache.parseBuffer(f.family, await resp.arrayBuffer(), f.weight);
       } catch {
         /* skip */
       }

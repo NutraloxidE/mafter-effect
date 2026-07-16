@@ -84,7 +84,12 @@ interface Geom3DGlState {
   uLightDirWorld: WebGLUniformLocation | null;
   uAmbient: WebGLUniformLocation | null;
   uBaseColor: WebGLUniformLocation | null;
-  /** 直前にアップロードした mesh の参照。同一参照ならバッファ再アップロードをスキップ。 */
+  /**
+   * 直前にアップロードした mesh の参照。同一参照ならバッファ再アップロードをスキップ。
+   * ponytail: 1 canvas = 1 mesh 前提の 1 スロットキャッシュ。§5.5f-1 の共有 canvas に
+   * 複数レイヤーが描くとフレームごとに全メッシュを再アップロードする（グループを組んだときだけ
+   * 効かない）。実測で問題になったら mesh 参照キーの Map + 複数 VBO へ広げる。
+   */
   lastMesh: MeshData | null;
   broken: boolean;
 }
@@ -179,6 +184,12 @@ export interface Geom3DRenderOptions {
   /** comp/world 空間の平行光方向（正規化は shader 側で行う）。 */
   lightDirWorld: readonly [number, number, number];
   ambient: number;
+  /**
+   * §5.5f-1 canvas 共有: false なら color/depth を消さずに追記する。グループ内で**最初に描く
+   * （= 最下位の）メンバーだけ true** にすること。depth buffer を残すことで 3D レイヤー同士が
+   * 正しく相互貫入する。省略時は true（共有なしの従来 per-layer 挙動）。
+   */
+  clear?: boolean;
 }
 
 /**
@@ -199,8 +210,10 @@ export function renderGeom3D(canvas: HTMLCanvasElement, mesh: MeshData, opts: Ge
   gl.enable(gl.DEPTH_TEST);
   gl.depthFunc(gl.LEQUAL);
   gl.disable(gl.CULL_FACE); // §5.3: 巻き方向の厳密な一貫性を仮定しない（安全側）
-  gl.clearColor(0, 0, 0, 0);
-  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  if (opts.clear !== false) {
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  }
 
   if (mesh.triangleCount === 0) return true;
 
