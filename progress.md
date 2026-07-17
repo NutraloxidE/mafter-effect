@@ -2523,3 +2523,19 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
   - **検証**: (1) default（flag OFF）byte 不変 = `bench-gpu-raster-parity.mjs` golden 全 MATCH。(2) **GPU parity（flag ON）= `bench-gpu-raster-compositor-parity.mjs` で CPU vs GPU が maxAbs=0/mean=0 ＝ byte-identical**（3D+全 normal fixture・text 端含む・GPU 実走 counter=3）。(3) `tsc` 緑 / vitest 41/41 / `playerBuildFreshness` 緑（build:player 不要）。INV/§5/直列化 非変更。
   - **設計知見**: export slow path は blend/adjustment/nested/3D のいずれかで入るため、Phase 2 の gpuEligible（全 normal）フレームは 3D・nested-composite シーンに限られる。重い一般ケース（blend+adjustment）の GPU 利得には **Phase 3（blend shader + adjustment）が必須**。Phase 2 は context/pool/upload/shader/parity/fallback/flag の土台を検証済みで提供。
 - **Next steps**: Phase 3（track matte shader・15 blend shader・adjustment ping-pong）。blend の色空間・premultiplied・丸めの parity 許容差確定が中核判断のため、**着手前にユーザー確認を推奨**。Phase 2 の GPU 経路は既定 OFF なので本番挙動は現状と完全一致。
+
+### 2026-07-17（Claude Opus 4.8）— 「再生中に調整レイヤーが効かない」バグ調査 + preview キャッシュ lifecycle の footgun 修正（症状は synthetic 未再現）
+
+- **報告**: 調整レイヤーの表示(enabled)トグル→効く／プレビュー再生し続ける→効かない。加えて「live→cache→Cache OFF で全部消える」。実環境に未コミット変更なし。
+- **切り分け（実機計測）**:
+  - 私の直近 GPU 作業（Phase 0/1/2・export のみ・byte 検証済み）は無関係。前回の z-index 修正も intact。
+  - **live 再生ループは調整を落とさない**（tint を enabled で 3.5s 再生継続 → paused-ON と距離0で一致）。
+  - 重い(非リアルタイム)comp の再生中は preview が live DOM を `visibility:hidden` にして **RAM キャッシュ overlay（baked=`compositeExportFrame`）に切替**（`PreviewPanel.tsx:1297-1314` / `ramPreview.shouldPreferCacheOverlay`）。
+  - 実 `_pj17` Comp 7 は「調整4枚が enabled=false」で保存されており、当初の「baked が調整を焼けない」計測は**無効調整のため**だった。**enabled にすれば baked も調整を焼く**（Comp7 baked f=20 で ON/OFF changed 4.86%）ことを確認 → **live≠baked parity バグは無い**。
+- **synthetic 再現の結論（cache overlay を実際に表示させた状態で）**:
+  - **「Cache OFF で全部消える」は再現せず**（overlay 表示中に Cache OFF しても content 100%・修正有無に関わらず）。
+  - **「再生中に調整 enable が反映されない」も再現せず**（overlay 表示中に調整を ON → solid 色が [88,82,41]→[82,82,82] と live-ON に一致＝反映される）。
+  - ＝ **クリーンな synthetic では cache/playback/adjustment lifecycle は正しく動く**。ユーザ症状は実プロジェクト固有の重条件（1080p・カメラ・displacement 調整・nested・広い work area 等）依存で、headless 合成では再現できていない。
+- **入れた修正（footgun・無回帰）**: `PreviewPanel.tsx` の **DomRenderer 生成 effect の依存から `effectiveCacheEnabled` を除去**。従来はキャッシュ ON/OFF のたびに `dispose()`→`new DomRenderer()` でレンダラを作り直しており（DOM 空化・再生中は render effect が `draftPlaybackActive` で早期 return するため再描画されない → 「Cache OFF で消える」の妥当な機序）、キャッシュの付け外しは別 effect の `setFrameRenderCache`/`setNestedCompRasterizer`（442-449）が担うのでレンダラ再生成は不要。**tsc 緑 / full suite 1311/1312（唯一の fail は既存 liquidChrome。`projectBins > treeOrder` は baseline でも ~1/3 落ちる pre-existing flaky で本変更と無関係）**。
+- **正直な限界**: この修正は「レンダラをキャッシュトグルで作り直さない」という妥当な改善だが、**症状（消える／効かない）を synthetic で再現できていない**ため症状解消は未実証。ユーザの実プロジェクトでの確認が必要。
+- **Next steps**: 症状 1/2 の確定再現には**実 Comp（調整 enabled・カメラ・displacement 調整つき）を ~30MB 以下に trim して import 可能な形**でもらうのが最短。もらえれば measure 駆動で根因を確定し完全修正する。それまでは上記 footgun 修正のみ（実機での効果確認をユーザに依頼）。

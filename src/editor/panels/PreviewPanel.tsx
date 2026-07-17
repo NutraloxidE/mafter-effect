@@ -437,7 +437,12 @@ export function PreviewPanel() {
       r.dispose();
       rendererRef.current = null;
     };
-  }, [comp?.id, effectiveCacheEnabled]); // eslint-disable-line react-hooks/exhaustive-deps
+    // NOTE: effectiveCacheEnabled は依存に入れない。キャッシュの付け外しで DomRenderer を
+    // 作り直すと DOM が空になり（`r.dispose()` → `new DomRenderer()`）、再生中は下の render
+    // effect が draftPlaybackActive で早期 return するため再描画されず「プレビューが全部消える」
+    // 回帰になる。キャッシュ有効/無効の再配線は下の setFrameRenderCache/setNestedCompRasterizer
+    // effect が担うので、レンダラ自体を作り直す必要はない。
+  }, [comp?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     rendererRef.current?.setFrameRenderCache(
