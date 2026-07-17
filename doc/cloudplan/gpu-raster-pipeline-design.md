@@ -178,6 +178,17 @@ const gpuEffectPasses = new Map<string, GpuEffectPass>();
   - context 数がレイヤ数に比例しない（budget 計測で確認・INV 受け入れ §6）。
 - **rollback**: feature flag off で全経路 `Canvas2DCompositor`。
 
+### Phase 2 — WebGL2 Compositor（capture は foreignObject のまま）✅ 実装済み（2026-07-17）
+
+> **実装記録**: `src/runtime/compositor/WebGL2Compositor.ts`（`WebGl2Compositor` = normal-composite backend・module singleton context）+ `gpuCompositorFlag.ts`（`isGpuCompositorEnabled` / `isWebGl2Capable`・非直列化 dev flag `globalThis.__mafterGpuCompositor`・既定 OFF）を新設。`compositeExportFrame` のトップレベル slow path に **frame-level eligibility**（adjustment 無し AND 全レイヤ normal blend）を追加し、eligible かつ flag ON かつ WebGL2 対応時のみ GPU 累積、それ以外は従来 Canvas2D（挙動不変）。GPU は straight-alpha レイヤ canvas を `UNPACK_PREMULTIPLY_ALPHA` で premultiplied texture 化し `blendFunc(ONE, ONE_MINUS_SRC_ALPHA)` で source-over、`finish()` で 2D canvas へ `drawImage`（premultiplied→straight 変換）。GL 失敗時は捕捉した同じ capture 群で Canvas2D へ**再 capture 無し fallback**。matte は capture 段で焼込済（責務外）。nested（`compositeContainer`）は Phase 2 では Canvas2D のまま ＝ 同時活性の GPU compositor は 1 つ（re-entrancy guard で 2 つ目は throw→fallback）。context lost は `broken` フラグで次フレーム再生成。
+>
+> **検証**:
+> - **default 経路（flag OFF）byte 不変**: `bench-gpu-raster-parity.mjs` が golden と全フレーム MATCH（既定挙動に一切影響なし）。
+> - **GPU parity（flag ON）**: `bench-gpu-raster-compositor-parity.mjs`（全 normal + 3D レイヤーで slow path に入れた gpuEligible fixture）で CPU vs GPU が **maxAbs=0 / mean=0 ＝ byte-identical**（text 反エイリアス端含む）。GPU 実走 counter=3 で fallback 固着でないことも確認。
+> - `tsc` 緑 / vitest 41/41（composite 系 + freshness）/ `playerBuildFreshness` 緑（`exportComposite` は player 非 import → build:player 不要）。
+>
+> **重要な設計知見（実装で判明）**: export の slow path は **blend / adjustment / nested / 3D のいずれかがある**フレームだけが入る（全 normal は fast 単一 capture 経路で compositor に来ない）。よって Phase 2 の gpuEligible（全 normal）フレームは **3D・nested-composite シーンに限られる**。重い一般ケース（blend + adjustment）で GPU 利得を出すには **Phase 3（blend shader + adjustment）が必須**。Phase 2 は「context/pool/upload/shader/parity/fallback/flag」の検証済み土台を提供し、Phase 3 がその上に blend/matte/adjustment を載せる。
+
 ### Phase 3 — matte / blend / adjustment を GPU へ
 
 - **変更 symbol / shader**:

@@ -23,6 +23,8 @@
 import { captureElementToCanvas, flattenShadow, inlineExportMedia, svgToDataUrl } from "./rasterCapture";
 import { type FilterRegion } from "./effectRaster";
 import { Canvas2DCompositor } from "./compositor/Canvas2DCompositor";
+import { WebGl2Compositor, canUseWebGl2Compositor } from "./compositor/WebGL2Compositor";
+import { isGpuCompositorEnabled } from "./compositor/gpuCompositorFlag";
 import { globalPluginRegistry } from "./pluginRegistry";
 import type { ResolvedEffect } from "./resolved";
 import type { BlendMode } from "../core/schema";
@@ -260,20 +262,61 @@ export async function compositeExportFrame(
 
   const perspective = root.style.perspective;
   const perspectiveOrigin = root.style.perspectiveOrigin || "50% 50%";
+  const layers = src.getExportLayers();
 
-  const compositor = new Canvas2DCompositor(nw, nh, bg);
-  for (const layer of src.getExportLayers()) {
-    if (layer.isAdjustment) {
-      if (layer.exportChain) await compositor.applyAdjustment(layer.exportChain, nw, nh);
-      continue;
+  // §Phase 2 GPU 経路（flag ON かつ WebGL2 対応時のみ）: adjustment が無く全レイヤ normal blend の
+  // フレームは WebGL2Compositor で normal 累積する。それ以外は従来 Canvas2D（挙動不変）。
+  // GPU 対象フレームは capture を先に集めてから合成するので、GL 失敗時は同じ capture を使って
+  // Canvas2D へ無コスト fallback できる（再 capture 不要）。matte は capture 段で焼込済（責務外）。
+  const gpuEligible =
+    isGpuCompositorEnabled()
+    && canUseWebGl2Compositor()
+    && layers.every((l) => !l.isAdjustment && l.blendMode === "normal");
+
+  let master: HTMLCanvasElement;
+  if (gpuEligible) {
+    const subs: HTMLCanvasElement[] = [];
+    for (const layer of layers) {
+      subs.push(await captureLayerNode(layer.div, perspective, perspectiveOrigin, nw, nh));
     }
-    const sub = await captureLayerNode(layer.div, perspective, perspectiveOrigin, nw, nh);
-    compositor.drawLayer(sub, layer.blendMode);
+    master = compositeNormalLayers(subs, nw, nh, bg);
+  } else {
+    const compositor = new Canvas2DCompositor(nw, nh, bg);
+    for (const layer of layers) {
+      if (layer.isAdjustment) {
+        if (layer.exportChain) await compositor.applyAdjustment(layer.exportChain, nw, nh);
+        continue;
+      }
+      const sub = await captureLayerNode(layer.div, perspective, perspectiveOrigin, nw, nh);
+      compositor.drawLayer(sub, layer.blendMode);
+    }
+    master = compositor.finish();
   }
-  const master = compositor.finish();
 
   if (w === nw && h === nh) return master;
   const scaled = makeCanvas(w, h);
   scaled.getContext("2d")!.drawImage(master, 0, 0, w, h);
   return scaled;
+}
+
+/**
+ * normal blend の captured レイヤ列を z 順で 1 枚へ合成する。WebGL2 を試し、GL 失敗時は
+ * 同じ capture 群で Canvas2D へ fallback する（挙動は許容差内一致・parity harness で検証）。
+ */
+function compositeNormalLayers(
+  subs: HTMLCanvasElement[],
+  nw: number,
+  nh: number,
+  bg: string,
+): HTMLCanvasElement {
+  try {
+    const gl = new WebGl2Compositor(nw, nh, bg);
+    for (const sub of subs) gl.drawLayer(sub, "normal");
+    return gl.finish();
+  } catch {
+    WebGl2Compositor.releaseLock();
+    const cpu = new Canvas2DCompositor(nw, nh, bg);
+    for (const sub of subs) cpu.drawLayer(sub, "normal");
+    return cpu.finish();
+  }
 }
