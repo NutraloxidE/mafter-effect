@@ -2466,3 +2466,18 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
   - vite-node ベンチ（1920×1080・全 65 量子化ステップのコールドキャッシュ生成）: blueNoise 74.37ms→29.13ms（**約61%減**）、ordered 1.47ms→0.83ms（**約43%減**）。
 - **doc**: `doc/cloudplan/dither-dissolve-optimization-sonnet5low.md` の Opt 4 節・完了状況を更新予定。
 - **Next steps**: Opt 3（feTile 化）は引き続きスコープ外（共有キャプチャ経路への影響のため）。ditherDissolve の残タスクは現状これで打ち止め。
+
+### 2026-07-16（Claude Sonnet 5）— Compiled RenderPlan フィードバックの実現可能性評価 + Sonnet5-low Plan 実装（WP-4 / WP-2）✅
+
+- **背景**: 他エージェントから「Compiled RenderPlan + Dirty Property Patching」という軽量化フィードバックを受け、実際の spec/実装と突き合わせて実現可能性を評価し、`doc/cloudplan/compiled-render-plan-sonnet5low.md` に Sonnet 5 low 向け実装 PLAN を作成（別セッション）。本セッションでその PLAN を実装。
+- **評価の要点**: フィードバックの WP-1（entry を objectId で永続化）は**トップレベルでは実装済み**（`DomRenderer.entries: Map<ObjectId, ObjectEntry>`）で再実装不要と判明。本当の負債は **`renderNestedComp` が毎フレーム `container.innerHTML=""` で全ラッパ div を作り直す**こと（§23.3e に明記済みの既知制約）。WP-3/WP-5/WP-6（並行 `evaluateFrame`/DirtyMask/tree-shaken bundle）は `resolve()` と並行する第二の解決経路を持ち込み INV-2 の bit 一致保守が破綻するリスクが高いため**スコープ外**とし、WP-4（同値 style 書込抑制）と WP-2（nested reconcile 化）のみを実装対象とした。
+- **Phase A（WP-4）実装**: `ObjectEntry` に `lastTransform/lastOpacity/lastZ`（`string | null`）を追加し、`applyObject` の通常経路で transform/opacity/zIndex を前回値と比較、同値なら style 代入をスキップ。値の計算式は不変（出力バイト等価）。matte/matte-source 分岐・通常復帰時は last-value を null リセットし、モード切替後の残留を防止。
+- **Phase B（WP-2）実装**: `renderNestedComp` の `container.innerHTML=""` を撤去し、新規 `nestedWrappers: WeakMap<container, Map<ObjectId, HTMLDivElement>>` でオブジェクトラッパ div を objectId 永続化（トップレベル `entries` と同じ reconcile モデルをネストへ移植）。離脱オブジェクトのラッパは GL 解放→remove の順で GC。各ラッパの子要素は「今フレーム touch されなかった旧子ノード」を検出して remove（GL/video の実体解放は既存の `prevEls`/`nextEls` 差分ループに委譲し二重 teardown を回避）。既存の text/video/comp 持ち越し・geom3d canvas 共有・export composite タグ付け・blend mode 適用ロジックは無変更（reconcile化は「ラッパ div の永続化」層のみに閉じた最小 diff）。デバッグ・テスト用に `div.dataset.objectId` をネストラッパにも付与（描画に影響しない）。
+- **検証**:
+  - `npm run typecheck` 緑 / `npm test`（vitest full run）1311/1312 passed。唯一の失敗 `effects.test.ts > liquidChrome 再登録` は stash して baseline でも同一に再現する pre-existing 不良（本変更と無関係、過去セッションでも繰り返し確認済み）。`playerBuildFreshness` 含め無回帰。
+  - `npm run build:player` 実行済み（`DomRenderer.ts` は player import 対象のランタイム側）。
+  - **新規恒久 verify `verify-nested-reconcile.mjs`**（外部アセット不要・store API で synthetic project を構築）: nested comp（solid×2 + text + adjustment 候補）の描画・30フレームスクラブ後も div 実体の参照同一性が保たれること（`kept===total`）・レイヤー削除後に孤立要素が残らないこと（削除分だけ減少）・adjustment ON で content 子要素がゼロ化すること・深いネスト（Outer2→Outer→Inner）が壊れないこと、を確認し PASS。**同スクリプトを baseline（変更前コード）に対して実行すると `identity.kept=0/4` で FAIL することを実測確認済み（ゲートに歯がある）**。他の nested 系 verify（`verify-nested-geom3d.mjs` 等）は実ユーザーの巨大 zip 依存でこの環境では実行不可なため、このスクリプトが代替の無回帰ゲートとして機能する。
+  - 既存 `verify-blend-mode.mjs` PASS（無回帰）。`verify-track-matte.mjs` は track matte 本体チェック8件全PASS、唯一のFAIL（favicon.ico 404 由来の `page errors` ゲート）は baseline でも同一に再現する既知の環境ノイズ（stash して確認済み・無関係）。`verify-export-adjustment.mjs` PASS（adjustment export bake parity 無回帰）。
+- **spec**: §23.3e を更新（散文のみ・§5型/INV非変更）— `renderNestedComp` が reconcile 実装になったことを反映し、`nestedWrappers` の役割・GC順序・子要素の touch 検出を追記。
+- **doc**: `doc/cloudplan/compiled-render-plan-sonnet5low.md` に「実装記録（2026-07-16）」節を追記し、Phase A/B とも完了とマーク。
+- **Next steps**: WP-3/WP-5/WP-6 は未着手のまま（計画どおりスコープ外。着手時はユーザー確認必須）。実測ベンチ（before/after のフレーム時間計測）は未実施 — nested precomp を多用する実プロジェクトでの体感計測が次のステップ。

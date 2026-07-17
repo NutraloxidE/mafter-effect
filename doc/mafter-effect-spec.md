@@ -1832,11 +1832,12 @@ childFrame     = clamp(round(parentTimeSec * childFps) + trimStart, 0, childComp
 ネスト comp 内の **3D-extrude text（§5.5f）** は、トップレベルと**同じ実 MVP 投影**で描く。precomp として呼ばれた瞬間に 2D フォールバックへ落ちてはならない（`Main` を別 comp に置くと押し出しが消える回帰の再発防止）。
 
 - **カメラは「子 comp のもの」**: `renderNestedComp` はローカルの `cameraPre`（`setupCameraRig(container, childScene)` の返り値）と `childScene.camera?.fov`、`childComp.width/height` を `geom3dCamera` として渡す。`this.cameraPre` / `this.cameraFov` は**親 comp の値**なので使ってはならない（precomp 内の 3D は子の座標系で閉じ、外側の変換はコンテナの CSS transform が担う＝ §23.3a の collapse OFF と整合）。
-- **GL コンテキストの持ち越し（必須）**: `renderNestedComp` は毎フレーム `container.innerHTML = ""` で作り直す非 reconcile 実装のため、**素直に描くと geom3d canvas ごと WebGL context が毎フレーム生成される**。Chrome の同時コンテキスト上限（~16）を数十フレームで超え、`Too many active WebGL contexts. Oldest context will be lost.` で 3D が消える。よって:
-  - **`text` の el と、再帰ネストのコンテナ（`comp`）は key（`objId:index:type`）で前フレームの実体を持ち越す**（他の型は従来どおり毎フレーム新規で無害）。持ち越しにより canvas＝context が生き続ける。
-  - **今フレーム使われなかった持ち越し el は `releaseAlphaGlCompositorsUnder()` で GL を明示解放**する（レイヤー削除・3D OFF・型変更）。持ち越しと解放は**対で必要**（解放だけでも上限超過は防げるが、毎フレーム context 再生成＝シェーダ再コンパイルで重い）。
+- **GL コンテキストの持ち越し（必須・2026-07-16 reconcile 化で一般化）**: `renderNestedComp` は**オブジェクトラッパ div を objectId で永続化する reconcile 実装**（旧: 毎フレーム `container.innerHTML = ""` で作り直す非 reconcile 実装。WP-2）。ラッパ div 自体が持ち越されるため、その内部に立つ geom3d canvas も自然に生き続け、素直に描いても毎フレーム WebGL context が再生成されることはない。
+  - **ラッパ div は `nestedWrappers: WeakMap<container, Map<ObjectId, HTMLDivElement>>` で container ごとに objectId をキーに永続化**する。離脱したオブジェクト（今フレーム `childScene.objects` に無い id）のラッパは `releaseAlphaGlCompositorsUnder()` で GL を明示解放してから `remove()` する。
+  - ラッパ内の**子要素**（text/video/comp の el）は引き続き `nestedElReuse`（`objId:index:type` キー）で持ち越す。isAdj トグルや component 型変更で孤立した旧子要素は、フレームごとに「touch されなかった旧子ノード」を検出して `remove()` する（GL/video の実体解放は既存の `prevEls`/`nextEls` 差分ループが担う。二重 teardown を避けるため、ラッパ内の即時除去は DOM detach のみ行う）。
+  - **今フレーム使われなかった持ち越し el（text/video/comp）は `releaseAlphaGlCompositorsUnder()` / `teardownVideoElement()` で明示解放**する（レイヤー削除・3D OFF・型変更）。持ち越しと解放は**対で必要**（解放だけでも上限超過は防げるが、毎フレーム context 再生成＝シェーダ再コンパイルで重い）。
 - **export（INV-2）**: GL canvas は `preserveDrawingBuffer: true` かつ `inlineCanvasBitmaps` が DOM 全体を deep query するため、ネスト comp の canvas も foreignObject 経路へそのまま乗る。`compFrameCapture` で捕捉したネスト comp の PNG は**単独 comp の PNG とバイト等価**になること（`verify-nested-geom3d.mjs`）。
-- **回帰ゲート**: 「canvas 要素の同一性がスクラブ後も保たれる」ことを検証する。`Too many active WebGL contexts` 警告の観測は **GC 依存で不安定**なため、単独の合否条件にしてはならない。
+- **回帰ゲート**: 「canvas 要素の同一性がスクラブ後も保たれる」ことを検証する。`Too many active WebGL contexts` 警告の観測は **GC 依存で不安定**なため、単独の合否条件にしてはならない。ラッパ div の reconcile 自体は外部アセット不要の合成プロジェクトで検証可能（`verify-nested-reconcile.mjs`）: 参照同一性（スクラブ中も div 実体が持ち越される）・レイヤー削除後の孤立要素ゼロ・adjustment ON/OFF での content 出入りを確認する。
 
 ### §23.4 循環参照制御
 
