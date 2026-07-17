@@ -21,10 +21,8 @@
 // 調整も blend も無いネスト comp は従来どおり親の単一 capture に含める（3D 文脈保持の高速経路）。
 
 import { captureElementToCanvas, flattenShadow, inlineExportMedia, svgToDataUrl } from "./rasterCapture";
-import { canvasToRasterBuffer } from "./pixelSort";
-import { processRasterChainAsync } from "./rasterProcessAsync";
-import { applyFilterChainToBuffer, type FilterRegion } from "./effectRaster";
-import { blendModeToCompositeOp } from "./blendCompose";
+import { type FilterRegion } from "./effectRaster";
+import { Canvas2DCompositor } from "./compositor/Canvas2DCompositor";
 import { globalPluginRegistry } from "./pluginRegistry";
 import type { ResolvedEffect } from "./resolved";
 import type { BlendMode } from "../core/schema";
@@ -174,23 +172,16 @@ async function compositeContainer(
 ): Promise<HTMLCanvasElement> {
   const nw = Math.max(1, Math.round(meta.width));
   const nh = Math.max(1, Math.round(meta.height));
-  const master = makeCanvas(nw, nh);
-  const mctx = master.getContext("2d")!;
-  if (meta.background !== "transparent") {
-    mctx.fillStyle = meta.background;
-    mctx.fillRect(0, 0, nw, nh);
-  }
+  const compositor = new Canvas2DCompositor(nw, nh, meta.background);
   for (const layer of readContainerLayers(container)) {
     if (layer.isAdjustment) {
-      if (layer.exportChain) await applyAdjustmentToMaster(master, layer.exportChain, nw, nh);
+      if (layer.exportChain) await compositor.applyAdjustment(layer.exportChain, nw, nh);
       continue;
     }
     const sub = await captureLayerNode(layer.div, meta.perspective, meta.perspectiveOrigin, nw, nh);
-    mctx.globalCompositeOperation = blendModeToCompositeOp(layer.blendMode);
-    mctx.drawImage(sub, 0, 0);
+    compositor.drawLayer(sub, layer.blendMode);
   }
-  mctx.globalCompositeOperation = "source-over";
-  return master;
+  return compositor.finish();
 }
 
 /**
@@ -237,31 +228,6 @@ async function captureLayerNode(
 }
 
 /**
- * §27.4 — 調整レイヤーの effect chain を background canvas（= 累積 master）に適用して in-place 更新する。
- * pre CSS/SVG filter → raster chain → post CSS/SVG filter の順（DomRenderer の調整 pipeline と同順）。
- */
-async function applyAdjustmentToMaster(
-  master: HTMLCanvasElement,
-  chain: ExportChain,
-  nw: number,
-  nh: number,
-): Promise<void> {
-  let buffer = canvasToRasterBuffer(master);
-  if (chain.preFilterStr) {
-    buffer = await applyFilterChainToBuffer(buffer, nw, nh, chain.preFilterStr, chain.preSvgFilters, chain.region);
-  }
-  if (chain.rasterChain.length > 0) {
-    buffer = await processRasterChainAsync(buffer, chain.rasterChain, { width: nw, height: nh, frame: chain.frame });
-  }
-  if (chain.postFilterStr) {
-    buffer = await applyFilterChainToBuffer(buffer, nw, nh, chain.postFilterStr, chain.postSvgFilters, chain.region);
-  }
-  const ctx = master.getContext("2d")!;
-  ctx.globalCompositeOperation = "source-over";
-  ctx.putImageData(new ImageData(new Uint8ClampedArray(buffer.data), buffer.width, buffer.height), 0, 0);
-}
-
-/**
  * 1 フレームを comp ネイティブ解像度 (nw×nh) で合成し、必要なら (w×h) へスケールした canvas を返す。
  *
  * - 調整レイヤーも CSS blend も「再帰合成が必要なネスト comp」も無ければ単一ショット root capture
@@ -295,23 +261,16 @@ export async function compositeExportFrame(
   const perspective = root.style.perspective;
   const perspectiveOrigin = root.style.perspectiveOrigin || "50% 50%";
 
-  const master = makeCanvas(nw, nh);
-  const mctx = master.getContext("2d")!;
-  if (bg !== "transparent") {
-    mctx.fillStyle = bg;
-    mctx.fillRect(0, 0, nw, nh);
-  }
-
+  const compositor = new Canvas2DCompositor(nw, nh, bg);
   for (const layer of src.getExportLayers()) {
     if (layer.isAdjustment) {
-      if (layer.exportChain) await applyAdjustmentToMaster(master, layer.exportChain, nw, nh);
+      if (layer.exportChain) await compositor.applyAdjustment(layer.exportChain, nw, nh);
       continue;
     }
     const sub = await captureLayerNode(layer.div, perspective, perspectiveOrigin, nw, nh);
-    mctx.globalCompositeOperation = blendModeToCompositeOp(layer.blendMode);
-    mctx.drawImage(sub, 0, 0);
+    compositor.drawLayer(sub, layer.blendMode);
   }
-  mctx.globalCompositeOperation = "source-over";
+  const master = compositor.finish();
 
   if (w === nw && h === nh) return master;
   const scaled = makeCanvas(w, h);

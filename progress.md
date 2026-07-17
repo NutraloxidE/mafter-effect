@@ -2512,4 +2512,9 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
   - `bench-gpu-raster-export-baseline.mjs` → `.json`: 同一 fixture を PNG 連番で決定論 export（`exportComposition` を page から Vite dynamic-import で駆動・WebCodecs 非依存）。primary GPU target の `compositeExportFrame`（per-layer capture + Canvas2D z 順累積 + `applyAdjustmentToMaster`）を実測。
   - **実測（24fr / 1280×720・ok・pageErrors 0）**: avg **253.8ms/frame**。内訳: `<img>svg decode` 13回/70.8ms + **`drawImage` 累積 23回/63.4ms** + `getImageData` 14.1ms + `toDataURL` 15.3ms + `putImageData` 2ms、`readPixels` 0。
   - **知見**: export のボトルネックは capture(71ms) + **drawImage 累積(63ms)** の 2 本柱。preview（live CSS blend で drawImage 僅少）と違い export は z 順 Canvas2D 累積が重く、**合成 GPU 化の効果は preview より export で大きい**ことが確定 → plan の Decision（`compositeExportFrame` を最初の GPU compositor 宿主にする）を数値で支持。
-- **Next steps**: Phase 1（`Canvas2DCompositor` seam・byte 不変・parity test）に着手（内部リファクタ・INV/§5/直列化 非変更のため cloud で継続）。
+- **成果物4: Phase 1 実装（`Canvas2DCompositor` seam・byte 不変）** ✅:
+  - 新設 `src/runtime/compositor/RasterCompositor.ts`（interface）+ `Canvas2DCompositor.ts`（reference backend）。将来 WebGL2 backend を同 interface で差し込む seam。責務は「master への合成」のみに閉じ、DOM capture（foreignObject / perspective / nested 再帰）は `exportComposite.ts` 側に残す。
+  - `exportComposite.ts`: `compositeExportFrame` / `compositeContainer` の master 累積 + `applyAdjustmentToMaster`（削除）を compositor 呼び出しへ置換。**同一 Canvas2D オペレーション・同順**のため byte-identical。diff −51/+10。
+  - **新規 parity ゲート `bench-gpu-raster-parity.mjs`** + `bench-gpu-raster-parity.golden.json`: `captureCompFramePng`（RAM preview 経路＝内部で `compositeExportFrame` 使用）の PNG を FNV-1a hash 比較。**リファクタ前後で全フレーム byte-identical PASS**（同一コード 2 回で決定論も確認済み＝ゲートに歯がある）。
+  - **検証**: `npx tsc --noEmit` 緑 / vitest 1311/1312（唯一の fail `effects.test.ts liquidChrome 再登録` は既存・本変更と無関係）/ `playerBuildFreshness` 緑。`exportComposite` は `src/player` 非 import のため **build:player 不要**（確認済み）。INV/§5/直列化 いずれも非変更。
+- **Next steps**: Phase 2（WebGL2 compositor・shared context + texture/FBO pool・normal composite のみ）に着手可。ただし GPU shader/parity 許容差の設計判断を含むため、着手前にユーザー確認を推奨（計画上は Phase 1 完了＝seam 準備済み）。export 経路 baseline（drawImage 累積 63ms/frame）が Phase 2 の主対象。

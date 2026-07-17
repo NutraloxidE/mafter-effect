@@ -148,7 +148,10 @@ const gpuEffectPasses = new Map<string, GpuEffectPass>();
 - **受け入れ**: 数値がそろい、Phase 2 の投資対効果が定量化される。
 - **rollback**: instrumentation を捨てるだけ。
 
-### Phase 1 — seam 抽出（挙動 byte 不変）
+### Phase 1 — seam 抽出（挙動 byte 不変）✅ 実装済み（2026-07-17）
+
+> **実装記録**: `src/runtime/compositor/RasterCompositor.ts`（interface）+ `Canvas2DCompositor.ts`（reference backend）を新設。`exportComposite.ts` の `compositeExportFrame` / `compositeContainer` の master 累積 + `applyAdjustmentToMaster` を compositor へ移設（同一 Canvas2D オペレーション・同順）。capture 系（`captureLayerNode` / perspective / nested 再帰）は据置き。検証: `bench-gpu-raster-parity.mjs`（`captureCompFramePng` の golden pixel-hash）で **全フレーム byte-identical PASS**、`npx tsc --noEmit` 緑、vitest 1311/1312（唯一の fail `effects.test.ts liquidChrome 再登録` は既存・無関係）、`playerBuildFreshness` 緑（exportComposite は player 非 import のため build:player 不要）。diff は exportComposite.ts −51/+10 + 新規 2 ファイルのみ。
+
 
 - **変更 symbol**:
   - `exportComposite.ts` の `compositeExportFrame` を、`RasterCompositor` 経由に**内部リファクタ**。既存の逐次ロジックを `Canvas2DCompositor` にそのまま移設（`makeCanvas`/`blendModeToCompositeOp`/`drawImage`/`applyAdjustmentToMaster` を backend メソッド化）。
