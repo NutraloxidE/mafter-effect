@@ -1,0 +1,51 @@
+{
+  "when": "2026-07-17T08:25:28.882Z",
+  "note": "Phase 0 baseline — export 経路 (compositeExportFrame per-layer capture + Canvas2D z-order accumulate + applyAdjustmentToMaster). PNG 連番・WebCodecs 非依存。",
+  "fixture": {
+    "mainId": "01KXQJW8G1V3FMR8RBS37AQCTT",
+    "innerId": "01KXQJW8FTAY2RKGM68F2DJQ0M",
+    "mainSize": [
+      1280,
+      720
+    ]
+  },
+  "export": {
+    "ok": true,
+    "err": null,
+    "totalMs": 6045.6,
+    "frames": 24,
+    "firstFrameMs": 5.8,
+    "avgFrameMs": 253.8,
+    "api": {
+      "getImageData": {
+        "n": 119,
+        "ms": 337.5
+      },
+      "putImageData": {
+        "n": 96,
+        "ms": 48.4
+      },
+      "drawImage": {
+        "n": 551,
+        "ms": 1522.2
+      },
+      "toDataURL": {
+        "n": 72,
+        "ms": 366.6
+      },
+      "createImageBitmap": {
+        "n": 0,
+        "ms": 0
+      },
+      "readPixels": {
+        "n": 0,
+        "ms": 0
+      },
+      "imageDecode": {
+        "n": 311,
+        "ms": 1699.3
+      }
+    }
+  },
+  "pageErrors": []
+}

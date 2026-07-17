@@ -63,11 +63,38 @@
 
 ---
 
+## 3b. export 経路の実測（primary GPU target）
+
+同一 fixture を **PNG 連番で決定論 export**（`exportComposition` を page から Vite dynamic-import で駆動・WebCodecs 非依存）。preview の live blend と違い、export は `compositeExportFrame` が **per-layer 個別 capture + Canvas2D z 順累積 + `applyAdjustmentToMaster`** を通る。再現: `node bench-gpu-raster-export-baseline.mjs` → `bench-gpu-raster-export-baseline.json`。
+
+| 指標 | 実測（24 フレーム・1280×720） |
+|---|---|
+| **avg frame**（1 フレーム目=prepare を除く） | **253.8 ms**（≈3.9 fps） |
+| total | 6045.6 ms / 24fr / ok=true / pageErrors 0 |
+
+### pixel-API 内訳（1 フレームあたり・export）
+
+| API | export | preview(cold) | 差の意味 |
+|---|---|---|---|
+| **`<img> SVG decode`（capture）** | **13.0 回 / 70.8 ms** | 4.0 回 / 73.2 ms | **export はレイヤー数ぶん個別 capture**（preview は live 合成で capture 少） |
+| **`drawImage`（z 順累積）** | **23.0 回 / 63.4 ms** | 4.0 回 / 8.7 ms | **export の master 累積が支配的**。preview の CSS `mix-blend-mode`（capture 不要）と対照的 |
+| `toDataURL`（capture inline） | 3.0 回 / 15.3 ms | 2.9 回 / 11.4 ms | 同程度 |
+| `getImageData`（adjustment buffer 化） | 5.0 回 / 14.1 ms | 4.0 回 / 10.3 ms | `applyAdjustmentToMaster` の往復 |
+| `putImageData`（adjustment 戻し） | 4.0 回 / 2.0 ms | 3.0 回 / 1.5 ms | 同 |
+| `readPixels` | 0 | 0 | export も現状 GPU readback なし |
+
+### export 経路の読み取り（confirmed）
+
+- **export のボトルネックは capture(70.8ms) + drawImage 累積(63.4ms) の 2 本柱** ＝ 合わせて ~134ms/frame。**GPU compositor（Phase 2〜3）が直接叩けるのは drawImage 累積 + getImageData/putImageData(≈80ms/frame) 側**で、preview（drawImage 僅少）より **export の方が合成 GPU 化の効果が大きい**ことが数値で確定。
+- これは plan の Decision（`compositeExportFrame` を最初の GPU compositor 宿主にする）を**強く支持**する: export では z 順 Canvas2D 累積が実測で 63ms/frame と大きく、GPU 化の主戦場は preview より export 側にある。
+- capture(70.8ms) は Phase 2 では残る（Phase 6 / cache 側の課題）点は preview と共通。
+
+---
+
 ## 4. 未計測（Phase 0 残・次セッション候補）
 
-- **export 経路（`compositeExportFrame`）の per-layer 計測** — preview は live blend だが export は per-layer 個別 capture。primary GPU target なので export 側 baseline を別途取る（PNG 連番 or mp4 を UI/exposed hook 経由で駆動）。
 - **fixture A（軽量 comp）** — 「GPU 化で軽量 comp が遅くならない」ゲートの下限値。
-- **4K / レイヤー数スケール** — capture コストの解像度・枚数依存。
+- **4K / レイヤー数スケール** — capture・drawImage 累積の解像度・枚数依存。
 - **cache hit/miss 計測** — 上記 warm≒cold の機序確定。
 
 ---
@@ -83,6 +110,15 @@
 
 ## 付録: 再現とベースライン運用
 
-- スクリプト: `bench-gpu-raster-baseline.mjs`（root・page-only 計測・source 非改変）。
-- 出力: `bench-gpu-raster-baseline.json`（`when` タイムスタンプ付き）。
-- GPU 化の各 Phase 後に同スクリプトを再実行し、`avgFrameMs` と API 内訳（特に `getImageData`/`putImageData`/`imageDecode`/`readPixels`）を本表と比較する。**readPixels が preview で 0 を超えたら plan §7.1 違反として要調査。**
+- スクリプト（root・page-only 計測・source 非改変）:
+  - `bench-gpu-raster-baseline.mjs` → `bench-gpu-raster-baseline.json`（**preview scrub**）
+  - `bench-gpu-raster-export-baseline.mjs` → `bench-gpu-raster-export-baseline.json`（**export PNG 連番**・`compositeExportFrame`）
+- どちらも `npm run dev` 起動後に `node <script>` で実行（`VERIFY_PORT` 既定 5173 / https）。
+- GPU 化の各 Phase 後に両スクリプトを再実行し、`avgFrameMs` と API 内訳（特に `drawImage`/`getImageData`/`putImageData`/`imageDecode`/`readPixels`）を本表と比較する。**readPixels が preview で 0 を超えたら plan §7.1 違反として要調査。**
+
+### ベースライン要約（1280×720 / 9+4 レイヤー・この環境）
+
+| 経路 | avg frame | 支配コスト（/frame） |
+|---|---|---|
+| preview（cold） | 196.8 ms | capture decode 73ms / getImageData 10ms / drawImage 9ms |
+| export（PNG 連番） | 253.8 ms | capture decode 71ms + **drawImage 累積 63ms** / getImageData 14ms |

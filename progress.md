@@ -2507,6 +2507,9 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
   - フレーム時間: cold **196.8ms** / warm **183.5ms**（≈5fps）。
   - 内訳（cold・1frame）: **`<img>svg decode` 4回/73.2ms（最大）** / `toDataURL` 11.4ms / `getImageData` 10.3ms / `drawImage` 8.7ms / `putImageData` 1.5ms / **`readPixels` 0**。
   - **主要知見**: (1) capture（foreignObject SVG decode）が単独で支配的 → 合成のみ GPU 化（Phase 2）だけでは capture コストが残り、**Phase 6 HTML-in-Canvas / cache L1 表現最適化の価値が数値上高い**。(2) getImageData/putImageData 往復が実在（plan §6.1/§6.3 の GPU 対象を裏付け）。(3) **preview に readPixels 現状ゼロ**（plan §7.1 の監視基準）。(4) **warm≒cold（差~7%）＝ `frameRenderCache` が interactive re-scrub でヒットしていない**（要 Phase 0 追補・GPU 化と独立に効きうる）。
-- **未計測（次セッション候補）**: export 経路（`compositeExportFrame` per-layer capture）の baseline / 軽量 comp fixture A / 4K・レイヤー数スケール / cache hit-miss 機序。
 - **不変性**: source 変更なし（計測は page monkey-patch のみ）。`npm run build:player` 不要（runtime 非改変）。INV・§5・直列化いずれも無影響。
-- **Next steps**: ユーザー確認のうえ Phase 1（`Canvas2DCompositor` seam・byte 不変・parity test）着手可。実 GPU 化（Phase 2+）着手前に export 経路 baseline を追加取得推奨。
+- **成果物3: export 経路 baseline**（追加取得済み）:
+  - `bench-gpu-raster-export-baseline.mjs` → `.json`: 同一 fixture を PNG 連番で決定論 export（`exportComposition` を page から Vite dynamic-import で駆動・WebCodecs 非依存）。primary GPU target の `compositeExportFrame`（per-layer capture + Canvas2D z 順累積 + `applyAdjustmentToMaster`）を実測。
+  - **実測（24fr / 1280×720・ok・pageErrors 0）**: avg **253.8ms/frame**。内訳: `<img>svg decode` 13回/70.8ms + **`drawImage` 累積 23回/63.4ms** + `getImageData` 14.1ms + `toDataURL` 15.3ms + `putImageData` 2ms、`readPixels` 0。
+  - **知見**: export のボトルネックは capture(71ms) + **drawImage 累積(63ms)** の 2 本柱。preview（live CSS blend で drawImage 僅少）と違い export は z 順 Canvas2D 累積が重く、**合成 GPU 化の効果は preview より export で大きい**ことが確定 → plan の Decision（`compositeExportFrame` を最初の GPU compositor 宿主にする）を数値で支持。
+- **Next steps**: Phase 1（`Canvas2DCompositor` seam・byte 不変・parity test）に着手（内部リファクタ・INV/§5/直列化 非変更のため cloud で継続）。
