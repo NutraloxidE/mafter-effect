@@ -155,14 +155,14 @@ interface ObjectEntry {
   /** §5.4f トラックマット塗り（full-comp host + mask） */
   hasTrackMatte: boolean;
   /**
-   * 通常経路（非 matte・非 matte-source）ホスト style の同値書込抑制用 last-value。
+   * 通常経路（非 matte・非 matte-source）ホスト transform/opacity の同値書込抑制用 last-value。
    * matte/matte-source/childrenRebuilt に入るフレームで null 化し、通常経路へ戻った初回に
-   * 必ず書き直させる（モード切替後に古い transform/opacity/zIndex が残るのを防ぐ）。
+   * 必ず書き直させる（モード切替後に古い transform/opacity が残るのを防ぐ）。
    * 値の計算式自体は変えない・出力は従来と等価（WP-4・INV-2 不変）。
+   * zIndex は clearMatteSourceStyle が毎フレーム "" に戻すためキャッシュ不可（無条件書込）。
    */
   lastTransform: string | null;
   lastOpacity: string | null;
-  lastZ: string | null;
 }
 
 interface RasterWorkItem {
@@ -498,7 +498,6 @@ export class DomRenderer implements Renderer {
           hasTrackMatte: false,
           lastTransform: null,
           lastOpacity: null,
-          lastZ: null,
         };
         this.entries.set(obj.id, entry);
       }
@@ -1126,10 +1125,9 @@ export class DomRenderer implements Renderer {
       entry.blendMode = "normal";
       applyMatteSourceLayout(entry.div, mat4ToCss(xform), Number(opacity));
       // WP-4: このモードでは通常経路の style を書かない。通常経路へ戻った初回に必ず
-      // 書き直させるため last-value を無効化する（古い transform/opacity/zIndex 残留防止）。
+      // 書き直させるため last-value を無効化する（古い transform/opacity 残留防止）。
       entry.lastTransform = null;
       entry.lastOpacity = null;
-      entry.lastZ = null;
     } else if (obj.trackMatte) {
       // §5.4f: full-comp host + inner + result canvas（正準 = applyTrackMatte）。
       const inner = ensureTrackMatteFillStructure(entry.div, compW, compH);
@@ -1141,11 +1139,10 @@ export class DomRenderer implements Renderer {
       this.applyBlendMode(entry, obj.blendMode);
       markTrackMatteFillHost(entry.div, obj.id);
       ensureTrackMatteResultCanvas(entry.div, compW, compH);
-      // WP-4: 同上。entry.div.style.transform 自体はこの分岐で書かないが、opacity/zIndex は
-      // 通常経路と異なる値（"1" / matte 専用計算）を書くため last-value を無効化する。
+      // WP-4: 同上。entry.div.style.transform 自体はこの分岐で書かないが、opacity は
+      // 通常経路と異なる値（"1"）を書くため last-value を無効化する。
       entry.lastTransform = null;
       entry.lastOpacity = null;
-      entry.lastZ = null;
     } else {
       entry.contentRoot = entry.div;
       // §5.4f 後始末を先に行う（matte source 用の zIndex 等を消してから現在値を設定する。
@@ -1163,11 +1160,10 @@ export class DomRenderer implements Renderer {
         entry.div.style.opacity = opacity;
         entry.lastOpacity = opacity;
       }
-      const z = String(Math.round(obj.zOrder * BASE_Z));
-      if (z !== entry.lastZ) {
-        entry.div.style.zIndex = z;
-        entry.lastZ = z;
-      }
+      // zIndex は毎フレーム無条件で書く。直前の clearMatteSourceStyle が zIndex="" に
+      // リセットするため（filter と同様・上の §5.4f コメント参照）、last-value でスキップすると
+      // zIndex が auto のまま戻らず paint 順が壊れる（調整レイヤーの backdrop から下位が逃げる）。
+      entry.div.style.zIndex = String(Math.round(obj.zOrder * BASE_Z));
       this.applyBlendMode(entry, obj.blendMode);
       this.trackMatteSigByFillId.delete(obj.id);
       // host 構造から通常へ戻るとき inner を畳む（マット子は先に外へ）
