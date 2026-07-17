@@ -2481,3 +2481,17 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
 - **spec**: §23.3e を更新（散文のみ・§5型/INV非変更）— `renderNestedComp` が reconcile 実装になったことを反映し、`nestedWrappers` の役割・GC順序・子要素の touch 検出を追記。
 - **doc**: `doc/cloudplan/compiled-render-plan-sonnet5low.md` に「実装記録（2026-07-16）」節を追記し、Phase A/B とも完了とマーク。
 - **Next steps**: WP-3/WP-5/WP-6 は未着手のまま（計画どおりスコープ外。着手時はユーザー確認必須）。実測ベンチ（before/after のフレーム時間計測）は未実施 — nested precomp を多用する実プロジェクトでの体感計測が次のステップ。
+
+### 2026-07-17（Claude Opus 4.8）— WP-4 回帰修正: 調整レイヤー backdrop から下位レイヤーが逃げる ✅
+- **症状（ユーザー報告・実機再現）**: `main 1` で時系列的に後から現れる 3D-extrude text レイヤー（ネスト precomp `2-もう一人じゃないよって` の「テレパシー」等）が、上位の調整レイヤー（chromaSplit/gradientMap の live backdrop-filter）の影響を受けず、素のまま浮いて描画される。前セッションの WP-4 軽量化以降に発生。
+- **局在化（measure-driven）**: 実 zip をインポートし `main 1` f150 を preview 実機描画 → CDP で DOM を計測。調整レイヤー div（`Adjustment`/`pixelize`）の**computed z-index が `auto`** になっていた（本来 zOrder×BASE_Z = 130 / 40）。z:auto の positioned 要素は正の z-index を持つ兄弟（ネスト comp z50/z70 等）の**背面**に落ちるため、backdrop-filter が下位を採取できず＝逃げる。360895e の DomRenderer だけを親版に戻すと症状消失し、WP-4 が原因と確定。
+- **根因**: `applyObject` 通常経路は毎フレーム `clearMatteSourceStyle(entry.div)` を呼び、その中で `style.zIndex=""`（＝auto）にリセットする（`trackMatteDom.ts:119`・track matte 離脱後始末）。WP-4 が zIndex を `lastZ` last-value でキャッシュしたため、2 フレーム目以降は `z===lastZ` でスキップされ、クリアされた zIndex が二度と書き戻らず auto のまま固着した。**同ファイル 1573-1575 の既存コメントが `filter` について全く同じ罠（clearMatteSourceStyle が毎フレーム "" に戻すのでキャッシュ不可）を警告済み**で、WP-4 は zIndex で同じ轍を踏んでいた。transform/opacity は clearMatteSourceStyle が触らないためキャッシュ有効（据え置き）。
+- **修正**: zIndex を**無条件書込**に戻す（filter と同じ扱い）。`lastZ` フィールドと 4 箇所の関連コード（宣言・init・matte/matte-source 分岐の null リセット）を削除。最小 diff・INV/§5/直列化 不変。
+- **検証**:
+  - `npm run typecheck` 緑 / `npm test` 1311/1312（唯一の失敗 `liquidChrome` 再登録は前セッションと同一の pre-existing・無関係）。`playerBuildFreshness` 緑。
+  - `npm run build:player` 実行済み（DomRenderer は player import 対象）。
+  - **実機 preview parity**: 修正後 f150 で「テレパシー」が glitch テクスチャに埋没＝調整の影響を受ける状態に復帰。親版（軽量化前）と同一の見た目を確認。
+  - **新規恒久 verify `verify-zindex-persist.mjs`**（外部 zip 不要・synthetic 2 solid）: 6 フレームスクラブ後も非 matte レイヤーの computed z-index が numeric（10/20）を保持することを確認し PASS。**buggy 版（360895e）に対して実行すると `auto/auto` で FAIL することを実測確認済み（ゲートに歯がある）**。
+- **Next steps**: なし（打ち止め）。WP-4 の transform/opacity キャッシュは維持。将来 clearMatteSourceStyle が触る style を last-value キャッシュする際は同じ罠に注意。
+- **無回帰 verify（2026-07-17 追加実行・env を https/chrome channel に合わせて実行）**:
+  `verify-nested-reconcile`（WP-2 sibling）PASS / `verify-track-matte` 実チェック 8/8 PASS（唯一の fail は既知 favicon 404 ノイズゲート）/ `verify-blend-mode` PASS / `verify-export-adjustment`（INV-2 preview↔export の調整 effect bake parity）PASS。本修正は top-level `applyObject` の zIndex 書込のみ・全 render path 共有経路のため INV-2 は構造的に保持。
