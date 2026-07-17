@@ -2493,3 +2493,5 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
   - **実機 preview parity**: 修正後 f150 で「テレパシー」が glitch テクスチャに埋没＝調整の影響を受ける状態に復帰。親版（軽量化前）と同一の見た目を確認。
   - **新規恒久 verify `verify-zindex-persist.mjs`**（外部 zip 不要・synthetic 2 solid）: 6 フレームスクラブ後も非 matte レイヤーの computed z-index が numeric（10/20）を保持することを確認し PASS。**buggy 版（360895e）に対して実行すると `auto/auto` で FAIL することを実測確認済み（ゲートに歯がある）**。
 - **Next steps**: なし（打ち止め）。WP-4 の transform/opacity キャッシュは維持。将来 clearMatteSourceStyle が触る style を last-value キャッシュする際は同じ罠に注意。
+- **無回帰 verify（2026-07-17 追加実行・env を https/chrome channel に合わせて実行）**:
+  `verify-nested-reconcile`（WP-2 sibling）PASS / `verify-track-matte` 実チェック 8/8 PASS（唯一の fail は既知 favicon 404 ノイズゲート）/ `verify-blend-mode` PASS / `verify-export-adjustment`（INV-2 preview↔export の調整 effect bake parity）PASS。本修正は top-level `applyObject` の zIndex 書込のみ・全 render path 共有経路のため INV-2 は構造的に保持。
