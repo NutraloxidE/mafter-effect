@@ -2495,3 +2495,18 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
 - **Next steps**: なし（打ち止め）。WP-4 の transform/opacity キャッシュは維持。将来 clearMatteSourceStyle が触る style を last-value キャッシュする際は同じ罠に注意。
 - **無回帰 verify（2026-07-17 追加実行・env を https/chrome channel に合わせて実行）**:
   `verify-nested-reconcile`（WP-2 sibling）PASS / `verify-track-matte` 実チェック 8/8 PASS（唯一の fail は既知 favicon 404 ノイズゲート）/ `verify-blend-mode` PASS / `verify-export-adjustment`（INV-2 preview↔export の調整 effect bake parity）PASS。本修正は top-level `applyObject` の zIndex 書込のみ・全 render path 共有経路のため INV-2 は構造的に保持。
+
+### 2026-07-17（Claude Opus 4.8）— GPU Raster Pipeline 設計 + Phase 0 ベースライン計測 ✅
+
+- **背景**: ユーザー提供の設計ブリーフ（`gpurasterpipelineoptimizationideas1.md`）を実コードと突き合わせ、着手可能な粒度の実装計画へ落とし込む依頼。続けて「人間確認が不要な範囲をぶん回す」指示を受け、Phase 0（計測・挙動変更なし）まで実施。
+- **成果物1: `doc/cloudplan/gpu-raster-pipeline-design.md`** — 実 symbol/call path で裏付けた実装計画。現行経路（preview live/raster・`compositeExportFrame` z 順コンポジタ・`compFrameCapture`・既存 per-layer WebGL）を確認し、中核判断＝「`DomRenderer`+foreignObject は残し、`exportComposite.ts` の z 順コンポジタと preview raster overlay を共有 WebGL2 compositor の seam に置換」。`executionPath` 不変・GPU 実装は engine-private レジストリに隔離（Plugin API v1 非破壊）。Phase 0(計測)→1(Canvas2D seam byte 不変)→2(WebGL2 normal composite)→3(matte/blend/adjustment)→4(builtin GPU effects)→5(readback 排除)→6/7 保留。各 Phase に変更 symbol・受け入れ・rollback。INV-1〜6/preview≡export/serialization/Plugin API 影響を整理。
+- **成果物2: Phase 0 計測**（source 非改変・page-only monkey-patch）:
+  - `bench-gpu-raster-baseline.mjs`（root）: 重い composite（raster mosaic/wave + blend×3 + track matte + raster adjustment + nested precomp）を store API で構築し、preview scrub 48 フレームを実 Chrome で駆動。`getImageData`/`putImageData`/`drawImage`/`toDataURL`/`createImageBitmap`/`readPixels`/`<img>svg decode` を wrap して call 数・累積 ms を集計。→ `bench-gpu-raster-baseline.json`。
+  - `doc/cloudplan/gpu-raster-bench-phase0.md`: 結果と読み取り。
+- **実測（1280×720 / 9+4 レイヤー・pageErrors 0）**:
+  - フレーム時間: cold **196.8ms** / warm **183.5ms**（≈5fps）。
+  - 内訳（cold・1frame）: **`<img>svg decode` 4回/73.2ms（最大）** / `toDataURL` 11.4ms / `getImageData` 10.3ms / `drawImage` 8.7ms / `putImageData` 1.5ms / **`readPixels` 0**。
+  - **主要知見**: (1) capture（foreignObject SVG decode）が単独で支配的 → 合成のみ GPU 化（Phase 2）だけでは capture コストが残り、**Phase 6 HTML-in-Canvas / cache L1 表現最適化の価値が数値上高い**。(2) getImageData/putImageData 往復が実在（plan §6.1/§6.3 の GPU 対象を裏付け）。(3) **preview に readPixels 現状ゼロ**（plan §7.1 の監視基準）。(4) **warm≒cold（差~7%）＝ `frameRenderCache` が interactive re-scrub でヒットしていない**（要 Phase 0 追補・GPU 化と独立に効きうる）。
+- **未計測（次セッション候補）**: export 経路（`compositeExportFrame` per-layer capture）の baseline / 軽量 comp fixture A / 4K・レイヤー数スケール / cache hit-miss 機序。
+- **不変性**: source 変更なし（計測は page monkey-patch のみ）。`npm run build:player` 不要（runtime 非改変）。INV・§5・直列化いずれも無影響。
+- **Next steps**: ユーザー確認のうえ Phase 1（`Canvas2DCompositor` seam・byte 不変・parity test）着手可。実 GPU 化（Phase 2+）着手前に export 経路 baseline を追加取得推奨。
