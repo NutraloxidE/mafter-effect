@@ -1,5 +1,13 @@
 # Progress
 
+### 2026-07-19（Codex）— 最大実プロジェクトの `Master → main 1` 非破壊高速化 PLAN を作成
+
+- **依頼**: `Downloads` 内の最大 Mafter project で、重量級 `main 1` のような comp を `Master` に precomp として読み込んだ際の動作を、画・時間・保存形式を変えず高速化するフル PLAN を作る。実装は本セッションの対象外。
+- **調査対象**: `mafter-project (12).purini remix (1).zip`（589,976,631 bytes、`project.json` 7,832,665 bytes、13 comps）。`Master=30fps` の `[0,531)` が `main 1=15fps` の 266 unique child framesを参照するため、現行は 265/531（49.9%）が同一 child frame の再解決・再描画。lyric precomp 3件に計23,146 keyframes、hot interval `main 1` f188〜204 で 3D-extrude text 最大45枚同時可視。
+- **コード上の主要候補**: `renderNestedComp` の同一 child frame 再実行、nested style/effect/SVG の毎frame同期、`findSegment` の線形走査、`applyGeom3DText` が mesh cache hit 前に outline/nonzero 正規化を実行、共有 canvas の `Geom3DGlState.lastMesh` 1件による mesh 切替ごとの3 buffer再upload。
+- **成果物**: [doc/cloudplan/master-nested-composite-performance-plan.md](doc/cloudplan/master-nested-composite-performance-plan.md)。非破壊契約、baseline fixture/計測、段階実装、invalidation、preview/export/bundle検証、rollback、DoDを記載。
+- **推奨 next step**: PLAN Phase 0のみ着手し、spec §23.3への散文追記 → 小型real/synthetic fixture → `bench-master-nested-live.mjs` baselineを固定する。コード最適化は baseline で順位を再確認してから、1 phaseずつ実装する。
+
 ### 2026-07-16（Claude Opus 4.8）— ネスト共有 canvas の mp4/webm/HTML bundle parity を verify ＋ bundle の 3D text 消失を修正
 
 - **やったこと**: 8a79b28 で残っていた「mp4/webm/HTML bundle でのネスト共有 parity 未確認」を実機で潰した。新規 [verify-nested-geom3d-share-export.mjs](verify-nested-geom3d-share-export.mjs)。
