@@ -1,0 +1,50 @@
+{
+  "when": "2026-07-18T13:18:46.780Z",
+  "frames": [
+    0,
+    6,
+    14
+  ],
+  "modes": [
+    "multiply",
+    "screen",
+    "overlay",
+    "darken",
+    "lighten",
+    "color-dodge",
+    "color-burn",
+    "hard-light",
+    "soft-light",
+    "difference",
+    "exclusion",
+    "hue",
+    "saturation",
+    "color",
+    "luminosity"
+  ],
+  "gpuFramesExecuted": 3,
+  "perFrame": {
+    "0": {
+      "maxAbs": 1,
+      "mean": 0.0348,
+      "over": 0,
+      "ok": true,
+      "samples": 2073600
+    },
+    "6": {
+      "maxAbs": 1,
+      "mean": 0.0348,
+      "over": 0,
+      "ok": true,
+      "samples": 2073600
+    },
+    "14": {
+      "maxAbs": 1,
+      "mean": 0.0348,
+      "over": 0,
+      "ok": true,
+      "samples": 2073600
+    }
+  },
+  "pageErrors": []
+}

@@ -25,6 +25,7 @@ import { type FilterRegion } from "./effectRaster";
 import { Canvas2DCompositor } from "./compositor/Canvas2DCompositor";
 import { WebGl2Compositor, canUseWebGl2Compositor } from "./compositor/WebGL2Compositor";
 import { isGpuCompositorEnabled } from "./compositor/gpuCompositorFlag";
+import { isGpuEffectSupported } from "./compositor/gpuEffectRegistry";
 import { globalPluginRegistry } from "./pluginRegistry";
 import type { ResolvedEffect } from "./resolved";
 import type { BlendMode } from "../core/schema";
@@ -264,22 +265,33 @@ export async function compositeExportFrame(
   const perspectiveOrigin = root.style.perspectiveOrigin || "50% 50%";
   const layers = src.getExportLayers();
 
-  // §Phase 2 GPU 経路（flag ON かつ WebGL2 対応時のみ）: adjustment が無く全レイヤ normal blend の
-  // フレームは WebGL2Compositor で normal 累積する。それ以外は従来 Canvas2D（挙動不変）。
-  // GPU 対象フレームは capture を先に集めてから合成するので、GL 失敗時は同じ capture を使って
-  // Canvas2D へ無コスト fallback できる（再 capture 不要）。matte は capture 段で焼込済（責務外）。
+  // §Phase 2/3a/4 GPU 経路（flag ON かつ WebGL2 対応時のみ）:
+  //   - normal blend: fixed-function 高速パス（Phase 2）
+  //   - 非 normal 15 blend: ping-pong shader パス（Phase 3a）
+  //   - adjustment: chain が GPU 可能（CSS/SVG filter 無し + rasterChain 全 effect に GPU pass あり・
+  //     現状 mosaic のみ）なフレームのみ GPU（Phase 4）。それ以外の adjustment は丸ごと Canvas2D（CPU bridge）。
+  // GPU 対象フレームは capture を先に集めてから合成するので、GL 失敗時は同じ capture/op 列で Canvas2D へ
+  // 無コスト fallback できる（再 capture 不要）。matte は capture 段で焼込済（責務外）。
   const gpuEligible =
     isGpuCompositorEnabled()
     && canUseWebGl2Compositor()
-    && layers.every((l) => !l.isAdjustment && l.blendMode === "normal");
+    && layers.every((l) => !l.isAdjustment || (l.exportChain != null && isGpuAdjustmentChain(l.exportChain)));
 
   let master: HTMLCanvasElement;
   if (gpuEligible) {
-    const subs: HTMLCanvasElement[] = [];
+    const ops: GpuOp[] = [];
     for (const layer of layers) {
-      subs.push(await captureLayerNode(layer.div, perspective, perspectiveOrigin, nw, nh));
+      if (layer.isAdjustment) {
+        if (layer.exportChain) ops.push({ kind: "adjust", chain: layer.exportChain });
+        continue;
+      }
+      ops.push({
+        kind: "draw",
+        canvas: await captureLayerNode(layer.div, perspective, perspectiveOrigin, nw, nh),
+        blendMode: layer.blendMode,
+      });
     }
-    master = compositeNormalLayers(subs, nw, nh, bg);
+    master = await compositeGpuOps(ops, nw, nh, bg);
   } else {
     const compositor = new Canvas2DCompositor(nw, nh, bg);
     for (const layer of layers) {
@@ -299,24 +311,53 @@ export async function compositeExportFrame(
   return scaled;
 }
 
+/** z 順の GPU 合成オペレーション（capture 済みレイヤ描画 or 調整 chain 適用）。 */
+type GpuOp =
+  | { kind: "draw"; canvas: HTMLCanvasElement; blendMode: BlendMode }
+  | { kind: "adjust"; chain: ExportChain };
+
 /**
- * normal blend の captured レイヤ列を z 順で 1 枚へ合成する。WebGL2 を試し、GL 失敗時は
- * 同じ capture 群で Canvas2D へ fallback する（挙動は許容差内一致・parity harness で検証）。
+ * adjustment の effect chain が GPU で実行可能か。CSS/SVG filter（pre/post）を持たず、rasterChain の
+ * 全 effect に GPU pass がある（現状 mosaic のみ）場合に true（§7 案A・chain 単位で全落ち or 全 GPU）。
+ * rasterChain が空（純 CSS filter 調整など）は false → CPU へ（GPU 化しても無意味）。
  */
-function compositeNormalLayers(
-  subs: HTMLCanvasElement[],
+function isGpuAdjustmentChain(chain: ExportChain): boolean {
+  if (chain.preFilterStr || chain.postFilterStr) return false;
+  if (chain.rasterChain.length === 0) return false;
+  return chain.rasterChain.every((e) => isGpuEffectSupported(e.effect.type));
+}
+
+/**
+ * z 順 op 列を 1 枚へ GPU 合成する。全 op が normal draw なら Phase 2 の fixed-function 高速パス、
+ * 非 normal blend / adjustment を含めば ping-pong パス（Phase 3a/4）。GL 失敗時は同じ op 列で
+ * Canvas2D へ fallback する（挙動は許容差内一致・parity harness で検証）。
+ */
+async function compositeGpuOps(
+  ops: GpuOp[],
   nw: number,
   nh: number,
   bg: string,
-): HTMLCanvasElement {
+): Promise<HTMLCanvasElement> {
+  const hasAdjust = ops.some((o) => o.kind === "adjust");
+  const allNormalDraw = !hasAdjust && ops.every((o) => o.kind === "draw" && o.blendMode === "normal");
   try {
     const gl = new WebGl2Compositor(nw, nh, bg);
-    for (const sub of subs) gl.drawLayer(sub, "normal");
+    if (allNormalDraw) {
+      for (const o of ops) if (o.kind === "draw") gl.drawLayer(o.canvas, "normal");
+    } else {
+      for (const o of ops) {
+        if (o.kind === "draw") gl.drawLayerBlend(o.canvas, o.blendMode);
+        else await gl.applyAdjustment(o.chain, nw, nh);
+      }
+    }
     return gl.finish();
   } catch {
     WebGl2Compositor.releaseLock();
     const cpu = new Canvas2DCompositor(nw, nh, bg);
-    for (const sub of subs) cpu.drawLayer(sub, "normal");
+    for (const o of ops) {
+      if (o.kind === "draw") cpu.drawLayer(o.canvas, o.blendMode);
+      else await cpu.applyAdjustment(o.chain, nw, nh);
+    }
     return cpu.finish();
   }
 }

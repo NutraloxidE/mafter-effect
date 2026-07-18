@@ -189,6 +189,28 @@ const gpuEffectPasses = new Map<string, GpuEffectPass>();
 >
 > **重要な設計知見（実装で判明）**: export の slow path は **blend / adjustment / nested / 3D のいずれかがある**フレームだけが入る（全 normal は fast 単一 capture 経路で compositor に来ない）。よって Phase 2 の gpuEligible（全 normal）フレームは **3D・nested-composite シーンに限られる**。重い一般ケース（blend + adjustment）で GPU 利得を出すには **Phase 3（blend shader + adjustment）が必須**。Phase 2 は「context/pool/upload/shader/parity/fallback/flag」の検証済み土台を提供し、Phase 3 がその上に blend/matte/adjustment を載せる。
 
+### Phase 3a — 15 blend mode を GPU へ ✅ 実装済み（2026-07-18）
+
+> **実装記録**: `WebGl2Compositor` に blend ping-pong FBO パスを追加（`drawLayerBlend` / `BLEND_FRAGMENT_SRC`）。
+> 15 CSS mix-blend-mode を W3C Compositing & Blending の式で shader 実装（分離 11 種 + 非分離 hue/saturation/color/luminosity）。
+> backdrop は premultiplied RGBA8 accumulator、source は straight upload、`csb=(1-αb)Cs+αb·B` → premultiplied source-over
+> を fragment で明示計算（**sRGB のまま・linear 変換なし**）。normal は既存 fixed-function 高速パスを byte 不変で温存し、
+> 非 normal blend を1つでも含むフレームは全レイヤを ping-pong パスへ（normal も mode=0 で同パス）。context は Phase 2 の
+> module singleton を共有（レイヤ数比例で増えない）。GL 失敗時は同一 capture 群で Canvas2D へ無コスト fallback。
+> `exportComposite.ts` の `gpuEligible` を「adjustment 無しフレーム全体」に拡張（**adjustment は当面 CPU bridge**・
+> 丸ごと Canvas2D へ）。matte は capture 段で焼込済（責務外）。nested（`compositeContainer`）は Canvas2D のまま。
+>
+> **検証**（`npm run dev` + Playwright・既定 OFF で本番挙動は現状と完全一致）:
+> - **default 経路（flag OFF）byte 不変**: `bench-gpu-raster-parity.mjs` 全フレーム MATCH。
+> - **GPU normal parity（Phase 2 無回帰）**: `bench-gpu-raster-compositor-parity.mjs` maxAbs=0（byte-identical）。
+> - **GPU blend parity（新規・flag ON）**: `bench-gpu-raster-blend-parity.mjs`（15 mode 全部 + AA text エッジの fixture）で
+>   **maxAbs=1 / mean=0.035 / ≤2/255 超過ピクセル 0**、GPU 実走 counter=3。
+> - `tsc` 緑 / vitest 1310 passed（既存 2 failure = `effects.test liquidChrome 再登録`・`projectBins treeOrder` flaky は
+>   本変更前から失敗・無関係、stash で確認済み）/ `playerBuildFreshness` 緑（`exportComposite` は player 非 import）。
+>
+> **未対応（この Phase の非目標）**: adjustment の GPU ping-pong（CPU bridge のまま）/ live track matte の GPU 委譲 /
+> builtin raster effect の GPU 化（= Phase 4）。これらを含むフレームは従来どおり Canvas2D へ落ちる。
+
 ### Phase 3 — matte / blend / adjustment を GPU へ
 
 - **変更 symbol / shader**:
@@ -200,6 +222,30 @@ const gpuEffectPasses = new Map<string, GpuEffectPass>();
   - `verify-track-matte.mjs` / `verify-blend-mode.mjs` / `verify-export-adjustment.mjs` が GPU 経路で許容差内 PASS、CPU 経路は byte 不変。
   - nested comp（`compositeContainer` 再帰）の parity を含む（fixture E）。
 - **rollback**: matte/blend/adjustment を個別 flag で CPU backend に戻す（passes は独立）。
+
+### Phase 4（着手）— builtin GPU effects: mosaic + GPU adjustment 経路 ✅ 実装済み（2026-07-18）
+
+> **実装記録**: engine-private な `compositor/gpuEffectRegistry.ts`（`isGpuEffectSupported(type)`・現状 `mosaic` のみ）を
+> 新設し、`EffectDef` / `executionPath` は不変（§3・Plugin API v1 非破壊）。`WebGl2Compositor.applyAdjustment` を実装
+> （従来 throw → CPU bridge）: 調整 chain の rasterChain を GPU pass で適用する。**mosaic** は CPU `blockAverage`
+> （`pixelSort.ts`）を reference に **2-pass shader**（downsample: blockSize ごとの straight RGBA 平均を temp FBO へ →
+> upsample: premultiplied で accumulator へ戻す）で実装。CPU と一致させるため **top-origin ブロック index** で走査し、
+> 部分エッジブロックは範囲内ピクセルのみ（count）で平均、per-channel は 8-bit 量子化（Math.round 相当）。総サンプル数は
+> ブロックサイズに依らず O(w·h)（各ソース texel を 1 回）なので任意 blockSize で軽量。
+>
+> `exportComposite.ts`: 合成入力を z 順の **op 列**（`draw`=capture 済みレイヤ / `adjust`=exportChain）へ再構成し
+> `compositeGpuOps` で GPU 実行。`gpuEligible` を「adjustment が `isGpuAdjustmentChain`（CSS/SVG filter 無し AND
+> rasterChain 全 effect が GPU 可）を満たすフレーム」まで拡張。**未対応 effect / CSS filter を含む調整は従来どおり
+> 丸ごと Canvas2D（§7 案A・chain 単位で全落ち）**。GL 失敗時は同じ op 列で Canvas2D へ無コスト fallback。
+>
+> **検証**（既定 OFF で本番挙動は現状と完全一致）:
+> - default byte-identical / GPU normal maxAbs=0 / GPU blend maxAbs=1 = **無回帰**（既存 3 gate 全 PASS）。
+> - **GPU mosaic adjustment parity（新規）**: `bench-gpu-raster-mosaic-parity.mjs`（mosaic raster 調整・**540/16 の
+>   部分エッジブロック込み**）で **maxAbs=1 / mean=0.0017 / ≤2/255 超過 0**、GPU 実走 counter=3。
+> - `tsc` 緑 / vitest 1310 passed（既存 2 fail 無関係）/ 新規 `test/gpuCompositorMapping.test.ts`（blend id / effect レジストリの純関数契約）。
+>
+> **残**: 他 raster effect（wave/ripple/turbulentDisplace/pixelSorter）の GPU pass は未実装（chain に含むと当該調整は
+> CPU 全落ち）。CSS/SVG filter を持つ live 調整の GPU 化は対象外（案A のまま）。
 
 ### Phase 4 — builtin GPU effects（CPU reference は残す）
 

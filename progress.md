@@ -2546,17 +2546,20 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
 
 このブランチには**2系統**の作業がある。別セッション/ブランチで続ける想定。
 
-### A. GPU Raster Pipeline（Phase 0–2 完了・**既定 OFF で本番挙動は現状と完全一致**）
+### A. GPU Raster Pipeline（Phase 0–3a + Phase 4(mosaic) 完了・**既定 OFF で本番挙動は現状と完全一致**）
 
 - **完了物**:
-  - 計画: `doc/cloudplan/gpu-raster-pipeline-design.md`（Phase 別・変更 symbol・受け入れ・rollback つき。Phase 0/1/2 に実装記録 ✅）
+  - 計画: `doc/cloudplan/gpu-raster-pipeline-design.md`（Phase 別・変更 symbol・受け入れ・rollback つき。Phase 0/1/2/3a/4 に実装記録 ✅）
   - Phase 0 計測: `doc/cloudplan/gpu-raster-bench-phase0.md` + `bench-gpu-raster-baseline.mjs`(preview) / `bench-gpu-raster-export-baseline.mjs`(export) + `.json`
   - Phase 1: `src/runtime/compositor/RasterCompositor.ts` + `Canvas2DCompositor.ts`（`exportComposite.ts` の z 順累積+調整を seam 化・**byte-identical**）
   - Phase 2: `src/runtime/compositor/WebGL2Compositor.ts` + `gpuCompositorFlag.ts`（normal composite の WebGL2 backend・**既定 OFF**・GPU vs CPU **byte-identical** 確認）
-- **回帰ゲート（恒久）**: `bench-gpu-raster-parity.mjs`（`captureCompFramePng` golden・byte 一致）/ `bench-gpu-raster-compositor-parity.mjs`（GPU parity・`globalThis.__mafterGpuCompositor=true` で GPU 経路）
+  - Phase 3a: `WebGl2Compositor` に **15 CSS mix-blend-mode の GPU shader**（ping-pong FBO・W3C 合成式・sRGB 据置き）。`gpuEligible` を adjustment 無しフレーム全体へ拡張。normal 高速パスは byte 不変で温存。
+  - Phase 4(mosaic): `compositor/gpuEffectRegistry.ts`（`isGpuEffectSupported`・現状 mosaic のみ）+ `WebGl2Compositor.applyAdjustment`（GPU 調整経路）。**mosaic を 2-pass shader（top-origin blockAverage・部分エッジ込み・O(w·h)）で GPU 化**。`exportComposite` を z 順 op 列（draw/adjust）へ再構成し、`isGpuAdjustmentChain`（CSS filter 無し AND rasterChain 全 GPU 可）を満たす調整フレームのみ GPU、他は Canvas2D 全落ち（§7 案A）。
+- **回帰ゲート（恒久）**: `bench-gpu-raster-parity.mjs`（default byte 一致）/ `bench-gpu-raster-compositor-parity.mjs`（GPU normal）/ `bench-gpu-raster-blend-parity.mjs`（GPU 15 blend）/ `bench-gpu-raster-mosaic-parity.mjs`（**GPU mosaic 調整・新規**）+ `test/gpuCompositorMapping.test.ts`（純関数契約）。GPU 経路は `globalThis.__mafterGpuCompositor=true` で。
+- **検証結果（2026-07-18）**: default byte-identical / GPU normal maxAbs=0 / GPU blend maxAbs=1（15 mode + AA text）/ **GPU mosaic 調整 maxAbs=1・mean=0.0017・≤2/255 超過 0**（540/16 部分エッジ込み）・各 GPU 実走 3。tsc 緑 / vitest 1310 passed（既存 2 fail = liquidChrome 再登録・projectBins treeOrder flaky・無関係、stash 確認済み）。
 - **実測ベースライン（1280×720/9+4 層）**: preview cold **196.8ms**, export PNG **253.8ms**。支配コスト = capture(svg decode ~71-73ms/frame) + export の **drawImage 累積 63ms/frame**。preview の readPixels は現状 0。
-- **重要な設計知見**: export の slow path は blend/adjustment/nested/3D のいずれかで入る → Phase 2 の gpuEligible(全 normal) は 3D・nested シーンに限られる。**重い一般ケース(blend+adjustment)の GPU 利得には Phase 3 が必須**。
-- **次にやること（Phase 3）**: track matte shader / 15 blend shader / adjustment ping-pong。**中核判断 = 15 blend の parity 許容差・色空間(sRGB 据置き推奨)・premultiplied 丸め** → **着手前にユーザー確認**（前回ユーザー承認は Phase 2 まで）。私の推奨: 許容差 ≤2/255・sRGB 維持・adjustment は当面 CPU bridge。
+- **重要な設計知見**: export の slow path は blend/adjustment/nested/3D のいずれかで入る。Phase 3a で blend、Phase 4 で **mosaic 調整**が GPU 化。残る CPU 固定は「mosaic 以外の raster effect / CSS filter を含む調整」フレーム（丸ごと Canvas2D）。
+- **次にやること**: (1) 他 raster effect の GpuEffectPass（`wave`/`ripple`/`turbulentDisplace` = displacement 系。CPU reference と parity ≤2/255）。増えるほど adjustment の GPU 化率が上がる。(2) Phase 5（readback 排除・preview↔export 統合）。(3) live track matte の GPU 委譲（preview 経路・別サブシステム）。いずれも parity 許容差 ≤2/255・sRGB 維持で確定済み。実測ベンチ（GPU 経路の frame time 改善）はまだ未計測。
 - **有効化**: dev で `globalThis.__mafterGpuCompositor = true`（非直列化。既定 OFF なので本番無影響）。
 
 ### B. 「再生中に調整レイヤーが効かない / Cache OFF で全部消える」バグ（調査完了・**部分修正のみ**・症状は未再現）
