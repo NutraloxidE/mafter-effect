@@ -2539,3 +2539,39 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
 - **入れた修正（footgun・無回帰）**: `PreviewPanel.tsx` の **DomRenderer 生成 effect の依存から `effectiveCacheEnabled` を除去**。従来はキャッシュ ON/OFF のたびに `dispose()`→`new DomRenderer()` でレンダラを作り直しており（DOM 空化・再生中は render effect が `draftPlaybackActive` で早期 return するため再描画されない → 「Cache OFF で消える」の妥当な機序）、キャッシュの付け外しは別 effect の `setFrameRenderCache`/`setNestedCompRasterizer`（442-449）が担うのでレンダラ再生成は不要。**tsc 緑 / full suite 1311/1312（唯一の fail は既存 liquidChrome。`projectBins > treeOrder` は baseline でも ~1/3 落ちる pre-existing flaky で本変更と無関係）**。
 - **正直な限界**: この修正は「レンダラをキャッシュトグルで作り直さない」という妥当な改善だが、**症状（消える／効かない）を synthetic で再現できていない**ため症状解消は未実証。ユーザの実プロジェクトでの確認が必要。
 - **Next steps**: 症状 1/2 の確定再現には**実 Comp（調整 enabled・カメラ・displacement 調整つき）を ~30MB 以下に trim して import 可能な形**でもらうのが最短。もらえれば measure 駆動で根因を確定し完全修正する。それまでは上記 footgun 修正のみ（実機での効果確認をユーザに依頼）。
+
+---
+
+## 2026-07-17 セッション終了・引き継ぎ（Claude Opus 4.8）— branch `claude/implementation-plan-concrete-e5889v`
+
+このブランチには**2系統**の作業がある。別セッション/ブランチで続ける想定。
+
+### A. GPU Raster Pipeline（Phase 0–2 完了・**既定 OFF で本番挙動は現状と完全一致**）
+
+- **完了物**:
+  - 計画: `doc/cloudplan/gpu-raster-pipeline-design.md`（Phase 別・変更 symbol・受け入れ・rollback つき。Phase 0/1/2 に実装記録 ✅）
+  - Phase 0 計測: `doc/cloudplan/gpu-raster-bench-phase0.md` + `bench-gpu-raster-baseline.mjs`(preview) / `bench-gpu-raster-export-baseline.mjs`(export) + `.json`
+  - Phase 1: `src/runtime/compositor/RasterCompositor.ts` + `Canvas2DCompositor.ts`（`exportComposite.ts` の z 順累積+調整を seam 化・**byte-identical**）
+  - Phase 2: `src/runtime/compositor/WebGL2Compositor.ts` + `gpuCompositorFlag.ts`（normal composite の WebGL2 backend・**既定 OFF**・GPU vs CPU **byte-identical** 確認）
+- **回帰ゲート（恒久）**: `bench-gpu-raster-parity.mjs`（`captureCompFramePng` golden・byte 一致）/ `bench-gpu-raster-compositor-parity.mjs`（GPU parity・`globalThis.__mafterGpuCompositor=true` で GPU 経路）
+- **実測ベースライン（1280×720/9+4 層）**: preview cold **196.8ms**, export PNG **253.8ms**。支配コスト = capture(svg decode ~71-73ms/frame) + export の **drawImage 累積 63ms/frame**。preview の readPixels は現状 0。
+- **重要な設計知見**: export の slow path は blend/adjustment/nested/3D のいずれかで入る → Phase 2 の gpuEligible(全 normal) は 3D・nested シーンに限られる。**重い一般ケース(blend+adjustment)の GPU 利得には Phase 3 が必須**。
+- **次にやること（Phase 3）**: track matte shader / 15 blend shader / adjustment ping-pong。**中核判断 = 15 blend の parity 許容差・色空間(sRGB 据置き推奨)・premultiplied 丸め** → **着手前にユーザー確認**（前回ユーザー承認は Phase 2 まで）。私の推奨: 許容差 ≤2/255・sRGB 維持・adjustment は当面 CPU bridge。
+- **有効化**: dev で `globalThis.__mafterGpuCompositor = true`（非直列化。既定 OFF なので本番無影響）。
+
+### B. 「再生中に調整レイヤーが効かない / Cache OFF で全部消える」バグ（調査完了・**部分修正のみ**・症状は未再現）
+
+- **報告症状**: 調整レイヤーの**表示(enabled)トグル**→効く／プレビュー**再生し続ける**→効かない。加えて「live→cache overlay→Cache OFF で全部消える」。時系列でバラバラのテキスト/3Dテキスト層 + 調整レイヤーが全尺で最前面、という構成。
+- **入れた修正（コミット済み・無回帰）**: `PreviewPanel.tsx` の DomRenderer 生成 effect の依存から `effectiveCacheEnabled` を除去（キャッシュ ON/OFF でレンダラを dispose→new し DOM 空化する footgun。再生中は render effect が `draftPlaybackActive` で早期 return し再描画されないため「消える」機序になりうる）。tsc 緑 / full suite 1311/1312（唯一 fail は既存 liquidChrome）。
+- **切り分けで確定した事実**:
+  - GPU 作業(A)は export のみ・byte 検証済みで**無関係**。前回の z-index 修正も intact。
+  - **live 再生ループは調整を落とさない**（実測）。
+  - **live≠baked parity バグは無い**（enabled にすれば baked=`compositeExportFrame` も調整を焼く。Comp7 baked f=20 で ON/OFF changed 4.86%）。
+- **synthetic で再現できなかった（重要）**: staggered inPoint / 2D・3D 層+カメラ / **cache overlay を実際に表示させた状態** / 連続再生 / 調整 enable-disable いずれの組み合わせでも**調整は全層で正しく効く**。→ 症状は**実プロジェクト固有**。
+- **最有力仮説（未検証）**: 実際の **3D-extrude text（geom3d の WebGL canvas）が、オフスクリーンのキャッシュ焼き込み context（`compFrameCapture` が別 `DomRenderer` を生成）で正しく描かれず**、baked/overlay フレームから 3D text が欠落 or 調整未適用になる。synthetic ではフォント＋押し出しメッシュが要り再現不可。
+- **次にやること**: 症状が出る **Comp を動画アセット除いて ~30MB 以下に trim（調整 enabled・3D-extrude text・カメラ込み）した zip** を import して再現 → measure 駆動で `compFrameCapture` のオフスクリーン geom3d/WebGL 経路を疑って局在化。**82MB フル import はブラウザ OOM**。
+- **再現ハーネスの落とし穴メモ（次セッション用）**:
+  1. `_pj17` の Comp 7 は**調整4枚が enabled=false 保存**（計測を濁す。enabled にして測ること）。
+  2. **白テキスト+tint は彩度に写らない** → 色付き層 or 輝度で測る。
+  3. **cache overlay を出す**には小 work area を全 frame scrub で焼いてから再生（再生中は build が pause する）。auto-cache は `mosaic`/full displacement 等 `compRequiresPreviewBake` で起動。overlay 表示 = live root が `visibility:hidden`。
+  4. Playwright の checkbox クリックは rAF 再生中に stability timeout する → `evaluate` で native `cb.click()`。
