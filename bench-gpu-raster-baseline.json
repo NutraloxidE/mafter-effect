@@ -1,0 +1,105 @@
+{
+  "when": "2026-07-17T08:04:46.132Z",
+  "note": "Phase 0 baseline — current CPU raster/composite pipeline (foreignObject capture + Canvas2D). GPU 化後の比較基準。",
+  "fixture": {
+    "mainId": "01KXQHNZ6KG3XJPDWQHZ4373N6",
+    "innerId": "01KXQHNZ6CV25PSSNHWXQ9P8R6",
+    "mainSize": [
+      1280,
+      720
+    ],
+    "rasterSize": [
+      640,
+      360
+    ],
+    "layerCount": 9,
+    "innerLayerCount": 4
+  },
+  "cold": {
+    "label": "cold-scrub (distinct frames, cache miss)",
+    "frames": 48,
+    "avgFrameMs": 196.8,
+    "p50FrameMs": 192.8,
+    "p95FrameMs": 235.5,
+    "maxFrameMs": 278.3,
+    "apiDelta": {
+      "getImageData": {
+        "n": 191,
+        "ms": 496.3
+      },
+      "putImageData": {
+        "n": 143,
+        "ms": 72
+      },
+      "drawImage": {
+        "n": 191,
+        "ms": 416.6
+      },
+      "toDataURL": {
+        "n": 141,
+        "ms": 546.6
+      },
+      "createImageBitmap": {
+        "n": 0,
+        "ms": 0
+      },
+      "readPixels": {
+        "n": 0,
+        "ms": 0
+      },
+      "imageDecode": {
+        "n": 191,
+        "ms": 3513.8
+      }
+    }
+  },
+  "warm": {
+    "label": "warm-scrub (re-scrub, cache hit)",
+    "frames": 48,
+    "avgFrameMs": 183.5,
+    "p50FrameMs": 183.3,
+    "p95FrameMs": 192.8,
+    "maxFrameMs": 199.9,
+    "apiDelta": {
+      "getImageData": {
+        "n": 192,
+        "ms": 411.4
+      },
+      "putImageData": {
+        "n": 144,
+        "ms": 66
+      },
+      "drawImage": {
+        "n": 192,
+        "ms": 384.6
+      },
+      "toDataURL": {
+        "n": 144,
+        "ms": 552.6
+      },
+      "createImageBitmap": {
+        "n": 0,
+        "ms": 0
+      },
+      "readPixels": {
+        "n": 0,
+        "ms": 0
+      },
+      "imageDecode": {
+        "n": 192,
+        "ms": 3403.3
+      }
+    }
+  },
+  "pageErrors": [],
+  "interpretation": {
+    "readPixelsInPreview": 0,
+    "getImageDataInPreview": 191,
+    "putImageDataInPreview": 143,
+    "toDataURLInPreview": 141,
+    "imageDecodeInPreview": {
+      "n": 191,
+      "ms": 3513.8
+    }
+  }
+}

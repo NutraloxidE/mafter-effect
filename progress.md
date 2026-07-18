@@ -2495,3 +2495,83 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
 - **Next steps**: なし（打ち止め）。WP-4 の transform/opacity キャッシュは維持。将来 clearMatteSourceStyle が触る style を last-value キャッシュする際は同じ罠に注意。
 - **無回帰 verify（2026-07-17 追加実行・env を https/chrome channel に合わせて実行）**:
   `verify-nested-reconcile`（WP-2 sibling）PASS / `verify-track-matte` 実チェック 8/8 PASS（唯一の fail は既知 favicon 404 ノイズゲート）/ `verify-blend-mode` PASS / `verify-export-adjustment`（INV-2 preview↔export の調整 effect bake parity）PASS。本修正は top-level `applyObject` の zIndex 書込のみ・全 render path 共有経路のため INV-2 は構造的に保持。
+
+### 2026-07-17（Claude Opus 4.8）— GPU Raster Pipeline 設計 + Phase 0 ベースライン計測 ✅
+
+- **背景**: ユーザー提供の設計ブリーフ（`gpurasterpipelineoptimizationideas1.md`）を実コードと突き合わせ、着手可能な粒度の実装計画へ落とし込む依頼。続けて「人間確認が不要な範囲をぶん回す」指示を受け、Phase 0（計測・挙動変更なし）まで実施。
+- **成果物1: `doc/cloudplan/gpu-raster-pipeline-design.md`** — 実 symbol/call path で裏付けた実装計画。現行経路（preview live/raster・`compositeExportFrame` z 順コンポジタ・`compFrameCapture`・既存 per-layer WebGL）を確認し、中核判断＝「`DomRenderer`+foreignObject は残し、`exportComposite.ts` の z 順コンポジタと preview raster overlay を共有 WebGL2 compositor の seam に置換」。`executionPath` 不変・GPU 実装は engine-private レジストリに隔離（Plugin API v1 非破壊）。Phase 0(計測)→1(Canvas2D seam byte 不変)→2(WebGL2 normal composite)→3(matte/blend/adjustment)→4(builtin GPU effects)→5(readback 排除)→6/7 保留。各 Phase に変更 symbol・受け入れ・rollback。INV-1〜6/preview≡export/serialization/Plugin API 影響を整理。
+- **成果物2: Phase 0 計測**（source 非改変・page-only monkey-patch）:
+  - `bench-gpu-raster-baseline.mjs`（root）: 重い composite（raster mosaic/wave + blend×3 + track matte + raster adjustment + nested precomp）を store API で構築し、preview scrub 48 フレームを実 Chrome で駆動。`getImageData`/`putImageData`/`drawImage`/`toDataURL`/`createImageBitmap`/`readPixels`/`<img>svg decode` を wrap して call 数・累積 ms を集計。→ `bench-gpu-raster-baseline.json`。
+  - `doc/cloudplan/gpu-raster-bench-phase0.md`: 結果と読み取り。
+- **実測（1280×720 / 9+4 レイヤー・pageErrors 0）**:
+  - フレーム時間: cold **196.8ms** / warm **183.5ms**（≈5fps）。
+  - 内訳（cold・1frame）: **`<img>svg decode` 4回/73.2ms（最大）** / `toDataURL` 11.4ms / `getImageData` 10.3ms / `drawImage` 8.7ms / `putImageData` 1.5ms / **`readPixels` 0**。
+  - **主要知見**: (1) capture（foreignObject SVG decode）が単独で支配的 → 合成のみ GPU 化（Phase 2）だけでは capture コストが残り、**Phase 6 HTML-in-Canvas / cache L1 表現最適化の価値が数値上高い**。(2) getImageData/putImageData 往復が実在（plan §6.1/§6.3 の GPU 対象を裏付け）。(3) **preview に readPixels 現状ゼロ**（plan §7.1 の監視基準）。(4) **warm≒cold（差~7%）＝ `frameRenderCache` が interactive re-scrub でヒットしていない**（要 Phase 0 追補・GPU 化と独立に効きうる）。
+- **不変性**: source 変更なし（計測は page monkey-patch のみ）。`npm run build:player` 不要（runtime 非改変）。INV・§5・直列化いずれも無影響。
+- **成果物3: export 経路 baseline**（追加取得済み）:
+  - `bench-gpu-raster-export-baseline.mjs` → `.json`: 同一 fixture を PNG 連番で決定論 export（`exportComposition` を page から Vite dynamic-import で駆動・WebCodecs 非依存）。primary GPU target の `compositeExportFrame`（per-layer capture + Canvas2D z 順累積 + `applyAdjustmentToMaster`）を実測。
+  - **実測（24fr / 1280×720・ok・pageErrors 0）**: avg **253.8ms/frame**。内訳: `<img>svg decode` 13回/70.8ms + **`drawImage` 累積 23回/63.4ms** + `getImageData` 14.1ms + `toDataURL` 15.3ms + `putImageData` 2ms、`readPixels` 0。
+  - **知見**: export のボトルネックは capture(71ms) + **drawImage 累積(63ms)** の 2 本柱。preview（live CSS blend で drawImage 僅少）と違い export は z 順 Canvas2D 累積が重く、**合成 GPU 化の効果は preview より export で大きい**ことが確定 → plan の Decision（`compositeExportFrame` を最初の GPU compositor 宿主にする）を数値で支持。
+- **成果物4: Phase 1 実装（`Canvas2DCompositor` seam・byte 不変）** ✅:
+  - 新設 `src/runtime/compositor/RasterCompositor.ts`（interface）+ `Canvas2DCompositor.ts`（reference backend）。将来 WebGL2 backend を同 interface で差し込む seam。責務は「master への合成」のみに閉じ、DOM capture（foreignObject / perspective / nested 再帰）は `exportComposite.ts` 側に残す。
+  - `exportComposite.ts`: `compositeExportFrame` / `compositeContainer` の master 累積 + `applyAdjustmentToMaster`（削除）を compositor 呼び出しへ置換。**同一 Canvas2D オペレーション・同順**のため byte-identical。diff −51/+10。
+  - **新規 parity ゲート `bench-gpu-raster-parity.mjs`** + `bench-gpu-raster-parity.golden.json`: `captureCompFramePng`（RAM preview 経路＝内部で `compositeExportFrame` 使用）の PNG を FNV-1a hash 比較。**リファクタ前後で全フレーム byte-identical PASS**（同一コード 2 回で決定論も確認済み＝ゲートに歯がある）。
+  - **検証**: `npx tsc --noEmit` 緑 / vitest 1311/1312（唯一の fail `effects.test.ts liquidChrome 再登録` は既存・本変更と無関係）/ `playerBuildFreshness` 緑。`exportComposite` は `src/player` 非 import のため **build:player 不要**（確認済み）。INV/§5/直列化 いずれも非変更。
+- **成果物5: Phase 2 実装（WebGL2 normal-composite backend・flag 既定 OFF）** ✅（ユーザー「推奨で進めて」承認のうえ実施）:
+  - 新設 `src/runtime/compositor/WebGL2Compositor.ts`（`WebGl2Compositor`・module singleton の WebGL2 context・premultiplied source-over・context lost 対応・re-entrancy guard）+ `gpuCompositorFlag.ts`（`globalThis.__mafterGpuCompositor` 非直列化 dev flag・WebGL2 capability 判定・**既定 OFF**）。
+  - `compositeExportFrame` トップレベル slow path に frame-level eligibility（adjustment 無し AND 全レイヤ normal）を追加。eligible かつ flag ON かつ WebGL2 対応時のみ GPU 累積。GL 失敗時は捕捉済み capture で Canvas2D へ再 capture 無し fallback。nested（`compositeContainer`）は Canvas2D 据置き＝同時活性 GPU compositor は 1 つ。
+  - **検証**: (1) default（flag OFF）byte 不変 = `bench-gpu-raster-parity.mjs` golden 全 MATCH。(2) **GPU parity（flag ON）= `bench-gpu-raster-compositor-parity.mjs` で CPU vs GPU が maxAbs=0/mean=0 ＝ byte-identical**（3D+全 normal fixture・text 端含む・GPU 実走 counter=3）。(3) `tsc` 緑 / vitest 41/41 / `playerBuildFreshness` 緑（build:player 不要）。INV/§5/直列化 非変更。
+  - **設計知見**: export slow path は blend/adjustment/nested/3D のいずれかで入るため、Phase 2 の gpuEligible（全 normal）フレームは 3D・nested-composite シーンに限られる。重い一般ケース（blend+adjustment）の GPU 利得には **Phase 3（blend shader + adjustment）が必須**。Phase 2 は context/pool/upload/shader/parity/fallback/flag の土台を検証済みで提供。
+- **Next steps**: Phase 3（track matte shader・15 blend shader・adjustment ping-pong）。blend の色空間・premultiplied・丸めの parity 許容差確定が中核判断のため、**着手前にユーザー確認を推奨**。Phase 2 の GPU 経路は既定 OFF なので本番挙動は現状と完全一致。
+
+### 2026-07-17（Claude Opus 4.8）— 「再生中に調整レイヤーが効かない」バグ調査 + preview キャッシュ lifecycle の footgun 修正（症状は synthetic 未再現）
+
+- **報告**: 調整レイヤーの表示(enabled)トグル→効く／プレビュー再生し続ける→効かない。加えて「live→cache→Cache OFF で全部消える」。実環境に未コミット変更なし。
+- **切り分け（実機計測）**:
+  - 私の直近 GPU 作業（Phase 0/1/2・export のみ・byte 検証済み）は無関係。前回の z-index 修正も intact。
+  - **live 再生ループは調整を落とさない**（tint を enabled で 3.5s 再生継続 → paused-ON と距離0で一致）。
+  - 重い(非リアルタイム)comp の再生中は preview が live DOM を `visibility:hidden` にして **RAM キャッシュ overlay（baked=`compositeExportFrame`）に切替**（`PreviewPanel.tsx:1297-1314` / `ramPreview.shouldPreferCacheOverlay`）。
+  - 実 `_pj17` Comp 7 は「調整4枚が enabled=false」で保存されており、当初の「baked が調整を焼けない」計測は**無効調整のため**だった。**enabled にすれば baked も調整を焼く**（Comp7 baked f=20 で ON/OFF changed 4.86%）ことを確認 → **live≠baked parity バグは無い**。
+- **synthetic 再現の結論（cache overlay を実際に表示させた状態で）**:
+  - **「Cache OFF で全部消える」は再現せず**（overlay 表示中に Cache OFF しても content 100%・修正有無に関わらず）。
+  - **「再生中に調整 enable が反映されない」も再現せず**（overlay 表示中に調整を ON → solid 色が [88,82,41]→[82,82,82] と live-ON に一致＝反映される）。
+  - ＝ **クリーンな synthetic では cache/playback/adjustment lifecycle は正しく動く**。ユーザ症状は実プロジェクト固有の重条件（1080p・カメラ・displacement 調整・nested・広い work area 等）依存で、headless 合成では再現できていない。
+- **入れた修正（footgun・無回帰）**: `PreviewPanel.tsx` の **DomRenderer 生成 effect の依存から `effectiveCacheEnabled` を除去**。従来はキャッシュ ON/OFF のたびに `dispose()`→`new DomRenderer()` でレンダラを作り直しており（DOM 空化・再生中は render effect が `draftPlaybackActive` で早期 return するため再描画されない → 「Cache OFF で消える」の妥当な機序）、キャッシュの付け外しは別 effect の `setFrameRenderCache`/`setNestedCompRasterizer`（442-449）が担うのでレンダラ再生成は不要。**tsc 緑 / full suite 1311/1312（唯一の fail は既存 liquidChrome。`projectBins > treeOrder` は baseline でも ~1/3 落ちる pre-existing flaky で本変更と無関係）**。
+- **正直な限界**: この修正は「レンダラをキャッシュトグルで作り直さない」という妥当な改善だが、**症状（消える／効かない）を synthetic で再現できていない**ため症状解消は未実証。ユーザの実プロジェクトでの確認が必要。
+- **Next steps**: 症状 1/2 の確定再現には**実 Comp（調整 enabled・カメラ・displacement 調整つき）を ~30MB 以下に trim して import 可能な形**でもらうのが最短。もらえれば measure 駆動で根因を確定し完全修正する。それまでは上記 footgun 修正のみ（実機での効果確認をユーザに依頼）。
+
+---
+
+## 2026-07-17 セッション終了・引き継ぎ（Claude Opus 4.8）— branch `claude/implementation-plan-concrete-e5889v`
+
+このブランチには**2系統**の作業がある。別セッション/ブランチで続ける想定。
+
+### A. GPU Raster Pipeline（Phase 0–2 完了・**既定 OFF で本番挙動は現状と完全一致**）
+
+- **完了物**:
+  - 計画: `doc/cloudplan/gpu-raster-pipeline-design.md`（Phase 別・変更 symbol・受け入れ・rollback つき。Phase 0/1/2 に実装記録 ✅）
+  - Phase 0 計測: `doc/cloudplan/gpu-raster-bench-phase0.md` + `bench-gpu-raster-baseline.mjs`(preview) / `bench-gpu-raster-export-baseline.mjs`(export) + `.json`
+  - Phase 1: `src/runtime/compositor/RasterCompositor.ts` + `Canvas2DCompositor.ts`（`exportComposite.ts` の z 順累積+調整を seam 化・**byte-identical**）
+  - Phase 2: `src/runtime/compositor/WebGL2Compositor.ts` + `gpuCompositorFlag.ts`（normal composite の WebGL2 backend・**既定 OFF**・GPU vs CPU **byte-identical** 確認）
+- **回帰ゲート（恒久）**: `bench-gpu-raster-parity.mjs`（`captureCompFramePng` golden・byte 一致）/ `bench-gpu-raster-compositor-parity.mjs`（GPU parity・`globalThis.__mafterGpuCompositor=true` で GPU 経路）
+- **実測ベースライン（1280×720/9+4 層）**: preview cold **196.8ms**, export PNG **253.8ms**。支配コスト = capture(svg decode ~71-73ms/frame) + export の **drawImage 累積 63ms/frame**。preview の readPixels は現状 0。
+- **重要な設計知見**: export の slow path は blend/adjustment/nested/3D のいずれかで入る → Phase 2 の gpuEligible(全 normal) は 3D・nested シーンに限られる。**重い一般ケース(blend+adjustment)の GPU 利得には Phase 3 が必須**。
+- **次にやること（Phase 3）**: track matte shader / 15 blend shader / adjustment ping-pong。**中核判断 = 15 blend の parity 許容差・色空間(sRGB 据置き推奨)・premultiplied 丸め** → **着手前にユーザー確認**（前回ユーザー承認は Phase 2 まで）。私の推奨: 許容差 ≤2/255・sRGB 維持・adjustment は当面 CPU bridge。
+- **有効化**: dev で `globalThis.__mafterGpuCompositor = true`（非直列化。既定 OFF なので本番無影響）。
+
+### B. 「再生中に調整レイヤーが効かない / Cache OFF で全部消える」バグ（調査完了・**部分修正のみ**・症状は未再現）
+
+- **報告症状**: 調整レイヤーの**表示(enabled)トグル**→効く／プレビュー**再生し続ける**→効かない。加えて「live→cache overlay→Cache OFF で全部消える」。時系列でバラバラのテキスト/3Dテキスト層 + 調整レイヤーが全尺で最前面、という構成。
+- **入れた修正（コミット済み・無回帰）**: `PreviewPanel.tsx` の DomRenderer 生成 effect の依存から `effectiveCacheEnabled` を除去（キャッシュ ON/OFF でレンダラを dispose→new し DOM 空化する footgun。再生中は render effect が `draftPlaybackActive` で早期 return し再描画されないため「消える」機序になりうる）。tsc 緑 / full suite 1311/1312（唯一 fail は既存 liquidChrome）。
+- **切り分けで確定した事実**:
+  - GPU 作業(A)は export のみ・byte 検証済みで**無関係**。前回の z-index 修正も intact。
+  - **live 再生ループは調整を落とさない**（実測）。
+  - **live≠baked parity バグは無い**（enabled にすれば baked=`compositeExportFrame` も調整を焼く。Comp7 baked f=20 で ON/OFF changed 4.86%）。
+- **synthetic で再現できなかった（重要）**: staggered inPoint / 2D・3D 層+カメラ / **cache overlay を実際に表示させた状態** / 連続再生 / 調整 enable-disable いずれの組み合わせでも**調整は全層で正しく効く**。→ 症状は**実プロジェクト固有**。
+- **最有力仮説（未検証）**: 実際の **3D-extrude text（geom3d の WebGL canvas）が、オフスクリーンのキャッシュ焼き込み context（`compFrameCapture` が別 `DomRenderer` を生成）で正しく描かれず**、baked/overlay フレームから 3D text が欠落 or 調整未適用になる。synthetic ではフォント＋押し出しメッシュが要り再現不可。
+- **次にやること**: 症状が出る **Comp を動画アセット除いて ~30MB 以下に trim（調整 enabled・3D-extrude text・カメラ込み）した zip** を import して再現 → measure 駆動で `compFrameCapture` のオフスクリーン geom3d/WebGL 経路を疑って局在化。**82MB フル import はブラウザ OOM**。
+- **再現ハーネスの落とし穴メモ（次セッション用）**:
+  1. `_pj17` の Comp 7 は**調整4枚が enabled=false 保存**（計測を濁す。enabled にして測ること）。
+  2. **白テキスト+tint は彩度に写らない** → 色付き層 or 輝度で測る。
+  3. **cache overlay を出す**には小 work area を全 frame scrub で焼いてから再生（再生中は build が pause する）。auto-cache は `mosaic`/full displacement 等 `compRequiresPreviewBake` で起動。overlay 表示 = live root が `visibility:hidden`。
+  4. Playwright の checkbox クリックは rAF 再生中に stability timeout する → `evaluate` で native `cb.click()`。

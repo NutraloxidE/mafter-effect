@@ -1,0 +1,30 @@
+{
+  "when": "2026-07-17T09:44:30.004Z",
+  "frames": [
+    0,
+    5,
+    12
+  ],
+  "gpuFramesExecuted": 3,
+  "perFrame": {
+    "0": {
+      "maxAbs": 0,
+      "mean": 0,
+      "ok": true,
+      "samples": 2073600
+    },
+    "5": {
+      "maxAbs": 0,
+      "mean": 0,
+      "ok": true,
+      "samples": 2073600
+    },
+    "12": {
+      "maxAbs": 0,
+      "mean": 0,
+      "ok": true,
+      "samples": 2073600
+    }
+  },
+  "pageErrors": []
+}
