@@ -223,6 +223,30 @@ const gpuEffectPasses = new Map<string, GpuEffectPass>();
   - nested comp（`compositeContainer` 再帰）の parity を含む（fixture E）。
 - **rollback**: matte/blend/adjustment を個別 flag で CPU backend に戻す（passes は独立）。
 
+### Phase 4（着手）— builtin GPU effects: mosaic + GPU adjustment 経路 ✅ 実装済み（2026-07-18）
+
+> **実装記録**: engine-private な `compositor/gpuEffectRegistry.ts`（`isGpuEffectSupported(type)`・現状 `mosaic` のみ）を
+> 新設し、`EffectDef` / `executionPath` は不変（§3・Plugin API v1 非破壊）。`WebGl2Compositor.applyAdjustment` を実装
+> （従来 throw → CPU bridge）: 調整 chain の rasterChain を GPU pass で適用する。**mosaic** は CPU `blockAverage`
+> （`pixelSort.ts`）を reference に **2-pass shader**（downsample: blockSize ごとの straight RGBA 平均を temp FBO へ →
+> upsample: premultiplied で accumulator へ戻す）で実装。CPU と一致させるため **top-origin ブロック index** で走査し、
+> 部分エッジブロックは範囲内ピクセルのみ（count）で平均、per-channel は 8-bit 量子化（Math.round 相当）。総サンプル数は
+> ブロックサイズに依らず O(w·h)（各ソース texel を 1 回）なので任意 blockSize で軽量。
+>
+> `exportComposite.ts`: 合成入力を z 順の **op 列**（`draw`=capture 済みレイヤ / `adjust`=exportChain）へ再構成し
+> `compositeGpuOps` で GPU 実行。`gpuEligible` を「adjustment が `isGpuAdjustmentChain`（CSS/SVG filter 無し AND
+> rasterChain 全 effect が GPU 可）を満たすフレーム」まで拡張。**未対応 effect / CSS filter を含む調整は従来どおり
+> 丸ごと Canvas2D（§7 案A・chain 単位で全落ち）**。GL 失敗時は同じ op 列で Canvas2D へ無コスト fallback。
+>
+> **検証**（既定 OFF で本番挙動は現状と完全一致）:
+> - default byte-identical / GPU normal maxAbs=0 / GPU blend maxAbs=1 = **無回帰**（既存 3 gate 全 PASS）。
+> - **GPU mosaic adjustment parity（新規）**: `bench-gpu-raster-mosaic-parity.mjs`（mosaic raster 調整・**540/16 の
+>   部分エッジブロック込み**）で **maxAbs=1 / mean=0.0017 / ≤2/255 超過 0**、GPU 実走 counter=3。
+> - `tsc` 緑 / vitest 1310 passed（既存 2 fail 無関係）/ 新規 `test/gpuCompositorMapping.test.ts`（blend id / effect レジストリの純関数契約）。
+>
+> **残**: 他 raster effect（wave/ripple/turbulentDisplace/pixelSorter）の GPU pass は未実装（chain に含むと当該調整は
+> CPU 全落ち）。CSS/SVG filter を持つ live 調整の GPU 化は対象外（案A のまま）。
+
 ### Phase 4 — builtin GPU effects（CPU reference は残す）
 
 - **対象順**（shader 化しやすさ×コスト）: `mosaic` → `tint`（color matrix・現状 live だが GPU 化容易）→ `wave`/`ripple`/`turbulentDisplace`（displacement）→ blur。`pixelSorter` は Worker のまま（GPU 化は後回し）。

@@ -132,6 +132,58 @@ void main() {
   fragColor = vec4(co, ao);
 }`;
 
+// mosaic pass 1（downsample）: accumulator（premultiplied）から blockSize ごとの straight RGBA 平均を
+// temp FBO（bw×bh）へ。CPU blockAverage（pixelSort.ts）と一致させるため **top-origin ブロック index** で
+// 走査し、部分エッジブロックは範囲内ピクセルのみ（count）で平均する。
+const MOSAIC_DOWN_FRAGMENT_SRC = `#version 300 es
+precision highp float;
+uniform sampler2D uAccum; // premultiplied accumulator
+uniform int uW;
+uniform int uH;
+uniform int uBs;
+out vec4 fragColor;
+vec3 unpremult(vec4 c) { return c.a > 0.0 ? c.rgb / c.a : vec3(0.0); }
+void main() {
+  int bx = int(gl_FragCoord.x);   // block col
+  int bt = int(gl_FragCoord.y);   // block row（top-origin index）
+  float sr = 0.0, sg = 0.0, sb = 0.0, sa = 0.0, cnt = 0.0;
+  for (int dy = 0; dy < uBs; dy++) {
+    int pyTop = bt * uBs + dy;
+    if (pyTop >= uH) break;
+    int yTex = uH - 1 - pyTop; // accumulator は bottom-origin
+    for (int dx = 0; dx < uBs; dx++) {
+      int px = bx * uBs + dx;
+      if (px >= uW) break;
+      vec2 uv = vec2((float(px) + 0.5) / float(uW), (float(yTex) + 0.5) / float(uH));
+      vec4 c = texture(uAccum, uv);
+      vec3 st = unpremult(c);
+      sr += st.r; sg += st.g; sb += st.b; sa += c.a; cnt += 1.0;
+    }
+  }
+  if (cnt <= 0.0) { fragColor = vec4(0.0); return; }
+  fragColor = vec4(sr / cnt, sg / cnt, sb / cnt, sa / cnt); // straight avg
+}`;
+
+// mosaic pass 2（upsample）: temp（straight block avg）を full-res accumulator へ premultiplied で書き戻す。
+const MOSAIC_UP_FRAGMENT_SRC = `#version 300 es
+precision highp float;
+uniform sampler2D uTemp; // straight per-block avg
+uniform int uH;
+uniform int uBs;
+uniform int uBw;
+uniform int uBh;
+out vec4 fragColor;
+void main() {
+  int px = int(gl_FragCoord.x);
+  int yTex = int(gl_FragCoord.y);
+  int pyTop = uH - 1 - yTex;
+  int bx = px / uBs;
+  int bt = pyTop / uBs;
+  vec2 uv = vec2((float(bx) + 0.5) / float(uBw), (float(bt) + 0.5) / float(uBh));
+  vec4 st = texture(uTemp, uv);
+  fragColor = vec4(st.rgb * st.a, st.a); // premultiplied
+}`;
+
 /** blendMode を blend shader の mode id へ。normal=0 / 分離 1..11 / 非分離 100..103。 */
 export function blendModeToGpuId(mode: BlendMode): number {
   switch (mode) {
@@ -156,6 +208,28 @@ export function blendModeToGpuId(mode: BlendMode): number {
 
 type WebGLLocation = WebGLUniformLocation;
 
+interface MosaicState {
+  down: WebGLProgram;
+  up: WebGLProgram;
+  tempTex: WebGLTexture;
+  tempFbo: WebGLFramebuffer;
+  tempW: number;
+  tempH: number;
+  dAPos: number;
+  dAUv: number;
+  dAccum: WebGLLocation | null;
+  dW: WebGLLocation | null;
+  dH: WebGLLocation | null;
+  dBs: WebGLLocation | null;
+  uAPos: number;
+  uAUv: number;
+  uTemp: WebGLLocation | null;
+  uH: WebGLLocation | null;
+  uBs: WebGLLocation | null;
+  uBw: WebGLLocation | null;
+  uBh: WebGLLocation | null;
+}
+
 interface BlendState {
   program: WebGLProgram;
   srcTex: WebGLTexture;
@@ -169,6 +243,7 @@ interface BlendState {
   uBackdrop: WebGLLocation | null;
   uSrc: WebGLLocation | null;
   uMode: WebGLLocation | null;
+  mosaic: MosaicState | null;
 }
 
 interface GlState {
@@ -292,6 +367,7 @@ function ensureBlendState(s: GlState, nw: number, nh: number): BlendState {
       uBackdrop: gl.getUniformLocation(program, "uBackdrop"),
       uSrc: gl.getUniformLocation(program, "uSrc"),
       uMode: gl.getUniformLocation(program, "uMode"),
+      mosaic: null,
     };
   }
   const b = s.blend;
@@ -309,6 +385,45 @@ function ensureBlendState(s: GlState, nw: number, nh: number): BlendState {
   return b;
 }
 
+/** mosaic pass 用リソース（down/up program + temp FBO）を必要時に確保・リサイズする。 */
+function ensureMosaicState(s: GlState, b: BlendState, bw: number, bh: number): MosaicState {
+  const { gl } = s;
+  if (!b.mosaic) {
+    const down = linkProgram(gl, VERTEX_SRC, MOSAIC_DOWN_FRAGMENT_SRC);
+    const up = linkProgram(gl, VERTEX_SRC, MOSAIC_UP_FRAGMENT_SRC);
+    b.mosaic = {
+      down, up,
+      tempTex: gl.createTexture()!, // 下で allocate
+      tempFbo: gl.createFramebuffer()!,
+      tempW: 0, tempH: 0,
+      dAPos: gl.getAttribLocation(down, "aPos"),
+      dAUv: gl.getAttribLocation(down, "aUv"),
+      dAccum: gl.getUniformLocation(down, "uAccum"),
+      dW: gl.getUniformLocation(down, "uW"),
+      dH: gl.getUniformLocation(down, "uH"),
+      dBs: gl.getUniformLocation(down, "uBs"),
+      uAPos: gl.getAttribLocation(up, "aPos"),
+      uAUv: gl.getAttribLocation(up, "aUv"),
+      uTemp: gl.getUniformLocation(up, "uTemp"),
+      uH: gl.getUniformLocation(up, "uH"),
+      uBs: gl.getUniformLocation(up, "uBs"),
+      uBw: gl.getUniformLocation(up, "uBw"),
+      uBh: gl.getUniformLocation(up, "uBh"),
+    };
+  }
+  const m = b.mosaic;
+  if (m.tempW !== bw || m.tempH !== bh) {
+    gl.deleteTexture(m.tempTex);
+    m.tempTex = makeAccumTexture(gl, bw, bh);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, m.tempFbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, m.tempTex, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    m.tempW = bw;
+    m.tempH = bh;
+  }
+  return m;
+}
+
 function disposeState(): void {
   if (!state) return;
   try {
@@ -323,6 +438,12 @@ function disposeState(): void {
       gl.deleteTexture(state.blend.tex[1]);
       gl.deleteFramebuffer(state.blend.fbo[0]);
       gl.deleteFramebuffer(state.blend.fbo[1]);
+      if (state.blend.mosaic) {
+        gl.deleteProgram(state.blend.mosaic.down);
+        gl.deleteProgram(state.blend.mosaic.up);
+        gl.deleteTexture(state.blend.mosaic.tempTex);
+        gl.deleteFramebuffer(state.blend.mosaic.tempFbo);
+      }
     }
     gl.getExtension("WEBGL_lose_context")?.loseContext();
   } catch { /* noop */ }
@@ -399,16 +520,7 @@ export class WebGl2Compositor implements RasterCompositor {
   drawLayerBlend(sub: HTMLCanvasElement, blendMode: BlendMode): void {
     if (this.done) throw new Error("WebGl2Compositor: finish already called");
     const { gl } = this.s;
-    const b = ensureBlendState(this.s, this.nw, this.nh);
-    if (!this.blendUsed) {
-      // 初回: 読み側 accumulator を背景 premultiplied で clear。
-      this.blendReadIdx = 0;
-      gl.bindFramebuffer(gl.FRAMEBUFFER, b.fbo[0]!);
-      gl.disable(gl.BLEND);
-      gl.clearColor(this.bgPremult[0], this.bgPremult[1], this.bgPremult[2], this.bgPremult[3]);
-      gl.clear(gl.COLOR_BUFFER_BIT);
-      this.blendUsed = true;
-    }
+    const b = this.ensureBlendInit();
     if (sub.width === 0 || sub.height === 0) return;
 
     const readIdx = this.blendReadIdx;
@@ -443,8 +555,83 @@ export class WebGl2Compositor implements RasterCompositor {
     gl.vertexAttribPointer(aUv, 2, gl.FLOAT, false, 16, 8);
   }
 
-  applyAdjustment(_chain: ExportChain, _nw: number, _nh: number): Promise<void> {
-    throw new Error("WebGl2Compositor: adjustment unsupported (CPU bridge)");
+  /** ping-pong 経路の初回初期化（accumulator[0] を背景 premultiplied で clear）。 */
+  private ensureBlendInit(): BlendState {
+    const { gl } = this.s;
+    const b = ensureBlendState(this.s, this.nw, this.nh);
+    if (!this.blendUsed) {
+      this.blendReadIdx = 0;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, b.fbo[0]!);
+      gl.disable(gl.BLEND);
+      gl.clearColor(this.bgPremult[0], this.bgPremult[1], this.bgPremult[2], this.bgPremult[3]);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      this.blendUsed = true;
+    }
+    return b;
+  }
+
+  /**
+   * 調整レイヤーの effect chain（Phase 4: mosaic のみ GPU）を現在の accumulator に適用する。
+   * pre/post CSS/SVG filter を持つ chain は eligibility 側で除外済み（本メソッドには来ない）。
+   * 未対応 effect が来たら throw → 呼び出し側がフレーム単位で Canvas2D へ fallback。
+   */
+  async applyAdjustment(chain: ExportChain, _nw: number, _nh: number): Promise<void> {
+    if (this.done) throw new Error("WebGl2Compositor: finish already called");
+    if (chain.preFilterStr || chain.postFilterStr) {
+      throw new Error("WebGl2Compositor: CSS/SVG filter adjustment unsupported (CPU bridge)");
+    }
+    this.ensureBlendInit();
+    for (const entry of chain.rasterChain) {
+      const type = entry.effect.type;
+      if (type === "mosaic") {
+        const blockSize = Math.max(1, Math.round(numProp(entry.effect.props["blockSize"], 16)));
+        this.applyMosaic(blockSize);
+      } else {
+        throw new Error(`WebGl2Compositor: raster effect '${type}' has no GPU pass`);
+      }
+    }
+  }
+
+  /** mosaic（blockAverage）を 2 パス（downsample → upsample）で accumulator に適用。 */
+  private applyMosaic(blockSize: number): void {
+    if (blockSize <= 1) return; // CPU blockAverage と同じく no-op。
+    const { gl } = this.s;
+    const b = this.ensureBlendInit();
+    const readIdx = this.blendReadIdx;
+    const writeIdx = 1 - readIdx;
+    const bw = Math.ceil(this.nw / blockSize);
+    const bh = Math.ceil(this.nh / blockSize);
+    const m = ensureMosaicState(this.s, b, bw, bh);
+    gl.disable(gl.BLEND);
+
+    // pass 1: accumulator[read] → temp（straight block avg）。
+    gl.bindFramebuffer(gl.FRAMEBUFFER, m.tempFbo);
+    gl.viewport(0, 0, bw, bh);
+    gl.useProgram(m.down);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, b.tex[readIdx]!);
+    gl.uniform1i(m.dAccum, 0);
+    gl.uniform1i(m.dW, this.nw);
+    gl.uniform1i(m.dH, this.nh);
+    gl.uniform1i(m.dBs, blockSize);
+    this.bindQuad(m.dAPos, m.dAUv);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+    // pass 2: temp → accumulator[write]（premultiplied）。
+    gl.bindFramebuffer(gl.FRAMEBUFFER, b.fbo[writeIdx]!);
+    gl.viewport(0, 0, this.nw, this.nh);
+    gl.useProgram(m.up);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, m.tempTex);
+    gl.uniform1i(m.uTemp, 0);
+    gl.uniform1i(m.uH, this.nh);
+    gl.uniform1i(m.uBs, blockSize);
+    gl.uniform1i(m.uBw, bw);
+    gl.uniform1i(m.uBh, bh);
+    this.bindQuad(m.uAPos, m.uAUv);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+    this.blendReadIdx = writeIdx;
   }
 
   finish(): HTMLCanvasElement {
@@ -484,6 +671,12 @@ export class WebGl2Compositor implements RasterCompositor {
   static releaseLock(): void {
     inUse = false;
   }
+}
+
+/** props の scalar 値を数値に（NaN/未定義は fallback）。 */
+function numProp(v: unknown, fallback: number): number {
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : fallback;
 }
 
 /** "transparent" | "#rrggbb" | "rgb(...)" を [r,g,b,a] 0..1 に。未知は透明。 */
