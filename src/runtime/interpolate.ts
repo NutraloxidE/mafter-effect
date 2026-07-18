@@ -21,7 +21,17 @@ function segmentT(k0: Keyframe<unknown>, k1: Keyframe<unknown>, frame: Frame): n
   return easingFn(k0.easing)(raw);
 }
 
-/** keyframe 列の中で frame を挟む区間 [i, i+1] を返す。clamp 済みインデックス。 */
+/**
+ * keyframe 列の中で frame を挟む区間 [i, i+1] を返す。clamp 済みインデックス。
+ *
+ * 二分探索（lower-bound）で「frame を挟む最初の区間」を選ぶ。旧線形走査（先頭から最初に
+ * `a.frame <= frame <= b.frame` を満たす i を返す）と**完全同値**であることが前提:
+ * clamp 除去後は `first.frame < frame < last.frame`。lower-bound `j = 最初に kfs[j].frame >= frame
+ * となる添字` を取れば、`i = j-1` は `kfs[i+1].frame >= frame` を満たす最小の i であり、
+ * `kfs[i].frame < frame`（j が >= frame の最初なので j-1 は < frame）が成り立つ。よって
+ * 線形走査が返す「最初に frame を含む区間」と同じ pair を選ぶ（重複 frame・0 幅区間の扱いも一致）。
+ * keyframes は frame 昇順に整列済みであることを前提とする（§6.4 / 旧実装と同じ仮定）。
+ */
 function findSegment<T>(
   kfs: Keyframe<T>[],
   frame: Frame,
@@ -30,14 +40,17 @@ function findSegment<T>(
   const last = kfs[kfs.length - 1]!;
   if (frame <= first.frame) return { hold: first.value };
   if (frame >= last.frame) return { hold: last.value };
-  for (let i = 0; i < kfs.length - 1; i++) {
-    const a = kfs[i]!;
-    const b = kfs[i + 1]!;
-    if (frame >= a.frame && frame <= b.frame) {
-      return { before: a, after: b, t: segmentT(a, b, frame) };
-    }
+  // lower-bound: 最初に kfs[j].frame >= frame となる j（1 <= j <= kfs.length-1）。
+  let lo = 0;
+  let hi = kfs.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (kfs[mid]!.frame >= frame) hi = mid;
+    else lo = mid + 1;
   }
-  return { hold: last.value };
+  const a = kfs[lo - 1]!;
+  const b = kfs[lo]!;
+  return { before: a, after: b, t: segmentT(a, b, frame) };
 }
 
 export function sampleScalar(prop: AnimatedProp<number>, frame: Frame): number {

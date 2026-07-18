@@ -1839,6 +1839,18 @@ childFrame     = clamp(round(parentTimeSec * childFps) + trimStart, 0, childComp
 - **export（INV-2）**: GL canvas は `preserveDrawingBuffer: true` かつ `inlineCanvasBitmaps` が DOM 全体を deep query するため、ネスト comp の canvas も foreignObject 経路へそのまま乗る。`compFrameCapture` で捕捉したネスト comp の PNG は**単独 comp の PNG とバイト等価**になること（`verify-nested-geom3d.mjs`）。
 - **回帰ゲート**: 「canvas 要素の同一性がスクラブ後も保たれる」ことを検証する。`Too many active WebGL contexts` 警告の観測は **GC 依存で不安定**なため、単独の合否条件にしてはならない。ラッパ div の reconcile 自体は外部アセット不要の合成プロジェクトで検証可能（`verify-nested-reconcile.mjs`）: 参照同一性（スクラブ中も div 実体が持ち越される）・レイヤー削除後の孤立要素ゼロ・adjustment ON/OFF での content 出入りを確認する。
 
+### §23.3f ネスト live render の非破壊 cache 契約（runtime-only・確定 2026-07-19）
+
+重量級 precomp（例: `Master 30fps` に `main 1 15fps` を置き、hot interval で 45 枚の 3D-extrude text が同時可視）の live render を高速化するための cache は、**見た目・時間マッピング・保存形式・export 結果を一切変えない**ことを完了条件とする（`doc/cloudplan/master-nested-composite-performance-plan.md` を正とする散文契約。**§5 スキーマ / INV / 直列化は不変**）。
+
+- **runtime-only**: すべての cache key・予算・epoch は実行時のみに存在し、`project.json` に保存しない。§5・INV・直列化に関与しない。
+- **distinct frame は必ず正準経路**: 相異なる child frame は必ず正準 `resolve()` を通す。cache は `resolve()` / `renderNestedComp()` の結果・適用状態を再利用するだけで、**第二の frame evaluator を作らない**（preview/export/bundle の scene 値は共通 `resolve()` のまま・INV-2）。
+- **同一 child frame の再利用条件**: comp identity・render mode（preview/export・quality・renderScale・video mode 等）・resource epoch（font/image/media ready）・evaluator/timeline epoch が**すべて一致**し、前回 render が正常完了し、context lost していないときだけ許可する。
+- **invalidation**: resource ready・font load・asset 差替え・quality/render scale 変更・export mode 切替・WebGL context restore で cache を無効化する。
+- **miss はフォールバック**: cache miss・不明状態・context lost は必ず従来描画（`resolve()` + 従来 apply）へ倒す。**cache hit を正しさの前提にしない**（誤 hit を作るくらいなら miss に倒す）。
+- **許可する高速化の型**: 同一入力への純計算 memoization（keyframe 二分探索・prepared geometry・GPU mesh buffer 常駐）、同値 DOM/style/filter の再代入抑制、同一 child frame + epoch の subtree 再評価抑制。いずれも上記フォールバック規則に従う。
+- **flag**: 各最適化は非直列化の runtime flag（例 `__mafterPreparedGeomCache` / `__mafterGpuMeshCache`）で A/B でき、既定 OFF から検証後に 1 つずつ既定 ON にする。flag は project schema に追加しない。
+
 ### §23.4 循環参照制御
 
 - `store.addCompLayer(compId)` において BFS で循環を検出し、循環が生じる場合は追加を拒否する（`null` 返却）。
