@@ -264,22 +264,26 @@ export async function compositeExportFrame(
   const perspectiveOrigin = root.style.perspectiveOrigin || "50% 50%";
   const layers = src.getExportLayers();
 
-  // §Phase 2 GPU 経路（flag ON かつ WebGL2 対応時のみ）: adjustment が無く全レイヤ normal blend の
-  // フレームは WebGL2Compositor で normal 累積する。それ以外は従来 Canvas2D（挙動不変）。
+  // §Phase 2/3a GPU 経路（flag ON かつ WebGL2 対応時のみ）: adjustment が無いフレームは
+  // WebGL2Compositor で合成する（normal は fixed-function 高速パス・非 normal 15 blend は ping-pong
+  // shader パス）。adjustment を含むフレームは当面 Canvas2D（CPU bridge）。それ以外は従来どおり。
   // GPU 対象フレームは capture を先に集めてから合成するので、GL 失敗時は同じ capture を使って
   // Canvas2D へ無コスト fallback できる（再 capture 不要）。matte は capture 段で焼込済（責務外）。
   const gpuEligible =
     isGpuCompositorEnabled()
     && canUseWebGl2Compositor()
-    && layers.every((l) => !l.isAdjustment && l.blendMode === "normal");
+    && layers.every((l) => !l.isAdjustment);
 
   let master: HTMLCanvasElement;
   if (gpuEligible) {
-    const subs: HTMLCanvasElement[] = [];
+    const subs: { canvas: HTMLCanvasElement; blendMode: BlendMode }[] = [];
     for (const layer of layers) {
-      subs.push(await captureLayerNode(layer.div, perspective, perspectiveOrigin, nw, nh));
+      subs.push({
+        canvas: await captureLayerNode(layer.div, perspective, perspectiveOrigin, nw, nh),
+        blendMode: layer.blendMode,
+      });
     }
-    master = compositeNormalLayers(subs, nw, nh, bg);
+    master = compositeGpuLayers(subs, nw, nh, bg);
   } else {
     const compositor = new Canvas2DCompositor(nw, nh, bg);
     for (const layer of layers) {
@@ -300,23 +304,29 @@ export async function compositeExportFrame(
 }
 
 /**
- * normal blend の captured レイヤ列を z 順で 1 枚へ合成する。WebGL2 を試し、GL 失敗時は
+ * captured レイヤ列（blend mode 付き）を z 順で 1 枚へ GPU 合成する。全レイヤ normal なら Phase 2 の
+ * fixed-function 高速パス、非 normal blend を含めば Phase 3a の ping-pong shader パス。GL 失敗時は
  * 同じ capture 群で Canvas2D へ fallback する（挙動は許容差内一致・parity harness で検証）。
  */
-function compositeNormalLayers(
-  subs: HTMLCanvasElement[],
+function compositeGpuLayers(
+  subs: { canvas: HTMLCanvasElement; blendMode: BlendMode }[],
   nw: number,
   nh: number,
   bg: string,
 ): HTMLCanvasElement {
+  const allNormal = subs.every((s) => s.blendMode === "normal");
   try {
     const gl = new WebGl2Compositor(nw, nh, bg);
-    for (const sub of subs) gl.drawLayer(sub, "normal");
+    if (allNormal) {
+      for (const s of subs) gl.drawLayer(s.canvas, "normal");
+    } else {
+      for (const s of subs) gl.drawLayerBlend(s.canvas, s.blendMode);
+    }
     return gl.finish();
   } catch {
     WebGl2Compositor.releaseLock();
     const cpu = new Canvas2DCompositor(nw, nh, bg);
-    for (const sub of subs) cpu.drawLayer(sub, "normal");
+    for (const s of subs) cpu.drawLayer(s.canvas, s.blendMode);
     return cpu.finish();
   }
 }

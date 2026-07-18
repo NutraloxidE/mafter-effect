@@ -189,6 +189,28 @@ const gpuEffectPasses = new Map<string, GpuEffectPass>();
 >
 > **重要な設計知見（実装で判明）**: export の slow path は **blend / adjustment / nested / 3D のいずれかがある**フレームだけが入る（全 normal は fast 単一 capture 経路で compositor に来ない）。よって Phase 2 の gpuEligible（全 normal）フレームは **3D・nested-composite シーンに限られる**。重い一般ケース（blend + adjustment）で GPU 利得を出すには **Phase 3（blend shader + adjustment）が必須**。Phase 2 は「context/pool/upload/shader/parity/fallback/flag」の検証済み土台を提供し、Phase 3 がその上に blend/matte/adjustment を載せる。
 
+### Phase 3a — 15 blend mode を GPU へ ✅ 実装済み（2026-07-18）
+
+> **実装記録**: `WebGl2Compositor` に blend ping-pong FBO パスを追加（`drawLayerBlend` / `BLEND_FRAGMENT_SRC`）。
+> 15 CSS mix-blend-mode を W3C Compositing & Blending の式で shader 実装（分離 11 種 + 非分離 hue/saturation/color/luminosity）。
+> backdrop は premultiplied RGBA8 accumulator、source は straight upload、`csb=(1-αb)Cs+αb·B` → premultiplied source-over
+> を fragment で明示計算（**sRGB のまま・linear 変換なし**）。normal は既存 fixed-function 高速パスを byte 不変で温存し、
+> 非 normal blend を1つでも含むフレームは全レイヤを ping-pong パスへ（normal も mode=0 で同パス）。context は Phase 2 の
+> module singleton を共有（レイヤ数比例で増えない）。GL 失敗時は同一 capture 群で Canvas2D へ無コスト fallback。
+> `exportComposite.ts` の `gpuEligible` を「adjustment 無しフレーム全体」に拡張（**adjustment は当面 CPU bridge**・
+> 丸ごと Canvas2D へ）。matte は capture 段で焼込済（責務外）。nested（`compositeContainer`）は Canvas2D のまま。
+>
+> **検証**（`npm run dev` + Playwright・既定 OFF で本番挙動は現状と完全一致）:
+> - **default 経路（flag OFF）byte 不変**: `bench-gpu-raster-parity.mjs` 全フレーム MATCH。
+> - **GPU normal parity（Phase 2 無回帰）**: `bench-gpu-raster-compositor-parity.mjs` maxAbs=0（byte-identical）。
+> - **GPU blend parity（新規・flag ON）**: `bench-gpu-raster-blend-parity.mjs`（15 mode 全部 + AA text エッジの fixture）で
+>   **maxAbs=1 / mean=0.035 / ≤2/255 超過ピクセル 0**、GPU 実走 counter=3。
+> - `tsc` 緑 / vitest 1310 passed（既存 2 failure = `effects.test liquidChrome 再登録`・`projectBins treeOrder` flaky は
+>   本変更前から失敗・無関係、stash で確認済み）/ `playerBuildFreshness` 緑（`exportComposite` は player 非 import）。
+>
+> **未対応（この Phase の非目標）**: adjustment の GPU ping-pong（CPU bridge のまま）/ live track matte の GPU 委譲 /
+> builtin raster effect の GPU 化（= Phase 4）。これらを含むフレームは従来どおり Canvas2D へ落ちる。
+
 ### Phase 3 — matte / blend / adjustment を GPU へ
 
 - **変更 symbol / shader**:
