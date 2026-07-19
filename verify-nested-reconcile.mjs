@@ -12,7 +12,7 @@ import { chromium } from "playwright";
 const PORT = process.env.VERIFY_PORT ?? "5173";
 const URL = `http://localhost:${PORT}/`;
 
-const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium" });
+const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1000, height: 700 } });
 const errors = [];
 page.on("pageerror", (e) => errors.push(String(e)));

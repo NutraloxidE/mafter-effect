@@ -117,6 +117,13 @@ export function resetGeom3DGlBufferUploadCount(): void {
 }
 
 const statesByCanvas = new WeakMap<HTMLCanvasElement, Geom3DGlState>();
+const contextEpochCanvases = new WeakSet<HTMLCanvasElement>();
+let contextEpoch = 0;
+
+/** Nested same-frame reuse invalidation source for WebGL context loss/restore. */
+export function geom3DGlContextEpoch(): number {
+  return contextEpoch;
+}
 
 /**
  * **GL context 数の上限に注意（§5.5f 既知のリスク・2026-07-16）**
@@ -136,6 +143,11 @@ const statesByCanvas = new WeakMap<HTMLCanvasElement, Geom3DGlState>();
  * canvas を作り直す実装は数十フレームで上限に達する（§23.3e のネスト comp が実例）。
  */
 function createState(canvas: HTMLCanvasElement): Geom3DGlState | null {
+  if (!contextEpochCanvases.has(canvas)) {
+    canvas.addEventListener("webglcontextlost", () => { contextEpoch++; });
+    canvas.addEventListener("webglcontextrestored", () => { contextEpoch++; });
+    contextEpochCanvases.add(canvas);
+  }
   const gl = canvas.getContext("webgl", {
     alpha: true,
     premultipliedAlpha: true,

@@ -26,7 +26,7 @@ const TESTS = [
 
 console.log("[bench-master-nested-live] running resolve baseline + phase op-count gates…\n");
 
-const res = spawnSync("npx", ["vitest", "run", ...TESTS], {
+const res = spawnSync(process.execPath, ["node_modules/vitest/vitest.mjs", "run", ...TESTS], {
   stdio: "inherit",
   env: { ...process.env, BENCH_WRITE: "1" },
 });

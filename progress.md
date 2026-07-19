@@ -1,5 +1,15 @@
 # Progress
 
+### 2026-07-19（Codex）— `Master → main 1` 非破壊高速化 Phase 4〜5 と実データ検証を完了
+
+- **実データ計測**: `mafter-project (12).purini remix (1).zip`（589,976,631 bytes）から、大容量動画だけを除いたローカル専用 fixture を作成。`bench-master-nested-real.mjs` で実 PreviewPanel／Caching OFF／`Master` f376〜409 を走査し、代表 f400 の preview screenshot と `captureCompFramePng` の SHA-256 が legacy／最適化経路で完全一致。ページ例外なし、3D canvas 4枚・nested object 67個を確認。
+- **Phase 4**: nested wrapper の transform/opacity/z-index/adjustment style を changed-only 更新へ変更。wrapper 順は毎回 `appendChild` せず、ずれた要素だけ `insertBefore`。effect filter/backdrop-filter を差分同期し、SVG filter DOM は signature が同じ間再利用、effect が消えた場合は確実に除去する。
+- **Phase 5**: `NestedRenderEpochs`（mode/resource/evaluator/WebGL context）と resource-ready 条件を追加し、同一 comp identity＋同一 child frame の完成済み subtree を安全に再利用。font/image load 完了、render mode、timeline comp/evaluator、WebGL context loss/restore で miss に倒す。runtime-only kill switch `__mafterNestedFrameReuse=false` で即時 rollback 可能、既定 ON。
+- **計測結果**: hot 34 parent frames で nested full render **204→90**、same-child-frame reuse **34回**、GPU upload **4587→2427**。p50 は再測定で **366.6ms→319.4ms（12.9%）**、別測定では duplicate-frame p50 **333.8ms→92.3ms（72%）**。headless SwiftShader の p95 は分散が大きく悪化回もあるため、正しさゲートと operation count を採用根拠にした。
+- **rollout**: Phase 2 prepared geometry cache／Phase 3 GPU mesh cache は実データ wall-clock の安定改善を確認できず既定 OFF のまま。Phase 5 のみ既定 ON。§5・INV・project.json 直列化は不変。
+- **検証**: `test/nestedFrameReuse.test.ts` で invalidation matrix と kill switch を固定。Windows 対応の synthetic runner と実データ runnerを追加。`npm run typecheck` PASS、`verify-nested-reconcile.mjs` PASS、実データ preview/export hash parity PASS、`npm run build:player`＋`playerBuildFreshness` PASS。全 Vitest は **1345 passed / 1 failed**（既存 `effects.test.ts` の `liquidChrome` 再登録漏れ。base HEAD から継続する本変更と無関係な既知 failure）。
+- **Next steps**: 本 PLAN の必須 Phase は完了。Phase 6 は新しい profile で残余 hotspot が再現した場合だけ着手する。
+
 ### 2026-07-19（Claude Opus 4.8）— `Master → main 1` 非破壊高速化 PLAN の Phase 0〜3 を実装
 
 - **依頼**: `master-nested-composite-performance-plan.md` の Phase 0〜3 を実装・テスト・レポートまで一気に回す（Phase 4〜5 は再計測後にユーザーと判断）。

@@ -16,7 +16,20 @@ import { resolveVideoGainForFrame } from "./videoGainOnly";
 import { applyTextEl, rgbaCss } from "./textRender";
 import { parseGeom3DParams } from "./geom3d/geom3dParams";
 import { applyGeom3DText, clearGeom3DCanvas, createGeom3DCanvas, GEOM3D_CANVAS_CLASS, type Geom3DCameraContext } from "./geom3d/geom3dDomApply";
-import { releaseGeom3DGl } from "./geom3d/geom3dGl";
+import { geom3DGlContextEpoch, releaseGeom3DGl } from "./geom3d/geom3dGl";
+import {
+  canReuseNestedFrame,
+  nestedFrameReuseStats,
+  recordNestedFrameReuse,
+  recordNestedFrameReuseDuration,
+  recordNestedEffectDomWrite,
+  recordNestedStyleDomWrite,
+  recordNestedFullRender,
+  recordNestedFullRenderDuration,
+  resetNestedFrameReuseStats,
+  type NestedRenderEpochs,
+  type NestedRenderState,
+} from "./nestedFrameReuse";
 import { resolveGeom3DCanvasHosts, toGeom3DLayerInfo } from "./geom3d/geom3dCanvasGroup";
 import { buildMultiRingPathD, buildShapePathD, type ResolvedShapeVertex } from "./shapePath";
 import { composeRings, multiPolygonToPathD } from "./shapePathBoolean";
@@ -99,6 +112,15 @@ import { composeTrackMatteToCanvas } from "./trackMatteCapture";
 const BASE_Z = 10; // z-index はこの値を起点に zOrder*BASE_Z で割り当てる
 
 const SVG_NS = "http://www.w3.org/2000/svg";
+
+/** Operation-count benchmark hook: live nested subtrees that passed the same-frame reuse guard. */
+export function domRendererNestedFullRenderCount(): number {
+  return nestedFrameReuseStats().fullRenders;
+}
+
+export function resetDomRendererNestedFullRenderCount(): void {
+  resetNestedFrameReuseStats();
+}
 
 /** §6.5b / §23.3b — 3D 層のみ cameraPre を掛け、2D 層は免除。 */
 function objectWorldTransformWithCamera(cameraPre: Mat4 | null, obj: ResolvedObject): Mat4 {
@@ -216,8 +238,13 @@ export class DomRenderer implements Renderer {
    * 変位マップを細分化するためだけに使う（scene 解決値・INV-2 には影響しない）。
    */
   private renderScale = 1;
+  private nestedModeEpoch = 0;
+  private nestedResourceEpoch = 0;
+  private nestedEvaluatorEpoch = 0;
   setRenderScale(scale: number): void {
-    this.renderScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
+    const next = Number.isFinite(scale) && scale > 0 ? scale : 1;
+    if (next !== this.renderScale) this.nestedModeEpoch++;
+    this.renderScale = next;
   }
 
   // §26.4 テキスト品質モード
@@ -287,6 +314,18 @@ export class DomRenderer implements Renderer {
     persistentlyMutedVideoIds?: ReadonlySet<string> | null;
     loop?: { enabled: boolean; loopStart: Frame; loopEnd: Frame };
   }): void {
+    const previousMode = [
+      this.holdLastRaster,
+      this.forceAdjustmentRaster,
+      this.exportCompositeMode,
+      this.previewVideoPlayback,
+      this.exportVideoStep,
+      this.muteVideoPlayback,
+      this.persistentlyMutedVideoIds,
+      this.previewLoop.enabled,
+      this.previewLoop.loopStart,
+      this.previewLoop.loopEnd,
+    ];
     if (opts.holdLastRaster !== undefined) this.holdLastRaster = opts.holdLastRaster;
     if (opts.forceAdjustmentRaster !== undefined) this.forceAdjustmentRaster = opts.forceAdjustmentRaster;
     if (opts.exportCompositeMode !== undefined) this.exportCompositeMode = opts.exportCompositeMode;
@@ -303,6 +342,19 @@ export class DomRenderer implements Renderer {
       }
       this.previewVideoPlayback = opts.previewVideoPlayback;
     }
+    const nextMode = [
+      this.holdLastRaster,
+      this.forceAdjustmentRaster,
+      this.exportCompositeMode,
+      this.previewVideoPlayback,
+      this.exportVideoStep,
+      this.muteVideoPlayback,
+      this.persistentlyMutedVideoIds,
+      this.previewLoop.enabled,
+      this.previewLoop.loopStart,
+      this.previewLoop.loopEnd,
+    ];
+    if (previousMode.some((value, index) => value !== nextMode[index])) this.nestedModeEpoch++;
   }
 
   /**
@@ -337,15 +389,23 @@ export class DomRenderer implements Renderer {
   }
 
   setTextQuality(mode: "draft" | "precise"): void {
+    if (mode !== this.textQuality) this.nestedModeEpoch++;
     this.textQuality = mode;
   }
 
   setFontCache(cache: FontOutlineCache | null): void {
+    if (cache !== this.fontCache) this.nestedResourceEpoch++;
     this.fontCache = cache;
   }
 
   setImageCache(cache: ImageAssetCache | null): void {
+    if (cache !== this.imageCache) this.nestedResourceEpoch++;
     this.imageCache = cache;
+  }
+
+  /** Font/image decode or asset replacement completed inside an already-injected cache instance. */
+  invalidateNestedResources(): void {
+    this.nestedResourceEpoch++;
   }
 
   setFrameRenderCache(cache: FrameRenderCache | null): void {
@@ -2018,6 +2078,7 @@ export class DomRenderer implements Renderer {
 
   setTimelineComps(comps: Map<string, TimelineComposition>): void {
     this.pendingTimelineComps = comps;
+    this.nestedEvaluatorEpoch++;
   }
 
   // §23.3b ネスト comp の expression 用: comp ごとの ExpressionEvaluator を注入する。
@@ -2027,6 +2088,7 @@ export class DomRenderer implements Renderer {
 
   setCompEvaluators(evaluators: Map<string, ExpressionEvaluator>): void {
     this.pendingCompEvaluators = evaluators;
+    this.nestedEvaluatorEpoch++;
   }
 
   // §5.5f/§23.3b — ネスト comp コンテナごとの「持ち越す el」（key → el）。
@@ -2039,6 +2101,11 @@ export class DomRenderer implements Renderer {
   // ネストへ移植したもの。container.innerHTML="" による毎フレーム全破棄を廃止する（§23.3e）。
   // container が捨てられれば Map ごと GC される（WeakMap）。
   private nestedWrappers = new WeakMap<HTMLElement, Map<ObjectId, HTMLDivElement>>();
+  private nestedRenderStates = new WeakMap<HTMLElement, NestedRenderState>();
+  private nestedEffectStates = new WeakMap<HTMLElement, {
+    svgRoot: SVGSVGElement | null;
+    svgSignature: string;
+  }>();
 
   // §5.5f-1 — ネスト comp コンテナごとの group canvas（host レイヤー id → canvas）。
   // container 単位に分ける＝同じ precomp を 2 回置いても canvas を取り違えない（レイヤー id は共通のため）。
@@ -2079,6 +2146,28 @@ export class DomRenderer implements Renderer {
       this.renderNestedCompRaster(container, childComp, childFrame);
       return;
     }
+    const nestedRenderStart = performance.now();
+
+    const epochs: NestedRenderEpochs = {
+      mode: this.nestedModeEpoch,
+      resource: this.nestedResourceEpoch,
+      evaluator: this.nestedEvaluatorEpoch,
+      context: geom3DGlContextEpoch(),
+    };
+    const resourcesReady = () => [...container.querySelectorAll("img,video")].every((element) => {
+      if (element instanceof HTMLImageElement) return !element.getAttribute("src") || element.complete;
+      if (element instanceof HTMLVideoElement) {
+        return !element.getAttribute("src") || element.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA;
+      }
+      return true;
+    });
+    if (canReuseNestedFrame(this.nestedRenderStates.get(container), childComp, childFrame, epochs, resourcesReady())) {
+      recordNestedFrameReuse();
+      recordNestedFrameReuseDuration(performance.now() - nestedRenderStart);
+      return;
+    }
+    recordNestedFullRender();
+    this.nestedRenderStates.set(container, { ...epochs, comp: childComp, childFrame, completed: false });
 
     // §23.3b: 子 comp の expression を評価するため comp 固有の evaluator を渡す。
     // 渡さないと nested comp 内の wiggle 等が静的化し、opacity/effect param も動かない。
@@ -2087,9 +2176,19 @@ export class DomRenderer implements Renderer {
     });
     // §23.3a: isolation:isolate で内部ブレンドを precomp 内に閉じる（AE collapse OFF 相当）。
     // これで mix-blend-mode が外側へ漏れず、export の単一 capture でも内部ブレンドがネイティブに焼ける。
-    container.style.cssText = `position:absolute;top:0;left:0;width:${childComp.width}px;height:${childComp.height}px;overflow:hidden;transform-style:preserve-3d;isolation:isolate`;
-    if (childComp.background) container.style.background = rgbaCss(childComp.background);
-    else container.style.background = "";
+    const containerStyle = container.style;
+    if (containerStyle.position !== "absolute") containerStyle.position = "absolute";
+    if (containerStyle.top !== "0px") containerStyle.top = "0";
+    if (containerStyle.left !== "0px") containerStyle.left = "0";
+    const childWidth = `${childComp.width}px`;
+    const childHeight = `${childComp.height}px`;
+    if (containerStyle.width !== childWidth) containerStyle.width = childWidth;
+    if (containerStyle.height !== childHeight) containerStyle.height = childHeight;
+    if (containerStyle.overflow !== "hidden") containerStyle.overflow = "hidden";
+    if (containerStyle.transformStyle !== "preserve-3d") containerStyle.transformStyle = "preserve-3d";
+    if (containerStyle.isolation !== "isolate") containerStyle.isolation = "isolate";
+    const childBackground = childComp.background ? rgbaCss(childComp.background) : "";
+    if (containerStyle.background !== childBackground) containerStyle.background = childBackground;
     // §23.3b: ネスト comp は自身のカメラを live で適用（§6.5b と同一リグ）。
     const cameraPre = this.setupCameraRig(container, childScene);
 
@@ -2137,10 +2236,15 @@ export class DomRenderer implements Renderer {
     const geom3dCleared = new Set<HTMLCanvasElement>();
     // §23.3d export — この comp（再帰的に）に調整レイヤーがあれば子座標系で1枚へ確定する必要がある。
     let needsComposite = false;
+    let orderCursor: ChildNode | null = container.firstChild;
     for (const obj of childScene.objects) {
       let div = wrappers.get(obj.id);
       if (!div) {
         div = document.createElement("div");
+        div.style.position = "absolute";
+        div.style.top = "0";
+        div.style.left = "0";
+        div.style.transformOrigin = "0 0";
         div.dataset.objectId = obj.id; // トップレベル entries と同じ規約（デバッグ・テスト用の識別子。描画に影響しない）。
         wrappers.set(obj.id, div);
       }
@@ -2153,12 +2257,39 @@ export class DomRenderer implements Renderer {
       const nestedOpacity = shouldForceOpaqueForDither(obj.effects, obj.opacity)
         ? "1"
         : String(obj.opacity);
+      const transform = mat4ToCss(xform);
+      const zIndex = String(Math.round(obj.zOrder * BASE_Z));
+      if (div.style.transform !== transform) {
+        div.style.transform = transform;
+        recordNestedStyleDomWrite();
+      }
+      if (div.style.opacity !== nestedOpacity) {
+        div.style.opacity = nestedOpacity;
+        recordNestedStyleDomWrite();
+      }
+      if (div.style.zIndex !== zIndex) {
+        div.style.zIndex = zIndex;
+        recordNestedStyleDomWrite();
+      }
       if (isAdj) {
         // §23.3d: 調整レイヤーは comp 全面の空 div とし、effect を backdrop-filter で背後へ効かせる。
         // コンテンツ component は描かない（背後を覆わないため）。
-        div.style.cssText = `position:absolute;top:0;left:0;transform-origin:0 0;transform:${mat4ToCss(xform)};opacity:${nestedOpacity};z-index:${Math.round(obj.zOrder * BASE_Z)};width:${childComp.width}px;height:${childComp.height}px;background:transparent;pointer-events:none`;
+        const width = `${childComp.width}px`;
+        const height = `${childComp.height}px`;
+        if (div.style.width !== width) { div.style.width = width; recordNestedStyleDomWrite(); }
+        if (div.style.height !== height) { div.style.height = height; recordNestedStyleDomWrite(); }
+        if (div.style.background !== "transparent") { div.style.background = "transparent"; recordNestedStyleDomWrite(); }
+        if (div.style.pointerEvents !== "none") { div.style.pointerEvents = "none"; recordNestedStyleDomWrite(); }
+        div.dataset["nestedMode"] = "adjustment";
       } else {
-        div.style.cssText = `position:absolute;top:0;left:0;transform-origin:0 0;transform:${mat4ToCss(xform)};opacity:${nestedOpacity};z-index:${Math.round(obj.zOrder * BASE_Z)}`;
+        if (div.dataset["nestedMode"] === "adjustment") {
+          div.style.width = "";
+          div.style.height = "";
+          div.style.background = "";
+          div.style.pointerEvents = "";
+          recordNestedStyleDomWrite();
+        }
+        div.dataset["nestedMode"] = "content";
         for (const [ci, c] of obj.components.entries()) {
           // 型まで含めた key。components の並び替え・型変更で誤再利用しない。
           const reuseKey = `${obj.id}:${ci}:${c.type}`;
@@ -2228,9 +2359,14 @@ export class DomRenderer implements Renderer {
       // 保持しないため node.remove() のみで十分）。
       for (const child of beforeChildren) {
         if (touchedChildren.has(child)) continue;
+        if (child instanceof SVGSVGElement && child.dataset["nestedEffects"] === "1") continue;
         child.remove();
       }
-      container.appendChild(div);
+      if (div !== orderCursor) {
+        container.insertBefore(div, orderCursor);
+        recordNestedStyleDomWrite();
+      }
+      orderCursor = div.nextSibling;
       // §23.3a: トップレベルと挙動を揃える（ラスタ無し・append 後に実測サイズで filter region 決定）。
       setBlendModeStyle(div, obj.blendMode);
 
@@ -2298,6 +2434,13 @@ export class DomRenderer implements Renderer {
       container.setAttribute("data-nested-composite", needsComposite ? "1" : "0");
       if (needsComposite) this.frameHasNestedComposite = true;
     }
+    this.nestedRenderStates.set(container, {
+      ...epochs,
+      comp: childComp,
+      childFrame,
+      completed: resourcesReady(),
+    });
+    recordNestedFullRenderDuration(performance.now() - nestedRenderStart);
   }
 
   /**
@@ -2318,10 +2461,18 @@ export class DomRenderer implements Renderer {
     compH: number,
   ): void {
     const effects = obj.effects ?? [];
-    if (effects.length === 0) return;
     const isAdj = obj.isAdjustment === true;
-    const w = isAdj ? Math.max(1, Math.round(compW)) : Math.max(1, Math.round(div.offsetWidth || compW || 0));
-    const h = isAdj ? Math.max(1, Math.round(compH)) : Math.max(1, Math.round(div.offsetHeight || compH || 0));
+    const hasEnabledEffects = effects.some((effect) => effect.enabled);
+    const w = !hasEnabledEffects
+      ? 1
+      : isAdj
+        ? Math.max(1, Math.round(compW))
+        : Math.max(1, Math.round(div.offsetWidth || compW || 0));
+    const h = !hasEnabledEffects
+      ? 1
+      : isAdj
+        ? Math.max(1, Math.round(compH))
+        : Math.max(1, Math.round(div.offsetHeight || compH || 0));
     const ctx = { width: w, height: h, frame, layerOpacity: obj.opacity, renderScale: this.renderScale };
     const tokens: string[] = [];
     const svgFilters: { id: string; primitives: string }[] = [];
@@ -2341,16 +2492,54 @@ export class DomRenderer implements Renderer {
       if (!piece || piece.kind === "raster") continue; // raster 系は live 不可
       this.pushFilterPiece(piece, tokens, svgFilters, `nfx-${obj.id}-${i++}`);
     }
-    if (tokens.length === 0) return;
     const filterStr = tokens.join(" ");
     if (isAdj) {
-      div.style.backdropFilter = filterStr;
-      (div.style as CSSStyleDeclaration & { webkitBackdropFilter?: string }).webkitBackdropFilter = filterStr;
+      if (div.style.filter !== "") {
+        div.style.filter = "";
+        recordNestedEffectDomWrite();
+      }
+      if (div.style.backdropFilter !== filterStr) {
+        div.style.backdropFilter = filterStr;
+        recordNestedEffectDomWrite();
+      }
+      const webkitStyle = div.style as CSSStyleDeclaration & { webkitBackdropFilter?: string };
+      if (webkitStyle.webkitBackdropFilter !== filterStr) {
+        webkitStyle.webkitBackdropFilter = filterStr;
+        recordNestedEffectDomWrite();
+      }
     } else {
-      div.style.filter = filterStr;
+      if (div.style.backdropFilter !== "") {
+        div.style.backdropFilter = "";
+        recordNestedEffectDomWrite();
+      }
+      const webkitStyle = div.style as CSSStyleDeclaration & { webkitBackdropFilter?: string };
+      if (webkitStyle.webkitBackdropFilter !== "") {
+        webkitStyle.webkitBackdropFilter = "";
+        recordNestedEffectDomWrite();
+      }
+      if (div.style.filter !== filterStr) {
+        div.style.filter = filterStr;
+        recordNestedEffectDomWrite();
+      }
     }
-    if (svgFilters.length === 0) return;
-    const svg = document.createElementNS(SVG_NS, "svg");
+    let state = this.nestedEffectStates.get(div);
+    if (!state) {
+      state = { svgRoot: null, svgSignature: "" };
+      this.nestedEffectStates.set(div, state);
+    }
+    if (svgFilters.length === 0) {
+      if (state.svgRoot) {
+        state.svgRoot.remove();
+        state.svgRoot = null;
+        state.svgSignature = "";
+        recordNestedEffectDomWrite();
+      }
+      return;
+    }
+    const svgSignature = JSON.stringify([w, h, svgFilters]);
+    if (state.svgRoot?.isConnected && state.svgSignature === svgSignature) return;
+    const svg = state.svgRoot ?? document.createElementNS(SVG_NS, "svg");
+    svg.dataset["nestedEffects"] = "1";
     svg.setAttribute("aria-hidden", "true");
     svg.style.cssText = "position:absolute;width:0;height:0;overflow:hidden;pointer-events:none";
     const defs = document.createElementNS(SVG_NS, "defs");
@@ -2363,8 +2552,11 @@ export class DomRenderer implements Renderer {
     for (const { id, primitives } of svgFilters) {
       defs.appendChild(this.createSvgFilterElement(id, primitives, filterEntry));
     }
-    svg.appendChild(defs);
-    div.insertBefore(svg, div.firstChild);
+    svg.replaceChildren(defs);
+    if (svg.parentElement !== div) div.insertBefore(svg, div.firstChild);
+    state.svgRoot = svg;
+    state.svgSignature = svgSignature;
+    recordNestedEffectDomWrite();
   }
 
   // §28.11 — ネスト comp を comp 単位画像で描画。単一 <img> を再利用し、新フレームの

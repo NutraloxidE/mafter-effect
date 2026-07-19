@@ -2,8 +2,10 @@
 
 > 作成日: 2026-07-19  
 > 対象: `Downloads` 内の最大 Mafter project にある `Master → main 1 → 複数 lyric comp` 構成  
-> ステータス: **実装前 PLAN（コード変更なし）**  
+> ステータス: **Phase 0〜5 実装・実プロジェクト由来検証済み（Phase 2/3 は既定 OFF、Phase 5 は既定 ON）**  
 > 前提: 見た目・時間マッピング・保存形式・export 結果を変えない。フレームスキップや自動品質低下は行わない。
+
+> 2026-07-19 完了記録: 589,976,631 bytes の実プロジェクトから、大容量動画だけを除いたローカル fixture を作成し、`Master` f376〜409 を実 PreviewPanel（Caching OFF）で計測した。Phase 5 は 34 回の subtree reuse を記録し、代表フレームの preview screenshot と export PNG は legacy と SHA-256 が完全一致した。p50 は測定回により約 13〜40% 改善し、p95 は headless SwiftShader の揺らぎが大きいため採用判断には使わない。Phase 2/3 は実データで安定した wall-clock 改善を確認できなかったため kill switch の既定 OFF を維持する。
 
 ---
 
