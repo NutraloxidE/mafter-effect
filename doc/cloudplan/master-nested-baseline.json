@@ -1,0 +1,19 @@
+{
+  "generatedAt": "2026-07-18T16:24:17.535Z",
+  "note": "Phase 0 synthetic baseline. Real 590MB ZIP unreachable from cloud egress; run at your machine for the local-real fixture + final max-ZIP benchmark.",
+  "structure": {
+    "masterFps": 30,
+    "main1Fps": 15,
+    "parentUseSpan": 531,
+    "uniqueChildFrames": 266,
+    "totalChildCalls": 531,
+    "duplicateRatio": 0.4990583804143126,
+    "main1Keyframes": 128729,
+    "main1Objects": 45
+  },
+  "resolveBaselineMs": {
+    "distinctChildFrames": 47.53,
+    "allParentDerivedFrames": 76.5,
+    "reuseUpperBoundSaving": 0.379
+  }
+}

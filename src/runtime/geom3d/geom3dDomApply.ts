@@ -3,9 +3,11 @@ import type { RGBA } from "../../core/schema";
 import { parseTextProps } from "../textRender";
 import { curveQualitySegments } from "./geom3dParams";
 import { extrudeGeometry } from "./extrudeMesh";
+import { isPreparedGeomCacheEnabled } from "./geom3dCacheFlags";
 import { releaseGeom3DGl, renderGeom3D } from "./geom3dGl";
-import { getCachedMesh } from "./geom3dMeshCache";
+import { getCachedMesh, getPreparedGeom3DText } from "./geom3dMeshCache";
 import { textToOutlineGlyphs } from "./outlineProvider";
+import type { MeshData } from "./geom3dTypes";
 import type { Geom3DParams } from "./geom3dTypes";
 import { multiply, normalMatrix, translation, type Mat4 } from "../mat4";
 
@@ -134,12 +136,65 @@ export function applyGeom3DText(
   if (!font) return false;
   const p = parseTextProps(props);
   const segments = curveQualitySegments(geom.curveQuality);
-  const outline = textToOutlineGlyphs(
-    { text: p.text, size: p.size, tracking: p.tracking, leading: p.leading, align: p.align, boxWidth: p.boxWidth, boxHeight: p.boxHeight },
-    font,
-    segments,
-  );
-  if (!outline) return false;
+
+  // fontIdentity が字形の正体（family×weight×italic の解決結果）を表すため、要求 weight は
+  // キーに含めない — 含めると未ロード時の暫定メッシュを本来の weight で焼き付けてしまう。
+  const meshKey = [
+    p.text, p.size, p.tracking, p.leading, p.align, p.boxWidth, p.boxHeight,
+    fontIdentity(font),
+    geom.depth, geom.bevelSize, geom.bevelStyle, geom.bevelSegments, geom.curveQuality,
+  ].join("|");
+
+  const buildOutline = () =>
+    textToOutlineGlyphs(
+      { text: p.text, size: p.size, tracking: p.tracking, leading: p.leading, align: p.align, boxWidth: p.boxWidth, boxHeight: p.boxHeight },
+      font,
+      segments,
+    );
+
+  // outline のグリフ座標は content bbox 基準（font.getPath に -bounds.minX 済み）。
+  // object のローカル原点へ戻す (minX, minY) と mesh を解決する。
+  let mesh: MeshData;
+  let localMinX: number;
+  let localMinY: number;
+  if (isPreparedGeomCacheEnabled()) {
+    // §7 Phase 2: cache lookup を outline 抽出より前へ移す。hit すれば outline/normalize/extrude を
+    // 一切呼ばない（transform だけが変わる frame の純粋な重複仕事を除く）。
+    const prepared = getPreparedGeom3DText(meshKey, () => {
+      const outline = buildOutline();
+      if (!outline) return null;
+      return {
+        mesh: extrudeGeometry(outline.glyphs, {
+          depth: geom.depth,
+          bevelSize: geom.bevelSize,
+          bevelStyle: geom.bevelStyle,
+          bevelSegments: geom.bevelSegments,
+        }),
+        minX: outline.minX,
+        minY: outline.minY,
+        width: outline.width,
+        height: outline.height,
+      };
+    });
+    if (!prepared) return false;
+    mesh = prepared.mesh;
+    localMinX = prepared.minX;
+    localMinY = prepared.minY;
+  } else {
+    // 従来経路（flag OFF・挙動不変）: outline を毎 frame 抽出し mesh のみ cache する。
+    const outline = buildOutline();
+    if (!outline) return false;
+    mesh = getCachedMesh(meshKey, () =>
+      extrudeGeometry(outline.glyphs, {
+        depth: geom.depth,
+        bevelSize: geom.bevelSize,
+        bevelStyle: geom.bevelStyle,
+        bevelSegments: geom.bevelSegments,
+      }),
+    );
+    localMinX = outline.minX;
+    localMinY = outline.minY;
+  }
 
   // §5.5f-1 共有時、canvas は host レイヤーの el だけが宿す。member の el は空にして何も描かない
   // （ピクセルは host の div の z-index に出る — チェーンは連続する描画レイヤーに限られるため合成順は保たれる）。
@@ -177,26 +232,9 @@ export function applyGeom3DText(
   if (canvas.width !== bw) canvas.width = bw;
   if (canvas.height !== bh) canvas.height = bh;
 
-  // fontIdentity が字形の正体（family×weight×italic の解決結果）を表すため、要求 weight は
-  // キーに含めない — 含めると未ロード時の暫定メッシュを本来の weight で焼き付けてしまう。
-  const meshKey = [
-    p.text, p.size, p.tracking, p.leading, p.align, p.boxWidth, p.boxHeight,
-    fontIdentity(font),
-    geom.depth, geom.bevelSize, geom.bevelStyle, geom.bevelSegments, geom.curveQuality,
-  ].join("|");
-  const mesh = getCachedMesh(meshKey, () =>
-    extrudeGeometry(outline.glyphs, {
-      depth: geom.depth,
-      bevelSize: geom.bevelSize,
-      bevelStyle: geom.bevelStyle,
-      bevelSegments: geom.bevelSegments,
-    }),
-  );
-
-  // outline のグリフ座標は content bbox 基準（font.getPath に -bounds.minX 済み）。
   // object のローカル原点（= worldTransform が仮定する座標系）へ戻すには (minX, minY) を足し戻す
   // ＝ 旧実装が div の left/top=minX/minY で行っていたのと同じ補正を world 側の平行移動で行う。
-  const localOffset = translation(outline.minX, outline.minY, 0);
+  const localOffset = translation(localMinX, localMinY, 0);
   const meshWorld = multiply(camera.world, localOffset);
 
   let mvp: Mat4;

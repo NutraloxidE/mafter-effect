@@ -1,5 +1,27 @@
 # Progress
 
+### 2026-07-19（Codex）— `Master → main 1` 非破壊高速化 Phase 4〜5 と実データ検証を完了
+
+- **実データ計測**: `mafter-project (12).purini remix (1).zip`（589,976,631 bytes）から、大容量動画だけを除いたローカル専用 fixture を作成。`bench-master-nested-real.mjs` で実 PreviewPanel／Caching OFF／`Master` f376〜409 を走査し、代表 f400 の preview screenshot と `captureCompFramePng` の SHA-256 が legacy／最適化経路で完全一致。ページ例外なし、3D canvas 4枚・nested object 67個を確認。
+- **Phase 4**: nested wrapper の transform/opacity/z-index/adjustment style を changed-only 更新へ変更。wrapper 順は毎回 `appendChild` せず、ずれた要素だけ `insertBefore`。effect filter/backdrop-filter を差分同期し、SVG filter DOM は signature が同じ間再利用、effect が消えた場合は確実に除去する。
+- **Phase 5**: `NestedRenderEpochs`（mode/resource/evaluator/WebGL context）と resource-ready 条件を追加し、同一 comp identity＋同一 child frame の完成済み subtree を安全に再利用。font/image load 完了、render mode、timeline comp/evaluator、WebGL context loss/restore で miss に倒す。runtime-only kill switch `__mafterNestedFrameReuse=false` で即時 rollback 可能、既定 ON。
+- **計測結果**: hot 34 parent frames で nested full render **204→90**、same-child-frame reuse **34回**、GPU upload **4587→2427**。p50 は再測定で **366.6ms→319.4ms（12.9%）**、別測定では duplicate-frame p50 **333.8ms→92.3ms（72%）**。headless SwiftShader の p95 は分散が大きく悪化回もあるため、正しさゲートと operation count を採用根拠にした。
+- **rollout**: Phase 2 prepared geometry cache／Phase 3 GPU mesh cache は実データ wall-clock の安定改善を確認できず既定 OFF のまま。Phase 5 のみ既定 ON。§5・INV・project.json 直列化は不変。
+- **検証**: `test/nestedFrameReuse.test.ts` で invalidation matrix と kill switch を固定。Windows 対応の synthetic runner と実データ runnerを追加。`npm run typecheck` PASS、`verify-nested-reconcile.mjs` PASS、実データ preview/export hash parity PASS、`npm run build:player`＋`playerBuildFreshness` PASS。全 Vitest は **1345 passed / 1 failed**（既存 `effects.test.ts` の `liquidChrome` 再登録漏れ。base HEAD から継続する本変更と無関係な既知 failure）。
+- **Next steps**: 本 PLAN の必須 Phase は完了。Phase 6 は新しい profile で残余 hotspot が再現した場合だけ着手する。
+
+### 2026-07-19（Claude Opus 4.8）— `Master → main 1` 非破壊高速化 PLAN の Phase 0〜3 を実装
+
+- **依頼**: `master-nested-composite-performance-plan.md` の Phase 0〜3 を実装・テスト・レポートまで一気に回す（Phase 4〜5 は再計測後にユーザーと判断）。
+- **前提の制約**: 元 590MB 実 ZIP は org egress policy によりこの cloud 環境から取得不可（Drive リンクも `drive.google.com` が 403 policy denial）。よって **repo synthetic fixture** を基準に実装し、local-real fixture + 最終 max-ZIP benchmark は**ユーザーの実機に残タスク**として明記。
+- **すべて非破壊・flag 既定 OFF**: §5/INV/直列化 不変。新 flag は runtime-only（`__mafterPreparedGeomCache` / `__mafterGpuMeshCache`）で project.json に保存しない。
+- **Phase 0**: spec **§23.3f**（ネスト live render の非破壊 cache 契約・散文のみ）を追記。synthetic fixture [test/fixtures/masterNestedFixture.ts]（Master30→main1 15fps・45 3D-text 風・dense KF）。baseline [test/masterNestedBaseline.test.ts] + runner [bench-master-nested-live.mjs] + [doc/cloudplan/master-nested-baseline.json]。**266 unique / 531（49.9% dup）** を固定。resolve reuse 上限効果 ≈ 38%。
+- **Phase 1**: `interpolate.ts::findSegment` を線形走査 → **lower-bound 二分探索**（完全同値）。旧線形実装を reference にした seeded fuzz（scalar/vec3/rgba/step・重複frame・全easing・1万超ケース）が maxAbs 完全一致 [test/interpolateBinarySearchParity.test.ts]。
+- **Phase 2**: `applyGeom3DText` の cache lookup を `textToOutlineGlyphs` より**前**へ。`PreparedGeom3DText`（mesh + bounds）を有界 LRU（48MB）で持ち、transform-only frame で outline/nonzero 正規化/extrude を省く。null builder（system font）は誤 hit を作らず miss フォールバック [geom3dMeshCache.ts / geom3dDomApply.ts]。
+- **Phase 3**: `geom3dGl.ts` に per-context の `MeshBufferCache`（`MeshData` identity → 常駐 VBO・64MB LRU・context-loss/dispose で deleteBuffer）。共有 canvas の mesh 切替ごとの3 buffer再upload を warm で 0 に [geom3dMeshBufferCache.ts]。
+- **検証**: `tsc --noEmit` 緑。`npm test` = **1338 passed / 1 failed（既存の liquidChrome 未登録・本変更と無関係。base HEAD でも fail）**。`npm run build:player` 更新済み（`playerBuildFreshness` 緑）。実機 verify [verify-master-nested-cache.mjs]（実 WebGL/swiftshader）: OFF vs Phase2-ON / Phase2+3-ON の**ピクセル maxAbs=0**、outline build=1（10 transform-only frames）、warm GPU upload=0。既存 [verify-nested-reconcile.mjs] PASS。
+- **残タスク（ユーザー実機）**: ① 実 590MB ZIP で local-real fixture + 最終 wall-clock benchmark（hot interval f188〜204 の render p95 ≤ 33.3ms 目標）。② flag を検証後に 1 つずつ既定 ON へ。③ Phase 4（nested DOM/effect 差分）/ Phase 5（same-child-frame subtree reuse）は baseline 再計測して採否判断。
+
 ### 2026-07-19（Codex）— 最大実プロジェクトの `Master → main 1` 非破壊高速化 PLAN を作成
 
 - **依頼**: `Downloads` 内の最大 Mafter project で、重量級 `main 1` のような comp を `Master` に precomp として読み込んだ際の動作を、画・時間・保存形式を変えず高速化するフル PLAN を作る。実装は本セッションの対象外。

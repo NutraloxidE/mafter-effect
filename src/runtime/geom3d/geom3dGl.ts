@@ -1,4 +1,6 @@
 import type { Mat4 } from "../mat4";
+import { isGpuMeshCacheEnabled } from "./geom3dCacheFlags";
+import { MeshBufferCache, type MeshBufferStats } from "./geom3dMeshBufferCache";
 import type { MeshData } from "./geom3dTypes";
 
 /**
@@ -88,13 +90,40 @@ interface Geom3DGlState {
    * 直前にアップロードした mesh の参照。同一参照ならバッファ再アップロードをスキップ。
    * ponytail: 1 canvas = 1 mesh 前提の 1 スロットキャッシュ。§5.5f-1 の共有 canvas に
    * 複数レイヤーが描くとフレームごとに全メッシュを再アップロードする（グループを組んだときだけ
-   * 効かない）。実測で問題になったら mesh 参照キーの Map + 複数 VBO へ広げる。
+   * 効かない）。__mafterGpuMeshCache ON のときは `meshCache`（複数 VBO 常駐）が担う（§8 Phase 3）。
    */
   lastMesh: MeshData | null;
+  /**
+   * §8 Phase 3: mesh identity ごとの GPU buffer 常駐 cache（flag ON のときのみ遅延生成）。
+   * flag OFF なら null のまま = 従来 1-slot 経路（挙動不変）。
+   */
+  meshCache: MeshBufferCache | null;
   broken: boolean;
 }
 
+// §8 Phase 3: per-context GPU buffer 予算（runtime-only）。text mesh は 1 文字あたり数千頂点になりうるため
+// 45 文字級でも収まるよう 64MB。超過時は LRU eviction で deleteBuffer。
+const GPU_MESH_BUDGET_BYTES = 64 * 1024 * 1024;
+
+const glStats: MeshBufferStats = { bufferUploads: 0 };
+
+/** 累積 `bufferData` 呼び出し回数（ON/OFF 両経路を計上）。op-count ゲート用（warm frame で増分 0）。 */
+export function geom3DGlBufferUploadCount(): number {
+  return glStats.bufferUploads;
+}
+
+export function resetGeom3DGlBufferUploadCount(): void {
+  glStats.bufferUploads = 0;
+}
+
 const statesByCanvas = new WeakMap<HTMLCanvasElement, Geom3DGlState>();
+const contextEpochCanvases = new WeakSet<HTMLCanvasElement>();
+let contextEpoch = 0;
+
+/** Nested same-frame reuse invalidation source for WebGL context loss/restore. */
+export function geom3DGlContextEpoch(): number {
+  return contextEpoch;
+}
 
 /**
  * **GL context 数の上限に注意（§5.5f 既知のリスク・2026-07-16）**
@@ -114,6 +143,11 @@ const statesByCanvas = new WeakMap<HTMLCanvasElement, Geom3DGlState>();
  * canvas を作り直す実装は数十フレームで上限に達する（§23.3e のネスト comp が実例）。
  */
 function createState(canvas: HTMLCanvasElement): Geom3DGlState | null {
+  if (!contextEpochCanvases.has(canvas)) {
+    canvas.addEventListener("webglcontextlost", () => { contextEpoch++; });
+    canvas.addEventListener("webglcontextrestored", () => { contextEpoch++; });
+    contextEpochCanvases.add(canvas);
+  }
   const gl = canvas.getContext("webgl", {
     alpha: true,
     premultipliedAlpha: true,
@@ -147,6 +181,7 @@ function createState(canvas: HTMLCanvasElement): Geom3DGlState | null {
       uAmbient: gl.getUniformLocation(program, "uAmbient"),
       uBaseColor: gl.getUniformLocation(program, "uBaseColor"),
       lastMesh: null,
+      meshCache: null,
       broken: false,
     };
   } catch {
@@ -168,6 +203,7 @@ export function releaseGeom3DGl(canvas: HTMLCanvasElement): void {
   const state = statesByCanvas.get(canvas);
   if (!state) return;
   const { gl } = state;
+  state.meshCache?.dispose(gl); // §8: 常駐 GPU buffer を全解放
   gl.deleteBuffer(state.positionBuffer);
   gl.deleteBuffer(state.normalBuffer);
   gl.deleteBuffer(state.indexBuffer);
@@ -219,28 +255,42 @@ export function renderGeom3D(canvas: HTMLCanvasElement, mesh: MeshData, opts: Ge
 
   gl.useProgram(state.program);
 
-  if (state.lastMesh !== mesh) {
-    gl.bindBuffer(gl.ARRAY_BUFFER, state.positionBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, mesh.positions, gl.DYNAMIC_DRAW);
-    gl.bindBuffer(gl.ARRAY_BUFFER, state.normalBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, mesh.normals, gl.DYNAMIC_DRAW);
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, state.indexBuffer);
-    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, mesh.indices, gl.DYNAMIC_DRAW);
-    state.lastMesh = mesh;
+  // 使う VBO を決める。§8 Phase 3 の常駐 cache（flag ON）か、従来 1-slot（flag OFF・挙動不変）か。
+  let positionBuffer: WebGLBuffer;
+  let normalBuffer: WebGLBuffer;
+  let indexBuffer: WebGLBuffer;
+  if (isGpuMeshCacheEnabled()) {
+    if (!state.meshCache) state.meshCache = new MeshBufferCache(GPU_MESH_BUDGET_BYTES);
+    const buffers = state.meshCache.getOrUpload(gl, mesh, glStats);
+    if (!buffers) return false; // 生成失敗 → 呼び出し側フォールバック（誤 hit を作らない）
+    positionBuffer = buffers.position;
+    normalBuffer = buffers.normal;
+    indexBuffer = buffers.index;
   } else {
-    gl.bindBuffer(gl.ARRAY_BUFFER, state.positionBuffer);
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, state.indexBuffer);
+    positionBuffer = state.positionBuffer;
+    normalBuffer = state.normalBuffer;
+    indexBuffer = state.indexBuffer;
+    if (state.lastMesh !== mesh) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, state.positionBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, mesh.positions, gl.DYNAMIC_DRAW);
+      gl.bindBuffer(gl.ARRAY_BUFFER, state.normalBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, mesh.normals, gl.DYNAMIC_DRAW);
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, state.indexBuffer);
+      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, mesh.indices, gl.DYNAMIC_DRAW);
+      glStats.bufferUploads += 3;
+      state.lastMesh = mesh;
+    }
   }
 
-  gl.bindBuffer(gl.ARRAY_BUFFER, state.positionBuffer);
+  gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
   gl.enableVertexAttribArray(state.aPosition);
   gl.vertexAttribPointer(state.aPosition, 3, gl.FLOAT, false, 0, 0);
 
-  gl.bindBuffer(gl.ARRAY_BUFFER, state.normalBuffer);
+  gl.bindBuffer(gl.ARRAY_BUFFER, normalBuffer);
   gl.enableVertexAttribArray(state.aNormal);
   gl.vertexAttribPointer(state.aNormal, 3, gl.FLOAT, false, 0, 0);
 
-  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, state.indexBuffer);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
 
   gl.uniformMatrix4fv(state.uMVP, false, opts.mvp);
   gl.uniformMatrix4fv(state.uNormalMatrix, false, opts.normalMatrix);

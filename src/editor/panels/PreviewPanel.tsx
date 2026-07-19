@@ -506,6 +506,7 @@ export function PreviewPanel() {
       fontCacheRef.current.loadFromProject(project, _previewFs),
       imageCacheRef.current.loadFromProject(project, _previewFs, { proxyMaxDim, priorityAssetIds }),
     ]).then(() => {
+      rendererRef.current?.invalidateNestedResources();
       setRenderTick((t) => t + 1);
     });
   }, [project, comp?.width, comp?.height]); // eslint-disable-line react-hooks/exhaustive-deps
