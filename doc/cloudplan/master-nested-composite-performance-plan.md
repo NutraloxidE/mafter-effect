@@ -90,6 +90,11 @@
 | 上記区間の child frame | 0〜265、266 unique frames |
 | 同一 child frame の重複呼び出し | 265 / 531 = 49.9% |
 
+> **ベンチ用 ZIP の入手元**: この `mafter-project (12).purini remix (1).zip`（589,976,631 bytes）は次からダウンロードできる。
+> https://drive.google.com/file/d/1bDhpuMjVqAOmMjW_xLElRISJHxJn0JzY/view?usp=drivesdk
+>
+> cloud 実行環境からは `drive.google.com` が org egress policy により 403 で拒否されるため取得できない。**local-real fixture 作成・最終 wall-clock benchmark（Phase 2/3 flag の既定 ON 判定）はユーザー実機で本 ZIP を落としてから行う。**
+
 巨大な 546MB MKV や 63MB WAV は import/cold-load コストには影響するが、`Master → main 1` の live render で特徴的な重さは、次の scene 構造にも由来する。
 
 ### 2.2 `main 1` の構造
