@@ -28,7 +28,8 @@ const SCALE = Number(process.env.BENCH_SCALE ?? "1");
 const STATIC_CACHE = process.env.BENCH_STATIC_CACHE !== "0";
 const STATIC_IMAGE = process.env.BENCH_STATIC_IMAGE === "1";
 const STATIC_IMAGE_CACHE = process.env.BENCH_STATIC_IMAGE_CACHE !== "0";
-const VIDEO = process.env.BENCH_VIDEO === "1";
+const AUDIO_VIDEO = process.env.BENCH_AUDIO_VIDEO === "1";
+const VIDEO = process.env.BENCH_VIDEO === "1" || AUDIO_VIDEO;
 const DIRECT_VIDEO = process.env.BENCH_DIRECT_VIDEO !== "0";
 const OUTPUT_SAMPLE = process.env.BENCH_OUTPUT_SAMPLE === "1";
 const DIRECT_SOLID = process.env.BENCH_DIRECT_SOLID !== "0";
@@ -36,11 +37,13 @@ const ANIMATED_SOLID = process.env.BENCH_ANIMATED_SOLID === "1";
 const DIRECT_IMAGE = process.env.BENCH_DIRECT_IMAGE !== "0";
 const ANIMATED_IMAGE = process.env.BENCH_ANIMATED_IMAGE === "1";
 const WORKER_VIDEO = process.env.BENCH_WORKER_VIDEO === "1";
+const MP4_RESERVED_FAST_START = process.env.BENCH_MP4_RESERVED_FAST_START !== "0";
+const AUDIO_MIX_OVERLAP = process.env.BENCH_AUDIO_MIX_OVERLAP !== "0";
 if (!["png-seq", "mp4", "webm"].includes(FORMAT)) throw new Error(`Unsupported BENCH_FORMAT: ${FORMAT}`);
 const OUT_JSON = join(dirname(fileURLToPath(import.meta.url)), process.env.BENCH_OUT ?? "bench-gpu-raster-export-baseline.json");
 const N_FRAMES = Number(process.env.BENCH_FRAMES ?? "24");
 const VIDEO_BASE64 = VIDEO
-  ? readFileSync(join(dirname(fileURLToPath(import.meta.url)), "for-debug-data", "video_motion.mp4")).toString("base64")
+  ? readFileSync(join(dirname(fileURLToPath(import.meta.url)), "for-debug-data", AUDIO_VIDEO ? "video_with_audio.mp4" : "video_motion.mp4")).toString("base64")
   : null;
 
 const browser = await chromium.launch({
@@ -205,6 +208,8 @@ const exp = await ev(async (opts) => {
   globalThis.__mafterDirectSolidCapture = opts.directSolid;
   globalThis.__mafterDirectImageCapture = opts.directImage;
   globalThis.__mafterWorkerVideoExport = opts.workerVideo;
+  globalThis.__mafterMp4ReservedFastStart = opts.mp4ReservedFastStart;
+  globalThis.__mafterAudioMixOverlap = opts.audioMixOverlap;
   globalThis.__mafterGpuCompositorFrames = 0;
   globalThis.__mafterGpuDirectSurfaceFrames = 0;
   globalThis.__mafterDirectVideoCaptureFrames = 0;
@@ -217,8 +222,11 @@ const exp = await ev(async (opts) => {
 
   const perFrameMs = [];
   let lastT = performance.now();
+  let packStartedAt = null, doneAt = null;
   const onProgress = (p) => {
     if (p.phase === "render") { const now = performance.now(); perFrameMs.push(now - lastT); lastT = now; }
+    if (p.phase === "pack") packStartedAt = performance.now();
+    if (p.phase === "done") doneAt = performance.now();
   };
   const cfg = { range: [0, opts.n], fps: 30, scale: opts.scale, format: opts.format, alpha: opts.alpha, textRenderMode: "precise" };
   const t0 = performance.now();
@@ -250,12 +258,31 @@ const exp = await ev(async (opts) => {
           sampleCtx.drawImage(video, 0, 0, 64, 36);
           sample = Array.from(sampleCtx.getImageData(0, 0, 64, 36).data);
         }
+        let decodedAudio = null;
+        if (opts.verifyAudio) {
+          const audioContext = new AudioContext();
+          try {
+            const decoded = await audioContext.decodeAudioData(await res.blob.arrayBuffer());
+            const channel = decoded.getChannelData(0);
+            let sum = 0;
+            for (let i = 0; i < channel.length; i += 16) sum += channel[i] * channel[i];
+            decodedAudio = {
+              channels: decoded.numberOfChannels,
+              sampleRate: decoded.sampleRate,
+              duration: decoded.duration,
+              rms: Math.sqrt(sum / Math.ceil(channel.length / 16)),
+            };
+          } finally {
+            await audioContext.close();
+          }
+        }
         output = {
           bytes: res.blob.size,
           type: res.blob.type,
           width: video.videoWidth,
           height: video.videoHeight,
           duration: video.duration,
+          ...(decodedAudio ? { decodedAudio } : {}),
           ...(sample ? { sample } : {}),
         };
       } finally {
@@ -283,6 +310,7 @@ const exp = await ev(async (opts) => {
     workerVideoExportFrames: globalThis.__mafterWorkerVideoExportFrames ?? 0,
     firstFrameMs: +(perFrameMs[0] ?? 0).toFixed(1),
     avgFrameMs: avg(body),
+    finalizeMs: packStartedAt !== null && doneAt !== null ? +(doneAt - packStartedAt).toFixed(1) : null,
     api,
     output,
   };
@@ -300,6 +328,9 @@ const exp = await ev(async (opts) => {
   directSolid: DIRECT_SOLID,
   directImage: DIRECT_IMAGE,
   workerVideo: WORKER_VIDEO,
+  mp4ReservedFastStart: MP4_RESERVED_FAST_START,
+  audioMixOverlap: AUDIO_MIX_OVERLAP,
+  verifyAudio: AUDIO_VIDEO,
   outputSample: OUTPUT_SAMPLE,
 });
 

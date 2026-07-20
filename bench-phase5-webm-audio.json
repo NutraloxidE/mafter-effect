@@ -1,0 +1,72 @@
+{
+  "when": "2026-07-20T01:14:58.485Z",
+  "note": "Export benchmark — webm (compositeExportFrame + optional WebCodecs).",
+  "fixture": {
+    "mainId": "01KXYHE2RXF2KPE8KVPV0ZFCEE",
+    "innerId": "01KXYHE2RRZ2FA4YKASNY3CYJR",
+    "staticImageId": null,
+    "videoId": "01KXYHE2WTMZMCP7VFK6N76NE4",
+    "mainSize": [
+      1280,
+      720
+    ]
+  },
+  "export": {
+    "ok": true,
+    "err": null,
+    "totalMs": 7962.7,
+    "frames": 30,
+    "gpuFrames": 30,
+    "gpuDirectSurfaceFrames": 30,
+    "directVideoCaptureFrames": 30,
+    "directSolidCaptureFrames": 4,
+    "directImageCaptureFrames": 0,
+    "workerVideoExportFrames": 0,
+    "firstFrameMs": 1049,
+    "avgFrameMs": 230,
+    "api": {
+      "getImageData": {
+        "n": 119,
+        "ms": 573
+      },
+      "putImageData": {
+        "n": 90,
+        "ms": 28.8
+      },
+      "drawImage": {
+        "n": 389,
+        "ms": 51.3
+      },
+      "toDataURL": {
+        "n": 90,
+        "ms": 2665.2
+      },
+      "createImageBitmap": {
+        "n": 0,
+        "ms": 0
+      },
+      "readPixels": {
+        "n": 0,
+        "ms": 0
+      },
+      "imageDecode": {
+        "n": 269,
+        "ms": 759.9
+      }
+    },
+    "output": {
+      "bytes": 430089,
+      "type": "video/webm",
+      "width": 1280,
+      "height": 720,
+      "duration": 1,
+      "decodedAudio": {
+        "channels": 2,
+        "sampleRate": 48000,
+        "duration": 1.0135,
+        "rms": 0.0831263445486191
+      }
+    }
+  },
+  "pageErrors": []
+}

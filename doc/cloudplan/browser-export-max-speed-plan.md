@@ -270,6 +270,8 @@ worker: encode/mux N
 
 ### Phase 5 — Audio overlap と streaming output
 
+**実装・Gate 判定（2026-07-20）**: 音声source/metadataを同期確定し、read/decode/OfflineAudioContext mixを映像renderと重ねられるA/B経路を実装。60f音声付きMP4では直列20.20s、並行21.92s（+8.5%）だったため資源競合回避を優先し、`__mafterAudioMixOverlap=true` のopt-in（既定OFF）とした。MP4は`fastStart: "in-memory"`と、video/audio chunk上限を先に予約するregular MP4を比較。60fの2回で6120.4→5955.9ms（-2.7%）、5139.5→4758.1ms（-7.4%）、直接計測したfinalizeは2.3→1.2msだった予約方式を既定採用。音声付き予約MP4は48kHz stereo / RMS 0.085、WebMは48kHz stereo / RMS 0.083を実デコード確認。StreamTargetは現行公開APIが最終`Blob`を要求し、全出力保持を除けないため見送り。真のstreamingはFile System Access等のstream返却APIを別途設計するときに行う。
+
 1. audio asset read/decode/mix を video render と並行化できるよう preparation と mux metadata を分離する。
 2. AudioEncoder と VideoEncoder の同時実行が hardware resource contention を起こさないか A/B。
 3. 長尺 export は in-memory `ArrayBufferTarget` と streaming target を比較する。

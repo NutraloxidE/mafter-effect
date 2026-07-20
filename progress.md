@@ -1,5 +1,13 @@
 # Progress
 
+### 2026-07-20（Codex）— browser export 最大高速化 Phase 5
+
+- **Audio overlap**: 音声source/48kHz stereo metadataを同期確定し、asset read/decode/OfflineAudioContext mixを映像renderと並行可能にした。60f音声付きMP4 A/Bは直列 **20.20s**、並行 **21.92s（+8.5%）** のため `__mafterAudioMixOverlap=true` のopt-in、既定OFF。
+- **MP4 bounded finalization**: `fastStart: "in-memory"` を、予想video/audio chunk数を予約するregular MP4へ変更。60f A/Bは2回とも改善（**6120.4→5955.9ms / 5139.5→4758.1ms**）、finalize直接計測 **2.3→1.2ms** で既定ON。旧方式へは `__mafterMp4ReservedFastStart=false` で戻せる。
+- **出力検証**: 予約MP4は1280×720 / 2.005s、音声48kHz stereo / RMS 0.085。WebMも1280×720 / 1.0s、音声48kHz stereo / RMS 0.083。page error 0。StreamTargetは最終`Blob`契約では全出力保持を除けず、位置指定writeもあるため今回は非採用。
+- **検証**: targeted audio/fast-start/player freshness 18 tests PASS、`npm run build` PASS。全Vitestは **1377 passed / 1 failed**（既知の`effects.test.ts` liquidChrome再登録、本変更と無関係）。
+- **Next steps**: 珍しいdecode失敗sourceを含むempty audio trackの互換確認と、File System Accessへ直接書く新しいstreaming保存APIは別タスク。§5/INV/project.json直列化は不変。
+
 ### 2026-07-20（Codex）— browser export 最大高速化 Phase 4
 
 - **実装**: video-only MP4/WebM に DedicatedWorker encode/mux 経路を追加。Window は resolve/render/capture と transferable `VideoFrame` 生成まで、Worker は `VideoEncoder`・mux を担当。未ack frame は最大3枚、encoder dequeue と二重 backpressure。abort/error 時は保留frame・encoder・workerを解放する。

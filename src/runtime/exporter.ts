@@ -154,12 +154,16 @@ export async function exportComposition(
       );
       return { blob, format: "png-seq" };
     } else {
-      // Audio assets を先に収集・デコード（OfflineAudioContext が必要なため）
-      const audioMix = await buildAudioMix(project, tlComp, startFrame, endFrame, config.fps, fs);
+      // Source metadata is synchronous; the opt-in path may overlap decode/mix with deterministic video rendering.
+      let audioTask = createAudioMixTask(project, tlComp, startFrame, endFrame, config.fps, fs);
+      if (!isAudioMixOverlapEnabled() && audioTask.hasAudioSources) {
+        const audioMix = await audioTask.promise;
+        audioTask = { hasAudioSources: audioMix !== null, promise: Promise.resolve(audioMix) };
+      }
       try {
         const blob = await runVideo(
           tlComp, renderer, evaluator, config,
-          startFrame, totalFrames, nw, nh, w, h, audioMix, onProgress, signal,
+          startFrame, totalFrames, nw, nh, w, h, audioTask, onProgress, signal,
         );
         return { blob, format: config.format };
       } catch (e) {
@@ -240,7 +244,7 @@ async function runVideo(
   startFrame: number,
   totalFrames: number,
   nw: number, nh: number, w: number, h: number,
-  audioMix: AudioMixResult | null,
+  audioTask: AudioMixTask,
   onProgress: ProgressCallback,
   signal?: AbortSignal,
 ): Promise<Blob> {
@@ -252,7 +256,7 @@ async function runVideo(
   // alpha export（webm VP9）では透明背景にする。PNG-seq の runPngSeq と同じ方針。
   // mp4(H.264) は alpha 非対応で UI も alpha を出さないため config.alpha は常に false。
   const bg = config.alpha ? "transparent" : (comp.background ? rgbaToHex(comp.background) : "#000000");
-  const hasAudio = audioMix !== null;
+  const hasAudio = audioTask.hasAudioSources;
 
   // ─ muxer セットアップ ─
   type ChunkAccum = { chunk: EncodedVideoChunk; meta: EncodedVideoChunkMetadata | undefined }[];
@@ -261,12 +265,12 @@ async function runVideo(
   if (config.format === "mp4") {
     return await runMp4(
       comp, renderer, evaluator, config, startFrame, totalFrames,
-      nw, nh, w, h, fps, bg, hasAudio, audioMix, videoChunks, onProgress, signal,
+      nw, nh, w, h, fps, bg, hasAudio, audioTask.promise, videoChunks, onProgress, signal,
     );
   } else {
     return await runWebm(
       comp, renderer, evaluator, config, startFrame, totalFrames,
-      nw, nh, w, h, fps, bg, hasAudio, audioMix, videoChunks, onProgress, signal,
+      nw, nh, w, h, fps, bg, hasAudio, audioTask.promise, videoChunks, onProgress, signal,
     );
   }
 }
@@ -282,7 +286,7 @@ async function runMp4(
   fps: number,
   bg: string,
   hasAudio: boolean,
-  audioMix: AudioMixResult | null,
+  audioMixPromise: Promise<AudioMixResult | null>,
   _videoChunks: unknown[],
   onProgress: ProgressCallback,
   signal?: AbortSignal,
@@ -303,10 +307,10 @@ async function runMp4(
   const muxer = new Mp4Muxer({
     target,
     video: { codec: "avc", width: w, height: h, frameRate: fps },
-    ...(hasAudio && audioMix ? {
-      audio: { codec: "aac", numberOfChannels: audioMix.numberOfChannels, sampleRate: audioMix.sampleRate },
+    ...(hasAudio ? {
+      audio: { codec: "aac", numberOfChannels: 2, sampleRate: 48000 },
     } : {}),
-    fastStart: "in-memory",
+    fastStart: resolveMp4FastStart(totalFrames, hasAudio, totalFrames / fps),
     firstTimestampBehavior: "offset",
   });
 
@@ -332,7 +336,8 @@ async function runMp4(
     await videoEncoder.encoder.flush();
     if (videoEncoder.stats.error) throw videoEncoder.stats.error;
 
-    if (hasAudio && audioMix) {
+    const audioMix = await audioMixPromise;
+    if (audioMix) {
       onProgress({ phase: "audio", frame: totalFrames, totalFrames, message: "Encoding audio…" });
       try {
         await encodeAudioToMuxer(audioMix, (chunk, meta) => muxer.addAudioChunk(chunk, meta ?? undefined), "mp4a.40.2", config.audioBitrate, signal);
@@ -341,6 +346,7 @@ async function runMp4(
       }
     }
 
+    onProgress({ phase: "pack", frame: totalFrames, totalFrames, message: "Finalizing MP4…" });
     muxer.finalize();
     onProgress({ phase: "done", frame: totalFrames, totalFrames, message: "Done" });
     return new Blob([target.buffer], { type: "video/mp4" });
@@ -360,7 +366,7 @@ async function runWebm(
   fps: number,
   bg: string,
   hasAudio: boolean,
-  audioMix: AudioMixResult | null,
+  audioMixPromise: Promise<AudioMixResult | null>,
   _videoChunks: unknown[],
   onProgress: ProgressCallback,
   signal?: AbortSignal,
@@ -381,8 +387,8 @@ async function runWebm(
   const muxer = new WebmMuxer({
     target,
     video: { codec: "V_VP9", width: w, height: h, frameRate: fps, alpha: config.alpha },
-    ...(hasAudio && audioMix ? {
-      audio: { codec: "A_OPUS", numberOfChannels: audioMix.numberOfChannels, sampleRate: audioMix.sampleRate },
+    ...(hasAudio ? {
+      audio: { codec: "A_OPUS", numberOfChannels: 2, sampleRate: 48000 },
     } : {}),
   });
 
@@ -408,7 +414,8 @@ async function runWebm(
     await videoEncoder.encoder.flush();
     if (videoEncoder.stats.error) throw videoEncoder.stats.error;
 
-    if (hasAudio && audioMix) {
+    const audioMix = await audioMixPromise;
+    if (audioMix) {
       onProgress({ phase: "audio", frame: totalFrames, totalFrames, message: "Encoding audio…" });
       try {
         await encodeAudioToMuxer(audioMix, (chunk, meta) => muxer.addAudioChunk(chunk, meta ?? undefined), "opus", config.audioBitrate, signal);
@@ -417,6 +424,7 @@ async function runWebm(
       }
     }
 
+    onProgress({ phase: "pack", frame: totalFrames, totalFrames, message: "Finalizing WebM…" });
     muxer.finalize();
     onProgress({ phase: "done", frame: totalFrames, totalFrames, message: "Done" });
     return new Blob([target.buffer], { type: "video/webm" });
@@ -539,6 +547,35 @@ export interface AudioMixResult {
   numberOfChannels: number;
 }
 
+interface AudioMixTask {
+  hasAudioSources: boolean;
+  promise: Promise<AudioMixResult | null>;
+}
+
+export function isAudioMixOverlapEnabled(): boolean {
+  const g = globalThis as { __mafterAudioMixOverlap?: unknown };
+  return g.__mafterAudioMixOverlap === true;
+}
+
+function createAudioMixTask(
+  project: Project,
+  comp: TimelineComposition,
+  startFrame: number,
+  endFrame: number,
+  fps: number,
+  fs: FileSystem,
+): AudioMixTask {
+  const resolveComp = (compId: string): TimelineComposition | undefined => {
+    const candidate = project.compositions.find((composition) => composition.id === compId);
+    return candidate && candidate.kind === "timeline" ? candidate : undefined;
+  };
+  const mixSources = collectFootageAudioSources(comp, resolveComp);
+  if (mixSources.length === 0) return { hasAudioSources: false, promise: Promise.resolve(null) };
+  const promise = buildAudioMix(project, comp, startFrame, endFrame, fps, fs, mixSources);
+  void promise.catch(() => { /* consumed after video encode */ });
+  return { hasAudioSources: true, promise };
+}
+
 /** timeline の audio / video 内蔵音声コンポーネントを OfflineAudioContext で mix する。 */
 async function buildAudioMix(
   project: Project,
@@ -547,15 +584,10 @@ async function buildAudioMix(
   endFrame: number,
   fps: number,
   fs: FileSystem,
+  mixSources: ReturnType<typeof collectFootageAudioSources>,
 ): Promise<AudioMixResult | null> {
   if (typeof OfflineAudioContext === "undefined") return null;
 
-  const resolveComp = (compId: string): TimelineComposition | undefined => {
-    const c = project.compositions.find((c) => c.id === compId);
-    return c && c.kind === "timeline" ? c : undefined;
-  };
-  const mixSources = collectFootageAudioSources(comp, resolveComp);
-  if (mixSources.length === 0) return null;
   // §11.5.2 カット端 declick の抑制判定（シームレス境界の二重フェード防止）。preview と同一純関数。
   const fadeSuppression = computeFadeSuppression(collectFadeClips(comp));
 
@@ -692,6 +724,19 @@ export async function encodeAudioToMuxer(
 export function resolveAudioBitrate(raw: number | undefined): number {
   if (typeof raw !== "number" || !Number.isFinite(raw)) return 192_000;
   return Math.max(32_000, Math.min(320_000, Math.round(raw)));
+}
+
+export function resolveMp4FastStart(
+  totalFrames: number,
+  hasAudio: boolean,
+  durationSec: number,
+): "in-memory" | { expectedVideoChunks: number; expectedAudioChunks?: number } {
+  const g = globalThis as { __mafterMp4ReservedFastStart?: unknown };
+  if (g.__mafterMp4ReservedFastStart === false) return "in-memory";
+  return {
+    expectedVideoChunks: Math.max(1, Math.ceil(totalFrames)),
+    ...(hasAudio ? { expectedAudioChunks: Math.max(1, Math.ceil(durationSec * 48000 / 1024) + 1) } : {}),
+  };
 }
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
