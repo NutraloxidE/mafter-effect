@@ -13,7 +13,7 @@
 //         `$env:BENCH_FORMAT='mp4'; $env:BENCH_OUT='bench-browser-export-before-mp4.json'; node bench-gpu-raster-export-baseline.mjs`
 
 import { chromium } from "playwright";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -27,9 +27,15 @@ const SCALE = Number(process.env.BENCH_SCALE ?? "1");
 const STATIC_CACHE = process.env.BENCH_STATIC_CACHE !== "0";
 const STATIC_IMAGE = process.env.BENCH_STATIC_IMAGE === "1";
 const STATIC_IMAGE_CACHE = process.env.BENCH_STATIC_IMAGE_CACHE !== "0";
+const VIDEO = process.env.BENCH_VIDEO === "1";
+const DIRECT_VIDEO = process.env.BENCH_DIRECT_VIDEO !== "0";
+const OUTPUT_SAMPLE = process.env.BENCH_OUTPUT_SAMPLE === "1";
 if (!["png-seq", "mp4", "webm"].includes(FORMAT)) throw new Error(`Unsupported BENCH_FORMAT: ${FORMAT}`);
 const OUT_JSON = join(dirname(fileURLToPath(import.meta.url)), process.env.BENCH_OUT ?? "bench-gpu-raster-export-baseline.json");
 const N_FRAMES = Number(process.env.BENCH_FRAMES ?? "24");
+const VIDEO_BASE64 = VIDEO
+  ? readFileSync(join(dirname(fileURLToPath(import.meta.url)), "for-debug-data", "video_motion.mp4")).toString("base64")
+  : null;
 
 const browser = await chromium.launch({
   executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || chromium.executablePath(),
@@ -122,14 +128,25 @@ const built = await ev(async (opts) => {
     if (!staticImageId) throw new Error("fixture image layer failed");
     s.updateObject(staticImageId, { zOrder: 8.5 });
   }
+  let videoId = null;
+  if (opts.videoBase64) {
+    const binary = atob(opts.videoBase64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const assetId = await s.importVideoAsset(new File([bytes], "video_motion.mp4", { type: "video/mp4" }));
+    if (!assetId) throw new Error("fixture video import failed");
+    videoId = s.addVideoLayer(assetId, "DirectVideo");
+    if (!videoId) throw new Error("fixture video layer failed");
+    s.updateObject(videoId, { zOrder: 8.75 });
+  }
   const rlayer = solid("MosaicLayer", { r: 0.3, g: 0.9, b: 0.4, a: 1 }, { x: 500, y: 500, z: 0 }, 4); s.addEffect(rlayer, "mosaic");
   solid("MatteSrc", { r: 1, g: 1, b: 1, a: 1 }, { x: 400, y: 400, z: 0 }, 6);
   const fill = solid("MatteFill", { r: 0.9, g: 0.8, b: 0.1, a: 1 }, { x: 400, y: 400, z: 0 }, 5); s.setTrackMatteMode(fill, "alpha");
   const adj = s.addRasterAdjustmentLayer("MainAdj"); s.updateObject(adj, { zOrder: 7 }); s.addEffect(adj, "mosaic");
   const nest = s.addCompLayer(innerId, "FX-Inner-Instance"); if (nest) s.updateObject(nest, { zOrder: 8 });
   s.setCurrentComp(mainId); s.setFrame(0);
-  return { mainId, innerId, staticImageId, mainSize: [MAIN_W, MAIN_H] };
-}, { staticImage: STATIC_IMAGE });
+  return { mainId, innerId, staticImageId, videoId, mainSize: [MAIN_W, MAIN_H] };
+}, { staticImage: STATIC_IMAGE, videoBase64: VIDEO_BASE64 });
 console.log("built:", JSON.stringify(built));
 
 // FS へフラッシュ（exportComposition は project 引数を直接受けるが、fonts/assets を fs から読む）
@@ -146,8 +163,10 @@ const exp = await ev(async (opts) => {
   globalThis.__mafterGpuDirectSurface = opts.gpuDirect;
   globalThis.__mafterStaticLayerCaptureCache = opts.staticCache;
   globalThis.__mafterStaticImageCaptureCache = opts.staticImageCache;
+  globalThis.__mafterDirectVideoCapture = opts.directVideo;
   globalThis.__mafterGpuCompositorFrames = 0;
   globalThis.__mafterGpuDirectSurfaceFrames = 0;
+  globalThis.__mafterDirectVideoCaptureFrames = 0;
 
   // 計測を export 区間だけにリセット
   for (const k of Object.keys(stats)) { if (k === "lastActivity") continue; stats[k] = { n: 0, ms: 0 }; }
@@ -173,12 +192,27 @@ const exp = await ev(async (opts) => {
           video.onloadedmetadata = resolve;
           video.onerror = () => reject(new Error("encoded video metadata decode failed"));
         });
+        let sample = null;
+        if (opts.outputSample) {
+          video.currentTime = Math.min(video.duration / 2, Math.max(0, video.duration - 0.01));
+          await new Promise((resolve, reject) => {
+            video.onseeked = resolve;
+            video.onerror = () => reject(new Error("encoded video sample seek failed"));
+          });
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          const sampleCanvas = document.createElement("canvas");
+          sampleCanvas.width = 64; sampleCanvas.height = 36;
+          const sampleCtx = sampleCanvas.getContext("2d", { willReadFrequently: true });
+          sampleCtx.drawImage(video, 0, 0, 64, 36);
+          sample = Array.from(sampleCtx.getImageData(0, 0, 64, 36).data);
+        }
         output = {
           bytes: res.blob.size,
           type: res.blob.type,
           width: video.videoWidth,
           height: video.videoHeight,
           duration: video.duration,
+          ...(sample ? { sample } : {}),
         };
       } finally {
         URL.revokeObjectURL(url);
@@ -199,6 +233,7 @@ const exp = await ev(async (opts) => {
     frames: opts.n,
     gpuFrames: globalThis.__mafterGpuCompositorFrames ?? 0,
     gpuDirectSurfaceFrames: globalThis.__mafterGpuDirectSurfaceFrames ?? 0,
+    directVideoCaptureFrames: globalThis.__mafterDirectVideoCaptureFrames ?? 0,
     firstFrameMs: +(perFrameMs[0] ?? 0).toFixed(1),
     avgFrameMs: avg(body),
     api,
@@ -214,9 +249,14 @@ const exp = await ev(async (opts) => {
   scale: SCALE,
   staticCache: STATIC_CACHE,
   staticImageCache: STATIC_IMAGE_CACHE,
+  directVideo: DIRECT_VIDEO,
+  outputSample: OUTPUT_SAMPLE,
 });
 
-console.log("export result:", JSON.stringify(exp, null, 2));
+const printable = exp.output?.sample
+  ? { ...exp, output: { ...exp.output, sample: `[${exp.output.sample.length} values]` } }
+  : exp;
+console.log("export result:", JSON.stringify(printable, null, 2));
 
 const result = {
   when: new Date().toISOString(),

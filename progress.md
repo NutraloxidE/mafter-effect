@@ -2678,3 +2678,17 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
 - **対象外維持**: video/canvas/HTML/plugin/geom/nested/adjustment/effect/matte、PNG/precomp/bundle。
 - **回帰**: typecheck・player rebuild/freshness PASS。full Vitest **1355/1357**（既知liquidChrome +既知flaky projectBins）。projectBinsを含む関連38 testsは単独再実行で全PASS。
 - **Next step**: Phase 3c simple 2D video direct capture adapter。videoはframeごとに変わるためcacheせず、deterministic seek後のpresented frameをJPEG data URL + SVG decodeを経由せずfull-comp canvasへ直接描く。transform/opacity/fitのみ対応し、3D/effect/matte/nested/alphaは既存fallback。
+
+### 2026-07-20（Codex）— Browser Export Phase 3c simple 2D video direct capture ✅
+
+- **spec先行**: §11.2に、非透過MP4/WebM限定でseek済み単純2D videoをfull-comp canvasへ直接描画する契約を追記。world transform/opacity/fitを維持し、alpha/effect/matte/3D/nested/multi-component/未decode/非affineは従来fallback。PNG/precomp/bundle/previewは非適用。§5/INV/project.json変更なし。
+- **実装**:
+  - `directVideoCapture.ts`: resolved eligibility、Canvas2D affine gate、object-fit矩形、A/B seam。
+  - `DomRenderer`: eligible videoと同一resolved transform/opacity/fit、実`HTMLVideoElement`を`ExportLayer`へ投影。split/packed alphaのcanvas併存時は除外。
+  - `exportComposite.ts`: ready済みvideoを透明full-comp canvasへ直接draw。通常root一括capture可能なフレームもdirect videoがあればper-layerへ切替え、他の静的層は既存cacheを利用。失敗時は同frameでforeignObject fallback。
+  - `exporter.ts`: browser MP4/WebM loopだけopt-in。非直列化`__mafterDirectVideoCapture=false`で即時rollback可能。
+  - `directVideoCapture.test.ts`: eligibility/除外/affine/fit/flagの8 unit。
+- **実測（1280×720 heavy fixture + video / MP4 / 24fr / 3 pairs）**: wall median **5756.8→4717.8ms（-18.0%、3/3勝）**、steady **195.6→105.5ms/fr（-46.1%、3/3勝）**。`toDataURL`/SVG decode/`drawImage`は各 **-24 calls**。directはON runで24/24実走。詳細: `doc/cloudplan/browser-export-phase3c-video-direct-benchmark.md`。
+- **画素比較**: encoded midpoint 64×36 RGBでMAE **0.179/255**、max **9/255**、差>3は**0.839%**、差>10は0。差は従来の中間JPEG除去による品質改善。metadataは全run 1280×720・0.8秒、pageErrors 0。
+- **回帰**: typecheck・player rebuild/freshness・増分15 tests PASS。full Vitest **1364/1365**（唯一のfailは既知`effects.test.ts` liquidChrome再登録漏れ）。実ブラウザはvideo monotonic onTarget 25/25・reversal 0・stuck 0、adjustment export PASS、track matte 9/9 PASS。
+- **Next step**: Phase 3d content/placement分離。transform/opacityだけ動くsolid/text/imageでcontent surfaceを再利用し、placementをcompositor側へ移す。回転/scale/anchor/opacityのCanvas2D/WebGL parityを先に固定し、perspective/matte/nestedはfallback維持。

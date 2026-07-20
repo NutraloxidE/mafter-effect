@@ -97,6 +97,11 @@ import {
 } from "./trackMatteDom";
 import { composeTrackMatteToCanvas } from "./trackMatteCapture";
 import { staticLayerCaptureSignature } from "./staticLayerCaptureCache";
+import {
+  directVideoCaptureDescriptor,
+  type DirectVideoCaptureDescriptor,
+  type DirectVideoCaptureSource,
+} from "./directVideoCapture";
 
 // §8 DomRenderer — フラット matrix3d レンダラ。
 // 各 ResolvedObject を root の兄弟 div として並べる。ネストしない。
@@ -191,6 +196,8 @@ interface ObjectEntry {
   hasTrackMatte: boolean;
   /** browser video export用の安全なstatic capture signature。対象外はnull。 */
   captureCacheKey: string | null;
+  /** browser video exportでforeignObjectを省ける単純2D video。対象外はnull。 */
+  directVideoCapture: DirectVideoCaptureDescriptor | null;
   /**
    * 通常経路（非 matte・非 matte-source）ホスト transform/opacity の同値書込抑制用 last-value。
    * matte/matte-source/childrenRebuilt に入るフレームで null 化し、通常経路へ戻った初回に
@@ -205,6 +212,16 @@ interface ObjectEntry {
 interface RasterWorkItem {
   effect: ResolvedEffect;
   def: NonNullable<ReturnType<typeof globalPluginRegistry.getEffectDef>>;
+}
+
+function directVideoCaptureWithElement(entry: ObjectEntry): DirectVideoCaptureSource | null {
+  const descriptor = entry.directVideoCapture;
+  if (!descriptor) return null;
+  const videos = [...entry.div.querySelectorAll("video")];
+  if (videos.length !== 1 || entry.div.querySelector("canvas")) return null;
+  const video = videos[0];
+  if (!(video instanceof HTMLVideoElement)) return null;
+  return { ...descriptor, video };
 }
 
 export class DomRenderer implements Renderer {
@@ -572,6 +589,7 @@ export class DomRenderer implements Renderer {
           isTrackMatteSource: false,
           hasTrackMatte: false,
           captureCacheKey: null,
+          directVideoCapture: null,
           lastTransform: null,
           lastOpacity: null,
         };
@@ -581,6 +599,7 @@ export class DomRenderer implements Renderer {
       entry.isTrackMatteSource = obj.isTrackMatteSource === true;
       entry.hasTrackMatte = obj.trackMatte !== undefined;
       entry.captureCacheKey = staticLayerCaptureSignature(obj);
+      entry.directVideoCapture = directVideoCaptureDescriptor(obj);
 
       // §5.4f: 塗りを先に host 化し、マット源は fillHost の子（destination-in/out）。
       if (obj.trackMatte) {
@@ -1470,15 +1489,17 @@ export class DomRenderer implements Renderer {
         isAdjustment: e.isAdjustment,
         exportChain: e.isAdjustment ? e.exportChain : null,
         captureCacheKey: layerCaptureCacheKeyWithResources(e.div, e.captureCacheKey),
+        directVideoCapture: directVideoCaptureWithElement(e),
         z: Number(e.div.style.zIndex) || 0,
       }));
     layers.sort((a, b) => a.z - b.z);
-    return layers.map(({ div, blendMode, isAdjustment, exportChain, captureCacheKey }) => ({
+    return layers.map(({ div, blendMode, isAdjustment, exportChain, captureCacheKey, directVideoCapture }) => ({
       div,
       blendMode,
       isAdjustment,
       exportChain,
       captureCacheKey,
+      directVideoCapture,
     }));
   }
 

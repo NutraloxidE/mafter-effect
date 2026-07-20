@@ -29,6 +29,7 @@ import { isGpuEffectSupported } from "./compositor/gpuEffectRegistry";
 import { globalPluginRegistry } from "./pluginRegistry";
 import type { ResolvedEffect } from "./resolved";
 import type { BlendMode } from "../core/schema";
+import { videoDrawRect, type DirectVideoCaptureSource } from "./directVideoCapture";
 
 const XHTML = "http://www.w3.org/1999/xhtml";
 
@@ -59,6 +60,8 @@ export interface ExportLayer {
   exportChain: ExportChain | null;
   /** browser video exportで安全にforeignObject結果を再利用できる場合のresolved signature。 */
   captureCacheKey?: string | null;
+  /** browser mp4/webm専用: seek済み単純2D videoを直接canvasへ描ける場合のsource。 */
+  directVideoCapture?: DirectVideoCaptureSource | null;
 }
 
 /** §23.3d ネスト comp コンテナのメタ（renderNestedComp が export 時に付与）。 */
@@ -98,6 +101,8 @@ export interface ExportCompositeOptions {
   directGpuSurface?: boolean;
   /** effect無し2D solid/textの直近foreignObject captureを再利用する。 */
   cacheStaticLayerCaptures?: boolean;
+  /** seek済み単純2D videoをforeignObject/JPEGを介さず直接captureする。 */
+  directVideoCaptures?: boolean;
 }
 
 const staticLayerCaptureCache = new WeakMap<HTMLElement, {
@@ -246,15 +251,49 @@ async function captureLayerNode(
   return rasterizeClonedLayer(cloned, perspective, perspectiveOrigin, nw, nh);
 }
 
+function captureDirectVideoLayer(
+  source: DirectVideoCaptureSource,
+  nw: number,
+  nh: number,
+): HTMLCanvasElement | null {
+  const { video, worldTransform: m } = source;
+  if (video.readyState < 2 || video.videoWidth <= 0 || video.videoHeight <= 0) return null;
+  const styleWidth = Number.parseFloat(video.style.width);
+  const styleHeight = Number.parseFloat(video.style.height);
+  const boxWidth = video.clientWidth || (Number.isFinite(styleWidth) ? styleWidth : video.videoWidth);
+  const boxHeight = video.clientHeight || (Number.isFinite(styleHeight) ? styleHeight : video.videoHeight);
+  const rect = videoDrawRect(video.videoWidth, video.videoHeight, boxWidth, boxHeight, source.fit);
+  if (!rect) return null;
+
+  const canvas = makeCanvas(nw, nh);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  ctx.globalAlpha = source.opacity;
+  ctx.setTransform(m[0], m[1], m[4], m[5], m[12], m[13]);
+  try {
+    ctx.drawImage(video, rect.sx, rect.sy, rect.sw, rect.sh, rect.dx, rect.dy, rect.dw, rect.dh);
+  } catch {
+    return null;
+  }
+  const g = globalThis as { __mafterDirectVideoCaptureFrames?: number };
+  g.__mafterDirectVideoCaptureFrames = (g.__mafterDirectVideoCaptureFrames ?? 0) + 1;
+  return canvas;
+}
+
 async function captureLayerNodeWithCache(
   layer: ExportLayer,
   perspective: string,
   perspectiveOrigin: string,
   nw: number,
   nh: number,
-  enabled: boolean,
+  cacheEnabled: boolean,
+  directVideoEnabled: boolean,
 ): Promise<HTMLCanvasElement> {
-  if (!enabled || !layer.captureCacheKey) {
+  if (directVideoEnabled && layer.directVideoCapture) {
+    const direct = captureDirectVideoLayer(layer.directVideoCapture, nw, nh);
+    if (direct) return direct;
+  }
+  if (!cacheEnabled || !layer.captureCacheKey) {
     return captureLayerNode(layer.div, perspective, perspectiveOrigin, nw, nh);
   }
   const key = `${nw}x${nh}|${perspective}|${perspectiveOrigin}|${layer.captureCacheKey}`;
@@ -293,6 +332,9 @@ export async function compositeExportFrame(
 ): Promise<HTMLCanvasElement> {
   const root = src.getRoot();
   if (!root) throw new Error("compositeExportFrame: no root");
+  const layers = src.getExportLayers();
+  const useDirectVideo = options.directVideoCaptures === true
+    && layers.some((layer) => layer.directVideoCapture != null);
 
   // 高速経路: 調整 / blend / 再帰合成 / threeD が無いフレームは root を 1 枚 capture。
   // threeD は per-layer perspective capture が必要（root 一括 foreignObject は 3D を潰す）。
@@ -301,14 +343,13 @@ export async function compositeExportFrame(
     && !src.hasCssBlendLayers()
     && !src.hasNestedComposite()
     && !src.hasThreeDContent()
+    && !useDirectVideo
   ) {
     return captureElementToCanvas(root, nw, nh, bg, w, h);
   }
 
   const perspective = root.style.perspective;
   const perspectiveOrigin = root.style.perspectiveOrigin || "50% 50%";
-  const layers = src.getExportLayers();
-
   // §Phase 2/3a/4 GPU 経路（flag ON かつ WebGL2 対応時のみ）:
   //   - normal blend: fixed-function 高速パス（Phase 2）
   //   - 非 normal 15 blend: ping-pong shader パス（Phase 3a）
@@ -338,6 +379,7 @@ export async function compositeExportFrame(
           nw,
           nh,
           options.cacheStaticLayerCaptures === true,
+          useDirectVideo,
         ),
         blendMode: layer.blendMode,
       });
@@ -363,6 +405,7 @@ export async function compositeExportFrame(
         nw,
         nh,
         options.cacheStaticLayerCaptures === true,
+        useDirectVideo,
       );
       compositor.drawLayer(sub, layer.blendMode);
     }
