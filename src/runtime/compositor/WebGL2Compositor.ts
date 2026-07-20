@@ -634,7 +634,7 @@ export class WebGl2Compositor implements RasterCompositor {
     this.blendReadIdx = writeIdx;
   }
 
-  finish(): HTMLCanvasElement {
+  finish(copyToCanvas2d = true): HTMLCanvasElement {
     if (this.done) throw new Error("WebGl2Compositor: finish already called");
     this.done = true;
     try {
@@ -653,14 +653,21 @@ export class WebGl2Compositor implements RasterCompositor {
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
       }
       gl.flush();
+      // dev/bench 用: GPU 経路が実際に走ったフレーム数（描画・INV に無関係）。
+      const g = globalThis as {
+        __mafterGpuCompositorFrames?: number;
+        __mafterGpuDirectSurfaceFrames?: number;
+      };
+      g.__mafterGpuCompositorFrames = (g.__mafterGpuCompositorFrames ?? 0) + 1;
+      if (!copyToCanvas2d) {
+        g.__mafterGpuDirectSurfaceFrames = (g.__mafterGpuDirectSurfaceFrames ?? 0) + 1;
+        return canvas;
+      }
       const out = document.createElement("canvas");
       out.width = this.nw;
       out.height = this.nh;
       // premultiplied な GL canvas を 2D canvas へ drawImage → straight alpha へ変換（ブラウザ処理）。
       out.getContext("2d")!.drawImage(canvas, 0, 0);
-      // dev/bench 用: GPU 経路が実際に走ったフレーム数（描画・INV に無関係）。
-      const g = globalThis as { __mafterGpuCompositorFrames?: number };
-      g.__mafterGpuCompositorFrames = (g.__mafterGpuCompositorFrames ?? 0) + 1;
       return out;
     } finally {
       inUse = false;

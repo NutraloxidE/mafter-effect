@@ -57,6 +57,8 @@ export interface ExportLayer {
   isAdjustment: boolean;
   /** 調整レイヤーのみ非 null。 */
   exportChain: ExportChain | null;
+  /** browser video exportで安全にforeignObject結果を再利用できる場合のresolved signature。 */
+  captureCacheKey?: string | null;
 }
 
 /** §23.3d ネスト comp コンテナのメタ（renderNestedComp が export 時に付与）。 */
@@ -88,6 +90,20 @@ export interface ExportCompositeSource {
   /** 現フレームに threeD レイヤーがあるか（高速経路を外す判定）。 */
   hasThreeDContent(): boolean;
 }
+
+export interface ExportCompositeOptions {
+  /** 非透過 browser video export 専用。dev flag に依存せず GPU compositor を優先する。 */
+  enableGpuCompositor?: boolean;
+  /** 非透過 video encode 専用。GPU の最終 canvas を Canvas2D へ複製せず返す。 */
+  directGpuSurface?: boolean;
+  /** effect無し2D solid/textの直近foreignObject captureを再利用する。 */
+  cacheStaticLayerCaptures?: boolean;
+}
+
+const staticLayerCaptureCache = new WeakMap<HTMLElement, {
+  key: string;
+  capture: Promise<HTMLCanvasElement>;
+}>();
 
 function makeCanvas(w: number, h: number): HTMLCanvasElement {
   const c = document.createElement("canvas");
@@ -230,6 +246,33 @@ async function captureLayerNode(
   return rasterizeClonedLayer(cloned, perspective, perspectiveOrigin, nw, nh);
 }
 
+async function captureLayerNodeWithCache(
+  layer: ExportLayer,
+  perspective: string,
+  perspectiveOrigin: string,
+  nw: number,
+  nh: number,
+  enabled: boolean,
+): Promise<HTMLCanvasElement> {
+  if (!enabled || !layer.captureCacheKey) {
+    return captureLayerNode(layer.div, perspective, perspectiveOrigin, nw, nh);
+  }
+  const key = `${nw}x${nh}|${perspective}|${perspectiveOrigin}|${layer.captureCacheKey}`;
+  const cached = staticLayerCaptureCache.get(layer.div);
+  if (cached?.key === key) return cached.capture;
+
+  const capture = captureLayerNode(layer.div, perspective, perspectiveOrigin, nw, nh);
+  staticLayerCaptureCache.set(layer.div, { key, capture });
+  try {
+    return await capture;
+  } catch (error) {
+    if (staticLayerCaptureCache.get(layer.div)?.capture === capture) {
+      staticLayerCaptureCache.delete(layer.div);
+    }
+    throw error;
+  }
+}
+
 /**
  * 1 フレームを comp ネイティブ解像度 (nw×nh) で合成し、必要なら (w×h) へスケールした canvas を返す。
  *
@@ -246,6 +289,7 @@ export async function compositeExportFrame(
   w: number,
   h: number,
   bg: string,
+  options: ExportCompositeOptions = {},
 ): Promise<HTMLCanvasElement> {
   const root = src.getRoot();
   if (!root) throw new Error("compositeExportFrame: no root");
@@ -273,7 +317,7 @@ export async function compositeExportFrame(
   // GPU 対象フレームは capture を先に集めてから合成するので、GL 失敗時は同じ capture/op 列で Canvas2D へ
   // 無コスト fallback できる（再 capture 不要）。matte は capture 段で焼込済（責務外）。
   const gpuEligible =
-    isGpuCompositorEnabled()
+    (options.enableGpuCompositor === true || isGpuCompositorEnabled())
     && canUseWebGl2Compositor()
     && layers.every((l) => !l.isAdjustment || (l.exportChain != null && isGpuAdjustmentChain(l.exportChain)));
 
@@ -287,11 +331,24 @@ export async function compositeExportFrame(
       }
       ops.push({
         kind: "draw",
-        canvas: await captureLayerNode(layer.div, perspective, perspectiveOrigin, nw, nh),
+        canvas: await captureLayerNodeWithCache(
+          layer,
+          perspective,
+          perspectiveOrigin,
+          nw,
+          nh,
+          options.cacheStaticLayerCaptures === true,
+        ),
         blendMode: layer.blendMode,
       });
     }
-    master = await compositeGpuOps(ops, nw, nh, bg);
+    master = await compositeGpuOps(
+      ops,
+      nw,
+      nh,
+      bg,
+      options.directGpuSurface === true && w === nw && h === nh,
+    );
   } else {
     const compositor = new Canvas2DCompositor(nw, nh, bg);
     for (const layer of layers) {
@@ -299,7 +356,14 @@ export async function compositeExportFrame(
         if (layer.exportChain) await compositor.applyAdjustment(layer.exportChain, nw, nh);
         continue;
       }
-      const sub = await captureLayerNode(layer.div, perspective, perspectiveOrigin, nw, nh);
+      const sub = await captureLayerNodeWithCache(
+        layer,
+        perspective,
+        perspectiveOrigin,
+        nw,
+        nh,
+        options.cacheStaticLayerCaptures === true,
+      );
       compositor.drawLayer(sub, layer.blendMode);
     }
     master = compositor.finish();
@@ -337,6 +401,7 @@ async function compositeGpuOps(
   nw: number,
   nh: number,
   bg: string,
+  directSurface: boolean,
 ): Promise<HTMLCanvasElement> {
   const hasAdjust = ops.some((o) => o.kind === "adjust");
   const allNormalDraw = !hasAdjust && ops.every((o) => o.kind === "draw" && o.blendMode === "normal");
@@ -350,7 +415,7 @@ async function compositeGpuOps(
         else await gl.applyAdjustment(o.chain, nw, nh);
       }
     }
-    return gl.finish();
+    return gl.finish(!directSurface);
   } catch {
     WebGl2Compositor.releaseLock();
     const cpu = new Canvas2DCompositor(nw, nh, bg);

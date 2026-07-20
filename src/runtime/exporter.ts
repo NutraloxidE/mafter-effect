@@ -20,6 +20,9 @@ import { collectFootageAudioSources, scheduleGainAutomation } from "./footageAud
 import { collectFadeClips, computeFadeSuppression, fadeSec, isAutoFadeEnabled, scheduleDeclickRamps } from "./footageAutoFade";
 import { resolveFootageAudioPath } from "./footagePlayback";
 import { resolveExportVideoEncode } from "./exportVideoEncode";
+import { waitForEncoderQueueAtMost } from "./encoderBackpressure";
+import { isGpuDirectSurfaceEnabled } from "./compositor/gpuCompositorFlag";
+import { isStaticLayerCaptureCacheEnabled } from "./staticLayerCaptureCache";
 
 export type ExportPhase = "prepare" | "render" | "encode" | "audio" | "bake" | "pack" | "done" | "error";
 
@@ -308,7 +311,7 @@ async function runMp4(
 
     await encodeVideoFrames(
       comp, renderer, evaluator, startFrame, totalFrames, nw, nh, w, h, fps, bg,
-      videoEncoder, onProgress, signal,
+      videoEncoder, !config.alpha, !config.alpha && isGpuDirectSurfaceEnabled(), onProgress, signal,
     );
     await videoEncoder.encoder.flush();
     if (videoEncoder.stats.error) throw videoEncoder.stats.error;
@@ -372,7 +375,7 @@ async function runWebm(
 
     await encodeVideoFrames(
       comp, renderer, evaluator, startFrame, totalFrames, nw, nh, w, h, fps, bg,
-      videoEncoder, onProgress, signal,
+      videoEncoder, !config.alpha, !config.alpha && isGpuDirectSurfaceEnabled(), onProgress, signal,
     );
     await videoEncoder.encoder.flush();
     if (videoEncoder.stats.error) throw videoEncoder.stats.error;
@@ -405,6 +408,8 @@ async function encodeVideoFrames(
   fps: number,
   bg: string,
   videoEncoder: { encoder: VideoEncoder; stats: VideoEncodeStats },
+  enableGpuCompositor: boolean,
+  directGpuSurface: boolean,
   onProgress: ProgressCallback,
   signal?: AbortSignal,
 ) {
@@ -427,18 +432,20 @@ async function encodeVideoFrames(
     await renderer.flushVideoFrames();
     await nextTick();
 
-    const canvas = await compositeExportFrame(renderer, nw, nh, w, h, bg);
-    const bitmap = await createImageBitmap(canvas);
-    const vf = new VideoFrame(bitmap, {
+    const canvas = await compositeExportFrame(renderer, nw, nh, w, h, bg, {
+      enableGpuCompositor,
+      directGpuSurface,
+      cacheStaticLayerCaptures: isStaticLayerCaptureCacheEnabled(),
+    });
+    const vf = new VideoFrame(canvas, {
       timestamp: fi * usDuration,
       duration: usDuration,
     });
     // キーフレーム: 先頭 + 30 フレームごと
     encoder.encode(vf, { keyFrame: fi === 0 || fi % 30 === 0 });
     vf.close();
-    bitmap.close();
 
-    await backpressureEncoderQueue(encoder);
+    await waitForEncoderQueueAtMost(encoder, 6, signal);
   }
 }
 
@@ -709,16 +716,6 @@ function createVideoEncoder(
     },
   });
   return { encoder, stats };
-}
-
-/**
- * キューが溢れすぎないよう間引く。毎フレーム queue===0 を待つと HW エンコーダ環境で
- * タイムアウト→ PNG-seq フォールバックになるため、閾値超過時のみ短い待機を行う。
- */
-async function backpressureEncoderQueue(encoder: VideoEncoder, maxQueue = 6): Promise<void> {
-  while (encoder.encodeQueueSize > maxQueue) {
-    await new Promise((r) => setTimeout(r, 16));
-  }
 }
 
 function safeCloseEncoder(encoder: VideoEncoder): void {

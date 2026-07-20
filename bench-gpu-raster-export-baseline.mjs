@@ -5,11 +5,12 @@
 // applyAdjustmentToMaster の getImageData/putImageData 往復）の実測を取る。
 //
 // 駆動: page から Vite dynamic-import で runtime の exportComposition を呼び、
-//   PNG 連番（WebCodecs 不要）で決定論 export を実行。pixel-API を wrap して
+//   PNG 連番（既定）または BENCH_FORMAT=mp4|webm で決定論 export を実行。pixel-API を wrap して
 //   capture/getImageData/putImageData/toDataURL/createImageBitmap の内訳を集計する。
 //   → bench-gpu-raster-export-baseline.json
 //
 // 使い方: `npm run dev` 起動後 `node bench-gpu-raster-export-baseline.mjs`
+//         `$env:BENCH_FORMAT='mp4'; $env:BENCH_OUT='bench-browser-export-before-mp4.json'; node bench-gpu-raster-export-baseline.mjs`
 
 import { chromium } from "playwright";
 import { writeFileSync } from "node:fs";
@@ -18,10 +19,19 @@ import { dirname, join } from "node:path";
 
 const PORT = process.env.VERIFY_PORT ?? "5173";
 const APP_URL = `https://localhost:${PORT}/`;
-const OUT_JSON = join(dirname(fileURLToPath(import.meta.url)), "bench-gpu-raster-export-baseline.json");
-const N_FRAMES = 24;
+const FORMAT = process.env.BENCH_FORMAT ?? "png-seq";
+const GPU = process.env.BENCH_GPU === "1";
+const GPU_DIRECT = process.env.BENCH_GPU_DIRECT !== "0";
+const ALPHA = process.env.BENCH_ALPHA === "1";
+const SCALE = Number(process.env.BENCH_SCALE ?? "1");
+const STATIC_CACHE = process.env.BENCH_STATIC_CACHE !== "0";
+if (!["png-seq", "mp4", "webm"].includes(FORMAT)) throw new Error(`Unsupported BENCH_FORMAT: ${FORMAT}`);
+const OUT_JSON = join(dirname(fileURLToPath(import.meta.url)), process.env.BENCH_OUT ?? "bench-gpu-raster-export-baseline.json");
+const N_FRAMES = Number(process.env.BENCH_FRAMES ?? "24");
 
-const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium" });
+const browser = await chromium.launch({
+  executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || chromium.executablePath(),
+});
 const page = await browser.newPage({ viewport: { width: 1400, height: 900 }, ignoreHTTPSErrors: true });
 const pageErrors = [];
 page.on("pageerror", (e) => pageErrors.push(String(e)));
@@ -115,6 +125,11 @@ const exp = await ev(async (opts) => {
   const project = s.project;
   const fs = s.getFs();
   const mod = await import("/src/runtime/exporter.ts");
+  globalThis.__mafterGpuCompositor = opts.gpu;
+  globalThis.__mafterGpuDirectSurface = opts.gpuDirect;
+  globalThis.__mafterStaticLayerCaptureCache = opts.staticCache;
+  globalThis.__mafterGpuCompositorFrames = 0;
+  globalThis.__mafterGpuDirectSurfaceFrames = 0;
 
   // 計測を export 区間だけにリセット
   for (const k of Object.keys(stats)) { if (k === "lastActivity") continue; stats[k] = { n: 0, ms: 0 }; }
@@ -124,12 +139,33 @@ const exp = await ev(async (opts) => {
   const onProgress = (p) => {
     if (p.phase === "render") { const now = performance.now(); perFrameMs.push(now - lastT); lastT = now; }
   };
-  const cfg = { range: [0, opts.n], fps: 30, scale: 1, format: "png-seq", alpha: false, textRenderMode: "precise" };
+  const cfg = { range: [0, opts.n], fps: 30, scale: opts.scale, format: opts.format, alpha: opts.alpha, textRenderMode: "precise" };
   const t0 = performance.now();
-  let ok = true, err = null;
+  let ok = true, err = null, output = null;
   try {
     const res = await mod.exportComposition(project, opts.mainId, fs, cfg, onProgress);
     ok = !!res && !!res.blob;
+    if (res?.blob && opts.format !== "png-seq") {
+      const url = URL.createObjectURL(res.blob);
+      try {
+        const video = document.createElement("video");
+        video.preload = "metadata";
+        video.src = url;
+        await new Promise((resolve, reject) => {
+          video.onloadedmetadata = resolve;
+          video.onerror = () => reject(new Error("encoded video metadata decode failed"));
+        });
+        output = {
+          bytes: res.blob.size,
+          type: res.blob.type,
+          width: video.videoWidth,
+          height: video.videoHeight,
+          duration: video.duration,
+        };
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    }
   } catch (e) { ok = false; err = String(e); }
   const totalMs = performance.now() - t0;
 
@@ -138,14 +174,34 @@ const exp = await ev(async (opts) => {
   // 最初のフレームは prepare を含むので分けて集計
   const body = perFrameMs.slice(1);
   const avg = (arr) => arr.length ? +(arr.reduce((a, b) => a + b, 0) / arr.length).toFixed(1) : 0;
-  return { ok, err, totalMs: +totalMs.toFixed(1), frames: opts.n, firstFrameMs: +(perFrameMs[0] ?? 0).toFixed(1), avgFrameMs: avg(body), api };
-}, { mainId: built.mainId, n: N_FRAMES });
+  return {
+    ok,
+    err,
+    totalMs: +totalMs.toFixed(1),
+    frames: opts.n,
+    gpuFrames: globalThis.__mafterGpuCompositorFrames ?? 0,
+    gpuDirectSurfaceFrames: globalThis.__mafterGpuDirectSurfaceFrames ?? 0,
+    firstFrameMs: +(perFrameMs[0] ?? 0).toFixed(1),
+    avgFrameMs: avg(body),
+    api,
+    output,
+  };
+}, {
+  mainId: built.mainId,
+  n: N_FRAMES,
+  format: FORMAT,
+  gpu: GPU,
+  gpuDirect: GPU_DIRECT,
+  alpha: ALPHA,
+  scale: SCALE,
+  staticCache: STATIC_CACHE,
+});
 
 console.log("export result:", JSON.stringify(exp, null, 2));
 
 const result = {
   when: new Date().toISOString(),
-  note: "Phase 0 baseline — export 経路 (compositeExportFrame per-layer capture + Canvas2D z-order accumulate + applyAdjustmentToMaster). PNG 連番・WebCodecs 非依存。",
+  note: `Export benchmark — ${FORMAT} (compositeExportFrame + optional WebCodecs).`,
   fixture: built, export: exp, pageErrors: pageErrors.slice(0, 5),
 };
 writeFileSync(OUT_JSON, JSON.stringify(result, null, 2));

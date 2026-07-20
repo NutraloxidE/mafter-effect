@@ -21,7 +21,9 @@ const APP_URL = `https://localhost:${PORT}/`;
 const GOLD = join(dirname(fileURLToPath(import.meta.url)), "bench-gpu-raster-parity.golden.json");
 const FRAMES = [0, 7, 15, 23, 40];
 
-const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium" });
+const browser = await chromium.launch({
+  executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || chromium.executablePath(),
+});
 const page = await browser.newPage({ viewport: { width: 1400, height: 900 }, ignoreHTTPSErrors: true });
 const pageErrors = [];
 page.on("pageerror", (e) => pageErrors.push(String(e)));

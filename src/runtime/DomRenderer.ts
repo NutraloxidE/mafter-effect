@@ -96,6 +96,7 @@ import {
   showTrackMatteSourcesForTeardown,
 } from "./trackMatteDom";
 import { composeTrackMatteToCanvas } from "./trackMatteCapture";
+import { staticLayerCaptureSignature } from "./staticLayerCaptureCache";
 
 // §8 DomRenderer — フラット matrix3d レンダラ。
 // 各 ResolvedObject を root の兄弟 div として並べる。ネストしない。
@@ -176,6 +177,8 @@ interface ObjectEntry {
   isTrackMatteSource: boolean;
   /** §5.4f トラックマット塗り（full-comp host + mask） */
   hasTrackMatte: boolean;
+  /** browser video export用の安全なstatic capture signature。対象外はnull。 */
+  captureCacheKey: string | null;
   /**
    * 通常経路（非 matte・非 matte-source）ホスト transform/opacity の同値書込抑制用 last-value。
    * matte/matte-source/childrenRebuilt に入るフレームで null 化し、通常経路へ戻った初回に
@@ -556,6 +559,7 @@ export class DomRenderer implements Renderer {
           exportChain: null,
           isTrackMatteSource: false,
           hasTrackMatte: false,
+          captureCacheKey: null,
           lastTransform: null,
           lastOpacity: null,
         };
@@ -564,6 +568,7 @@ export class DomRenderer implements Renderer {
       entry.threeD = obj.threeD === true;
       entry.isTrackMatteSource = obj.isTrackMatteSource === true;
       entry.hasTrackMatte = obj.trackMatte !== undefined;
+      entry.captureCacheKey = staticLayerCaptureSignature(obj);
 
       // §5.4f: 塗りを先に host 化し、マット源は fillHost の子（destination-in/out）。
       if (obj.trackMatte) {
@@ -1452,14 +1457,16 @@ export class DomRenderer implements Renderer {
         blendMode: e.blendMode,
         isAdjustment: e.isAdjustment,
         exportChain: e.isAdjustment ? e.exportChain : null,
+        captureCacheKey: e.captureCacheKey,
         z: Number(e.div.style.zIndex) || 0,
       }));
     layers.sort((a, b) => a.z - b.z);
-    return layers.map(({ div, blendMode, isAdjustment, exportChain }) => ({
+    return layers.map(({ div, blendMode, isAdjustment, exportChain, captureCacheKey }) => ({
       div,
       blendMode,
       isAdjustment,
       exportChain,
+      captureCacheKey,
     }));
   }
 

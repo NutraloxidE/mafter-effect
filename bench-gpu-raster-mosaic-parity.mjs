@@ -20,7 +20,9 @@ const OUT = join(dirname(fileURLToPath(import.meta.url)), "bench-gpu-raster-mosa
 const FRAMES = [0, 6, 14];
 const MAX_ABS = 2, MAX_MEAN = 0.5;
 
-const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium" });
+const browser = await chromium.launch({
+  executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || chromium.executablePath(),
+});
 const page = await browser.newPage({ viewport: { width: 1400, height: 900 }, ignoreHTTPSErrors: true });
 const pageErrors = [];
 page.on("pageerror", (e) => pageErrors.push(String(e)));
