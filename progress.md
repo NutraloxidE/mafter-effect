@@ -2692,3 +2692,17 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
 - **画素比較**: encoded midpoint 64×36 RGBでMAE **0.179/255**、max **9/255**、差>3は**0.839%**、差>10は0。差は従来の中間JPEG除去による品質改善。metadataは全run 1280×720・0.8秒、pageErrors 0。
 - **回帰**: typecheck・player rebuild/freshness・増分15 tests PASS。full Vitest **1364/1365**（唯一のfailは既知`effects.test.ts` liquidChrome再登録漏れ）。実ブラウザはvideo monotonic onTarget 25/25・reversal 0・stuck 0、adjustment export PASS、track matte 9/9 PASS。
 - **Next step**: Phase 3d content/placement分離。transform/opacityだけ動くsolid/text/imageでcontent surfaceを再利用し、placementをcompositor側へ移す。回転/scale/anchor/opacityのCanvas2D/WebGL parityを先に固定し、perspective/matte/nestedはfallback維持。
+
+### 2026-07-20（Codex）— Browser Export Phase 3d simple 2D solid direct capture ✅
+
+- **spec先行**: §11.2に、非透過MP4/WebM限定で単純2D solidをresolved affine transform/opacity/color/sizeからfull-comp canvasへ直接描画する契約を追記。effect/matte/adjustment/3D/nested/multi-component/不正値はfallback。§5/INV/project.json変更なし。
+- **実装**:
+  - `directSolidCapture.ts`: resolved eligibility、値検証、A/B seam。
+  - `DomRenderer`→`ExportLayer`: direct solid descriptorを投影。
+  - `exportComposite.ts`: Canvas2D transform+opacity+`rgbaCss`で直接fill。既存static cacheを先に照合し、direct結果も同cacheへ格納するため、静的solidは初回1回だけdirect、animated solidはsignature変化時だけdirect。
+  - `exporter.ts`: 非透過browser MP4/WebMのみopt-in。`__mafterDirectSolidCapture=false`でrollback可能。
+  - `directSolidCapture.test.ts`: eligibility/除外/値gate/flagの4 unit。
+- **実測（1280×720 heavy fixture・position animated solid 1層 / MP4 / 24fr / 3 pairs）**: wall median **3887.4→3365.3ms（-13.4%、3/3勝）**、steady **111.8→94.4ms/fr（-15.6%、3/3勝）**。SVG decode/drawImage各 **-27 calls**。directは各ON run 27回（静的4層の初回 + animated層の残り23frame）。詳細: `doc/cloudplan/browser-export-phase3d-solid-direct-benchmark.md`。
+- **parity**: 全6run MP4 **14880 bytes**、1280×720・0.8秒一致。全3 pairのmidpoint 64×36 RGBAは**byte-identical（maxAbs=0）**、pageErrors 0。
+- **回帰**: typecheck・player rebuild/freshness・増分19 tests PASS。full Vitest **1368/1369**（唯一のfailは既知`effects.test.ts` liquidChrome再登録漏れ）。実ブラウザ adjustment export PASS、track matte 9/9 PASS。
+- **Next step**: Phase 3e simple 2D image direct capture。decoded `HTMLImageElement`を同じaffine/opacity/fit adapterへ載せ、静的は既存cache、transform animated時だけdirect更新。cross-origin/未decode/effect/matte/3Dはfallback。

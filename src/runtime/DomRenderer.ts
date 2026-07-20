@@ -102,6 +102,7 @@ import {
   type DirectVideoCaptureDescriptor,
   type DirectVideoCaptureSource,
 } from "./directVideoCapture";
+import { directSolidCaptureDescriptor, type DirectSolidCaptureDescriptor } from "./directSolidCapture";
 
 // §8 DomRenderer — フラット matrix3d レンダラ。
 // 各 ResolvedObject を root の兄弟 div として並べる。ネストしない。
@@ -198,6 +199,8 @@ interface ObjectEntry {
   captureCacheKey: string | null;
   /** browser video exportでforeignObjectを省ける単純2D video。対象外はnull。 */
   directVideoCapture: DirectVideoCaptureDescriptor | null;
+  /** browser video exportでforeignObjectを省ける単純2D solid。対象外はnull。 */
+  directSolidCapture: DirectSolidCaptureDescriptor | null;
   /**
    * 通常経路（非 matte・非 matte-source）ホスト transform/opacity の同値書込抑制用 last-value。
    * matte/matte-source/childrenRebuilt に入るフレームで null 化し、通常経路へ戻った初回に
@@ -590,6 +593,7 @@ export class DomRenderer implements Renderer {
           hasTrackMatte: false,
           captureCacheKey: null,
           directVideoCapture: null,
+          directSolidCapture: null,
           lastTransform: null,
           lastOpacity: null,
         };
@@ -600,6 +604,7 @@ export class DomRenderer implements Renderer {
       entry.hasTrackMatte = obj.trackMatte !== undefined;
       entry.captureCacheKey = staticLayerCaptureSignature(obj);
       entry.directVideoCapture = directVideoCaptureDescriptor(obj);
+      entry.directSolidCapture = directSolidCaptureDescriptor(obj);
 
       // §5.4f: 塗りを先に host 化し、マット源は fillHost の子（destination-in/out）。
       if (obj.trackMatte) {
@@ -1490,16 +1495,18 @@ export class DomRenderer implements Renderer {
         exportChain: e.isAdjustment ? e.exportChain : null,
         captureCacheKey: layerCaptureCacheKeyWithResources(e.div, e.captureCacheKey),
         directVideoCapture: directVideoCaptureWithElement(e),
+        directSolidCapture: e.directSolidCapture,
         z: Number(e.div.style.zIndex) || 0,
       }));
     layers.sort((a, b) => a.z - b.z);
-    return layers.map(({ div, blendMode, isAdjustment, exportChain, captureCacheKey, directVideoCapture }) => ({
+    return layers.map(({ div, blendMode, isAdjustment, exportChain, captureCacheKey, directVideoCapture, directSolidCapture }) => ({
       div,
       blendMode,
       isAdjustment,
       exportChain,
       captureCacheKey,
       directVideoCapture,
+      directSolidCapture,
     }));
   }
 

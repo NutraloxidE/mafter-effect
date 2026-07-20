@@ -18,7 +18,8 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const PORT = process.env.VERIFY_PORT ?? "5173";
-const APP_URL = `https://localhost:${PORT}/`;
+const PROTOCOL = process.env.BENCH_PROTOCOL ?? "https";
+const APP_URL = `${PROTOCOL}://localhost:${PORT}/`;
 const FORMAT = process.env.BENCH_FORMAT ?? "png-seq";
 const GPU = process.env.BENCH_GPU === "1";
 const GPU_DIRECT = process.env.BENCH_GPU_DIRECT !== "0";
@@ -30,6 +31,8 @@ const STATIC_IMAGE_CACHE = process.env.BENCH_STATIC_IMAGE_CACHE !== "0";
 const VIDEO = process.env.BENCH_VIDEO === "1";
 const DIRECT_VIDEO = process.env.BENCH_DIRECT_VIDEO !== "0";
 const OUTPUT_SAMPLE = process.env.BENCH_OUTPUT_SAMPLE === "1";
+const DIRECT_SOLID = process.env.BENCH_DIRECT_SOLID !== "0";
+const ANIMATED_SOLID = process.env.BENCH_ANIMATED_SOLID === "1";
 if (!["png-seq", "mp4", "webm"].includes(FORMAT)) throw new Error(`Unsupported BENCH_FORMAT: ${FORMAT}`);
 const OUT_JSON = join(dirname(fileURLToPath(import.meta.url)), process.env.BENCH_OUT ?? "bench-gpu-raster-export-baseline.json");
 const N_FRAMES = Number(process.env.BENCH_FRAMES ?? "24");
@@ -93,6 +96,8 @@ await ev(() => {
 // ─── fixture（preview 版と同一 composite） ──────────────────────────────────
 const built = await ev(async (opts) => {
   const s = window.__mafterEditorStore.getState();
+  const objectById = (id) => window.__mafterEditorStore.getState().project.compositions
+    .flatMap((comp) => comp.objects ?? []).find((obj) => obj.id === id);
   const RASTER_W = 640, RASTER_H = 360, MAIN_W = 1280, MAIN_H = 720, DUR = 60;
   const solid = (name, color, size, z) => {
     const id = s.addSolid(name);
@@ -113,6 +118,21 @@ const built = await ev(async (opts) => {
   const b1 = solid("Mul", { r: 0.8, g: 0.6, b: 0.2, a: 1 }, { x: 800, y: 500, z: 0 }, 1); s.setBlendMode(b1, "multiply");
   const b2 = solid("Ovl", { r: 0.2, g: 0.7, b: 0.9, a: 1 }, { x: 700, y: 450, z: 0 }, 2); s.setBlendMode(b2, "overlay");
   const b3 = solid("Scr", { r: 0.9, g: 0.2, b: 0.5, a: 1 }, { x: 600, y: 400, z: 0 }, 3); s.setBlendMode(b3, "screen");
+  if (opts.animatedSolid) {
+    const current = objectById(b3).transform;
+    s.updateObject(b3, {
+      transform: {
+        ...current,
+        position: {
+          value: { x: 0, y: 0, z: 0 },
+          keyframes: [
+            { frame: 0, value: { x: 80, y: 60, z: 0 }, easing: { type: "linear" } },
+            { frame: 24, value: { x: 520, y: 260, z: 0 }, easing: { type: "linear" } },
+          ],
+        },
+      },
+    });
+  }
   let staticImageId = null;
   if (opts.staticImage) {
     const source = document.createElement("canvas"); source.width = 320; source.height = 180;
@@ -146,7 +166,7 @@ const built = await ev(async (opts) => {
   const nest = s.addCompLayer(innerId, "FX-Inner-Instance"); if (nest) s.updateObject(nest, { zOrder: 8 });
   s.setCurrentComp(mainId); s.setFrame(0);
   return { mainId, innerId, staticImageId, videoId, mainSize: [MAIN_W, MAIN_H] };
-}, { staticImage: STATIC_IMAGE, videoBase64: VIDEO_BASE64 });
+}, { staticImage: STATIC_IMAGE, videoBase64: VIDEO_BASE64, animatedSolid: ANIMATED_SOLID });
 console.log("built:", JSON.stringify(built));
 
 // FS へフラッシュ（exportComposition は project 引数を直接受けるが、fonts/assets を fs から読む）
@@ -164,9 +184,11 @@ const exp = await ev(async (opts) => {
   globalThis.__mafterStaticLayerCaptureCache = opts.staticCache;
   globalThis.__mafterStaticImageCaptureCache = opts.staticImageCache;
   globalThis.__mafterDirectVideoCapture = opts.directVideo;
+  globalThis.__mafterDirectSolidCapture = opts.directSolid;
   globalThis.__mafterGpuCompositorFrames = 0;
   globalThis.__mafterGpuDirectSurfaceFrames = 0;
   globalThis.__mafterDirectVideoCaptureFrames = 0;
+  globalThis.__mafterDirectSolidCaptureFrames = 0;
 
   // 計測を export 区間だけにリセット
   for (const k of Object.keys(stats)) { if (k === "lastActivity") continue; stats[k] = { n: 0, ms: 0 }; }
@@ -234,6 +256,7 @@ const exp = await ev(async (opts) => {
     gpuFrames: globalThis.__mafterGpuCompositorFrames ?? 0,
     gpuDirectSurfaceFrames: globalThis.__mafterGpuDirectSurfaceFrames ?? 0,
     directVideoCaptureFrames: globalThis.__mafterDirectVideoCaptureFrames ?? 0,
+    directSolidCaptureFrames: globalThis.__mafterDirectSolidCaptureFrames ?? 0,
     firstFrameMs: +(perFrameMs[0] ?? 0).toFixed(1),
     avgFrameMs: avg(body),
     api,
@@ -250,6 +273,7 @@ const exp = await ev(async (opts) => {
   staticCache: STATIC_CACHE,
   staticImageCache: STATIC_IMAGE_CACHE,
   directVideo: DIRECT_VIDEO,
+  directSolid: DIRECT_SOLID,
   outputSample: OUTPUT_SAMPLE,
 });
 

@@ -30,6 +30,8 @@ import { globalPluginRegistry } from "./pluginRegistry";
 import type { ResolvedEffect } from "./resolved";
 import type { BlendMode } from "../core/schema";
 import { videoDrawRect, type DirectVideoCaptureSource } from "./directVideoCapture";
+import type { DirectSolidCaptureDescriptor } from "./directSolidCapture";
+import { rgbaCss } from "./textRender";
 
 const XHTML = "http://www.w3.org/1999/xhtml";
 
@@ -62,6 +64,8 @@ export interface ExportLayer {
   captureCacheKey?: string | null;
   /** browser mp4/webm専用: seek済み単純2D videoを直接canvasへ描ける場合のsource。 */
   directVideoCapture?: DirectVideoCaptureSource | null;
+  /** browser mp4/webm専用: 単純2D solidを直接canvasへ描ける場合のresolved値。 */
+  directSolidCapture?: DirectSolidCaptureDescriptor | null;
 }
 
 /** §23.3d ネスト comp コンテナのメタ（renderNestedComp が export 時に付与）。 */
@@ -103,6 +107,8 @@ export interface ExportCompositeOptions {
   cacheStaticLayerCaptures?: boolean;
   /** seek済み単純2D videoをforeignObject/JPEGを介さず直接captureする。 */
   directVideoCaptures?: boolean;
+  /** 単純2D solidをforeignObjectを介さず直接captureする。 */
+  directSolidCaptures?: boolean;
 }
 
 const staticLayerCaptureCache = new WeakMap<HTMLElement, {
@@ -280,6 +286,24 @@ function captureDirectVideoLayer(
   return canvas;
 }
 
+function captureDirectSolidLayer(
+  source: DirectSolidCaptureDescriptor,
+  nw: number,
+  nh: number,
+): HTMLCanvasElement | null {
+  const canvas = makeCanvas(nw, nh);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  const m = source.worldTransform;
+  ctx.globalAlpha = source.opacity;
+  ctx.setTransform(m[0], m[1], m[4], m[5], m[12], m[13]);
+  ctx.fillStyle = rgbaCss(source.color);
+  ctx.fillRect(0, 0, source.size.x, source.size.y);
+  const g = globalThis as { __mafterDirectSolidCaptureFrames?: number };
+  g.__mafterDirectSolidCaptureFrames = (g.__mafterDirectSolidCaptureFrames ?? 0) + 1;
+  return canvas;
+}
+
 async function captureLayerNodeWithCache(
   layer: ExportLayer,
   perspective: string,
@@ -288,20 +312,32 @@ async function captureLayerNodeWithCache(
   nh: number,
   cacheEnabled: boolean,
   directVideoEnabled: boolean,
+  directSolidEnabled: boolean,
 ): Promise<HTMLCanvasElement> {
   if (directVideoEnabled && layer.directVideoCapture) {
     const direct = captureDirectVideoLayer(layer.directVideoCapture, nw, nh);
     if (direct) return direct;
   }
-  if (!cacheEnabled || !layer.captureCacheKey) {
+  const cacheKey = cacheEnabled && layer.captureCacheKey
+    ? `${nw}x${nh}|${perspective}|${perspectiveOrigin}|${layer.captureCacheKey}`
+    : null;
+  if (cacheKey) {
+    const cached = staticLayerCaptureCache.get(layer.div);
+    if (cached?.key === cacheKey) return cached.capture;
+  }
+  if (directSolidEnabled && layer.directSolidCapture) {
+    const direct = captureDirectSolidLayer(layer.directSolidCapture, nw, nh);
+    if (direct) {
+      if (cacheKey) staticLayerCaptureCache.set(layer.div, { key: cacheKey, capture: Promise.resolve(direct) });
+      return direct;
+    }
+  }
+  if (!cacheKey) {
     return captureLayerNode(layer.div, perspective, perspectiveOrigin, nw, nh);
   }
-  const key = `${nw}x${nh}|${perspective}|${perspectiveOrigin}|${layer.captureCacheKey}`;
-  const cached = staticLayerCaptureCache.get(layer.div);
-  if (cached?.key === key) return cached.capture;
 
   const capture = captureLayerNode(layer.div, perspective, perspectiveOrigin, nw, nh);
-  staticLayerCaptureCache.set(layer.div, { key, capture });
+  staticLayerCaptureCache.set(layer.div, { key: cacheKey, capture });
   try {
     return await capture;
   } catch (error) {
@@ -335,6 +371,8 @@ export async function compositeExportFrame(
   const layers = src.getExportLayers();
   const useDirectVideo = options.directVideoCaptures === true
     && layers.some((layer) => layer.directVideoCapture != null);
+  const useDirectSolid = options.directSolidCaptures === true
+    && layers.some((layer) => layer.directSolidCapture != null);
 
   // 高速経路: 調整 / blend / 再帰合成 / threeD が無いフレームは root を 1 枚 capture。
   // threeD は per-layer perspective capture が必要（root 一括 foreignObject は 3D を潰す）。
@@ -344,6 +382,7 @@ export async function compositeExportFrame(
     && !src.hasNestedComposite()
     && !src.hasThreeDContent()
     && !useDirectVideo
+    && !useDirectSolid
   ) {
     return captureElementToCanvas(root, nw, nh, bg, w, h);
   }
@@ -380,6 +419,7 @@ export async function compositeExportFrame(
           nh,
           options.cacheStaticLayerCaptures === true,
           useDirectVideo,
+          useDirectSolid,
         ),
         blendMode: layer.blendMode,
       });
@@ -406,6 +446,7 @@ export async function compositeExportFrame(
         nh,
         options.cacheStaticLayerCaptures === true,
         useDirectVideo,
+        useDirectSolid,
       );
       compositor.drawLayer(sub, layer.blendMode);
     }

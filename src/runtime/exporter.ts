@@ -24,6 +24,7 @@ import { waitForEncoderQueueAtMost } from "./encoderBackpressure";
 import { isGpuDirectSurfaceEnabled } from "./compositor/gpuCompositorFlag";
 import { isStaticLayerCaptureCacheEnabled } from "./staticLayerCaptureCache";
 import { isDirectVideoCaptureEnabled } from "./directVideoCapture";
+import { isDirectSolidCaptureEnabled } from "./directSolidCapture";
 
 export type ExportPhase = "prepare" | "render" | "encode" | "audio" | "bake" | "pack" | "done" | "error";
 
@@ -438,6 +439,7 @@ async function encodeVideoFrames(
       directGpuSurface,
       cacheStaticLayerCaptures: isStaticLayerCaptureCacheEnabled(),
       directVideoCaptures: enableGpuCompositor && isDirectVideoCaptureEnabled(),
+      directSolidCaptures: enableGpuCompositor && isDirectSolidCaptureEnabled(),
     });
     const vf = new VideoFrame(canvas, {
       timestamp: fi * usDuration,
