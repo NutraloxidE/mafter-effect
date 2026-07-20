@@ -25,6 +25,8 @@ const GPU_DIRECT = process.env.BENCH_GPU_DIRECT !== "0";
 const ALPHA = process.env.BENCH_ALPHA === "1";
 const SCALE = Number(process.env.BENCH_SCALE ?? "1");
 const STATIC_CACHE = process.env.BENCH_STATIC_CACHE !== "0";
+const STATIC_IMAGE = process.env.BENCH_STATIC_IMAGE === "1";
+const STATIC_IMAGE_CACHE = process.env.BENCH_STATIC_IMAGE_CACHE !== "0";
 if (!["png-seq", "mp4", "webm"].includes(FORMAT)) throw new Error(`Unsupported BENCH_FORMAT: ${FORMAT}`);
 const OUT_JSON = join(dirname(fileURLToPath(import.meta.url)), process.env.BENCH_OUT ?? "bench-gpu-raster-export-baseline.json");
 const N_FRAMES = Number(process.env.BENCH_FRAMES ?? "24");
@@ -83,7 +85,7 @@ await ev(() => {
 });
 
 // ─── fixture（preview 版と同一 composite） ──────────────────────────────────
-const built = await ev(() => {
+const built = await ev(async (opts) => {
   const s = window.__mafterEditorStore.getState();
   const RASTER_W = 640, RASTER_H = 360, MAIN_W = 1280, MAIN_H = 720, DUR = 60;
   const solid = (name, color, size, z) => {
@@ -105,14 +107,29 @@ const built = await ev(() => {
   const b1 = solid("Mul", { r: 0.8, g: 0.6, b: 0.2, a: 1 }, { x: 800, y: 500, z: 0 }, 1); s.setBlendMode(b1, "multiply");
   const b2 = solid("Ovl", { r: 0.2, g: 0.7, b: 0.9, a: 1 }, { x: 700, y: 450, z: 0 }, 2); s.setBlendMode(b2, "overlay");
   const b3 = solid("Scr", { r: 0.9, g: 0.2, b: 0.5, a: 1 }, { x: 600, y: 400, z: 0 }, 3); s.setBlendMode(b3, "screen");
+  let staticImageId = null;
+  if (opts.staticImage) {
+    const source = document.createElement("canvas"); source.width = 320; source.height = 180;
+    const g = source.getContext("2d");
+    const grad = g.createLinearGradient(0, 0, 320, 180);
+    grad.addColorStop(0, "#ff3366"); grad.addColorStop(1, "#22bbff");
+    g.fillStyle = grad; g.fillRect(0, 0, 320, 180);
+    g.fillStyle = "rgba(255,255,255,.8)"; g.fillRect(48, 42, 224, 96);
+    const blob = await new Promise((resolve, reject) => source.toBlob((b) => b ? resolve(b) : reject(new Error("fixture png failed")), "image/png"));
+    const assetId = await s.importImageAsset(new File([blob], "bench-static.png", { type: "image/png" }));
+    if (!assetId) throw new Error("fixture image import failed");
+    staticImageId = s.addImageLayer(assetId, "StaticImage");
+    if (!staticImageId) throw new Error("fixture image layer failed");
+    s.updateObject(staticImageId, { zOrder: 8.5 });
+  }
   const rlayer = solid("MosaicLayer", { r: 0.3, g: 0.9, b: 0.4, a: 1 }, { x: 500, y: 500, z: 0 }, 4); s.addEffect(rlayer, "mosaic");
   solid("MatteSrc", { r: 1, g: 1, b: 1, a: 1 }, { x: 400, y: 400, z: 0 }, 6);
   const fill = solid("MatteFill", { r: 0.9, g: 0.8, b: 0.1, a: 1 }, { x: 400, y: 400, z: 0 }, 5); s.setTrackMatteMode(fill, "alpha");
   const adj = s.addRasterAdjustmentLayer("MainAdj"); s.updateObject(adj, { zOrder: 7 }); s.addEffect(adj, "mosaic");
   const nest = s.addCompLayer(innerId, "FX-Inner-Instance"); if (nest) s.updateObject(nest, { zOrder: 8 });
   s.setCurrentComp(mainId); s.setFrame(0);
-  return { mainId, innerId, mainSize: [MAIN_W, MAIN_H] };
-});
+  return { mainId, innerId, staticImageId, mainSize: [MAIN_W, MAIN_H] };
+}, { staticImage: STATIC_IMAGE });
 console.log("built:", JSON.stringify(built));
 
 // FS へフラッシュ（exportComposition は project 引数を直接受けるが、fonts/assets を fs から読む）
@@ -128,6 +145,7 @@ const exp = await ev(async (opts) => {
   globalThis.__mafterGpuCompositor = opts.gpu;
   globalThis.__mafterGpuDirectSurface = opts.gpuDirect;
   globalThis.__mafterStaticLayerCaptureCache = opts.staticCache;
+  globalThis.__mafterStaticImageCaptureCache = opts.staticImageCache;
   globalThis.__mafterGpuCompositorFrames = 0;
   globalThis.__mafterGpuDirectSurfaceFrames = 0;
 
@@ -195,6 +213,7 @@ const exp = await ev(async (opts) => {
   alpha: ALPHA,
   scale: SCALE,
   staticCache: STATIC_CACHE,
+  staticImageCache: STATIC_IMAGE_CACHE,
 });
 
 console.log("export result:", JSON.stringify(exp, null, 2));

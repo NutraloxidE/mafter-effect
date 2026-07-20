@@ -142,6 +142,18 @@ function setBlendModeStyle(el: HTMLElement, blend: BlendMode): void {
   s.mixBlendMode = isCssBlendMode(blend) ? blend : "";
 }
 
+function layerCaptureCacheKeyWithResources(div: HTMLElement, baseKey: string | null): string | null {
+  if (!baseKey) return null;
+  const images = [...div.querySelectorAll("img")];
+  if (images.length === 0) return baseKey;
+  const resources: string[] = [];
+  for (const image of images) {
+    if (!image.complete || image.naturalWidth <= 0 || image.naturalHeight <= 0) return null;
+    resources.push(`${image.currentSrc || image.src}|${image.naturalWidth}x${image.naturalHeight}`);
+  }
+  return `${baseKey}|images:${resources.join(";")}`;
+}
+
 interface ObjectEntry {
   div: HTMLDivElement;
   /** §5.4f トラックマット塗り時は inner（transform+content）。それ以外は div。 */
@@ -1457,7 +1469,7 @@ export class DomRenderer implements Renderer {
         blendMode: e.blendMode,
         isAdjustment: e.isAdjustment,
         exportChain: e.isAdjustment ? e.exportChain : null,
-        captureCacheKey: e.captureCacheKey,
+        captureCacheKey: layerCaptureCacheKeyWithResources(e.div, e.captureCacheKey),
         z: Number(e.div.style.zIndex) || 0,
       }));
     layers.sort((a, b) => a.z - b.z);

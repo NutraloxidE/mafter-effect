@@ -2669,3 +2669,12 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
 - **決定論ゲート**: `verify-video-export-monotonic.mjs` PASS（onTarget 25/25、reversal 0、stuck 0）。videoはcache対象外。
 - **全回帰**: player rebuild+freshness PASS。full Vitest **1354/1355**（唯一のfailは既存`effects.test.ts` liquidChrome再登録漏れ。増分failなし）。
 - **Next step**: Phase 3b direct image/video/canvas surface、またはcontent/placement分離でtransform-only animationもcache hit化。matte/perspective/nestedはfallback維持から1軸ずつ拡張する。
+
+### 2026-07-20（Codex）— Browser Export Phase 3b static image capture cache ✅
+
+- **spec先行**: §11.2 static capture cache対象へ読込完了済み2D imageを追加。asset IDだけでなく実DOMの`currentSrc`・natural sizeをsignatureへ含め、未読込/差替えはmissと確定。
+- **実装**: `staticLayerCaptureSignature`でimageをsafe対象化。`DomRenderer.getExportLayers`で`complete`/natural sizeをgateし、resource signatureをresolved signatureへ合成。A/B用image-only seamとunitを追加。
+- **実測（可視PNG 1枚 / MP4 / 24fr / 3 pairs）**: SVG decode **243→220**、drawImage **315→292**（各-23、全run一致）。wall median **3250.9→2795.8ms（-14.0%、3/3勝）**、steady **92.7→77.6ms/fr（-16.3%、3/3勝）**。全run output **14035 bytes**・1280×720 decode一致。詳細: `doc/cloudplan/browser-export-phase3b-image-cache-benchmark.md`。
+- **対象外維持**: video/canvas/HTML/plugin/geom/nested/adjustment/effect/matte、PNG/precomp/bundle。
+- **回帰**: typecheck・player rebuild/freshness PASS。full Vitest **1355/1357**（既知liquidChrome +既知flaky projectBins）。projectBinsを含む関連38 testsは単独再実行で全PASS。
+- **Next step**: Phase 3c simple 2D video direct capture adapter。videoはframeごとに変わるためcacheせず、deterministic seek後のpresented frameをJPEG data URL + SVG decodeを経由せずfull-comp canvasへ直接描く。transform/opacity/fitのみ対応し、3D/effect/matte/nested/alphaは既存fallback。

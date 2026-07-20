@@ -12,8 +12,9 @@ export function staticLayerCaptureSignature(obj: ResolvedObject): string | null 
   ) return null;
 
   for (const component of obj.components) {
-    if (component.type !== "solid" && component.type !== "text") return null;
+    if (component.type !== "solid" && component.type !== "text" && component.type !== "image") return null;
     if (component.type === "text" && component.props["geomEnabled"] === true) return null;
+    if (component.type === "image" && !isStaticImageCaptureCacheEnabled()) return null;
   }
 
   return JSON.stringify({
@@ -21,6 +22,12 @@ export function staticLayerCaptureSignature(obj: ResolvedObject): string | null 
     opacity: obj.opacity,
     components: obj.components,
   });
+}
+
+/** Phase 3b A/B bench用。false明示時だけimageをcache対象から外す。 */
+export function isStaticImageCaptureCacheEnabled(): boolean {
+  const g = globalThis as { __mafterStaticImageCaptureCache?: unknown };
+  return g.__mafterStaticImageCaptureCache !== false;
 }
 
 /** A/B bench用。false明示時だけbrowser video exportのstatic capture cacheを止める。 */
