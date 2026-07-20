@@ -2706,3 +2706,17 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
 - **parity**: 全6run MP4 **14880 bytes**、1280×720・0.8秒一致。全3 pairのmidpoint 64×36 RGBAは**byte-identical（maxAbs=0）**、pageErrors 0。
 - **回帰**: typecheck・player rebuild/freshness・増分19 tests PASS。full Vitest **1368/1369**（唯一のfailは既知`effects.test.ts` liquidChrome再登録漏れ）。実ブラウザ adjustment export PASS、track matte 9/9 PASS。
 - **Next step**: Phase 3e simple 2D image direct capture。decoded `HTMLImageElement`を同じaffine/opacity/fit adapterへ載せ、静的は既存cache、transform animated時だけdirect更新。cross-origin/未decode/effect/matte/3Dはfallback。
+
+### 2026-07-20（Codex）— Browser Export Phase 3e simple 2D image direct capture ✅
+
+- **spec先行**: §11.2に、非透過MP4/WebM限定で読込済み・same-origin/CORS-safe単純2D imageを実`HTMLImageElement`からresolved affine transform/opacity/fitで直接描画する契約を追記。未decode/cross-origin unsafe/effect/matte/adjustment/3D/nested/multi-componentはfallback。§5/INV/project.json変更なし。
+- **実装**:
+  - `directImageCapture.ts`: resolved eligibility、fit正規化、A/B seam。
+  - `DomRenderer`: DOM imageのcomplete/natural size/source originをgateして`ExportLayer`へ投影。
+  - `exportComposite.ts`: source/destination fit矩形 + affine/opacityで直接drawし、結果を既存one-entry cacheへ格納。
+  - `exporter.ts`: 非透過browser MP4/WebMのみopt-in。`__mafterDirectImageCapture=false`でrollback可能。
+  - `directImageCapture.test.ts`: eligibility/除外/fit/flagの4 unit。
+- **実測（1280×720 heavy fixture + position animated PNG / MP4 / 24fr / 3 pairs）**: wall median **4128.4→3371.8ms（-18.3%、3/3勝）**、steady **119.3→92.2ms/fr（-22.7%、3/3勝）**、SVG decode **239→215（-24）**。directは各ON run 24/24。詳細: `doc/cloudplan/browser-export-phase3e-image-direct-benchmark.md`。
+- **画素比較**: 全3 pairでmidpoint RGB MAE **0.054/255**、max **4/255**、差>3は**0.101%**、差>10は0。全run 1280×720・0.8秒、pageErrors 0。encoded sizeは70608→64059 bytes（Canvas2D直描画とSVG補間の微差）。
+- **回帰**: typecheck・player rebuild/freshness・増分23 tests PASS。full Vitest **1372/1373**（唯一のfailは既知`effects.test.ts` liquidChrome再登録漏れ）。実ブラウザ adjustment export PASS、track matte 9/9 PASS。
+- **Next step**: Phase 3f text content/placement分離、またはPhase 4 Worker encode/mux。textはfont/box/stroke/shadow/baselineのlocal bounds固定と回転・scale parityが必要なため、direct drawではなくlocal foreignObject surface cacheを優先する。

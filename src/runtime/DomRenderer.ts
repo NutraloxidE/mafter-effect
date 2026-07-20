@@ -103,6 +103,11 @@ import {
   type DirectVideoCaptureSource,
 } from "./directVideoCapture";
 import { directSolidCaptureDescriptor, type DirectSolidCaptureDescriptor } from "./directSolidCapture";
+import {
+  directImageCaptureDescriptor,
+  type DirectImageCaptureDescriptor,
+  type DirectImageCaptureSource,
+} from "./directImageCapture";
 
 // §8 DomRenderer — フラット matrix3d レンダラ。
 // 各 ResolvedObject を root の兄弟 div として並べる。ネストしない。
@@ -201,6 +206,8 @@ interface ObjectEntry {
   directVideoCapture: DirectVideoCaptureDescriptor | null;
   /** browser video exportでforeignObjectを省ける単純2D solid。対象外はnull。 */
   directSolidCapture: DirectSolidCaptureDescriptor | null;
+  /** browser video exportでforeignObjectを省ける単純2D image。対象外はnull。 */
+  directImageCapture: DirectImageCaptureDescriptor | null;
   /**
    * 通常経路（非 matte・非 matte-source）ホスト transform/opacity の同値書込抑制用 last-value。
    * matte/matte-source/childrenRebuilt に入るフレームで null 化し、通常経路へ戻った初回に
@@ -225,6 +232,22 @@ function directVideoCaptureWithElement(entry: ObjectEntry): DirectVideoCaptureSo
   const video = videos[0];
   if (!(video instanceof HTMLVideoElement)) return null;
   return { ...descriptor, video };
+}
+
+function directImageCaptureWithElement(entry: ObjectEntry): DirectImageCaptureSource | null {
+  const descriptor = entry.directImageCapture;
+  if (!descriptor) return null;
+  const images = [...entry.div.querySelectorAll("img")];
+  if (images.length !== 1 || entry.div.querySelector("canvas")) return null;
+  const image = images[0];
+  if (!(image instanceof HTMLImageElement) || !image.complete || image.naturalWidth <= 0 || image.naturalHeight <= 0) return null;
+  try {
+    const url = new URL(image.currentSrc || image.src, document.baseURI);
+    if (url.protocol !== "blob:" && url.protocol !== "data:" && url.origin !== location.origin && image.crossOrigin === null) return null;
+  } catch {
+    return null;
+  }
+  return { ...descriptor, image };
 }
 
 export class DomRenderer implements Renderer {
@@ -594,6 +617,7 @@ export class DomRenderer implements Renderer {
           captureCacheKey: null,
           directVideoCapture: null,
           directSolidCapture: null,
+          directImageCapture: null,
           lastTransform: null,
           lastOpacity: null,
         };
@@ -605,6 +629,7 @@ export class DomRenderer implements Renderer {
       entry.captureCacheKey = staticLayerCaptureSignature(obj);
       entry.directVideoCapture = directVideoCaptureDescriptor(obj);
       entry.directSolidCapture = directSolidCaptureDescriptor(obj);
+      entry.directImageCapture = directImageCaptureDescriptor(obj);
 
       // §5.4f: 塗りを先に host 化し、マット源は fillHost の子（destination-in/out）。
       if (obj.trackMatte) {
@@ -1496,10 +1521,11 @@ export class DomRenderer implements Renderer {
         captureCacheKey: layerCaptureCacheKeyWithResources(e.div, e.captureCacheKey),
         directVideoCapture: directVideoCaptureWithElement(e),
         directSolidCapture: e.directSolidCapture,
+        directImageCapture: directImageCaptureWithElement(e),
         z: Number(e.div.style.zIndex) || 0,
       }));
     layers.sort((a, b) => a.z - b.z);
-    return layers.map(({ div, blendMode, isAdjustment, exportChain, captureCacheKey, directVideoCapture, directSolidCapture }) => ({
+    return layers.map(({ div, blendMode, isAdjustment, exportChain, captureCacheKey, directVideoCapture, directSolidCapture, directImageCapture }) => ({
       div,
       blendMode,
       isAdjustment,
@@ -1507,6 +1533,7 @@ export class DomRenderer implements Renderer {
       captureCacheKey,
       directVideoCapture,
       directSolidCapture,
+      directImageCapture,
     }));
   }
 

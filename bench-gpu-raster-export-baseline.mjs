@@ -33,6 +33,8 @@ const DIRECT_VIDEO = process.env.BENCH_DIRECT_VIDEO !== "0";
 const OUTPUT_SAMPLE = process.env.BENCH_OUTPUT_SAMPLE === "1";
 const DIRECT_SOLID = process.env.BENCH_DIRECT_SOLID !== "0";
 const ANIMATED_SOLID = process.env.BENCH_ANIMATED_SOLID === "1";
+const DIRECT_IMAGE = process.env.BENCH_DIRECT_IMAGE !== "0";
+const ANIMATED_IMAGE = process.env.BENCH_ANIMATED_IMAGE === "1";
 if (!["png-seq", "mp4", "webm"].includes(FORMAT)) throw new Error(`Unsupported BENCH_FORMAT: ${FORMAT}`);
 const OUT_JSON = join(dirname(fileURLToPath(import.meta.url)), process.env.BENCH_OUT ?? "bench-gpu-raster-export-baseline.json");
 const N_FRAMES = Number(process.env.BENCH_FRAMES ?? "24");
@@ -147,6 +149,21 @@ const built = await ev(async (opts) => {
     staticImageId = s.addImageLayer(assetId, "StaticImage");
     if (!staticImageId) throw new Error("fixture image layer failed");
     s.updateObject(staticImageId, { zOrder: 8.5 });
+    if (opts.animatedImage) {
+      const current = objectById(staticImageId).transform;
+      s.updateObject(staticImageId, {
+        transform: {
+          ...current,
+          position: {
+            value: { x: 0, y: 0, z: 0 },
+            keyframes: [
+              { frame: 0, value: { x: 120, y: 100, z: 0 }, easing: { type: "linear" } },
+              { frame: 24, value: { x: 820, y: 420, z: 0 }, easing: { type: "linear" } },
+            ],
+          },
+        },
+      });
+    }
   }
   let videoId = null;
   if (opts.videoBase64) {
@@ -166,7 +183,7 @@ const built = await ev(async (opts) => {
   const nest = s.addCompLayer(innerId, "FX-Inner-Instance"); if (nest) s.updateObject(nest, { zOrder: 8 });
   s.setCurrentComp(mainId); s.setFrame(0);
   return { mainId, innerId, staticImageId, videoId, mainSize: [MAIN_W, MAIN_H] };
-}, { staticImage: STATIC_IMAGE, videoBase64: VIDEO_BASE64, animatedSolid: ANIMATED_SOLID });
+}, { staticImage: STATIC_IMAGE, videoBase64: VIDEO_BASE64, animatedSolid: ANIMATED_SOLID, animatedImage: ANIMATED_IMAGE });
 console.log("built:", JSON.stringify(built));
 
 // FS へフラッシュ（exportComposition は project 引数を直接受けるが、fonts/assets を fs から読む）
@@ -185,10 +202,12 @@ const exp = await ev(async (opts) => {
   globalThis.__mafterStaticImageCaptureCache = opts.staticImageCache;
   globalThis.__mafterDirectVideoCapture = opts.directVideo;
   globalThis.__mafterDirectSolidCapture = opts.directSolid;
+  globalThis.__mafterDirectImageCapture = opts.directImage;
   globalThis.__mafterGpuCompositorFrames = 0;
   globalThis.__mafterGpuDirectSurfaceFrames = 0;
   globalThis.__mafterDirectVideoCaptureFrames = 0;
   globalThis.__mafterDirectSolidCaptureFrames = 0;
+  globalThis.__mafterDirectImageCaptureFrames = 0;
 
   // 計測を export 区間だけにリセット
   for (const k of Object.keys(stats)) { if (k === "lastActivity") continue; stats[k] = { n: 0, ms: 0 }; }
@@ -257,6 +276,7 @@ const exp = await ev(async (opts) => {
     gpuDirectSurfaceFrames: globalThis.__mafterGpuDirectSurfaceFrames ?? 0,
     directVideoCaptureFrames: globalThis.__mafterDirectVideoCaptureFrames ?? 0,
     directSolidCaptureFrames: globalThis.__mafterDirectSolidCaptureFrames ?? 0,
+    directImageCaptureFrames: globalThis.__mafterDirectImageCaptureFrames ?? 0,
     firstFrameMs: +(perFrameMs[0] ?? 0).toFixed(1),
     avgFrameMs: avg(body),
     api,
@@ -274,6 +294,7 @@ const exp = await ev(async (opts) => {
   staticImageCache: STATIC_IMAGE_CACHE,
   directVideo: DIRECT_VIDEO,
   directSolid: DIRECT_SOLID,
+  directImage: DIRECT_IMAGE,
   outputSample: OUTPUT_SAMPLE,
 });
 
