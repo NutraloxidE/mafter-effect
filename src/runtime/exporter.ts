@@ -26,6 +26,7 @@ import { isStaticLayerCaptureCacheEnabled } from "./staticLayerCaptureCache";
 import { isDirectVideoCaptureEnabled } from "./directVideoCapture";
 import { isDirectSolidCaptureEnabled } from "./directSolidCapture";
 import { isDirectImageCaptureEnabled } from "./directImageCapture";
+import { createWorkerVideoExportSession, isWorkerVideoExportEnabled } from "./workerVideoExport";
 
 export type ExportPhase = "prepare" | "render" | "encode" | "audio" | "bake" | "pack" | "done" | "error";
 
@@ -286,6 +287,18 @@ async function runMp4(
   onProgress: ProgressCallback,
   signal?: AbortSignal,
 ): Promise<Blob> {
+  if (!hasAudio && isWorkerVideoExportEnabled()) {
+    const workerEncode = resolveExportVideoEncode(config);
+    return await runWorkerVideo(
+      "mp4", comp, renderer, evaluator, startFrame, totalFrames, nw, nh, w, h, fps, bg, false,
+      {
+        codec: avcCodecString(w, h, fps), width: w, height: h,
+        bitrate: workerEncode.bitrate, framerate: fps,
+        ...(workerEncode.latencyMode ? { latencyMode: workerEncode.latencyMode } : {}),
+      },
+      onProgress, signal,
+    );
+  }
   const target = new Mp4Target();
   const muxer = new Mp4Muxer({
     target,
@@ -352,6 +365,18 @@ async function runWebm(
   onProgress: ProgressCallback,
   signal?: AbortSignal,
 ): Promise<Blob> {
+  if (!hasAudio && !config.alpha && isWorkerVideoExportEnabled()) {
+    const workerEncode = resolveExportVideoEncode(config);
+    return await runWorkerVideo(
+      "webm", comp, renderer, evaluator, startFrame, totalFrames, nw, nh, w, h, fps, bg, false,
+      {
+        codec: "vp09.00.10.08", width: w, height: h,
+        bitrate: workerEncode.bitrate, framerate: fps, alpha: "discard",
+        ...(workerEncode.latencyMode ? { latencyMode: workerEncode.latencyMode } : {}),
+      },
+      onProgress, signal,
+    );
+  }
   const target = new WebmTarget();
   const muxer = new WebmMuxer({
     target,
@@ -401,6 +426,57 @@ async function runWebm(
 }
 
 /** 全フレームを VideoEncoder に渡す共通ループ。 */
+async function runWorkerVideo(
+  format: "mp4" | "webm",
+  comp: TimelineComposition,
+  renderer: DomRenderer,
+  evaluator: ExpressionEvaluator | undefined,
+  startFrame: number,
+  totalFrames: number,
+  nw: number, nh: number, w: number, h: number,
+  fps: number,
+  bg: string,
+  alpha: boolean,
+  encoderConfig: VideoEncoderConfig,
+  onProgress: ProgressCallback,
+  signal?: AbortSignal,
+): Promise<Blob> {
+  const session = await createWorkerVideoExportSession({ format, width: w, height: h, fps, alpha, encoderConfig }, signal);
+  const usDuration = Math.round(1_000_000 / fps);
+  try {
+    for (let fi = 0; fi < totalFrames; fi++) {
+      checkAbort(signal);
+      const frame = startFrame + fi;
+      renderer.renderFrame(resolve(comp, frame, { expressions: evaluator }), frame);
+      onProgress({ phase: "render", frame: fi, totalFrames, message: `Rendering frame ${fi + 1}/${totalFrames}` });
+      await renderer.flushRasterEffects();
+      await renderer.flushVideoFrames();
+      await nextTick();
+      const canvas = await compositeExportFrame(renderer, nw, nh, w, h, bg, {
+        enableGpuCompositor: !alpha,
+        directGpuSurface: !alpha && isGpuDirectSurfaceEnabled(),
+        cacheStaticLayerCaptures: isStaticLayerCaptureCacheEnabled(),
+        directVideoCaptures: !alpha && isDirectVideoCaptureEnabled(),
+        directSolidCaptures: !alpha && isDirectSolidCaptureEnabled(),
+        directImageCaptures: !alpha && isDirectImageCaptureEnabled(),
+      });
+      const videoFrame = new VideoFrame(canvas, {
+        timestamp: fi * usDuration,
+        duration: usDuration,
+      });
+      await session.encode(videoFrame, fi, fi === 0 || fi % 30 === 0, signal);
+    }
+    const result = await session.finish(signal);
+    const g = globalThis as { __mafterWorkerVideoExportFrames?: number };
+    g.__mafterWorkerVideoExportFrames = (g.__mafterWorkerVideoExportFrames ?? 0) + totalFrames;
+    onProgress({ phase: "done", frame: totalFrames, totalFrames, message: "Done" });
+    return new Blob([result.buffer], { type: result.mimeType });
+  } catch (error) {
+    session.abort();
+    throw error;
+  }
+}
+
 async function encodeVideoFrames(
   comp: TimelineComposition,
   renderer: DomRenderer,

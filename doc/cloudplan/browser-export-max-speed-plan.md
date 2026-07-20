@@ -248,6 +248,8 @@ direct video は速度だけでなく JPEG 0.92 の中間劣化も除けるが�
 
 ### Phase 4 — Worker encode/mux と bounded pipeline
 
+**実装・Gate 判定（2026-07-20）**: DedicatedWorker の video-only MP4/WebM encode+mux、transferable `VideoFrame`、最大3枚の ack backpressure、abort/close を実装。fixture A（24f MP4、GPU direct）では Window 3844.4ms に対し Worker 3956.3ms（+2.9%）、出力 5791 bytes / 1280×720 / 0.8s は一致した。短尺では wall 改善がないため既定OFFとし、`globalThis.__mafterWorkerVideoExport = true` の明示 opt-in と benchmark counter を残す。長尺または encode-bound fixture で再評価する。
+
 DOM/foreignObject capture は Window に残す。main thread が `CompositeFrame` から `VideoFrame` を生成し、DedicatedWorker へ transfer。Worker が VideoEncoder output と mux を担当する。
 
 ```text

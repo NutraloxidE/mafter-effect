@@ -35,6 +35,7 @@ const DIRECT_SOLID = process.env.BENCH_DIRECT_SOLID !== "0";
 const ANIMATED_SOLID = process.env.BENCH_ANIMATED_SOLID === "1";
 const DIRECT_IMAGE = process.env.BENCH_DIRECT_IMAGE !== "0";
 const ANIMATED_IMAGE = process.env.BENCH_ANIMATED_IMAGE === "1";
+const WORKER_VIDEO = process.env.BENCH_WORKER_VIDEO === "1";
 if (!["png-seq", "mp4", "webm"].includes(FORMAT)) throw new Error(`Unsupported BENCH_FORMAT: ${FORMAT}`);
 const OUT_JSON = join(dirname(fileURLToPath(import.meta.url)), process.env.BENCH_OUT ?? "bench-gpu-raster-export-baseline.json");
 const N_FRAMES = Number(process.env.BENCH_FRAMES ?? "24");
@@ -203,11 +204,13 @@ const exp = await ev(async (opts) => {
   globalThis.__mafterDirectVideoCapture = opts.directVideo;
   globalThis.__mafterDirectSolidCapture = opts.directSolid;
   globalThis.__mafterDirectImageCapture = opts.directImage;
+  globalThis.__mafterWorkerVideoExport = opts.workerVideo;
   globalThis.__mafterGpuCompositorFrames = 0;
   globalThis.__mafterGpuDirectSurfaceFrames = 0;
   globalThis.__mafterDirectVideoCaptureFrames = 0;
   globalThis.__mafterDirectSolidCaptureFrames = 0;
   globalThis.__mafterDirectImageCaptureFrames = 0;
+  globalThis.__mafterWorkerVideoExportFrames = 0;
 
   // 計測を export 区間だけにリセット
   for (const k of Object.keys(stats)) { if (k === "lastActivity") continue; stats[k] = { n: 0, ms: 0 }; }
@@ -277,6 +280,7 @@ const exp = await ev(async (opts) => {
     directVideoCaptureFrames: globalThis.__mafterDirectVideoCaptureFrames ?? 0,
     directSolidCaptureFrames: globalThis.__mafterDirectSolidCaptureFrames ?? 0,
     directImageCaptureFrames: globalThis.__mafterDirectImageCaptureFrames ?? 0,
+    workerVideoExportFrames: globalThis.__mafterWorkerVideoExportFrames ?? 0,
     firstFrameMs: +(perFrameMs[0] ?? 0).toFixed(1),
     avgFrameMs: avg(body),
     api,
@@ -295,6 +299,7 @@ const exp = await ev(async (opts) => {
   directVideo: DIRECT_VIDEO,
   directSolid: DIRECT_SOLID,
   directImage: DIRECT_IMAGE,
+  workerVideo: WORKER_VIDEO,
   outputSample: OUTPUT_SAMPLE,
 });
 

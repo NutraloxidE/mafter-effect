@@ -1,5 +1,13 @@
 # Progress
 
+### 2026-07-20（Codex）— browser export 最大高速化 Phase 4
+
+- **実装**: video-only MP4/WebM に DedicatedWorker encode/mux 経路を追加。Window は resolve/render/capture と transferable `VideoFrame` 生成まで、Worker は `VideoEncoder`・mux を担当。未ack frame は最大3枚、encoder dequeue と二重 backpressure。abort/error 時は保留frame・encoder・workerを解放する。
+- **互換性**: 音声付き・透過WebM・Worker非対応は従来Window経路。§5/INV/project.json直列化は不変。runtime変更のため `npm run build:player` 実行済み。
+- **A/B**: fixture A 24f MP4（GPU direct）で Window **3844.4ms**、Worker **3956.3ms（+2.9%）**。双方 5791 bytes / 1280×720 / 0.8s、page error 0。短尺wall改善がないため `__mafterWorkerVideoExport=true` の明示opt-in（既定OFF）とした。
+- **検証**: `npm run typecheck` / `npm run build` / targeted worker・player freshness tests PASS。全Vitestは **1374 passed / 1 failed**（既知の `effects.test.ts` liquidChrome再登録、本変更と無関係）。
+- **Next steps**: Phase 5で音声準備を映像renderと並行化し、長尺向けstreaming targetのメモリ/最終化コストを評価する。
+
 ### 2026-07-19（Codex）— `Master → main 1` 非破壊高速化 Phase 4〜5 と実データ検証を完了
 
 - **実データ計測**: `mafter-project (12).purini remix (1).zip`（589,976,631 bytes）から、大容量動画だけを除いたローカル専用 fixture を作成。`bench-master-nested-real.mjs` で実 PreviewPanel／Caching OFF／`Master` f376〜409 を走査し、代表 f400 の preview screenshot と `captureCompFramePng` の SHA-256 が legacy／最適化経路で完全一致。ページ例外なし、3D canvas 4枚・nested object 67個を確認。

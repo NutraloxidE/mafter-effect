@@ -1,0 +1,66 @@
+{
+  "when": "2026-07-20T01:05:37.783Z",
+  "note": "Export benchmark — mp4 (compositeExportFrame + optional WebCodecs).",
+  "fixture": {
+    "mainId": "01KXYGX37R4PVH1VXXA9PFZWSJ",
+    "innerId": "01KXYGX37MW9ME6JHHCFGASDK6",
+    "staticImageId": null,
+    "videoId": null,
+    "mainSize": [
+      1280,
+      720
+    ]
+  },
+  "export": {
+    "ok": true,
+    "err": null,
+    "totalMs": 3956.3,
+    "frames": 24,
+    "gpuFrames": 24,
+    "gpuDirectSurfaceFrames": 24,
+    "directVideoCaptureFrames": 0,
+    "directSolidCaptureFrames": 4,
+    "directImageCaptureFrames": 0,
+    "workerVideoExportFrames": 24,
+    "firstFrameMs": 1258.6,
+    "avgFrameMs": 111.8,
+    "api": {
+      "getImageData": {
+        "n": 95,
+        "ms": 502
+      },
+      "putImageData": {
+        "n": 72,
+        "ms": 29
+      },
+      "drawImage": {
+        "n": 287,
+        "ms": 61.2
+      },
+      "toDataURL": {
+        "n": 72,
+        "ms": 409.4
+      },
+      "createImageBitmap": {
+        "n": 0,
+        "ms": 0
+      },
+      "readPixels": {
+        "n": 0,
+        "ms": 0
+      },
+      "imageDecode": {
+        "n": 215,
+        "ms": 925.4
+      }
+    },
+    "output": {
+      "bytes": 5791,
+      "type": "video/mp4",
+      "width": 1280,
+      "height": 720,
+      "duration": 0.8
+    }
+  },
+  "pageErrors": []
+}
