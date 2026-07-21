@@ -112,6 +112,8 @@ import {
 } from "./expressionPresets";
 import { bindExpressionFs } from "./expressionModuleHub";
 import { feedbackCollector } from "./feedbackCollector";
+import { duplicateProjectEntries as buildDuplicatedProjectEntries } from "./duplicateProjectEntries";
+import { unreferencedAssetFilePaths } from "./assetFileRefs";
 
 const WAVEFORM_MODE_KEY = "mafter:waveformMode";
 function loadWaveformMode(): WaveformMode {
@@ -134,6 +136,21 @@ registerBuiltinEffects();
 // §17: プロジェクトデータの正は FS（IndexedDbFs）。ストアはその投影。
 
 const fs = new IndexedDbFs("mafter-effect-fs");
+
+async function copyFsDirectory(
+  fileSystem: IndexedDbFs,
+  fromDir: string,
+  toDir: string,
+  transform?: (sourcePath: string, bytes: Uint8Array) => Uint8Array,
+): Promise<void> {
+  for (const sourcePath of await fileSystem.list(fromDir)) {
+    const suffix = sourcePath.slice(fromDir.length).replace(/^\/+/, "");
+    if (!suffix) continue;
+    const bytes = await fileSystem.read(sourcePath);
+    await fileSystem.write(`${toDir}/${suffix}`, transform?.(sourcePath, bytes) ?? bytes);
+  }
+}
+
 bindExpressionFs(fs);
 const pluginLoader = new ModuleLoader(fs);
 
@@ -284,6 +301,10 @@ export interface EditorStore {
     targetBinId: string | null,
     index: number,
   ) => void;
+  duplicateProjectEntries: (
+    entries: ProjectTreeEntry[],
+    targetBinId: string | null,
+  ) => Promise<ProjectTreeEntry[]>;
   // §21.9 レイヤー名リネーム
   renameObject: (id: string, name: string) => void;
   // §21.10 ラベル色
@@ -897,6 +918,43 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     if (!before) return;
     const after = moveTreeEntries(before, entries, targetBinId, index);
     get().applyCommand({ label: "Move Project Item", before, after });
+  },
+
+  duplicateProjectEntries: async (entries, targetBinId) => {
+    const before = get().project;
+    if (!before || entries.length === 0) return [];
+    const result = buildDuplicatedProjectEntries(before, entries, targetBinId);
+    if (result.pastedEntries.length === 0) return [];
+    const writtenDirs: string[] = [];
+    try {
+      for (const copy of result.htmlCompCopies) {
+        const fromDir = compositionDir(copy.from);
+        const toDir = compositionDir(copy.to);
+        await copyFsDirectory(fs, fromDir, toDir, (path, bytes) => {
+          if (!path.endsWith("/script.js")) return bytes;
+          const text = new TextDecoder().decode(bytes).replaceAll(copy.from, copy.to);
+          return new TextEncoder().encode(text);
+        });
+        writtenDirs.push(toDir);
+      }
+      for (const copy of result.objectScriptCopies) {
+        const fromDir = `scripts/${copy.from}`;
+        if (!(await fs.exists(fromDir)) && (await fs.list(fromDir)).length === 0) continue;
+        const toDir = `scripts/${copy.to}`;
+        await copyFsDirectory(fs, fromDir, toDir);
+        writtenDirs.push(toDir);
+      }
+    } catch (e) {
+      for (const dir of writtenDirs) {
+        try {
+          for (const path of await fs.list(dir)) await fs.delete(path);
+        } catch { /* best-effort rollback */ }
+      }
+      alert(`Project アイテムの貼り付けに失敗しました。\n\n${String(e)}`);
+      return [];
+    }
+    get().applyCommand({ label: "Paste Project Items", before, after: result.project });
+    return result.pastedEntries;
   },
 
   renameObject: (id, name) => {
@@ -1735,17 +1793,8 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       }));
     }
 
-    const assetPath = asset.path;
     // §11.4b 原本 + 全プロキシファイルを FS から削除（path / originalPath / meta.proxies.*）。
-    const filesToDelete = new Set<string>([assetPath]);
-    if (typeof asset.meta?.["originalPath"] === "string") filesToDelete.add(asset.meta["originalPath"] as string);
-    const proxies = asset.meta?.["proxies"];
-    if (proxies && typeof proxies === "object") {
-      for (const raw of Object.values(proxies as Record<string, unknown>)) {
-        const pp = (raw as { path?: unknown })?.path;
-        if (typeof pp === "string") filesToDelete.add(pp);
-      }
-    }
+    const filesToDelete = unreferencedAssetFilePaths(before, assetId);
     void (async () => {
       for (const f of filesToDelete) {
         try {

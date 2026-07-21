@@ -40,6 +40,7 @@ export function ProjectPanel() {
   const renameBin = useEditorStore((s) => s.renameBin);
   const deleteBin = useEditorStore((s) => s.deleteBin);
   const moveProjectEntries = useEditorStore((s) => s.moveProjectEntries);
+  const duplicateProjectEntries = useEditorStore((s) => s.duplicateProjectEntries);
   const addPluginObject = useEditorStore((s) => s.addPluginObject);
   // pluginsVersion で subscribe し、registry が更新されたら component を再レンダーする
   const pluginsVersion = useEditorStore((s) => s.pluginsVersion);
@@ -221,6 +222,7 @@ export function ProjectPanel() {
             onRenameBin={renameBin}
             onDeleteBin={deleteBin}
             onMoveProjectEntries={moveProjectEntries}
+            onDuplicateProjectEntries={duplicateProjectEntries}
             onImportImage={() => imageInput.current?.click()}
             onImportVideo={() => videoInput.current?.click()}
             onImportAudio={() => audioInput.current?.click()}

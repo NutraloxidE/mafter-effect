@@ -1470,6 +1470,25 @@ moveProjectEntries(entries, targetBinId, index): void
 - 検索: 名前フィルタ + マッチ祖先 bin を自動展開
 - ツリー内 DnD: フォルダ行へドロップで移動（`application/x-mafter-project-tree`）。Timeline 配置 DnD（`application/x-mafter-item`）とは別 MIME
 
+### §20.6 Project アイテムのコピー / 貼り付け（確定 2026-07-21）
+
+Project パネルの comp / footage / bin は、右クリックメニューの「コピー」「貼り付け」と
+`Ctrl/Cmd+C` / `Ctrl/Cmd+V` で複製できる。複数選択を維持し、1 回の貼り付けを 1 command / 1 undo とする。
+スキーマ・直列化形式への追加はない。
+
+- **貼り付け先**: フォルダ行への貼り付けはそのフォルダ内。comp / footage 行への貼り付けはその行と同じ親。
+  空白への貼り付けはルート。キーボード貼り付けも現在選択から同じ規則で決める。
+- **bin**: フォルダ本体と全子孫を再帰複製し、子の順序と階層を維持する。親 bin と子孫を同時選択した場合、
+  子孫は親側の再帰複製に含めて一度だけ複製する。
+- **composition**: comp と内部 `SceneObject` に新 ULID を振り、`parent`、shape merge の `objectId`、
+  `comp` / `html` component の `compId`、footage component の `asset` は、参照先も同じ貼り付け集合に含まれる場合だけ
+  新 ID へリマップする。集合外への参照は維持する。HTML comp の `compositions/<id>/` と、レイヤー固有の
+  `scripts/<objectId>/` は新 ID のパスへコピーする。
+- **asset**: 新 AssetId を持つ別 Project アイテムとして複製するが、`path` / proxy metadata は同じ FS 実体を共有する。
+  そのため片方の Project アイテムを削除しても、同じ実体パスを参照する別 asset が残る間は FS ファイルを削除しない。
+- 直接貼り付けた bin / comp の表示名は ` copy` を付ける。bin 内の子孫名と asset のファイル名は維持する。
+- クリップボードは Project パネル内の参照を保持し、貼り付け後も繰り返し使用できる。コピー元が削除済みなら無視する。
+
 ---
 
 ## §21. Timeline パネル / AE 相当のタイムライン編集（UI 層・MVP 後の UX 拡張）

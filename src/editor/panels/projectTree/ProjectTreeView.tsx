@@ -36,6 +36,10 @@ export interface ProjectTreeViewProps {
     targetBinId: string | null,
     index: number,
   ) => void;
+  onDuplicateProjectEntries: (
+    entries: ProjectTreeEntry[],
+    targetBinId: string | null,
+  ) => Promise<ProjectTreeEntry[]>;
   onImportImage: () => void;
   onImportVideo: () => void;
   onImportAudio: () => void;
@@ -63,6 +67,12 @@ function compById(project: Project, id: string): Composition | undefined {
 
 function assetById(project: Project, id: string): AssetEntry | undefined {
   return project.assets.find((a) => a.id === id);
+}
+
+function parentBinOf(project: Project, entry: ProjectTreeEntry): string | null {
+  if (entry.kind === "bin") return binById(project, entry.id)?.parentId ?? null;
+  if (entry.kind === "composition") return compById(project, entry.id)?.binId ?? null;
+  return assetById(project, entry.id)?.binId ?? null;
 }
 
 function entryLabel(project: Project, entry: ProjectTreeEntry): string {
@@ -146,6 +156,7 @@ export function ProjectTreeView(props: ProjectTreeViewProps) {
     onRenameBin,
     onDeleteBin,
     onMoveProjectEntries,
+    onDuplicateProjectEntries,
     onImportImage,
     onImportVideo,
     onImportAudio,
@@ -164,6 +175,7 @@ export function ProjectTreeView(props: ProjectTreeViewProps) {
   const [renamingBinId, setRenamingBinId] = useState<string | null>(null);
   const [expandVersion, setExpandVersion] = useState(0);
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
+  const [clipboardEntries, setClipboardEntries] = useState<ProjectTreeEntry[]>([]);
   const [hoveredKey, setHoveredKey] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const lastSelectedKeyRef = useRef<string | null>(null);
@@ -191,6 +203,7 @@ export function ProjectTreeView(props: ProjectTreeViewProps) {
   const handleEntryClick = useCallback(
     (entry: ProjectTreeEntry, e: MouseEvent) => {
       e.stopPropagation();
+      scrollRef.current?.focus();
       const key = entryKey(entry);
 
       if (e.shiftKey && lastSelectedKeyRef.current) {
@@ -240,6 +253,72 @@ export function ProjectTreeView(props: ProjectTreeViewProps) {
     [selectedKeys, selectedSet, visibleEntries],
   );
 
+  const orderedSelectedEntries = useCallback(
+    (fallback?: ProjectTreeEntry): ProjectTreeEntry[] => {
+      if (fallback && !selectedSet.has(entryKey(fallback))) return [fallback];
+      const selected = keysToEntries(selectedKeys);
+      const order = new Map(visibleEntries.map((entry, index) => [entryKey(entry), index]));
+      const sorted = selected.sort(
+        (a, b) => (order.get(entryKey(a)) ?? Number.MAX_SAFE_INTEGER) - (order.get(entryKey(b)) ?? Number.MAX_SAFE_INTEGER),
+      );
+      return sorted.length > 0 ? sorted : fallback ? [fallback] : [];
+    },
+    [selectedKeys, selectedSet, visibleEntries],
+  );
+
+  const copyEntries = useCallback((fallback?: ProjectTreeEntry) => {
+    const entries = orderedSelectedEntries(fallback);
+    if (entries.length > 0) setClipboardEntries(entries);
+  }, [orderedSelectedEntries]);
+
+  const pasteEntries = useCallback((targetBinId: string | null) => {
+    if (clipboardEntries.length === 0) return;
+    void onDuplicateProjectEntries(clipboardEntries, targetBinId).then((pasted) => {
+      if (pasted.length === 0) return;
+      const keys = pasted.map(entryKey);
+      setSelectedKeys(keys);
+      lastSelectedKeyRef.current = keys.at(-1) ?? null;
+    });
+  }, [clipboardEntries, onDuplicateProjectEntries]);
+
+  const contextMenuEntries = useCallback((entry: ProjectTreeEntry): ProjectTreeEntry[] => {
+    const entries = orderedSelectedEntries(entry);
+    if (!selectedSet.has(entryKey(entry))) {
+      setSelectedKeys([entryKey(entry)]);
+      lastSelectedKeyRef.current = entryKey(entry);
+    }
+    return entries;
+  }, [orderedSelectedEntries, selectedSet]);
+
+  const copyPasteMenuItems = useCallback(
+    (entry: ProjectTreeEntry): ContextMenuItem[] => {
+      const entries = contextMenuEntries(entry);
+      const pasteTarget = entry.kind === "bin" ? entry.id : parentBinOf(project, entry);
+      return [
+        {
+          kind: "action",
+          label: entries.length > 1 ? `コピー (${entries.length})` : "コピー",
+          shortcut: "Ctrl+C",
+          onSelect: () => setClipboardEntries(entries),
+        },
+        {
+          kind: "action",
+          label: "貼り付け",
+          shortcut: "Ctrl+V",
+          disabled: clipboardEntries.length === 0,
+          onSelect: () => pasteEntries(pasteTarget),
+        },
+      ];
+    },
+    [clipboardEntries.length, contextMenuEntries, pasteEntries, project],
+  );
+
+  const keyboardPasteTarget = useCallback((): string | null => {
+    const selected = orderedSelectedEntries();
+    if (selected.length === 1 && selected[0]?.kind === "bin") return selected[0].id;
+    return selected[0] ? parentBinOf(project, selected[0]) : null;
+  }, [orderedSelectedEntries, project]);
+
   const onTreeDragStart = useCallback(
     (e: DragEvent, entry: ProjectTreeEntry) => {
       const entries = getDragEntries(entry);
@@ -282,6 +361,10 @@ export function ProjectTreeView(props: ProjectTreeViewProps) {
       return (
         <div key={`bin:${entry.id}`}>
           <div
+            onContextMenu={(e) => {
+              e.preventDefault();
+              openContextMenu(e.clientX, e.clientY, copyPasteMenuItems(entry));
+            }}
             onClick={(e) => {
               if (isInteractiveChild(e.target)) return;
               handleEntryClick(entry, e);
@@ -386,6 +469,10 @@ export function ProjectTreeView(props: ProjectTreeViewProps) {
         <div
           key={`comp:${entry.id}`}
           draggable
+          onContextMenu={(e) => {
+            e.preventDefault();
+            openContextMenu(e.clientX, e.clientY, copyPasteMenuItems(entry));
+          }}
           onDragStart={(e) => {
             onTreeDragStart(e, entry);
             if (comp.kind === "timeline") {
@@ -481,9 +568,13 @@ export function ProjectTreeView(props: ProjectTreeViewProps) {
     const canConvertToPacked = asset.kind === "video" && isSplitAlphaVideoMeta(asset.meta);
     const handleAssetContextMenu = (e: MouseEvent) => {
       e.preventDefault();
-      const items: ContextMenuItem[] = [
-        { kind: "action", label: "このファイルでコンポジットを作成", onSelect: () => onCreateCompFromAsset(asset.id) },
-      ];
+      const items: ContextMenuItem[] = [...copyPasteMenuItems(entry)];
+      if (canCreateCompFromAsset) {
+        items.push(
+          { kind: "separator" },
+          { kind: "action", label: "このファイルでコンポジットを作成", onSelect: () => onCreateCompFromAsset(asset.id) },
+        );
+      }
       if (canConvertToPacked) {
         items.push({
           kind: "action",
@@ -498,7 +589,7 @@ export function ProjectTreeView(props: ProjectTreeViewProps) {
       <div
         key={`asset:${entry.id}`}
         draggable={isFootage}
-        onContextMenu={canCreateCompFromAsset ? handleAssetContextMenu : undefined}
+        onContextMenu={handleAssetContextMenu}
         onDragStart={(e) => {
           onTreeDragStart(e, entry);
           if (asset.kind === "audio") {
@@ -574,11 +665,39 @@ export function ProjectTreeView(props: ProjectTreeViewProps) {
       </div>
       <div
         ref={scrollRef}
-        style={{ flex: 1, overflow: "auto" }}
+        tabIndex={0}
+        style={{ flex: 1, overflow: "auto", outline: "none" }}
+        onCopy={(e) => {
+          const entries = orderedSelectedEntries();
+          if (entries.length === 0) return;
+          e.preventDefault();
+          copyEntries();
+        }}
+        onPaste={(e) => {
+          if (clipboardEntries.length === 0) return;
+          e.preventDefault();
+          pasteEntries(keyboardPasteTarget());
+        }}
+        onContextMenu={(e) => {
+          if (e.target !== e.currentTarget) return;
+          e.preventDefault();
+          openContextMenu(e.clientX, e.clientY, [
+            {
+              kind: "action",
+              label: "貼り付け",
+              shortcut: "Ctrl+V",
+              disabled: clipboardEntries.length === 0,
+              onSelect: () => pasteEntries(null),
+            },
+          ]);
+        }}
         onDragOverCapture={edgeScroll.onDragOverCapture}
         onDragLeave={edgeScroll.onDragLeave}
         onClick={(e) => {
-          if (e.target === e.currentTarget) setSelectedKeys([]);
+          if (e.target === e.currentTarget) {
+            setSelectedKeys([]);
+            e.currentTarget.focus();
+          }
         }}
         onDragOver={(e) => {
           if (e.dataTransfer.types.includes(TREE_DRAG_MIME)) {

@@ -2811,3 +2811,16 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
   - `test/textBulkReplace.test.ts`: computeReadingOrder（2x2 グリッド・行 tolerance・行分割・同座標 id tiebreak）＋ reading モード planBulkReplace（非数字採番・位置無しレイヤー除外・keyframe 除外）を追加。
 - **検証**: typecheck クリーン。full Vitest **1420/1420 PASS**。実ブラウザ（Playwright）: Ctrl ダブルタップ→M→T でダイアログ、採番ラジオ（中身の数字/配置順）表示、配置順切替で説明更新、入力＋単語分割でクラッシュなし。機能由来の page error なし。
 - **build:player**: editor-only のため不要。
+
+### 2026-07-21（Codex）— Project パネルのアイテム Copy / Paste ✅
+
+- **概要**: Project パネルの comp / footage / bin を、右クリック「コピー」「貼り付け」と `Ctrl/Cmd+C` / `Ctrl/Cmd+V` の両方で複製可能にした。複数選択、フォルダー再帰複製、貼り付け先フォルダー、1 paste = 1 undo に対応。
+- **spec先行**: §20.6 を追加。§5・INV・project.json 直列化形式は不変。
+- **実装**:
+  - `duplicateProjectEntries.ts`: 選択祖先の重複除去、bin 子孫順維持、comp / object / shape vertex / effect / preset の新 ULID、parent / merge object / comp / html / asset 参照リマップ、expression script path リマップを純 project transform として実装。
+  - `store.ts`: HTML comp FS と object script directory を新 ID へコピー後、`Paste Project Items` を 1 command で適用。asset 複製は同じ原本/proxy path を共有するため、別 asset entry が残る間は共有 FS ファイルを削除しない。
+  - `ProjectTreeView.tsx`: 行・空白のコンテキストメニュー、Project パネル内 clipboard、native copy/paste event による Ctrl/Cmd ショートカット、貼り付け後の選択更新。
+  - unit 8件追加（再帰複製・参照リマップ・外部参照維持・共有 asset path 保護）。
+- **検証**: typecheck PASS、増分 8/8 PASS、`git diff --check` PASS。full Vitest **1428/1429 PASS**（唯一の fail は今回未変更の `public/player.js` 鮮度。runtime/player 差分なしの既存状態）。実ブラウザ: 右クリック Copy/Paste、Ctrl+C で menu clipboard 有効化、Ctrl+V で複製、Undo で1件復元、フォルダー行への paste が depth 1 に入ること、console error 0 を確認。
+- **build:player**: editor-only のため未実行（runtime/player 未変更）。
+- **残タスク**: なし。
