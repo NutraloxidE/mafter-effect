@@ -2833,3 +2833,16 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
 - **検証**: `test/duplicateProjectEntries.test.ts` 5/5 PASS、typecheck PASS。実ブラウザで右クリック Copy/Paste により `Main 2`、続く `Ctrl+C` / `Ctrl+V` により `Main 3` が生成されることを確認。
 - **build:player**: editor-only のため未実行（runtime/player 未変更）。
 - **残タスク**: なし。
+
+### 2026-07-22（Claude Opus 4.8）— インスペクター複数選択の一斉編集 ✅
+
+- **概要**: 複数レイヤー選択時、インスペクターの共通プロパティを一斉編集可能に。トグル/enum は同値で同期、数値は各レイヤーの現状を維持したまま同じ delta で上下（3D extrude/bevel、camera、effect、component 全 param 含む）。Transform/Opacity は元から delta 対応済み。
+- **spec先行**: UI エルゴノミクスのみ。§5・INV・project.json 直列化形式は不変。
+- **実装**:
+  - `store.ts`: `applyToggleToSelection` を追加し `setThreeD`/`setThreeDMode`/`setBlendMode`/`setTrackMatteMode` を選択全体対応（1 undo コマンド）。
+  - `multiSelectPropEdit.ts`（新規・純関数）: components/effects/expressionPresets パッチを選択他レイヤーへ横展開。type/presetId でマッチ、数値は delta・非数値は同値、対象要素なしはスキップ。
+  - `InspectorPanel.tsx`: `editObject` closure を全 sub-field（Text/Solid/Shape/Video/Component/Effect/ExpressionPreset）と `setCamProp` に配線。トグル4種に「— 混在 —」インジケータ、ヘッダーに「+N レイヤー選択中」バッジ。
+- **検証**: typecheck PASS。増分 unit 6/6 PASS（`multiSelectPropEdit.test.ts` 3、`multiSelectToggle.test.ts` 3）。
+- **build:player**: editor-only のため未実行（runtime/player 未変更）。
+- **既知の天井**: 同一 type の effect/component が複数ある場合は最初の一致にのみ適用。live preview（scrub 中）は複数選択時オフ、commit で確定。
+- **残タスク**: 実ブラウザでの目視確認（未実施）。

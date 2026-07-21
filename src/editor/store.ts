@@ -431,6 +431,32 @@ function reportAutosaveFailure(e: unknown): void {
   alert(`自動保存に失敗しました。編集内容が保存されていません。\nzip 書き出しでバックアップを取ってください。\n\n${String(e)}`);
 }
 
+/**
+ * トグル系プロパティ（3D / blend / matte 等）を選択レイヤー全体へ同値で適用する。
+ * objId が現在の複数選択に含まれるときは選択全体、それ以外は objId 単体。
+ * 単一 undo コマンドにまとめる（updateObjects）。返り値は実際に適用した id 配列。
+ */
+function applyToggleToSelection(
+  get: () => EditorStore,
+  objId: string,
+  patchFor: (o: SceneObject) => Partial<SceneObject>,
+  label: string,
+): string[] {
+  const s = get();
+  const comp = currentTimelineComp(s.project, s.currentCompId);
+  if (!comp) return [];
+  const inSelection = s.selectedObjectIds.includes(objId) && s.selectedObjectIds.length > 1;
+  const ids = inSelection ? s.selectedObjectIds : [objId];
+  const targets = comp.objects.filter((o) => ids.includes(o.id));
+  if (targets.length === 0) return [];
+  if (targets.length === 1) {
+    s.updateObject(targets[0]!.id, patchFor(targets[0]!), label);
+  } else {
+    s.updateObjects(targets.map((o) => ({ id: o.id, patch: patchFor(o) })), label);
+  }
+  return targets.map((o) => o.id);
+}
+
 export const useEditorStore = create<EditorStore>((set, get) => ({
   project: null,
   currentCompId: "",
@@ -2153,40 +2179,33 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   setPreviewCamera: (cam) => set({ previewCamera: cam }),
 
   setThreeD: (objId, enabled) => {
-    const comp = currentTimelineComp(get().project, get().currentCompId);
-    const obj = comp?.objects.find((o) => o.id === objId);
-    if (!obj) return;
-    get().updateObject(objId, { threeD: enabled ? true : undefined }, enabled ? "Enable 3D layer" : "Disable 3D layer");
+    applyToggleToSelection(get, objId, () => ({ threeD: enabled ? true : undefined }), enabled ? "Enable 3D layer" : "Disable 3D layer");
   },
 
   setThreeDMode: (objId, mode) => {
-    const comp = currentTimelineComp(get().project, get().currentCompId);
-    const obj = comp?.objects.find((o) => o.id === objId);
-    if (!obj) return;
-    get().updateObject(objId, { threeDMode: mode === "auto" ? undefined : mode }, `3D mode: ${mode}`);
+    applyToggleToSelection(get, objId, () => ({ threeDMode: mode === "auto" ? undefined : mode }), `3D mode: ${mode}`);
   },
 
   // §5.4d: normal は undefined にして直列化省略（byte 等価）。
   setBlendMode: (objId, mode) => {
-    const comp = currentTimelineComp(get().project, get().currentCompId);
-    const obj = comp?.objects.find((o) => o.id === objId);
-    if (!obj) return;
-    get().updateObject(objId, { blendMode: mode === "normal" ? undefined : mode }, `Blend mode: ${mode}`);
+    const ids = applyToggleToSelection(get, objId, () => ({ blendMode: mode === "normal" ? undefined : mode }), `Blend mode: ${mode}`);
+    if (ids.length === 0) return;
     set((s) => {
-      if (!(objId in s.missingBlendModes)) return s;
-      const { [objId]: _removed, ...missingBlendModes } = s.missingBlendModes;
+      const idSet = new Set(ids);
+      if (!ids.some((id) => id in s.missingBlendModes)) return s;
+      const missingBlendModes = Object.fromEntries(
+        Object.entries(s.missingBlendModes).filter(([k]) => !idSet.has(k)),
+      );
       return { missingBlendModes };
     });
   },
 
   // §5.4f: 未設定は undefined にして直列化省略。
   setTrackMatteMode: (objId, mode) => {
-    const comp = currentTimelineComp(get().project, get().currentCompId);
-    const obj = comp?.objects.find((o) => o.id === objId);
-    if (!obj) return;
-    get().updateObject(
+    applyToggleToSelection(
+      get,
       objId,
-      { trackMatteMode: mode === null ? undefined : mode },
+      () => ({ trackMatteMode: mode === null ? undefined : mode }),
       mode === null ? "Clear track matte" : `Track matte: ${mode}`,
     );
   },

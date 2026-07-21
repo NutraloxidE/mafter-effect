@@ -18,6 +18,7 @@ import { BUNDLED_FONTS, WEB_SAFE_FONTS, isKnownFont, is3DCapableFont } from "../
 import { ScrubNumber } from "../ScrubNumber";
 import { TimecodeScrub } from "../TimecodeScrub";
 import { applyLinkedScaleDelta, applyLinkedScaleValue } from "../linkedScale";
+import { buildSelectionCollectionPatches } from "../multiSelectPropEdit";
 import { formatBarBeat } from "../beatTimecode";
 import { globalPluginRegistry } from "../../runtime/pluginRegistry";
 import { geom3dWebglComponentIndex, resolveGeom3DCanvasHosts, toGeom3DLayerInfo } from "../../runtime/geom3d/geom3dCanvasGroup";
@@ -296,6 +297,33 @@ export function InspectorPanel() {
   const scl = sampleVec3(obj.transform.scale, frame);
   const opacity = sampleScalar(obj.opacity, frame);
 
+  // 複数選択時、トグル系プロパティが選択レイヤー間で混在しているか（AE 風の "—" 表示用）。
+  const selObjs = selectedIds.length > 1 && comp
+    ? comp.objects.filter((o) => selectedIds.includes(o.id))
+    : null;
+  const isMixed = <T,>(read: (o: SceneObject) => T): boolean => {
+    if (!selObjs || selObjs.length < 2) return false;
+    const first = read(selObjs[0]!);
+    return selObjs.some((o) => read(o) !== first);
+  };
+  // components / effects / expressionPresets の一斉編集: 選択全体へ差分/同値で横展開。
+  // 上記コレクションを差し替えるパッチのみ横展開し、他は base のみ（name 等の誤上書き防止）。
+  const editObject = (id: string, patch: Partial<SceneObject>, label?: string) => {
+    const collectionKey: "components" | "effects" | "expressionPresets" | null =
+      patch.components ? "components" : patch.effects ? "effects" : patch.expressionPresets ? "expressionPresets" : null;
+    if (id !== obj.id || !comp || selectedIds.length <= 1 || !collectionKey) {
+      updateObject(id, patch, label);
+      return;
+    }
+    const targets = comp.objects.filter((o) => selectedIds.includes(o.id));
+    updateObjects(buildSelectionCollectionPatches(obj, patch, collectionKey, targets, frame), label);
+  };
+
+  const blendMixed = isMixed((o) => o.blendMode ?? "normal");
+  const threeDMixed = isMixed((o) => o.threeD ?? false);
+  const threeDModeMixed = isMixed((o) => o.threeDMode ?? "auto");
+  const trackMatteMixed = isMixed((o) => o.trackMatteMode ?? "");
+
   const previewPatch = (patch: Partial<SceneObject>) => {
     if (selectedIds.length > 1) return;
     setPreviewOverride({ objectId: obj.id, patch });
@@ -422,7 +450,7 @@ export function InspectorPanel() {
   const setCamProp = (key: string, value: unknown, label: string) => {
     if (camIdx < 0) return;
     const next = obj.components.map((c, i) => (i === camIdx ? { ...c, props: { ...c.props, [key]: value } } : c));
-    updateObject(obj.id, { components: next }, label);
+    editObject(obj.id, { components: next }, label);
   };
 
   const legacyInstances: ExpressionPresetInstance[] = Object.entries(legacyPresetIds).flatMap(([param, presetId]) => {
@@ -507,6 +535,11 @@ export function InspectorPanel() {
     <div ref={panelScrollRef} style={INSPECTOR_ROOT_STYLE}>
       <div style={{ ...INSPECTOR_HEADER_STYLE, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
         <LayerNameHeader objId={obj.id} name={obj.name} />
+        {selectedIds.length > 1 && (
+          <span style={{ fontSize: 10, color: "#7fb8f0", fontWeight: 600 }}>
+            +{selectedIds.length - 1} レイヤー選択中
+          </span>
+        )}
         {obj.isAdjustment && (
           <span style={{ marginLeft: 6, fontSize: 10, color: "#c9a227", fontWeight: 600 }}>
             ADJ · {(obj.adjustmentMode ?? "live") === "raster" ? "Raster" : "Live"}
@@ -577,14 +610,15 @@ export function InspectorPanel() {
         </Row>
         <Row label="Blend Mode">
           <select
-            value={missingBlendModes[obj.id] ? "__missing__" : (obj.blendMode ?? "normal")}
+            value={blendMixed ? "__mixed__" : missingBlendModes[obj.id] ? "__missing__" : (obj.blendMode ?? "normal")}
             onChange={(e) => {
               const v = e.target.value;
-              if (v === "__missing__") return;
+              if (v === "__missing__" || v === "__mixed__") return;
               setBlendMode(obj.id, v as BlendMode);
             }}
             style={selectStyle}
           >
+            {blendMixed && <option value="__mixed__">— 混在 —</option>}
             {missingBlendModes[obj.id] && (
               <option value="__missing__">{formatMissingBlendModeLabel(missingBlendModes[obj.id]!)}</option>
             )}
@@ -607,7 +641,7 @@ export function InspectorPanel() {
             const disabled = layerLocked || ineligible || !hasAbove;
             return (
               <select
-                value={obj.trackMatteMode ?? ""}
+                value={trackMatteMixed ? "__mixed__" : (obj.trackMatteMode ?? "")}
                 disabled={disabled}
                 title={
                   isMatteSource
@@ -620,10 +654,12 @@ export function InspectorPanel() {
                 }
                 onChange={(e) => {
                   const v = e.target.value;
+                  if (v === "__mixed__") return;
                   setTrackMatteMode(obj.id, v === "" ? null : (v as TrackMatteMode));
                 }}
                 style={selectStyle}
               >
+                {trackMatteMixed && <option value="__mixed__">— 混在 —</option>}
                 <option value="">なし</option>
                 {TRACK_MATTE_MODES.map((m) => (
                   <option key={m} value={m}>
@@ -690,19 +726,28 @@ export function InspectorPanel() {
           <Row label="3D Layer">
             <button
               type="button"
-              onClick={() => setThreeD(obj.id, !obj.threeD)}
-              style={{ ...btnStyle, background: obj.threeD ? "#2f5a44" : "#2a2a2a", color: obj.threeD ? "#9fe8c4" : "#ccc" }}
+              onClick={() => setThreeD(obj.id, threeDMixed ? true : !obj.threeD)}
+              style={{
+                ...btnStyle,
+                background: threeDMixed ? "#4a4020" : obj.threeD ? "#2f5a44" : "#2a2a2a",
+                color: threeDMixed ? "#e0c060" : obj.threeD ? "#9fe8c4" : "#ccc",
+              }}
+              title={threeDMixed ? "選択レイヤーで混在 — クリックで全て ON" : undefined}
             >
-              {obj.threeD ? "ON" : "OFF"}
+              {threeDMixed ? "混在" : obj.threeD ? "ON" : "OFF"}
             </button>
           </Row>
           {obj.threeD && (
             <Row label="Render Mode">
               <select
-                value={obj.threeDMode ?? "auto"}
-                onChange={(e) => setThreeDMode(obj.id, e.target.value as ThreeDMode)}
+                value={threeDModeMixed ? "__mixed__" : (obj.threeDMode ?? "auto")}
+                onChange={(e) => {
+                  if (e.target.value === "__mixed__") return;
+                  setThreeDMode(obj.id, e.target.value as ThreeDMode);
+                }}
                 style={selectStyle}
               >
+                {threeDModeMixed && <option value="__mixed__">— 混在 —</option>}
                 <option value="auto">Auto ({effectiveAutoMode})</option>
                 <option value="dom">DOM (Classic)</option>
                 <option value="raster3d">Raster3D (Advanced)</option>
@@ -745,7 +790,7 @@ export function InspectorPanel() {
                   obj={obj}
                   compIdx={compIdx}
                   frame={frame}
-                  updateObject={updateObject}
+                  updateObject={editObject}
                   previewPatch={previewPatch}
                   onEditFocus={() => setPreviewQualityEditing(true)}
                   onEditBlur={() => setPreviewQualityEditing(false)}
@@ -758,7 +803,7 @@ export function InspectorPanel() {
                   obj={obj}
                   compIdx={compIdx}
                   frame={frame}
-                  updateObject={updateObject}
+                  updateObject={editObject}
                   previewPatch={previewPatch}
                   onEditFocus={() => setPreviewQualityEditing(true)}
                   onEditBlur={() => setPreviewQualityEditing(false)}
@@ -768,7 +813,7 @@ export function InspectorPanel() {
                   obj={obj}
                   compIdx={compIdx}
                   frame={frame}
-                  updateObject={updateObject}
+                  updateObject={editObject}
                   previewPatch={previewPatch}
                   onEditFocus={() => setPreviewQualityEditing(true)}
                   onEditBlur={() => setPreviewQualityEditing(false)}
@@ -778,7 +823,7 @@ export function InspectorPanel() {
                   obj={obj}
                   compIdx={compIdx}
                   frame={frame}
-                  updateObject={updateObject}
+                  updateObject={editObject}
                   previewPatch={previewPatch}
                   onEditFocus={() => setPreviewQualityEditing(true)}
                   onEditBlur={() => setPreviewQualityEditing(false)}
@@ -790,7 +835,7 @@ export function InspectorPanel() {
                   compIdx={compIdx}
                   params={def?.params ?? []}
                   frame={frame}
-                  updateObject={updateObject}
+                  updateObject={editObject}
                   previewPatch={previewPatch}
                   onEditFocus={() => setPreviewQualityEditing(true)}
                   onEditBlur={() => setPreviewQualityEditing(false)}
@@ -970,7 +1015,7 @@ export function InspectorPanel() {
                   effect={effect}
                   params={def?.params ?? []}
                   frame={frame}
-                  updateObject={updateObject}
+                  updateObject={editObject}
                   previewPatch={previewPatch}
                 />
               </InspectorFoldout>
@@ -1056,7 +1101,7 @@ export function InspectorPanel() {
                   onMigrate={(propsOverrides) =>
                     void addExpressionPreset(obj.id, inst.presetId as ExpressionPresetId, propsOverrides)
                   }
-                  updateObject={updateObject}
+                  updateObject={editObject}
                   previewPatch={previewPatch}
                 />
               </InspectorFoldout>
