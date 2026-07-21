@@ -1,5 +1,19 @@
 # Progress
 
+### 2026-07-20（Claude Opus 4.8）— browser export 最大高速化 Phase 6（実験的 multi-render-context）実装・計測・既定 OFF で採用
+
+- **依頼**: `claude/phase-6-implementation-test-n5u5zo` ブランチの続きとして `browser-export-max-speed-plan.md` の **Phase 6（Experimental multi-render-context）** を実装・テストし、いい感じならコミット。
+- **やったこと（spec 先行）**: §11.2 に「複数レンダリング context の実験的並行描画（実験・既定 OFF）」を散文追記。決定論 frame ステップを保ったまま frame を `fi % N` でラウンドロビン分配し複数の隔離 render context で並行描画、frame 結果は timestamp 昇順の bounded reorder queue で整列してから encoder/zip へ渡す契約、共有（イミュータブル font/image cache・純関数 evaluator）と分離（mutable DOM/renderer/HTML player）、GPU/直接 capture 系との排他、video/worker 併用時の無効化を明記（§5/INV/project.json 直列化は不変）。
+- **実装**:
+  - 新規 [src/runtime/multiRenderContext.ts](src/runtime/multiRenderContext.ts): 純関数ドライバ `runOrderedMultiContext`（N producer で並行描画→ frame 昇順で consumer へ整列供給。有界 reorder window でメモリ制御、error/abort 伝播）＋ フラグ（`__mafterMultiRenderContext` / `__mafterMultiRenderContextCount` 2..4 clamp・既定 2・非直列化）＋ `compTreeHasVideo`（ネスト先まで video component を再帰検出）。
+  - [src/runtime/exporter.ts](src/runtime/exporter.ts): 適格時に追加 render context（container+DomRenderer+HtmlCompPlayer、font/image cache と compEvaluators は primary と共有）を構築し、`runPngSeq` / `encodeVideoFrames` に multi-context 分岐を追加。**multi-context は常に純 Canvas2D 合成（`compositeExportFrame(...,{})`）** を使い GPU/direct 系と排他。除外条件: comp（ネスト先含む）に video を含む、video 形式で worker export 併用。既定 flag OFF のため既定経路は完全に不変。
+- **計測（実 Chromium / 実 WebGL・[verify-multi-render-context-export.mjs](verify-multi-render-context-export.mjs)・1280×720 video なし HTML-heavy fixture / N=2 / 24f）**:
+  - **正しさ（正準ゲート・PASS）**: single vs multi(2) の **per-frame PNG SHA-256 が 24/24 完全一致（mismatch 0）**、context 別描画 `[12,12]` 均等、single 側 mcFrames=0（既定経路未変更）、pageErrors 0。→ INV-2 成立。
+  - **性能（改善なし）**: PNG 連番 wall single **2533.4ms** → multi **2756.4ms**（やや悪化）。mp4 は headless で png-seq へフォールバックし絶対値は参考。
+- **判定**: PLAN Phase 6 の採用線「2 contexts で wall ≥20% 改善」に届かない（single main thread で foreignObject capture/`drawImage` が実質同期 CPU バウンド＝重ねる非同期 decode 待ちが少ない）。Phase 4（worker +2.9%）/ Phase 5（audio overlap +8.5%）同様、**正しく gate された opt-in 実験として温存し既定 OFF**。詳細: [doc/cloudplan/browser-export-phase6-multi-context-benchmark.md](doc/cloudplan/browser-export-phase6-multi-context-benchmark.md)。
+- **検証**: `npm run typecheck` PASS / 新規 [test/multiRenderContext.test.ts](test/multiRenderContext.test.ts) 10 件 PASS / export 関連（encoderBackpressure・exportVideoEncode・workerVideoExport・bundleExport・**playerBuildFreshness**）PASS。`player.js` は exporter を import しないため **再ビルド不要**（freshness 緑で確認）。full Vitest **1387 passed / 1 failed**（唯一の fail は既存 `effects.test.ts` liquidChrome 再登録漏れ。`git stash` で base tree でも同一 fail を確認・本変更と無関係）。
+- **Next steps**: 実 GPU で `img.decode()` が真に off-main-thread になる環境でなら overlap が効きうるが本 repo 相当環境では価値なし。Phase 6 で PLAN の全 Phase を実装完了。今後の browser export 高速化は残余 hotspot 再現時に profiler 起点で。
+
 ### 2026-07-20（Codex）— browser export 最大高速化 Phase 5
 
 - **Audio overlap**: 音声source/48kHz stereo metadataを同期確定し、asset read/decode/OfflineAudioContext mixを映像renderと並行可能にした。60f音声付きMP4 A/Bは直列 **20.20s**、並行 **21.92s（+8.5%）** のため `__mafterAudioMixOverlap=true` のopt-in、既定OFF。
