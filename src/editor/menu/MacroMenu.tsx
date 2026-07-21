@@ -1,14 +1,17 @@
-// §32.2 メニューバーの「マクロ ▾」ドロップダウン。将来のマクロ追加はここに項目を足す。
+// §32.2 / §33 メニューバーの「マクロ ▾」ドロップダウン。
+// 項目はコマンドレジストリの「マクロ」グループ（key "m"）の子から生成するため、
+// registerCommand で登録した機能はドロップダウンにも自動で並ぶ（Ctrl ダブルタップ経路と共通）。
 
 import { useEffect, useState } from "react";
+import { useCommandTree } from "../commandMenu/useCommandTree";
 
-interface MacroMenuProps {
-  /** 「テキスト一括置換…」選択時に呼ばれる（App がモーダルを開く）。 */
-  onOpenTextBulkReplace: () => void;
-}
+const MACRO_GROUP_KEY = "m";
 
-export function MacroMenu({ onOpenTextBulkReplace }: MacroMenuProps) {
+export function MacroMenu() {
   const [open, setOpen] = useState(false);
+  const tree = useCommandTree();
+  const group = tree.find((n) => n.key === MACRO_GROUP_KEY);
+  const items = group?.children ?? [];
 
   useEffect(() => {
     if (!open) return;
@@ -19,30 +22,42 @@ export function MacroMenu({ onOpenTextBulkReplace }: MacroMenuProps) {
     return () => window.removeEventListener("keydown", onKey);
   }, [open]);
 
-  const select = (fn: () => void) => {
-    setOpen(false);
-    fn();
-  };
-
   return (
     <span style={{ position: "relative", ...({ WebkitAppRegion: "no-drag" } as React.CSSProperties) }}>
-      <button onClick={() => setOpen((v) => !v)} style={triggerStyle(open)}>
-        マクロ ▾
+      <button
+        onClick={() => setOpen((v) => !v)}
+        style={triggerStyle(open)}
+        title="Ctrl ダブルタップ → M でも開けます"
+      >
+        {group?.label ?? "マクロ"} ▾
       </button>
       {open && (
         <>
           {/* 外側クリックで閉じる透明オーバーレイ */}
           <div style={backdropStyle} onClick={() => setOpen(false)} />
           <div style={menuStyle} role="menu">
-            <button
-              role="menuitem"
-              onClick={() => select(onOpenTextBulkReplace)}
-              style={itemStyle}
-              onMouseEnter={(e) => (e.currentTarget.style.background = "#2a2a2a")}
-              onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-            >
-              テキスト一括置換…
-            </button>
+            {items.length === 0 ? (
+              <div style={{ padding: "5px 10px", fontSize: 11, color: "#777" }}>
+                （マクロなし）
+              </div>
+            ) : (
+              items.map((item) => (
+                <button
+                  key={item.key}
+                  role="menuitem"
+                  onClick={() => {
+                    setOpen(false);
+                    item.run?.();
+                  }}
+                  style={itemStyle}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = "#2a2a2a")}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                >
+                  <span style={keyCapStyle}>{item.key.toUpperCase()}</span>
+                  <span>{item.label}…</span>
+                </button>
+              ))
+            )}
           </div>
         </>
       )}
@@ -69,13 +84,19 @@ const backdropStyle: React.CSSProperties = {
 
 const menuStyle: React.CSSProperties = {
   position: "absolute", top: "100%", left: 0, marginTop: 2, zIndex: 9999,
-  minWidth: 168, background: "#1e1e1e", border: "1px solid #444",
+  minWidth: 200, background: "#1e1e1e", border: "1px solid #444",
   borderRadius: 4, padding: 4, boxShadow: "0 8px 24px rgba(0,0,0,.6)",
 };
 
 const itemStyle: React.CSSProperties = {
-  display: "block", width: "100%", textAlign: "left",
+  display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left",
   background: "transparent", border: "none", color: "#ccc",
   padding: "5px 10px", fontSize: 12, borderRadius: 3, cursor: "pointer",
   WebkitAppRegion: "no-drag",
 } as React.CSSProperties;
+
+const keyCapStyle: React.CSSProperties = {
+  minWidth: 18, textAlign: "center", padding: "0 5px", fontSize: 11,
+  fontFamily: "ui-monospace, monospace", color: "#7fb8f0",
+  background: "#2a2a2a", border: "1px solid #444", borderRadius: 3,
+};

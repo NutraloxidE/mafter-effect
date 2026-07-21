@@ -3479,3 +3479,44 @@ solid レイヤーの **Timeline 行ラベル列**（[TimelinePanel.tsx](../src/
 - [ ] 置換は 1 回の Cmd-Z で全レイヤーが元の連番に戻る（1 undo）
 - [ ] keyframe / expression 付き text と `^\d+$` 非一致の text は対象外（回帰なし）
 - [ ] project.json byte 等価 roundtrip（スキーマ・直列化不変）
+
+---
+
+## §33 コマンドメニュー / キーボードリーダー（Ctrl ダブルタップ）— UI 層・additive
+
+### §33.0 スコープ（確定）
+
+機能を **キー列で起動**できる汎用コマンド機構。**Ctrl キーのダブルタップ**でコマンドモードに入り、続けてキーを押してツリーを辿る（例: `Ctrl,Ctrl → M → T` で「マクロ → テキスト一括置換」を実行）。
+
+- **単一の拡張点**: 機能側は [`registerCommand({ id, path, run })`](../src/editor/commandMenu/commandRegistry.ts) を呼ぶだけで、**メニューバーのドロップダウン**（§32.2 MacroMenu）と**キーボードリーダー**の両経路にトリガが増える。マクロに限らず任意機能を登録可能。
+- `path` はルート→葉の `{key,label}` 列。同一プレフィックスは自動でグループ化される（中間ノードのラベルは最初の登録が採用）。
+- **project.json・§5 データスキーマ・INV-1〜6 は不変**（UI 層のキーボード/メニュー機構のみ）。editor-only（`src/runtime` / `src/player` 非依存）。
+
+### §33.1 リーダー起動（確定）
+
+- **Ctrl 単独タップを規定時間内（既定 400ms）に 2 回**でコマンドモード起動。
+- タップは「Ctrl 押下→離す間に**他キーを挟まない**」もののみ有効（`Ctrl+Z` 等の修飾用途は起動しない）。判定の純粋部分は [leaderTap.ts](../src/editor/commandMenu/leaderTap.ts)（`isSecondTap`）。
+- 起動後: 現在階層の子ノードのキーを押すと、子があれば潜り、葉なら `run()` して終了。**Esc / 背景クリック / 無操作タイムアウト（既定 3s）**でキャンセル。
+- コマンドモード中はキーを `capture` 段階で奪い、フォーカス中の input や既存ショートカット（§17 undo 等）に漏らさない。
+
+### §33.2 UI（確定）
+
+- **HUD**（[CommandMenuOverlay.tsx](../src/editor/commandMenu/CommandMenuOverlay.tsx)）: which-key 風。パンくず（`⌃⌃ ▸ マクロ ▸ …`）＋次に押せるキー一覧（キーキャップ＋ラベル、子ありは `▸`）。
+- **ドロップダウン**（MacroMenu）はコマンドレジストリの「マクロ」グループ（`key:"m"`）の子から項目を生成し、マウス操作でも同じ `run()` を起動する。
+
+### §33.3 データモデル（UI 層・スキーマ非依存）
+
+```ts
+interface CommandLeaf { id: string; path: { key: string; label: string }[]; run: () => void; hint?: string }
+interface CommandNode { key: string; label: string; hint?: string; children: CommandNode[]; run?: () => void }
+```
+
+`buildCommandTree` / `resolveLevel` / `nodeAtPath` / `pathLabels` は純関数（[commandTree.ts](../src/editor/commandMenu/commandTree.ts)・INV-1 整合）。レジストリの `getLeaves()` は変更まで同一参照を返す（`useSyncExternalStore` 契約）。
+
+### §33.4 受け入れ条件
+
+- [ ] `Ctrl` ダブルタップで HUD が出る（`Ctrl+Z` 等では出ない）
+- [ ] HUD で `M → T` を押すとテキスト一括置換ダイアログが開く
+- [ ] Esc / 背景クリック / 無操作でキャンセルされる
+- [ ] `registerCommand` で足したコマンドがドロップダウンと HUD の両方に現れる
+- [ ] project.json byte 等価 roundtrip（スキーマ・直列化不変）

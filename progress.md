@@ -2765,3 +2765,20 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
 - **build:player**: editor-only（runtime/player 未変更）のため不要。`playerBuildFreshness` PASS で裏付け。
 - **検証**: typecheck クリーン。full Vitest **1402/1402 PASS**。実ブラウザ（Playwright + Chromium）スモーク: マクロ ▾ 表示→ドロップダウン→モーダル→プレビュー描画→キャンセルまで全 PASS、機能由来の page error なし。
 - **Next step（将来）**: マクロ枠に他マクロ追加（連番採番・レイヤー一括リネーム等）。char モードの内部空白の扱いは現状「1文字扱い（前後trimのみ）」で確定。
+
+### 2026-07-21（Claude Code / Opus 4.8）— コマンドメニュー / キーボードリーダー（Ctrl ダブルタップ）✅
+
+- **概要**: 機能をキー列で起動できる汎用機構を追加。**Ctrl ダブルタップ → M → T** で「マクロ → テキスト一括置換」を実行。`registerCommand` 1 コールで **ドロップダウンと Ctrl 経路の両方**にトリガが増える拡張設計。
+- **spec先行**: `doc/mafter-effect-spec.md` に §33 追記（散文のみ・additive）。§33.0 拡張点／§33.1 リーダー起動／§33.2 UI／§33.3 データモデル／§33.4 受け入れ条件。**§5・INV・project.json 不変**、editor-only。
+- **実装（`src/editor/commandMenu/`）**:
+  - `types.ts`: `CommandLeaf` / `CommandNode`。
+  - `commandTree.ts`（純・INV-1）: `buildCommandTree` / `resolveLevel` / `nodeAtPath` / `pathLabels`。
+  - `leaderTap.ts`（純）: `isSecondTap`（ダブルタップ窓 400ms）。
+  - `commandRegistry.ts`: シングルトン＋`registerCommand`。`getLeaves()` は変更まで同一参照（useSyncExternalStore 契約）。
+  - `useCommandTree.ts` / `useCommandMenu.ts`: 購読＋リーダー検出（Ctrl 押下中の他キーで修飾扱い→`Ctrl+Z` 等は起動しない、capture 段階でキーを奪う、Esc/背景/無操作3sでキャンセル）。
+  - `CommandMenuOverlay.tsx`: which-key 風 HUD（パンくず＋キーキャップ一覧）。
+  - `menu/MacroMenu.tsx`: レジストリの「マクロ」グループから項目生成（onOpenTextBulkReplace prop 廃止）。
+  - `src/App.tsx`: `registerCommand({ path:[マクロ,テキスト一括置換], run })` ＋ `<CommandMenuOverlay/>`。
+  - `test/commandMenu.test.ts`（11 unit）: ツリー畳み込み・順序・lowercase 正規化・後勝ち・resolve/nodeAt/pathLabels・isSecondTap。
+- **検証**: typecheck クリーン。full Vitest **1413/1413 PASS**。実ブラウザ（Playwright）: `Ctrl+Z` は HUD を開かない／`Ctrl` ダブルタップで HUD 表示／`M` で潜り／`T` でダイアログ起動＋HUD 閉／`Esc` キャンセル、いずれも PASS。機能由来の page error なし。
+- **build:player**: editor-only のため不要。

@@ -7,6 +7,8 @@ import { FeedbackPrompt, FeedbackSendModal } from "./editor/FeedbackPrompt";
 import { isFeedbackEnabled } from "./editor/feedbackCollector";
 import { MacroMenu } from "./editor/menu/MacroMenu";
 import { TextBulkReplaceDialog } from "./editor/menu/TextBulkReplaceDialog";
+import { CommandMenuOverlay } from "./editor/commandMenu/CommandMenuOverlay";
+import { registerCommand } from "./editor/commandMenu/commandRegistry";
 
 const WORKSPACE_KEY = "mafter-workspace-v1";
 
@@ -70,6 +72,19 @@ export function App() {
     void loadFromFs();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // §33 マクロ「テキスト一括置換」をコマンドレジストリへ登録（ドロップダウン＋Ctrl ダブルタップ共通）。
+  // 将来の機能はここに registerCommand を足すだけで両経路にトリガが増える。
+  useEffect(() => {
+    return registerCommand({
+      id: "macro.textBulkReplace",
+      path: [
+        { key: "m", label: "マクロ" },
+        { key: "t", label: "テキスト一括置換" },
+      ],
+      run: () => setShowTextBulkReplace(true),
+    });
+  }, []);
+
   // キーボードショートカット
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -132,7 +147,7 @@ export function App() {
         <button onClick={undo} disabled={!canUndo} style={menuBtnStyle(canUndo)}>↩ Undo</button>
         <button onClick={redo} disabled={!canRedo} style={menuBtnStyle(canRedo)}>↪ Redo</button>
         <span style={{ color: "#444", marginLeft: 4 }}>|</span>
-        <MacroMenu onOpenTextBulkReplace={() => setShowTextBulkReplace(true)} />
+        <MacroMenu />
         <span style={{ color: "#444" }}>|</span>
         <span style={{ color: "#555", fontSize: 11 }}>
           {canUndo ? `${undoStack.past.length} op` : "clean"}
@@ -154,6 +169,9 @@ export function App() {
 
       {/* 単一コントローラのコンテキストメニュー描画ホスト（body ポータル） */}
       <ContextMenuHost />
+
+      {/* §33 コマンドモード HUD（Ctrl ダブルタップで起動） */}
+      <CommandMenuOverlay />
 
       {/* フィードバックループ: 不便シグナルの催促トースト（doc/feedback-loop.md） */}
       <FeedbackPrompt />
