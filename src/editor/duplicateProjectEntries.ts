@@ -39,6 +39,31 @@ function key(entry: ProjectTreeEntry): string {
   return `${entry.kind}:${entry.id}`;
 }
 
+function entryName(project: Project, entry: ProjectTreeEntry): string | null {
+  if (entry.kind === "bin") {
+    return (project.bins ?? []).find((bin) => bin.id === entry.id)?.name ?? null;
+  }
+  if (entry.kind === "composition") {
+    return project.compositions.find((comp) => comp.id === entry.id)?.name ?? null;
+  }
+  const path = project.assets.find((asset) => asset.id === entry.id)?.path;
+  return path?.split("/").pop() ?? null;
+}
+
+/** Return the original name when free, otherwise advance a trailing numeric suffix. */
+export function nextAvailableProjectItemName(name: string, existingNames: ReadonlySet<string>): string {
+  if (!existingNames.has(name)) return name;
+  const suffix = /^(.*) (\d+)$/.exec(name);
+  const base = suffix?.[1] ?? name;
+  let number = suffix ? Number(suffix[2]) + 1 : 2;
+  let candidate = `${base} ${number}`;
+  while (existingNames.has(candidate)) {
+    number += 1;
+    candidate = `${base} ${number}`;
+  }
+  return candidate;
+}
+
 function parentBinOf(project: Project, entry: ProjectTreeEntry): string | null {
   if (entry.kind === "bin") {
     return (project.bins ?? []).find((bin) => bin.id === entry.id)?.parentId ?? null;
@@ -229,6 +254,24 @@ export function duplicateProjectEntries(
   }
 
   const rootKeys = new Set(roots.map(key));
+  const existingNames = new Set(
+    orderedEntriesForParent(project, targetParentBinId)
+      .map((entry) => entryName(project, entry))
+      .filter((name): name is string => name !== null),
+  );
+  const rootNames = new Map<string, string>();
+  for (const root of roots) {
+    const name = entryName(project, root);
+    if (root.kind === "asset" && name !== null) existingNames.add(name);
+  }
+  for (const root of roots) {
+    if (root.kind === "asset") continue;
+    const name = entryName(project, root);
+    if (name === null) continue;
+    const availableName = nextAvailableProjectItemName(name, existingNames);
+    rootNames.set(key(root), availableName);
+    existingNames.add(availableName);
+  }
   const newBins: ProjectBin[] = [];
   const newCompositions: Composition[] = [];
   const newAssets: AssetEntry[] = [];
@@ -243,7 +286,7 @@ export function duplicateProjectEntries(
     if (entry.kind === "bin") {
       const source = (project.bins ?? []).find((bin) => bin.id === entry.id)!;
       const id = binIds.get(entry.id)!;
-      newBins.push({ ...structuredClone(source), id, name: isRoot ? `${source.name} copy` : source.name, parentId: parentBinId });
+      newBins.push({ ...structuredClone(source), id, name: rootNames.get(key(entry)) ?? source.name, parentId: parentBinId });
       clonedEntries.push({ entry: { kind: "bin", id }, parentBinId });
       continue;
     }
@@ -256,7 +299,7 @@ export function duplicateProjectEntries(
     }
     const source = project.compositions.find((comp) => comp.id === entry.id)!;
     const id = compIds.get(entry.id)!;
-    const name = isRoot ? `${source.name} copy` : source.name;
+    const name = rootNames.get(key(entry)) ?? source.name;
     if (source.kind === "timeline") {
       newCompositions.push(
         cloneTimelineComposition(

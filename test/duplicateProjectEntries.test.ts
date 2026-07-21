@@ -5,6 +5,7 @@ import { defaultTransform, staticProp } from "../src/core/props";
 import type { AssetEntry, Project, SceneObject, TimelineComposition } from "../src/core/schema";
 import {
   duplicateProjectEntries,
+  nextAvailableProjectItemName,
   normalizeProjectCopyRoots,
   type ProjectEntryIdFactory,
 } from "../src/editor/duplicateProjectEntries";
@@ -87,6 +88,14 @@ function fixture(): Project {
 }
 
 describe("duplicateProjectEntries", () => {
+  it("advances numeric suffixes only when the destination name conflicts", () => {
+    expect(nextAvailableProjectItemName("Main", new Set())).toBe("Main");
+    expect(nextAvailableProjectItemName("Main", new Set(["Main"]))).toBe("Main 2");
+    expect(nextAvailableProjectItemName("Main", new Set(["Main", "Main 2"]))).toBe("Main 3");
+    expect(nextAvailableProjectItemName("Main 2", new Set(["Main 2", "Main 3"]))).toBe("Main 4");
+    expect(nextAvailableProjectItemName("Main 2", new Set())).toBe("Main 2");
+  });
+
   it("deduplicates descendants covered by a selected folder", () => {
     const project = fixture();
     expect(normalizeProjectCopyRoots(project, [
@@ -107,7 +116,7 @@ describe("duplicateProjectEntries", () => {
 
     expect(result.pastedEntries).toEqual([{ kind: "bin", id: "bin-copy-1" }]);
     expect(result.project.bins?.find((bin) => bin.id === "bin-copy-1")).toMatchObject({
-      name: "Folder copy",
+      name: "Folder 2",
       parentId: null,
     });
     expect(result.project.bins?.find((bin) => bin.id === "bin-copy-2")).toMatchObject({
@@ -151,10 +160,26 @@ describe("duplicateProjectEntries", () => {
       deterministicIds(),
     );
     const copied = result.project.compositions.find((comp) => comp.id === "comp-copy-1");
-    expect(copied).toMatchObject({ name: "Main copy", binId: "child-folder" });
+    expect(copied).toMatchObject({ name: "Main", binId: "child-folder" });
     if (!copied || copied.kind !== "timeline") throw new Error("missing copied timeline comp");
     const child = copied.objects.find((item) => item.name === "child")!;
     expect(child.components[0]?.props["asset"]).toBe("asset");
     expect(child.components[1]?.props["compId"]).toBe("nested");
+  });
+
+  it("increments an existing numeric suffix in the same folder", () => {
+    const project = fixture();
+    const main = project.compositions.find((comp) => comp.id === "main")!;
+    project.compositions.push({ ...main, id: "main-2", name: "Main 2" });
+    const withOrder = appendTreeEntry(project, { kind: "composition", id: "main-2" }, "folder");
+
+    const result = duplicateProjectEntries(
+      withOrder,
+      [{ kind: "composition", id: "main-2" }],
+      "folder",
+      deterministicIds(),
+    );
+
+    expect(result.project.compositions.find((comp) => comp.id === "comp-copy-1")?.name).toBe("Main 3");
   });
 });

@@ -2824,3 +2824,12 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
 - **検証**: typecheck PASS、増分 8/8 PASS、`git diff --check` PASS。full Vitest **1428/1429 PASS**（唯一の fail は今回未変更の `public/player.js` 鮮度。runtime/player 差分なしの既存状態）。実ブラウザ: 右クリック Copy/Paste、Ctrl+C で menu clipboard 有効化、Ctrl+V で複製、Undo で1件復元、フォルダー行への paste が depth 1 に入ること、console error 0 を確認。
 - **build:player**: editor-only のため未実行（runtime/player 未変更）。
 - **残タスク**: なし。
+
+### 2026-07-21（Codex）— Project アイテム複製名の連番化 ✅
+
+- **概要**: Project パネルで bin / comp を貼り付ける際、貼り付け先に同名があれば `Name 2`、既存名が数字で終わる場合や番号が埋まっている場合は `Name 3`、`Name 4`…と空き番号まで進めるよう変更。同名がない別フォルダーへの貼り付けでは元名を維持する。asset は表示名が path 由来のため従来どおりファイル名を維持する。
+- **spec先行**: §20.6 の ` copy` 規則を数字サフィックス規則へ更新。§5・INV・project.json 直列化形式は不変。
+- **実装**: `duplicateProjectEntries.ts` に純関数 `nextAvailableProjectItemName` と、貼り付け先の bin / comp / asset 表示名を使う衝突判定を追加。複数項目を同時に貼る場合も同一操作内で採番を予約する。
+- **検証**: `test/duplicateProjectEntries.test.ts` 5/5 PASS、typecheck PASS。実ブラウザで右クリック Copy/Paste により `Main 2`、続く `Ctrl+C` / `Ctrl+V` により `Main 3` が生成されることを確認。
+- **build:player**: editor-only のため未実行（runtime/player 未変更）。
+- **残タスク**: なし。
