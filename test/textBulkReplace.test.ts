@@ -3,6 +3,7 @@ import { defaultTransform, staticProp } from "../src/core/props";
 import type { AnimatedProp, SceneObject } from "../src/core/schema";
 import {
   buildReplacedObjects,
+  computeReadingOrder,
   planBulkReplace,
   tokenize,
 } from "../src/editor/macros/textBulkReplace";
@@ -103,6 +104,87 @@ describe("planBulkReplace — number = 1-based token index", () => {
     const objs = [textObject("a", "1"), textObject("b", "2")];
     const plan = planBulkReplace(objs, "hi", "char");
     expect(plan.assignments.map((x) => x.newText)).toEqual(["h", "i"]);
+  });
+});
+
+describe("computeReadingOrder — top-left → row → bottom-right", () => {
+  it("orders a 2x2 grid row-major regardless of input order", () => {
+    const entries = [
+      { objectId: "br", x: 100, y: 100 },
+      { objectId: "tl", x: 0, y: 0 },
+      { objectId: "tr", x: 100, y: 0 },
+      { objectId: "bl", x: 0, y: 100 },
+    ];
+    expect(computeReadingOrder(entries)).toEqual(["tl", "tr", "bl", "br"]);
+  });
+
+  it("treats near-equal y (within tolerance) as the same row", () => {
+    const entries = [
+      { objectId: "a", x: 0, y: 0 },
+      { objectId: "b", x: 50, y: 10 }, // jitter < 24 → same row
+      { objectId: "c", x: 0, y: 200 },
+    ];
+    expect(computeReadingOrder(entries, 24)).toEqual(["a", "b", "c"]);
+  });
+
+  it("splits rows when y differs beyond tolerance", () => {
+    const entries = [
+      { objectId: "low", x: 0, y: 40 },
+      { objectId: "high", x: 100, y: 0 },
+    ];
+    // high (y=0) is its own row above low (y=40)
+    expect(computeReadingOrder(entries, 24)).toEqual(["high", "low"]);
+  });
+
+  it("is deterministic for identical positions (tiebreak by id)", () => {
+    const entries = [
+      { objectId: "z", x: 0, y: 0 },
+      { objectId: "a", x: 0, y: 0 },
+    ];
+    expect(computeReadingOrder(entries)).toEqual(["a", "z"]);
+  });
+});
+
+describe("planBulkReplace — reading order mode", () => {
+  it("numbers non-numeric text layers by reading order and replaces", () => {
+    const objs = [
+      textObject("br", staticProp("dog")),
+      textObject("tl", staticProp("apple")),
+      textObject("tr", staticProp("banana")),
+    ];
+    const positions = new Map([
+      ["br", { x: 100, y: 100 }],
+      ["tl", { x: 0, y: 0 }],
+      ["tr", { x: 100, y: 0 }],
+    ]);
+    const plan = planBulkReplace(objs, "one two three", "word", "reading", positions);
+    // reading order: tl(#1), tr(#2), br(#3) — assignments 配列は object 順なので number でソートして検証
+    const sorted = [...plan.assignments].sort((a, b) => a.number - b.number);
+    expect(sorted.map((a) => [a.objectId, a.number, a.newText])).toEqual([
+      ["tl", 1, "one"],
+      ["tr", 2, "two"],
+      ["br", 3, "three"],
+    ]);
+  });
+
+  it("excludes layers with no position (not visible at frame)", () => {
+    const objs = [textObject("a", staticProp("x")), textObject("b", staticProp("y"))];
+    const positions = new Map([["a", { x: 0, y: 0 }]]); // b missing
+    const plan = planBulkReplace(objs, "p q", "word", "reading", positions);
+    expect(plan.assignments.map((a) => a.objectId)).toEqual(["a"]);
+    expect(plan.targetCount).toBe(1);
+  });
+
+  it("skips keyframed/expression text even in reading mode", () => {
+    const kf = { value: "x", keyframes: [{ frame: 0, value: "x" } as never] };
+    const objs = [textObject("a", kf), textObject("b", staticProp("y"))];
+    const positions = new Map([
+      ["a", { x: 0, y: 0 }],
+      ["b", { x: 0, y: 100 }],
+    ]);
+    const plan = planBulkReplace(objs, "p q", "word", "reading", positions);
+    expect(plan.skipped.map((s) => s.reason)).toEqual(["animated"]);
+    expect(plan.assignments.map((a) => [a.objectId, a.newText])).toEqual([["b", "p"]]);
   });
 });
 

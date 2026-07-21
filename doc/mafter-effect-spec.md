@@ -3442,7 +3442,12 @@ solid レイヤーの **Timeline 行ラベル列**（[TimelinePanel.tsx](../src/
 
 **目的**: 連番プレースホルダになったテキストレイヤー群へ、入力文字列を番号順に流し込む。
 
-**対象レイヤー**: **現在のコンポジション**内の、`text` コンポーネントを持ち、その **現在のテキスト内容（trim 済）が整数 `^\d+$`** に一致する **静的**テキストレイヤーのみ。テキストに keyframe / expression が付くレイヤーは対象外（プレビューで除外理由を表示）。
+**採番モード（`order`・確定）**: レイヤーへ番号を割り当てる根拠を 2 つから選ぶ。
+
+- **`content`（中身の数字）**: 対象は **現在のテキスト内容（trim 済）が整数 `^\d+$`** の **静的**テキストレイヤーのみ。番号＝その整数。
+- **`reading`（配置の読み順）**: 対象は **現フレームで表示中の静的テキストレイヤー全部**（中身が数字でなくてよい）。各レイヤーの画面位置（`resolve(comp, frame)` の `worldTransform` 平行移動成分）を **左上→行→右下** の読み順に並べ、その順で `1,2,3…` を採番する。行判定は y 差が `DEFAULT_ROW_TOLERANCE`（既定 24px）以内なら同一行と見なし、行内は x 昇順。読み順計算 `computeReadingOrder` は純関数（INV-1）。
+
+いずれのモードでも keyframe / expression 付き text は対象外（プレビューで除外件数を表示）。位置取得 [textLayerPositions.ts](../src/editor/macros/textLayerPositions.ts) は `resolve` を使うが、`resolve` 自体が純関数のためスキーマ・レンダラ非依存は保たれる。
 
 **入力とモード**:
 
@@ -3462,8 +3467,8 @@ solid レイヤーの **Timeline 行ラベル列**（[TimelinePanel.tsx](../src/
 ### §32.2 UI（確定）
 
 - メニューバー（[src/App.tsx](../src/App.tsx)）の Undo/Redo 近傍に「マクロ ▾」ボタン（[src/editor/menu/MacroMenu.tsx](../src/editor/menu/MacroMenu.tsx)）。クリックで項目リストを開き、外側クリック / Esc で閉じる。
-- 「テキスト一括置換…」でモーダル（[src/editor/menu/TextBulkReplaceDialog.tsx](../src/editor/menu/TextBulkReplaceDialog.tsx)）を開く。入力欄＋モード切替＋**ライブプレビュー**（`番号 N: "旧" → "新"`、未置換番号・未使用トークン・除外レイヤーの件数）。
-- 対象 0 件時は「適用」を無効化し、現在コンプに連番テキストが無い旨を表示。
+- 「テキスト一括置換…」でモーダル（[src/editor/menu/TextBulkReplaceDialog.tsx](../src/editor/menu/TextBulkReplaceDialog.tsx)）を開く。入力欄＋**採番モード切替（中身の数字 / 配置順）**＋分割モード切替＋**ライブプレビュー**（`番号 N: "旧" → "新"`、未置換番号・未使用トークン・除外レイヤーの件数）。
+- 対象 0 件時は「適用」を無効化し、モードに応じた理由（連番テキストが無い / 表示中のテキストが無い）を表示。
 
 ### §32.3 不変条件との関係（確定）
 
@@ -3474,7 +3479,8 @@ solid レイヤーの **Timeline 行ラベル列**（[TimelinePanel.tsx](../src/
 ### §32.4 受け入れ条件
 
 - [ ] メニューバーに「マクロ ▾」が出て、「テキスト一括置換…」でモーダルが開く
-- [ ] 中身 `1`,`2`,`3` の text 3 枚に対し、単語モード「a b c」→ `a`,`b`,`c`／文字モード「あいう」→ `あ`,`い`,`う` に置換
+- [ ] 中身 `1`,`2`,`3` の text 3 枚に対し、単語モード「a b c」→ `a`,`b`,`c`／文字モード「あいう」→ `あ`,`い`,`う` に置換（content モード）
+- [ ] 配置順モード: 中身が数字でない text を左上→右下の読み順で採番し、その順に置換
 - [ ] 欠番・重複・過不足がプレビュー件数と実結果に一致
 - [ ] 置換は 1 回の Cmd-Z で全レイヤーが元の連番に戻る（1 undo）
 - [ ] keyframe / expression 付き text と `^\d+$` 非一致の text は対象外（回帰なし）

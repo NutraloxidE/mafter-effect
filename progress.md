@@ -2782,3 +2782,16 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
   - `test/commandMenu.test.ts`（11 unit）: ツリー畳み込み・順序・lowercase 正規化・後勝ち・resolve/nodeAt/pathLabels・isSecondTap。
 - **検証**: typecheck クリーン。full Vitest **1413/1413 PASS**。実ブラウザ（Playwright）: `Ctrl+Z` は HUD を開かない／`Ctrl` ダブルタップで HUD 表示／`M` で潜り／`T` でダイアログ起動＋HUD 閉／`Esc` キャンセル、いずれも PASS。機能由来の page error なし。
 - **build:player**: editor-only のため不要。
+
+### 2026-07-21（Claude Code / Opus 4.8）— テキスト一括置換に「配置順（読み順）採番モード」追加 ✅
+
+- **概要**: テキスト一括置換に採番モード `order` を追加。`content`（従来: 中身が整数のレイヤーを対象）に加え、**`reading`（配置順）**: 中身が数字でなくても、現フレームで表示中の全テキストレイヤーを**左上→行→右下**の読み順で自動採番して順に置換する。
+- **spec先行**: §32.1 に採番モード（content/reading）を追記。reading は `resolve(comp,frame)` の worldTransform 平行移動を読み順（行 tolerance 既定 24px）に並べて 1,2,3… 採番。`computeReadingOrder` は純関数（INV-1）。§5・INV・project.json 不変。
+- **実装**:
+  - `src/editor/macros/textBulkReplace.ts`: `OrderMode` 追加、`computeReadingOrder`（純・行バンド＋行内 x 昇順＋id 安定）追加、`planBulkReplace(objects, input, mode, order?, positions?, rowTolerance?)` に拡張（既存 3 引数 content 呼び出しは後方互換）。
+  - `src/editor/macros/textLayerPositions.ts`（新規）: `resolve` で現フレームの各レイヤー画面位置を取得（純 resolve 経由、失敗時は空）。
+  - `src/editor/store.ts`: `applyTextBulkReplace(input, mode, order)`。reading 時に positions を計算して渡す。
+  - `src/editor/menu/TextBulkReplaceDialog.tsx`: 採番モードのラジオ（中身の数字 / 配置順）＋モード別の説明・空状態文言。プレビューは現フレーム位置で再計算。
+  - `test/textBulkReplace.test.ts`: computeReadingOrder（2x2 グリッド・行 tolerance・行分割・同座標 id tiebreak）＋ reading モード planBulkReplace（非数字採番・位置無しレイヤー除外・keyframe 除外）を追加。
+- **検証**: typecheck クリーン。full Vitest **1420/1420 PASS**。実ブラウザ（Playwright）: Ctrl ダブルタップ→M→T でダイアログ、採番ラジオ（中身の数字/配置順）表示、配置順切替で説明更新、入力＋単語分割でクラッシュなし。機能由来の page error なし。
+- **build:player**: editor-only のため不要。

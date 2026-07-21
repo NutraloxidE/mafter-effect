@@ -3,31 +3,40 @@
 
 import { useMemo, useState } from "react";
 import { currentTimelineComp, useEditorStore } from "../store";
-import { planBulkReplace, type ReplaceMode } from "../macros/textBulkReplace";
+import { planBulkReplace, type OrderMode, type ReplaceMode } from "../macros/textBulkReplace";
+import { textLayerPositions } from "../macros/textLayerPositions";
 
 export function TextBulkReplaceDialog({ onClose }: { onClose: () => void }) {
   const project = useEditorStore((s) => s.project);
   const currentCompId = useEditorStore((s) => s.currentCompId);
+  const currentFrame = useEditorStore((s) => s.currentFrame);
   const applyTextBulkReplace = useEditorStore((s) => s.applyTextBulkReplace);
 
   const [input, setInput] = useState("");
   const [mode, setMode] = useState<ReplaceMode>("char");
+  const [order, setOrder] = useState<OrderMode>("content");
 
-  const objects = useMemo(
-    () => currentTimelineComp(project, currentCompId)?.objects ?? [],
+  const comp = useMemo(
+    () => currentTimelineComp(project, currentCompId),
     [project, currentCompId],
+  );
+  const objects = comp?.objects ?? [];
+
+  const positions = useMemo(
+    () => (order === "reading" && comp ? textLayerPositions(comp, currentFrame) : undefined),
+    [order, comp, currentFrame],
   );
 
   const plan = useMemo(
-    () => planBulkReplace(objects, input, mode),
-    [objects, input, mode],
+    () => planBulkReplace(objects, input, mode, order, positions),
+    [objects, input, mode, order, positions],
   );
 
   const numberedLayerCount = plan.targetCount + plan.skipped.length;
   const canApply = plan.assignments.length > 0;
 
   const onApply = () => {
-    applyTextBulkReplace(input, mode);
+    applyTextBulkReplace(input, mode, order);
     onClose();
   };
 
@@ -38,9 +47,18 @@ export function TextBulkReplaceDialog({ onClose }: { onClose: () => void }) {
           テキスト一括置換
         </div>
         <div style={{ fontSize: 10, color: "#888", marginBottom: 10 }}>
-          現在のコンポジションで、中身が <code style={codeStyle}>1</code>{" "}
-          <code style={codeStyle}>2</code> <code style={codeStyle}>3</code>… の連番テキストレイヤーに、
-          入力を番号順に割り当てて置換します。
+          {order === "content" ? (
+            <>
+              現在のコンポジションで、中身が <code style={codeStyle}>1</code>{" "}
+              <code style={codeStyle}>2</code> <code style={codeStyle}>3</code>… の連番テキストレイヤーに、
+              入力を番号順に割り当てて置換します。
+            </>
+          ) : (
+            <>
+              現在のコンポジションのテキストレイヤーを<strong>配置順（左上→行→右下）</strong>で自動採番し、
+              入力を順に割り当てて置換します（中身が数字でなくても対象）。現フレームで表示中のレイヤーが対象。
+            </>
+          )}
         </div>
 
         <textarea
@@ -50,8 +68,20 @@ export function TextBulkReplaceDialog({ onClose }: { onClose: () => void }) {
           style={textareaStyle}
         />
 
-        <div style={{ display: "flex", gap: 14, alignItems: "center", margin: "10px 0" }}>
-          <span style={{ fontSize: 11, color: "#999" }}>分割モード:</span>
+        <div style={{ display: "flex", gap: 14, alignItems: "center", margin: "10px 0 4px" }}>
+          <span style={{ fontSize: 11, color: "#999", width: 62 }}>採番:</span>
+          <label style={radioLabel}>
+            <input type="radio" name="order" checked={order === "content"} onChange={() => setOrder("content")} />
+            中身の数字
+          </label>
+          <label style={radioLabel}>
+            <input type="radio" name="order" checked={order === "reading"} onChange={() => setOrder("reading")} />
+            配置順（左上→右下）
+          </label>
+        </div>
+
+        <div style={{ display: "flex", gap: 14, alignItems: "center", margin: "0 0 10px" }}>
+          <span style={{ fontSize: 11, color: "#999", width: 62 }}>分割:</span>
           <label style={radioLabel}>
             <input type="radio" name="mode" checked={mode === "char"} onChange={() => setMode("char")} />
             文字（1 文字ずつ）
@@ -64,12 +94,14 @@ export function TextBulkReplaceDialog({ onClose }: { onClose: () => void }) {
 
         {/* ライブプレビュー */}
         <div style={{ fontSize: 10, color: "#777", marginBottom: 4 }}>
-          プレビュー（番号レイヤー {numberedLayerCount} / トークン {plan.tokenCount}）
+          プレビュー（対象レイヤー {numberedLayerCount} / トークン {plan.tokenCount}）
         </div>
         <div style={previewBoxStyle}>
           {numberedLayerCount === 0 ? (
             <div style={{ color: "#888", fontSize: 11 }}>
-              現在のコンポジションに連番（中身が整数）のテキストレイヤーがありません。
+              {order === "content"
+                ? "現在のコンポジションに連番（中身が整数）のテキストレイヤーがありません。"
+                : "現在のコンポジションの現フレームに表示中のテキストレイヤーがありません。"}
             </div>
           ) : (
             <>

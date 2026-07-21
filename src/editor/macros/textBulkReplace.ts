@@ -1,10 +1,19 @@
 // §32.1 テキスト一括置換 — レンダラ非依存の純ロジック（INV-1）。
-// 現在コンプ内で「中身が整数の静的テキストレイヤー」を対象に、入力トークンを
-// 番号順（番号 N ← N 番目のトークン）で割り当てる計画を立て、置換後 objects を作る。
+// 2 つの採番モードで対象テキストレイヤーへ入力トークンを割り当てる:
+//   - "content": 中身が整数のレイヤーのみ対象。番号 = その整数。
+//   - "reading": 全テキストレイヤーが対象。番号 = 配置の読み順（左上→行→右下）。
+// いずれも「番号 N ← N 番目のトークン」で置換計画を立て、置換後 objects を作る。
 
 import type { AnimatedProp, Component, SceneObject } from "../../core/schema";
 
+/** 入力の分割単位。char=1 文字ずつ / word=空白区切り。 */
 export type ReplaceMode = "char" | "word";
+
+/** 採番の根拠。content=中身の整数 / reading=配置の読み順。 */
+export type OrderMode = "content" | "reading";
+
+/** 読み順で「同じ行」と見なす y 方向の許容差（comp px）。これを超える y 差で行が変わる。 */
+export const DEFAULT_ROW_TOLERANCE = 24;
 
 /** 入力文字列をモードに応じてトークン列へ分解する。 */
 export function tokenize(input: string, mode: ReplaceMode): string[] {
@@ -42,6 +51,46 @@ function parseLayerNumber(text: string): number | null {
   return Number.isSafeInteger(n) ? n : null;
 }
 
+export interface ReadingEntry {
+  objectId: string;
+  x: number;
+  y: number;
+}
+
+/**
+ * 読み順（左上→行ごとに左→右→次の行…→右下）で objectId を並べる純関数。
+ * y が rowTolerance 以内なら同一行と見なし、行内を x 昇順で並べる。
+ * 同座標は objectId で安定ソート。
+ */
+export function computeReadingOrder(
+  entries: ReadingEntry[],
+  rowTolerance: number = DEFAULT_ROW_TOLERANCE,
+): string[] {
+  const byY = [...entries].sort(
+    (a, b) => a.y - b.y || a.x - b.x || (a.objectId < b.objectId ? -1 : 1),
+  );
+  const rows: ReadingEntry[][] = [];
+  let current: ReadingEntry[] = [];
+  let prevY: number | null = null;
+  for (const e of byY) {
+    if (prevY === null || e.y - prevY <= rowTolerance) {
+      current.push(e);
+    } else {
+      rows.push(current);
+      current = [e];
+    }
+    prevY = e.y;
+  }
+  if (current.length > 0) rows.push(current);
+
+  const order: string[] = [];
+  for (const row of rows) {
+    row.sort((a, b) => a.x - b.x || (a.objectId < b.objectId ? -1 : 1));
+    for (const e of row) order.push(e.objectId);
+  }
+  return order;
+}
+
 export type SkipReason = "animated" | "expression";
 
 export interface ReplaceAssignment {
@@ -54,72 +103,129 @@ export interface ReplaceAssignment {
 
 export interface SkippedLayer {
   objectId: string;
-  number: number;
+  number: number; // content モードでは元の整数、reading モードでは 0（順序対象外）
   reason: SkipReason;
 }
 
 export interface BulkReplacePlan {
   assignments: ReplaceAssignment[];
-  /** 番号レイヤーだが keyframe/expression 付きで除外したもの。 */
+  /** keyframe/expression 付きで除外した text レイヤー。 */
   skipped: SkippedLayer[];
-  /** 番号レイヤーだがトークンが足りず未置換の番号（昇順・重複排除）。 */
+  /** 対象だがトークンが足りず未置換の番号（昇順・重複排除）。 */
   unmatchedNumbers: number[];
-  /** どの番号にも割り当たらなかったトークン（末尾の余り）。 */
+  /** どの番号にも割り当たらなかったトークン。 */
   unusedTokens: string[];
-  targetCount: number; // 対象になった番号レイヤー数（除外含まず）
+  targetCount: number; // 採番できた対象レイヤー数（除外含まず）
   tokenCount: number;
+}
+
+interface TextInfo {
+  objectId: string;
+  componentIndex: number;
+  text: string;
+  isAnimated: boolean;
+  hasExpression: boolean;
+}
+
+interface NumberedTarget {
+  objectId: string;
+  componentIndex: number;
+  number: number;
+  text: string;
+}
+
+/** 各 object の先頭 text コンポーネントを読み取り TextInfo 列にする。 */
+function collectTextInfos(objects: SceneObject[]): TextInfo[] {
+  const infos: TextInfo[] = [];
+  for (const obj of objects) {
+    const componentIndex = obj.components.findIndex((c) => c.type === "text");
+    if (componentIndex < 0) continue;
+    const r = readTextProp(obj.components[componentIndex]!);
+    if (!r) continue;
+    infos.push({ objectId: obj.id, componentIndex, ...r });
+  }
+  return infos;
 }
 
 /**
  * 番号付きテキストレイヤーへトークンを割り当てる計画を立てる。
  * 番号 N のレイヤーには tokens[N-1] を割り当てる（欠番・重複に頑健）。
+ *
+ * @param order   "content"=中身の整数で採番 / "reading"=配置の読み順で採番
+ * @param positions reading モードで各 objectId の画面位置（未指定/未収録のレイヤーは対象外）
  */
 export function planBulkReplace(
   objects: SceneObject[],
   input: string,
   mode: ReplaceMode,
+  order: OrderMode = "content",
+  positions?: ReadonlyMap<string, { x: number; y: number }>,
+  rowTolerance: number = DEFAULT_ROW_TOLERANCE,
 ): BulkReplacePlan {
   const tokens = tokenize(input, mode);
-  const assignments: ReplaceAssignment[] = [];
+  const infos = collectTextInfos(objects);
   const skipped: SkippedLayer[] = [];
+  const numbered: NumberedTarget[] = [];
+
+  if (order === "content") {
+    for (const info of infos) {
+      const number = parseLayerNumber(info.text);
+      if (number === null) continue; // 数字でないレイヤーは対象外（静かに無視）
+      if (info.hasExpression) {
+        skipped.push({ objectId: info.objectId, number, reason: "expression" });
+      } else if (info.isAnimated) {
+        skipped.push({ objectId: info.objectId, number, reason: "animated" });
+      } else {
+        numbered.push({ ...info, number });
+      }
+    }
+  } else {
+    // reading: 静的な全 text レイヤーを位置の読み順で採番。位置が無い（現フレーム非表示）ものは対象外。
+    const statics: TextInfo[] = [];
+    for (const info of infos) {
+      if (info.hasExpression) {
+        skipped.push({ objectId: info.objectId, number: 0, reason: "expression" });
+      } else if (info.isAnimated) {
+        skipped.push({ objectId: info.objectId, number: 0, reason: "animated" });
+      } else if (positions?.has(info.objectId)) {
+        statics.push(info);
+      }
+    }
+    const entries: ReadingEntry[] = statics.map((s) => {
+      const p = positions!.get(s.objectId)!;
+      return { objectId: s.objectId, x: p.x, y: p.y };
+    });
+    const orderedIds = computeReadingOrder(entries, rowTolerance);
+    const indexOf = new Map(orderedIds.map((id, i) => [id, i + 1]));
+    for (const s of statics) {
+      numbered.push({
+        objectId: s.objectId,
+        componentIndex: s.componentIndex,
+        text: s.text,
+        number: indexOf.get(s.objectId) ?? 0,
+      });
+    }
+  }
+
+  const assignments: ReplaceAssignment[] = [];
   const unmatched = new Set<number>();
   const usedTokenIndices = new Set<number>();
-  let targetCount = 0;
-
-  for (const obj of objects) {
-    const componentIndex = obj.components.findIndex((c) => c.type === "text");
-    if (componentIndex < 0) continue;
-    const info = readTextProp(obj.components[componentIndex]!);
-    if (!info) continue;
-    const number = parseLayerNumber(info.text);
-    if (number === null) continue;
-
-    if (info.hasExpression) {
-      skipped.push({ objectId: obj.id, number, reason: "expression" });
-      continue;
-    }
-    if (info.isAnimated) {
-      skipped.push({ objectId: obj.id, number, reason: "animated" });
-      continue;
-    }
-
-    targetCount += 1;
-    const tokenIndex = number - 1;
+  for (const n of numbered) {
+    const tokenIndex = n.number - 1;
     const token = tokenIndex >= 0 ? tokens[tokenIndex] : undefined;
     if (token === undefined) {
-      unmatched.add(number);
+      unmatched.add(n.number);
       continue;
     }
     usedTokenIndices.add(tokenIndex);
     assignments.push({
-      objectId: obj.id,
-      componentIndex,
-      number,
-      oldText: info.text,
+      objectId: n.objectId,
+      componentIndex: n.componentIndex,
+      number: n.number,
+      oldText: n.text,
       newText: token,
     });
   }
-
   const unusedTokens = tokens.filter((_, i) => !usedTokenIndices.has(i));
 
   return {
@@ -127,7 +233,7 @@ export function planBulkReplace(
     skipped,
     unmatchedNumbers: [...unmatched].sort((a, b) => a - b),
     unusedTokens,
-    targetCount,
+    targetCount: numbered.length,
     tokenCount: tokens.length,
   };
 }
