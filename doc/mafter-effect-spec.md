@@ -3469,6 +3469,8 @@ solid レイヤーの **Timeline 行ラベル列**（[TimelinePanel.tsx](../src/
 - メニューバー（[src/App.tsx](../src/App.tsx)）の Undo/Redo 近傍に「マクロ ▾」ボタン（[src/editor/menu/MacroMenu.tsx](../src/editor/menu/MacroMenu.tsx)）。クリックで項目リストを開き、外側クリック / Esc で閉じる。
 - 「テキスト一括置換…」でモーダル（[src/editor/menu/TextBulkReplaceDialog.tsx](../src/editor/menu/TextBulkReplaceDialog.tsx)）を開く。入力欄＋**採番モード切替（中身の数字 / 配置順）**＋分割モード切替＋**ライブプレビュー**（`番号 N: "旧" → "新"`、未置換番号・未使用トークン・除外レイヤーの件数）。
 - 対象 0 件時は「適用」を無効化し、モードに応じた理由（連番テキストが無い / 表示中のテキストが無い）を表示。
+- **選択の永続化**: 入力テキスト・採番モード・分割モード・ダイアログ位置を `localStorage`（`mafter-text-bulk-replace-v1`）に保存し、次回起動でも維持する（project.json 非汚染・§19.3 の UI 状態）。
+- **移動可能**: ヘッダをドラッグしてダイアログを自由に移動できる。背景は透明レイヤー（外側クリックで閉じるが背後のコンポジションは見える）。
 
 ### §32.3 不変条件との関係（確定）
 

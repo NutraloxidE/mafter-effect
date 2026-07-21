@@ -146,12 +146,11 @@ export function App() {
         <span style={{ fontWeight: "bold", color: "#7fb8f0", marginRight: 8 }}>Mafter Effect</span>
         <button onClick={undo} disabled={!canUndo} style={menuBtnStyle(canUndo)}>↩ Undo</button>
         <button onClick={redo} disabled={!canRedo} style={menuBtnStyle(canRedo)}>↪ Redo</button>
-        <span style={{ color: "#444", marginLeft: 4 }}>|</span>
-        <MacroMenu />
-        <span style={{ color: "#444" }}>|</span>
-        <span style={{ color: "#555", fontSize: 11 }}>
+        <span style={{ color: "#555", fontSize: 11, marginLeft: 2 }}>
           {canUndo ? `${undoStack.past.length} op` : "clean"}
         </span>
+        <span style={{ color: "#444", marginLeft: 4 }}>|</span>
+        <MacroMenu />
         <span style={{ flex: 1 }} />
         {isFeedbackEnabled() && (
           <button onClick={() => setShowFeedbackModal(true)} style={feedbackLinkStyle}>

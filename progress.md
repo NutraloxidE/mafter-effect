@@ -2783,6 +2783,14 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
 - **検証**: typecheck クリーン。full Vitest **1413/1413 PASS**。実ブラウザ（Playwright）: `Ctrl+Z` は HUD を開かない／`Ctrl` ダブルタップで HUD 表示／`M` で潜り／`T` でダイアログ起動＋HUD 閉／`Esc` キャンセル、いずれも PASS。機能由来の page error なし。
 - **build:player**: editor-only のため不要。
 
+### 2026-07-21（Claude Code / Opus 4.8）— UI 改善: 置換ダイアログの永続化・移動 + メニュー並び ✅
+
+- **概要**: ①テキスト一括置換ダイアログの最後の選択（入力/採番/分割モード）と位置を localStorage に永続化。②ヘッダドラッグでダイアログを自由に移動（背景透明化・背後のコンプが見える）。③メニューバーの `clean`/`N op` 表示を Undo/Redo のすぐ右へ移動（マクロは その後）。
+- **spec**: §32.2 に永続化・移動可能を追記（project.json 非汚染の UI 状態・§19.3）。
+- **実装**: `TextBulkReplaceDialog.tsx`（`mafter-text-bulk-replace-v1` の load/save、ヘッダ mousedown ドラッグ、overlay 透明・dialog fixed 配置）、`App.tsx`（op/clean を Redo 直後へ）。
+- **検証**: typecheck クリーン。full Vitest **1420/1420 PASS**（UI のみ・ロジック不変）。実ブラウザ: clean が Redo 直後 / 選択（配置順・単語・入力）が再開後も維持 / ドラッグで移動（Δ200,150）+ 位置も維持、page error なし。
+- **build:player**: 不要（editor-only）。
+
 ### 2026-07-21（Claude Code / Opus 4.8）— テキスト一括置換に「配置順（読み順）採番モード」追加 ✅
 
 - **概要**: テキスト一括置換に採番モード `order` を追加。`content`（従来: 中身が整数のレイヤーを対象）に加え、**`reading`（配置順）**: 中身が数字でなくても、現フレームで表示中の全テキストレイヤーを**左上→行→右下**の読み順で自動採番して順に置換する。

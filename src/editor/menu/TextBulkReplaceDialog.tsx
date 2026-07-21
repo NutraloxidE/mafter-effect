@@ -1,10 +1,44 @@
 // §32.1/§32.2 テキスト一括置換モーダル。現在コンプの連番テキストレイヤーへ
 // 入力トークンを番号順に流し込む。ライブプレビュー付き。編集は 1 undo（store 経由）。
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { currentTimelineComp, useEditorStore } from "../store";
 import { planBulkReplace, type OrderMode, type ReplaceMode } from "../macros/textBulkReplace";
 import { textLayerPositions } from "../macros/textLayerPositions";
+
+const PREFS_KEY = "mafter-text-bulk-replace-v1";
+const DIALOG_WIDTH = 420;
+
+interface DialogPrefs {
+  input: string;
+  mode: ReplaceMode;
+  order: OrderMode;
+  x: number | null; // null = 未設定（中央に配置）
+  y: number | null;
+}
+
+function loadPrefs(): DialogPrefs {
+  const fallback: DialogPrefs = { input: "", mode: "char", order: "content", x: null, y: null };
+  try {
+    const raw = localStorage.getItem(PREFS_KEY);
+    if (!raw) return fallback;
+    const p = JSON.parse(raw) as Partial<DialogPrefs>;
+    return {
+      input: typeof p.input === "string" ? p.input : "",
+      mode: p.mode === "word" ? "word" : "char",
+      order: p.order === "reading" ? "reading" : "content",
+      x: typeof p.x === "number" ? p.x : null,
+      y: typeof p.y === "number" ? p.y : null,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function defaultPos(): { x: number; y: number } {
+  if (typeof window === "undefined") return { x: 100, y: 100 };
+  return { x: Math.max(8, (window.innerWidth - DIALOG_WIDTH) / 2), y: Math.max(8, window.innerHeight * 0.16) };
+}
 
 export function TextBulkReplaceDialog({ onClose }: { onClose: () => void }) {
   const project = useEditorStore((s) => s.project);
@@ -12,9 +46,45 @@ export function TextBulkReplaceDialog({ onClose }: { onClose: () => void }) {
   const currentFrame = useEditorStore((s) => s.currentFrame);
   const applyTextBulkReplace = useEditorStore((s) => s.applyTextBulkReplace);
 
-  const [input, setInput] = useState("");
-  const [mode, setMode] = useState<ReplaceMode>("char");
-  const [order, setOrder] = useState<OrderMode>("content");
+  const [prefs] = useState(loadPrefs);
+  const [input, setInput] = useState(prefs.input);
+  const [mode, setMode] = useState<ReplaceMode>(prefs.mode);
+  const [order, setOrder] = useState<OrderMode>(prefs.order);
+  const [pos, setPos] = useState<{ x: number; y: number }>(() =>
+    prefs.x !== null && prefs.y !== null ? { x: prefs.x, y: prefs.y } : defaultPos(),
+  );
+  const dragRef = useRef<{ dx: number; dy: number } | null>(null);
+
+  // 選択内容・位置を永続化（次回起動でも維持）。
+  useEffect(() => {
+    try {
+      localStorage.setItem(PREFS_KEY, JSON.stringify({ input, mode, order, x: pos.x, y: pos.y }));
+    } catch {
+      /* ignore */
+    }
+  }, [input, mode, order, pos]);
+
+  const onHeaderMouseDown = (e: React.MouseEvent) => {
+    e.stopPropagation(); // 背景クリック（閉じる）と区別
+    dragRef.current = { dx: e.clientX - pos.x, dy: e.clientY - pos.y };
+    const onMove = (ev: MouseEvent) => {
+      const d = dragRef.current;
+      if (!d) return;
+      const maxX = window.innerWidth - 80;
+      const maxY = window.innerHeight - 40;
+      setPos({
+        x: Math.min(Math.max(-DIALOG_WIDTH + 120, ev.clientX - d.dx), maxX),
+        y: Math.min(Math.max(0, ev.clientY - d.dy), maxY),
+      });
+    };
+    const onUp = () => {
+      dragRef.current = null;
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
 
   const comp = useMemo(
     () => currentTimelineComp(project, currentCompId),
@@ -42,9 +112,13 @@ export function TextBulkReplaceDialog({ onClose }: { onClose: () => void }) {
 
   return (
     <div style={overlayStyle} onMouseDown={onClose}>
-      <div style={dialogStyle} onMouseDown={(e) => e.stopPropagation()}>
-        <div style={{ fontWeight: "bold", fontSize: 13, color: "#ddd", marginBottom: 4 }}>
-          テキスト一括置換
+      <div
+        style={{ ...dialogStyle, left: pos.x, top: pos.y }}
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <div style={headerStyle} onMouseDown={onHeaderMouseDown} title="ドラッグで移動">
+          <span style={{ fontWeight: "bold", fontSize: 13, color: "#ddd" }}>テキスト一括置換</span>
+          <span style={{ color: "#555", fontSize: 12, letterSpacing: 2 }}>⠿</span>
         </div>
         <div style={{ fontSize: 10, color: "#888", marginBottom: 10 }}>
           {order === "content" ? (
@@ -144,14 +218,21 @@ export function TextBulkReplaceDialog({ onClose }: { onClose: () => void }) {
 }
 
 const overlayStyle: React.CSSProperties = {
-  position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", display: "flex",
-  alignItems: "center", justifyContent: "center", zIndex: 10001,
+  // 透明な全画面レイヤー: 外側クリックで閉じつつ、背後のコンポジションは見える（移動しやすい）。
+  position: "fixed", inset: 0, background: "transparent", zIndex: 10001,
 };
 
 const dialogStyle: React.CSSProperties = {
+  position: "fixed", // left/top はインラインで指定（ドラッグで更新）
   background: "#1e1e1e", border: "1px solid #444", borderRadius: 6,
-  padding: 16, width: 420, maxWidth: "92vw", color: "#ccc", fontSize: 12,
-  boxShadow: "0 8px 32px rgba(0,0,0,.6)",
+  padding: 16, width: DIALOG_WIDTH, color: "#ccc", fontSize: 12,
+  boxShadow: "0 12px 40px rgba(0,0,0,.7)",
+};
+
+const headerStyle: React.CSSProperties = {
+  display: "flex", alignItems: "center", justifyContent: "space-between",
+  cursor: "move", userSelect: "none", marginBottom: 6,
+  paddingBottom: 6, borderBottom: "1px solid #333",
 };
 
 const textareaStyle: React.CSSProperties = {
