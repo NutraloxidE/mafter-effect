@@ -3425,3 +3425,110 @@ solid レイヤーの **Timeline 行ラベル列**（[TimelinePanel.tsx](../src/
 - [src/editor/panels/TimelinePanel.tsx](../src/editor/panels/TimelinePanel.tsx): `LayerRow` ラベル列にスウォッチチップ
 - [src/editor/ColorSwatch.tsx](../src/editor/ColorSwatch.tsx): 既存部品を再利用（新規部品なし）
 - [src/editor/fontList.ts](../src/editor/fontList.ts): §26.3.1 Font 候補リスト（新規・Inspector 参照）
+
+---
+
+## §32 マクロ（一括編集ツール）— UI 層・additive
+
+### §32.0 スコープ（確定）
+
+メニューバーに **「マクロ ▾」ドロップダウン**を新設し、複数レイヤーを対象とする一括編集マクロを段階的に足す枠組みを持つ。最初のマクロは **「テキスト一括置換」**。
+
+- すべての編集は既存 command 層（`applyCommand({label, before, after})`）を通し、**1 操作 = 1 undo**（§17）。
+- **`project.json` 直列化形式・§5 データスキーマ・INV-1〜6 は不変**（既存 `text` コンポーネントの `props.text` の値を書き換えるのみ）。マクロは純ロジック＋UI 層で閉じ、レンダラ・export 経路には新規配線を足さない。
+- editor-only。`src/runtime/*` / `src/player/*` を変更しないため **`public/player.js` の再ビルドは不要**。
+
+### §32.1 テキスト一括置換（確定）
+
+**目的**: 連番プレースホルダになったテキストレイヤー群へ、入力文字列を番号順に流し込む。
+
+**採番モード（`order`・確定）**: レイヤーへ番号を割り当てる根拠を 2 つから選ぶ。
+
+- **`content`（中身の数字）**: 対象は **現在のテキスト内容（trim 済）が整数 `^\d+$`** の **静的**テキストレイヤーのみ。番号＝その整数。
+- **`reading`（配置の読み順）**: 対象は **現フレームで表示中の静的テキストレイヤー全部**（中身が数字でなくてよい）。各レイヤーの画面位置（`resolve(comp, frame)` の `worldTransform` 平行移動成分）を **左上→行→右下** の読み順に並べ、その順で `1,2,3…` を採番する。行内は x 昇順。読み順計算 `computeReadingOrder` は純関数（INV-1）。
+  - **行判定（`rowGrouping`）**: y 差がどれだけ離れたら別の行と見なすかを 2 プリセットから選ぶ。
+    - **`lenient`（緩め・既定）**: `LENIENT_ROW_TOLERANCE`（64px）まで同一行と見なす。多少の上下ズレがあっても同じ視覚行を 1 行として左→右に採番する。
+    - **`strict`（厳格）**: `STRICT_ROW_TOLERANCE`（4px・ほぼ同座標のみ）。座標が近いものだけ同一行。
+    - 例: 右側の要素が 20px 高いだけの 2 要素は、緩め＝同一行（左→右）、厳格＝別行（上→下）で採番が変わる。`rowToleranceFor(grouping)` で px に変換。
+
+いずれのモードでも keyframe / expression 付き text は対象外（プレビューで除外件数を表示）。位置取得 [textLayerPositions.ts](../src/editor/macros/textLayerPositions.ts) は `resolve` を使うが、`resolve` 自体が純関数のためスキーマ・レンダラ非依存は保たれる。
+
+**入力とモード**:
+
+- 入力欄 1 つ。モードは **文字 / 単語** の 2 択。
+  - **文字モード**: 入力を前後 trim し、`Array.from()` で 1 文字ずつに分解（日本語用）。
+  - **単語モード**: 入力を trim し `\s+` で分解（空白区切り・英語用）。
+
+**割当規則**: トークン列を 1-based とみなし、**番号 `N` のレイヤーへ `N` 番目のトークン**を割り当てる（`token[N-1]`）。
+
+- 番号は「入力列の何番目を受け取るか」の添字。→ 欠番（`1`,`3` のみ等）でも各レイヤーは自番号のトークンを受け取り、**重複番号**（`2` が複数）は同じトークンを受け取る。
+- トークン数 < 最大番号 → 割当の無い番号レイヤーは**そのまま**（未置換として件数表示）。
+- トークン数 > 番号種類 → 余ったトークンは**未使用**（件数表示）。
+- 書き込みは `props.text` の base 値（`AnimatedProp<string>.value`、または生 string）を差し替えるのみ。keyframes・その他 prop・レイヤー並び（id 順）は不変。
+
+**適用範囲**: **現在のコンポジションのみ**（他コンプ・precomp は対象外）。
+
+### §32.2 UI（確定）
+
+- メニューバー（[src/App.tsx](../src/App.tsx)）の Undo/Redo 近傍に「マクロ ▾」ボタン（[src/editor/menu/MacroMenu.tsx](../src/editor/menu/MacroMenu.tsx)）。クリックで項目リストを開き、外側クリック / Esc で閉じる。
+- 「テキスト一括置換…」でモーダル（[src/editor/menu/TextBulkReplaceDialog.tsx](../src/editor/menu/TextBulkReplaceDialog.tsx)）を開く。入力欄＋**採番モード切替（中身の数字 / 配置順）**＋分割モード切替＋**ライブプレビュー**（`番号 N: "旧" → "新"`、未置換番号・未使用トークン・除外レイヤーの件数）。
+- 対象 0 件時は「適用」を無効化し、モードに応じた理由（連番テキストが無い / 表示中のテキストが無い）を表示。
+- **選択の永続化**: 入力テキスト・採番モード・分割モード・ダイアログ位置を `localStorage`（`mafter-text-bulk-replace-v1`）に保存し、次回起動でも維持する（project.json 非汚染・§19.3 の UI 状態）。
+- **移動可能**: ヘッダをドラッグしてダイアログを自由に移動できる。背景は透明レイヤー（外側クリックで閉じるが背後のコンポジションは見える）。
+
+### §32.3 不変条件との関係（確定）
+
+- 置換計画は **レンダラ非依存の純関数**（[src/editor/macros/textBulkReplace.ts](../src/editor/macros/textBulkReplace.ts)：`tokenize` / `planBulkReplace` / `buildReplacedObjects`）。乱数・時刻・DOM を使わない（INV-1 整合）。
+- preview ≡ export は既存 `text` 値変更に自動追従。マクロは新しい解決経路を作らない（INV-2 に無影響）。
+- ID は stable（既存レイヤーの `id` を保持・INV-6）。
+
+### §32.4 受け入れ条件
+
+- [ ] メニューバーに「マクロ ▾」が出て、「テキスト一括置換…」でモーダルが開く
+- [ ] 中身 `1`,`2`,`3` の text 3 枚に対し、単語モード「a b c」→ `a`,`b`,`c`／文字モード「あいう」→ `あ`,`い`,`う` に置換（content モード）
+- [ ] 配置順モード: 中身が数字でない text を左上→右下の読み順で採番し、その順に置換
+- [ ] 欠番・重複・過不足がプレビュー件数と実結果に一致
+- [ ] 置換は 1 回の Cmd-Z で全レイヤーが元の連番に戻る（1 undo）
+- [ ] keyframe / expression 付き text と `^\d+$` 非一致の text は対象外（回帰なし）
+- [ ] project.json byte 等価 roundtrip（スキーマ・直列化不変）
+
+---
+
+## §33 コマンドメニュー / キーボードリーダー（Ctrl ダブルタップ）— UI 層・additive
+
+### §33.0 スコープ（確定）
+
+機能を **キー列で起動**できる汎用コマンド機構。**Ctrl キーのダブルタップ**でコマンドモードに入り、続けてキーを押してツリーを辿る（例: `Ctrl,Ctrl → M → T` で「マクロ → テキスト一括置換」を実行）。
+
+- **単一の拡張点**: 機能側は [`registerCommand({ id, path, run })`](../src/editor/commandMenu/commandRegistry.ts) を呼ぶだけで、**メニューバーのドロップダウン**（§32.2 MacroMenu）と**キーボードリーダー**の両経路にトリガが増える。マクロに限らず任意機能を登録可能。
+- `path` はルート→葉の `{key,label}` 列。同一プレフィックスは自動でグループ化される（中間ノードのラベルは最初の登録が採用）。
+- **project.json・§5 データスキーマ・INV-1〜6 は不変**（UI 層のキーボード/メニュー機構のみ）。editor-only（`src/runtime` / `src/player` 非依存）。
+
+### §33.1 リーダー起動（確定）
+
+- **Ctrl 単独タップを規定時間内（既定 400ms）に 2 回**でコマンドモード起動。
+- タップは「Ctrl 押下→離す間に**他キーを挟まない**」もののみ有効（`Ctrl+Z` 等の修飾用途は起動しない）。判定の純粋部分は [leaderTap.ts](../src/editor/commandMenu/leaderTap.ts)（`isSecondTap`）。
+- 起動後: 現在階層の子ノードのキーを押すと、子があれば潜り、葉なら `run()` して終了。**Esc / 背景クリック / 無操作タイムアウト（既定 3s）**でキャンセル。
+- コマンドモード中はキーを `capture` 段階で奪い、フォーカス中の input や既存ショートカット（§17 undo 等）に漏らさない。
+
+### §33.2 UI（確定）
+
+- **HUD**（[CommandMenuOverlay.tsx](../src/editor/commandMenu/CommandMenuOverlay.tsx)）: which-key 風。パンくず（`⌃⌃ ▸ マクロ ▸ …`）＋次に押せるキー一覧（キーキャップ＋ラベル、子ありは `▸`）。
+- **ドロップダウン**（MacroMenu）はコマンドレジストリの「マクロ」グループ（`key:"m"`）の子から項目を生成し、マウス操作でも同じ `run()` を起動する。
+
+### §33.3 データモデル（UI 層・スキーマ非依存）
+
+```ts
+interface CommandLeaf { id: string; path: { key: string; label: string }[]; run: () => void; hint?: string }
+interface CommandNode { key: string; label: string; hint?: string; children: CommandNode[]; run?: () => void }
+```
+
+`buildCommandTree` / `resolveLevel` / `nodeAtPath` / `pathLabels` は純関数（[commandTree.ts](../src/editor/commandMenu/commandTree.ts)・INV-1 整合）。レジストリの `getLeaves()` は変更まで同一参照を返す（`useSyncExternalStore` 契約）。
+
+### §33.4 受け入れ条件
+
+- [ ] `Ctrl` ダブルタップで HUD が出る（`Ctrl+Z` 等では出ない）
+- [ ] HUD で `M → T` を押すとテキスト一括置換ダイアログが開く
+- [ ] Esc / 背景クリック / 無操作でキャンセルされる
+- [ ] `registerCommand` で足したコマンドがドロップダウンと HUD の両方に現れる
+- [ ] project.json byte 等価 roundtrip（スキーマ・直列化不変）

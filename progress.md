@@ -2750,3 +2750,64 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
 - **画素比較**: 全3 pairでmidpoint RGB MAE **0.054/255**、max **4/255**、差>3は**0.101%**、差>10は0。全run 1280×720・0.8秒、pageErrors 0。encoded sizeは70608→64059 bytes（Canvas2D直描画とSVG補間の微差）。
 - **回帰**: typecheck・player rebuild/freshness・増分23 tests PASS。full Vitest **1372/1373**（唯一のfailは既知`effects.test.ts` liquidChrome再登録漏れ）。実ブラウザ adjustment export PASS、track matte 9/9 PASS。
 - **Next step**: Phase 3f text content/placement分離、またはPhase 4 Worker encode/mux。textはfont/box/stroke/shadow/baselineのlocal bounds固定と回転・scale parityが必要なため、direct drawではなくlocal foreignObject surface cacheを優先する。
+
+### 2026-07-21（Claude Code / Opus 4.8）— マクロメニュー ＋ テキスト一括置換 ✅
+
+- **概要**: メニューバーに「マクロ ▾」ドロップダウンを新設し、最初のマクロ「テキスト一括置換」を実装。現在コンプ内で中身が整数 `1`,`2`,`3`… の静的テキストレイヤーへ、入力文字列を番号順に流し込む（番号 N ← N 番目のトークン）。文字モード（1文字ずつ）／単語モード（空白区切り・英語用）。適用範囲は現在コンポジションのみ。
+- **spec先行**: `doc/mafter-effect-spec.md` に §32 マクロ（一括編集ツール）を追記（散文のみ・additive）。§32.1 セマンティクス／§32.2 UI／§32.3 INV整合／§32.4 受け入れ条件。**§5・INV-1〜6・project.json 直列化は不変**（既存 `text` prop の value を書き換えるのみ）。
+- **実装**:
+  - `src/editor/macros/textBulkReplace.ts`（新規・純ロジック／INV-1）: `tokenize` / `planBulkReplace`（番号=1-based トークン添字、欠番・重複・過不足・keyframe/expression 除外を計画化）/ `buildReplacedObjects`（value のみ差替、id順・他prop不変）。
+  - `src/editor/store.ts`: `applyTextBulkReplace(input, mode)` 追加（`decomposeGlyphs` を踏襲、`applyCommand` で 1 undo）。
+  - `src/editor/menu/MacroMenu.tsx`（新規）: ドロップダウン（外側クリック/Esc で閉じる、Electron ドラッグ no-drag）。
+  - `src/editor/menu/TextBulkReplaceDialog.tsx`（新規）: 入力欄＋モード切替＋ライブプレビュー（番号→旧→新、未置換/未使用/除外の件数）。
+  - `src/App.tsx`: メニューバーに `MacroMenu` 差込、ダイアログ開閉 state。
+  - `test/textBulkReplace.test.ts`（新規・14 unit）: 文字/単語、欠番、重複、過不足、非整数除外、keyframe/expression 除外、生string、buildReplacedObjects の非破壊性。
+- **build:player**: editor-only（runtime/player 未変更）のため不要。`playerBuildFreshness` PASS で裏付け。
+- **検証**: typecheck クリーン。full Vitest **1402/1402 PASS**。実ブラウザ（Playwright + Chromium）スモーク: マクロ ▾ 表示→ドロップダウン→モーダル→プレビュー描画→キャンセルまで全 PASS、機能由来の page error なし。
+- **Next step（将来）**: マクロ枠に他マクロ追加（連番採番・レイヤー一括リネーム等）。char モードの内部空白の扱いは現状「1文字扱い（前後trimのみ）」で確定。
+
+### 2026-07-21（Claude Code / Opus 4.8）— コマンドメニュー / キーボードリーダー（Ctrl ダブルタップ）✅
+
+- **概要**: 機能をキー列で起動できる汎用機構を追加。**Ctrl ダブルタップ → M → T** で「マクロ → テキスト一括置換」を実行。`registerCommand` 1 コールで **ドロップダウンと Ctrl 経路の両方**にトリガが増える拡張設計。
+- **spec先行**: `doc/mafter-effect-spec.md` に §33 追記（散文のみ・additive）。§33.0 拡張点／§33.1 リーダー起動／§33.2 UI／§33.3 データモデル／§33.4 受け入れ条件。**§5・INV・project.json 不変**、editor-only。
+- **実装（`src/editor/commandMenu/`）**:
+  - `types.ts`: `CommandLeaf` / `CommandNode`。
+  - `commandTree.ts`（純・INV-1）: `buildCommandTree` / `resolveLevel` / `nodeAtPath` / `pathLabels`。
+  - `leaderTap.ts`（純）: `isSecondTap`（ダブルタップ窓 400ms）。
+  - `commandRegistry.ts`: シングルトン＋`registerCommand`。`getLeaves()` は変更まで同一参照（useSyncExternalStore 契約）。
+  - `useCommandTree.ts` / `useCommandMenu.ts`: 購読＋リーダー検出（Ctrl 押下中の他キーで修飾扱い→`Ctrl+Z` 等は起動しない、capture 段階でキーを奪う、Esc/背景/無操作3sでキャンセル）。
+  - `CommandMenuOverlay.tsx`: which-key 風 HUD（パンくず＋キーキャップ一覧）。
+  - `menu/MacroMenu.tsx`: レジストリの「マクロ」グループから項目生成（onOpenTextBulkReplace prop 廃止）。
+  - `src/App.tsx`: `registerCommand({ path:[マクロ,テキスト一括置換], run })` ＋ `<CommandMenuOverlay/>`。
+  - `test/commandMenu.test.ts`（11 unit）: ツリー畳み込み・順序・lowercase 正規化・後勝ち・resolve/nodeAt/pathLabels・isSecondTap。
+- **検証**: typecheck クリーン。full Vitest **1413/1413 PASS**。実ブラウザ（Playwright）: `Ctrl+Z` は HUD を開かない／`Ctrl` ダブルタップで HUD 表示／`M` で潜り／`T` でダイアログ起動＋HUD 閉／`Esc` キャンセル、いずれも PASS。機能由来の page error なし。
+- **build:player**: editor-only のため不要。
+
+### 2026-07-21（Claude Code / Opus 4.8）— 配置順の行判定モード（緩め/厳格）追加・緩めを既定に ✅
+
+- **概要**: reading（配置順）採番の行判定に 2 プリセットを追加。**緩め（`lenient`・既定・64px）**＝多少の上下ズレは同じ行、**厳格（`strict`・4px）**＝座標が近いものだけ同じ行。従来の単一 24px を廃し、既定を緩めに。
+- **spec**: §32.1 に `rowGrouping`（lenient/strict）と例（右が 20px 高い 2 要素で採番が変わる）を追記。§5・INV・project.json 不変。
+- **実装**: `textBulkReplace.ts`（`RowGrouping` 型・`LENIENT/STRICT_ROW_TOLERANCE`・`rowToleranceFor`、`DEFAULT_ROW_TOLERANCE`=緩め）、`store.ts`（`applyTextBulkReplace` に rowGrouping 追加・既定 lenient）、`TextBulkReplaceDialog.tsx`（reading 時のみ行判定ラジオ表示・prefs 永続化・既定 緩め）。
+- **検証**: typecheck クリーン。full Vitest **1424/1424 PASS**（緩め/厳格で採番が変わる純ロジック unit を追加）。実ブラウザ: 行判定 UI は content で非表示・reading で表示、既定 緩め、厳格が再開後も維持、page error なし。
+- **build:player**: 不要（editor-only）。
+
+### 2026-07-21（Claude Code / Opus 4.8）— UI 改善: 置換ダイアログの永続化・移動 + メニュー並び ✅
+
+- **概要**: ①テキスト一括置換ダイアログの最後の選択（入力/採番/分割モード）と位置を localStorage に永続化。②ヘッダドラッグでダイアログを自由に移動（背景透明化・背後のコンプが見える）。③メニューバーの `clean`/`N op` 表示を Undo/Redo のすぐ右へ移動（マクロは その後）。
+- **spec**: §32.2 に永続化・移動可能を追記（project.json 非汚染の UI 状態・§19.3）。
+- **実装**: `TextBulkReplaceDialog.tsx`（`mafter-text-bulk-replace-v1` の load/save、ヘッダ mousedown ドラッグ、overlay 透明・dialog fixed 配置）、`App.tsx`（op/clean を Redo 直後へ）。
+- **検証**: typecheck クリーン。full Vitest **1420/1420 PASS**（UI のみ・ロジック不変）。実ブラウザ: clean が Redo 直後 / 選択（配置順・単語・入力）が再開後も維持 / ドラッグで移動（Δ200,150）+ 位置も維持、page error なし。
+- **build:player**: 不要（editor-only）。
+
+### 2026-07-21（Claude Code / Opus 4.8）— テキスト一括置換に「配置順（読み順）採番モード」追加 ✅
+
+- **概要**: テキスト一括置換に採番モード `order` を追加。`content`（従来: 中身が整数のレイヤーを対象）に加え、**`reading`（配置順）**: 中身が数字でなくても、現フレームで表示中の全テキストレイヤーを**左上→行→右下**の読み順で自動採番して順に置換する。
+- **spec先行**: §32.1 に採番モード（content/reading）を追記。reading は `resolve(comp,frame)` の worldTransform 平行移動を読み順（行 tolerance 既定 24px）に並べて 1,2,3… 採番。`computeReadingOrder` は純関数（INV-1）。§5・INV・project.json 不変。
+- **実装**:
+  - `src/editor/macros/textBulkReplace.ts`: `OrderMode` 追加、`computeReadingOrder`（純・行バンド＋行内 x 昇順＋id 安定）追加、`planBulkReplace(objects, input, mode, order?, positions?, rowTolerance?)` に拡張（既存 3 引数 content 呼び出しは後方互換）。
+  - `src/editor/macros/textLayerPositions.ts`（新規）: `resolve` で現フレームの各レイヤー画面位置を取得（純 resolve 経由、失敗時は空）。
+  - `src/editor/store.ts`: `applyTextBulkReplace(input, mode, order)`。reading 時に positions を計算して渡す。
+  - `src/editor/menu/TextBulkReplaceDialog.tsx`: 採番モードのラジオ（中身の数字 / 配置順）＋モード別の説明・空状態文言。プレビューは現フレーム位置で再計算。
+  - `test/textBulkReplace.test.ts`: computeReadingOrder（2x2 グリッド・行 tolerance・行分割・同座標 id tiebreak）＋ reading モード planBulkReplace（非数字採番・位置無しレイヤー除外・keyframe 除外）を追加。
+- **検証**: typecheck クリーン。full Vitest **1420/1420 PASS**。実ブラウザ（Playwright）: Ctrl ダブルタップ→M→T でダイアログ、採番ラジオ（中身の数字/配置順）表示、配置順切替で説明更新、入力＋単語分割でクラッシュなし。機能由来の page error なし。
+- **build:player**: editor-only のため不要。
