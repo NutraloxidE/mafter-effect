@@ -3425,3 +3425,57 @@ solid レイヤーの **Timeline 行ラベル列**（[TimelinePanel.tsx](../src/
 - [src/editor/panels/TimelinePanel.tsx](../src/editor/panels/TimelinePanel.tsx): `LayerRow` ラベル列にスウォッチチップ
 - [src/editor/ColorSwatch.tsx](../src/editor/ColorSwatch.tsx): 既存部品を再利用（新規部品なし）
 - [src/editor/fontList.ts](../src/editor/fontList.ts): §26.3.1 Font 候補リスト（新規・Inspector 参照）
+
+---
+
+## §32 マクロ（一括編集ツール）— UI 層・additive
+
+### §32.0 スコープ（確定）
+
+メニューバーに **「マクロ ▾」ドロップダウン**を新設し、複数レイヤーを対象とする一括編集マクロを段階的に足す枠組みを持つ。最初のマクロは **「テキスト一括置換」**。
+
+- すべての編集は既存 command 層（`applyCommand({label, before, after})`）を通し、**1 操作 = 1 undo**（§17）。
+- **`project.json` 直列化形式・§5 データスキーマ・INV-1〜6 は不変**（既存 `text` コンポーネントの `props.text` の値を書き換えるのみ）。マクロは純ロジック＋UI 層で閉じ、レンダラ・export 経路には新規配線を足さない。
+- editor-only。`src/runtime/*` / `src/player/*` を変更しないため **`public/player.js` の再ビルドは不要**。
+
+### §32.1 テキスト一括置換（確定）
+
+**目的**: 連番プレースホルダになったテキストレイヤー群へ、入力文字列を番号順に流し込む。
+
+**対象レイヤー**: **現在のコンポジション**内の、`text` コンポーネントを持ち、その **現在のテキスト内容（trim 済）が整数 `^\d+$`** に一致する **静的**テキストレイヤーのみ。テキストに keyframe / expression が付くレイヤーは対象外（プレビューで除外理由を表示）。
+
+**入力とモード**:
+
+- 入力欄 1 つ。モードは **文字 / 単語** の 2 択。
+  - **文字モード**: 入力を前後 trim し、`Array.from()` で 1 文字ずつに分解（日本語用）。
+  - **単語モード**: 入力を trim し `\s+` で分解（空白区切り・英語用）。
+
+**割当規則**: トークン列を 1-based とみなし、**番号 `N` のレイヤーへ `N` 番目のトークン**を割り当てる（`token[N-1]`）。
+
+- 番号は「入力列の何番目を受け取るか」の添字。→ 欠番（`1`,`3` のみ等）でも各レイヤーは自番号のトークンを受け取り、**重複番号**（`2` が複数）は同じトークンを受け取る。
+- トークン数 < 最大番号 → 割当の無い番号レイヤーは**そのまま**（未置換として件数表示）。
+- トークン数 > 番号種類 → 余ったトークンは**未使用**（件数表示）。
+- 書き込みは `props.text` の base 値（`AnimatedProp<string>.value`、または生 string）を差し替えるのみ。keyframes・その他 prop・レイヤー並び（id 順）は不変。
+
+**適用範囲**: **現在のコンポジションのみ**（他コンプ・precomp は対象外）。
+
+### §32.2 UI（確定）
+
+- メニューバー（[src/App.tsx](../src/App.tsx)）の Undo/Redo 近傍に「マクロ ▾」ボタン（[src/editor/menu/MacroMenu.tsx](../src/editor/menu/MacroMenu.tsx)）。クリックで項目リストを開き、外側クリック / Esc で閉じる。
+- 「テキスト一括置換…」でモーダル（[src/editor/menu/TextBulkReplaceDialog.tsx](../src/editor/menu/TextBulkReplaceDialog.tsx)）を開く。入力欄＋モード切替＋**ライブプレビュー**（`番号 N: "旧" → "新"`、未置換番号・未使用トークン・除外レイヤーの件数）。
+- 対象 0 件時は「適用」を無効化し、現在コンプに連番テキストが無い旨を表示。
+
+### §32.3 不変条件との関係（確定）
+
+- 置換計画は **レンダラ非依存の純関数**（[src/editor/macros/textBulkReplace.ts](../src/editor/macros/textBulkReplace.ts)：`tokenize` / `planBulkReplace` / `buildReplacedObjects`）。乱数・時刻・DOM を使わない（INV-1 整合）。
+- preview ≡ export は既存 `text` 値変更に自動追従。マクロは新しい解決経路を作らない（INV-2 に無影響）。
+- ID は stable（既存レイヤーの `id` を保持・INV-6）。
+
+### §32.4 受け入れ条件
+
+- [ ] メニューバーに「マクロ ▾」が出て、「テキスト一括置換…」でモーダルが開く
+- [ ] 中身 `1`,`2`,`3` の text 3 枚に対し、単語モード「a b c」→ `a`,`b`,`c`／文字モード「あいう」→ `あ`,`い`,`う` に置換
+- [ ] 欠番・重複・過不足がプレビュー件数と実結果に一致
+- [ ] 置換は 1 回の Cmd-Z で全レイヤーが元の連番に戻る（1 undo）
+- [ ] keyframe / expression 付き text と `^\d+$` 非一致の text は対象外（回帰なし）
+- [ ] project.json byte 等価 roundtrip（スキーマ・直列化不変）

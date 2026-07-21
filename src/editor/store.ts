@@ -93,6 +93,7 @@ import {
   type UndoRedoStack,
 } from "./commands";
 import { buildGlyphDecomposeObjects, createCanvasMeasureContext, type GlyphDecomposeMode } from "./glyphDecompose";
+import { buildReplacedObjects, planBulkReplace, type BulkReplacePlan, type ReplaceMode } from "./macros/textBulkReplace";
 import { bakeMergeShapeToPath } from "./shapeBake";
 import { loadWorkArea, saveWorkArea } from "./workAreaStorage";
 import { WAVEFORM_MODES, type WaveformMode } from "../audio/waveform";
@@ -300,6 +301,9 @@ export interface EditorStore {
   splitSelected: () => void;
   // P1-9 Paste (Ctrl+V): クリップボードのレイヤーを新 ID で貼り付け、選択状態にする。
   pasteObjects: (objects: SceneObject[]) => string[];
+
+  // §32.1 マクロ: テキスト一括置換。現在コンプの連番テキストレイヤーへトークンを番号順に流し込む。
+  applyTextBulkReplace: (input: string, mode: ReplaceMode) => BulkReplacePlan | null;
 
   // ショートカット: オブジェクトを新規追加して ID を返す
   addSolid: (name?: string) => string | null;
@@ -668,6 +672,24 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       ? "Decompose Glyphs (child)"
       : "Decompose Glyphs (null)";
     get().applyCommand({ label, before, after });
+  },
+
+  applyTextBulkReplace: (input, mode) => {
+    const before = get().project;
+    if (!before) return null;
+    const comp = currentTimelineComp(before, get().currentCompId);
+    if (!comp) return null;
+    const plan = planBulkReplace(comp.objects, input, mode);
+    if (plan.assignments.length === 0) return plan; // 置換対象なし: 状態を変えずに計画のみ返す
+    const afterObjects = buildReplacedObjects(comp.objects, plan.assignments);
+    const after: Project = {
+      ...before,
+      compositions: before.compositions.map((c) =>
+        c.id === comp.id && c.kind === "timeline" ? { ...c, objects: afterObjects } : c,
+      ),
+    };
+    get().applyCommand({ label: "テキスト一括置換", before, after });
+    return plan;
   },
 
   bakeShapeMerge: (objectId) => {

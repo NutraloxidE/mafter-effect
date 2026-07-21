@@ -2750,3 +2750,18 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
 - **画素比較**: 全3 pairでmidpoint RGB MAE **0.054/255**、max **4/255**、差>3は**0.101%**、差>10は0。全run 1280×720・0.8秒、pageErrors 0。encoded sizeは70608→64059 bytes（Canvas2D直描画とSVG補間の微差）。
 - **回帰**: typecheck・player rebuild/freshness・増分23 tests PASS。full Vitest **1372/1373**（唯一のfailは既知`effects.test.ts` liquidChrome再登録漏れ）。実ブラウザ adjustment export PASS、track matte 9/9 PASS。
 - **Next step**: Phase 3f text content/placement分離、またはPhase 4 Worker encode/mux。textはfont/box/stroke/shadow/baselineのlocal bounds固定と回転・scale parityが必要なため、direct drawではなくlocal foreignObject surface cacheを優先する。
+
+### 2026-07-21（Claude Code / Opus 4.8）— マクロメニュー ＋ テキスト一括置換 ✅
+
+- **概要**: メニューバーに「マクロ ▾」ドロップダウンを新設し、最初のマクロ「テキスト一括置換」を実装。現在コンプ内で中身が整数 `1`,`2`,`3`… の静的テキストレイヤーへ、入力文字列を番号順に流し込む（番号 N ← N 番目のトークン）。文字モード（1文字ずつ）／単語モード（空白区切り・英語用）。適用範囲は現在コンポジションのみ。
+- **spec先行**: `doc/mafter-effect-spec.md` に §32 マクロ（一括編集ツール）を追記（散文のみ・additive）。§32.1 セマンティクス／§32.2 UI／§32.3 INV整合／§32.4 受け入れ条件。**§5・INV-1〜6・project.json 直列化は不変**（既存 `text` prop の value を書き換えるのみ）。
+- **実装**:
+  - `src/editor/macros/textBulkReplace.ts`（新規・純ロジック／INV-1）: `tokenize` / `planBulkReplace`（番号=1-based トークン添字、欠番・重複・過不足・keyframe/expression 除外を計画化）/ `buildReplacedObjects`（value のみ差替、id順・他prop不変）。
+  - `src/editor/store.ts`: `applyTextBulkReplace(input, mode)` 追加（`decomposeGlyphs` を踏襲、`applyCommand` で 1 undo）。
+  - `src/editor/menu/MacroMenu.tsx`（新規）: ドロップダウン（外側クリック/Esc で閉じる、Electron ドラッグ no-drag）。
+  - `src/editor/menu/TextBulkReplaceDialog.tsx`（新規）: 入力欄＋モード切替＋ライブプレビュー（番号→旧→新、未置換/未使用/除外の件数）。
+  - `src/App.tsx`: メニューバーに `MacroMenu` 差込、ダイアログ開閉 state。
+  - `test/textBulkReplace.test.ts`（新規・14 unit）: 文字/単語、欠番、重複、過不足、非整数除外、keyframe/expression 除外、生string、buildReplacedObjects の非破壊性。
+- **build:player**: editor-only（runtime/player 未変更）のため不要。`playerBuildFreshness` PASS で裏付け。
+- **検証**: typecheck クリーン。full Vitest **1402/1402 PASS**。実ブラウザ（Playwright + Chromium）スモーク: マクロ ▾ 表示→ドロップダウン→モーダル→プレビュー描画→キャンセルまで全 PASS、機能由来の page error なし。
+- **Next step（将来）**: マクロ枠に他マクロ追加（連番採番・レイヤー一括リネーム等）。char モードの内部空白の扱いは現状「1文字扱い（前後trimのみ）」で確定。

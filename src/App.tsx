@@ -5,6 +5,8 @@ import { defaultWorkspace, ensureEasePanelVisible, ensurePipelinePanelVisible, t
 import { useEditorStore } from "./editor/store";
 import { FeedbackPrompt, FeedbackSendModal } from "./editor/FeedbackPrompt";
 import { isFeedbackEnabled } from "./editor/feedbackCollector";
+import { MacroMenu } from "./editor/menu/MacroMenu";
+import { TextBulkReplaceDialog } from "./editor/menu/TextBulkReplaceDialog";
 
 const WORKSPACE_KEY = "mafter-workspace-v1";
 
@@ -54,6 +56,7 @@ function updateLayoutTabs(node: LayoutNode, path: number[], active: number): Lay
 export function App() {
   const [workspace, setWorkspace] = useState<WorkspaceState>(loadWorkspace);
   const [showFeedbackModal, setShowFeedbackModal] = useState(false);
+  const [showTextBulkReplace, setShowTextBulkReplace] = useState(false);
 
   const undo = useEditorStore((s) => s.undo);
   const redo = useEditorStore((s) => s.redo);
@@ -129,6 +132,8 @@ export function App() {
         <button onClick={undo} disabled={!canUndo} style={menuBtnStyle(canUndo)}>↩ Undo</button>
         <button onClick={redo} disabled={!canRedo} style={menuBtnStyle(canRedo)}>↪ Redo</button>
         <span style={{ color: "#444", marginLeft: 4 }}>|</span>
+        <MacroMenu onOpenTextBulkReplace={() => setShowTextBulkReplace(true)} />
+        <span style={{ color: "#444" }}>|</span>
         <span style={{ color: "#555", fontSize: 11 }}>
           {canUndo ? `${undoStack.past.length} op` : "clean"}
         </span>
@@ -154,6 +159,8 @@ export function App() {
       <FeedbackPrompt />
 
       {showFeedbackModal && <FeedbackSendModal onClose={() => setShowFeedbackModal(false)} />}
+
+      {showTextBulkReplace && <TextBulkReplaceDialog onClose={() => setShowTextBulkReplace(false)} />}
     </div>
   );
 }
