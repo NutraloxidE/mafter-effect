@@ -3445,7 +3445,11 @@ solid レイヤーの **Timeline 行ラベル列**（[TimelinePanel.tsx](../src/
 **採番モード（`order`・確定）**: レイヤーへ番号を割り当てる根拠を 2 つから選ぶ。
 
 - **`content`（中身の数字）**: 対象は **現在のテキスト内容（trim 済）が整数 `^\d+$`** の **静的**テキストレイヤーのみ。番号＝その整数。
-- **`reading`（配置の読み順）**: 対象は **現フレームで表示中の静的テキストレイヤー全部**（中身が数字でなくてよい）。各レイヤーの画面位置（`resolve(comp, frame)` の `worldTransform` 平行移動成分）を **左上→行→右下** の読み順に並べ、その順で `1,2,3…` を採番する。行判定は y 差が `DEFAULT_ROW_TOLERANCE`（既定 24px）以内なら同一行と見なし、行内は x 昇順。読み順計算 `computeReadingOrder` は純関数（INV-1）。
+- **`reading`（配置の読み順）**: 対象は **現フレームで表示中の静的テキストレイヤー全部**（中身が数字でなくてよい）。各レイヤーの画面位置（`resolve(comp, frame)` の `worldTransform` 平行移動成分）を **左上→行→右下** の読み順に並べ、その順で `1,2,3…` を採番する。行内は x 昇順。読み順計算 `computeReadingOrder` は純関数（INV-1）。
+  - **行判定（`rowGrouping`）**: y 差がどれだけ離れたら別の行と見なすかを 2 プリセットから選ぶ。
+    - **`lenient`（緩め・既定）**: `LENIENT_ROW_TOLERANCE`（64px）まで同一行と見なす。多少の上下ズレがあっても同じ視覚行を 1 行として左→右に採番する。
+    - **`strict`（厳格）**: `STRICT_ROW_TOLERANCE`（4px・ほぼ同座標のみ）。座標が近いものだけ同一行。
+    - 例: 右側の要素が 20px 高いだけの 2 要素は、緩め＝同一行（左→右）、厳格＝別行（上→下）で採番が変わる。`rowToleranceFor(grouping)` で px に変換。
 
 いずれのモードでも keyframe / expression 付き text は対象外（プレビューで除外件数を表示）。位置取得 [textLayerPositions.ts](../src/editor/macros/textLayerPositions.ts) は `resolve` を使うが、`resolve` 自体が純関数のためスキーマ・レンダラ非依存は保たれる。
 

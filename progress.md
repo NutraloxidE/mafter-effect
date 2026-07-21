@@ -2783,6 +2783,14 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
 - **検証**: typecheck クリーン。full Vitest **1413/1413 PASS**。実ブラウザ（Playwright）: `Ctrl+Z` は HUD を開かない／`Ctrl` ダブルタップで HUD 表示／`M` で潜り／`T` でダイアログ起動＋HUD 閉／`Esc` キャンセル、いずれも PASS。機能由来の page error なし。
 - **build:player**: editor-only のため不要。
 
+### 2026-07-21（Claude Code / Opus 4.8）— 配置順の行判定モード（緩め/厳格）追加・緩めを既定に ✅
+
+- **概要**: reading（配置順）採番の行判定に 2 プリセットを追加。**緩め（`lenient`・既定・64px）**＝多少の上下ズレは同じ行、**厳格（`strict`・4px）**＝座標が近いものだけ同じ行。従来の単一 24px を廃し、既定を緩めに。
+- **spec**: §32.1 に `rowGrouping`（lenient/strict）と例（右が 20px 高い 2 要素で採番が変わる）を追記。§5・INV・project.json 不変。
+- **実装**: `textBulkReplace.ts`（`RowGrouping` 型・`LENIENT/STRICT_ROW_TOLERANCE`・`rowToleranceFor`、`DEFAULT_ROW_TOLERANCE`=緩め）、`store.ts`（`applyTextBulkReplace` に rowGrouping 追加・既定 lenient）、`TextBulkReplaceDialog.tsx`（reading 時のみ行判定ラジオ表示・prefs 永続化・既定 緩め）。
+- **検証**: typecheck クリーン。full Vitest **1424/1424 PASS**（緩め/厳格で採番が変わる純ロジック unit を追加）。実ブラウザ: 行判定 UI は content で非表示・reading で表示、既定 緩め、厳格が再開後も維持、page error なし。
+- **build:player**: 不要（editor-only）。
+
 ### 2026-07-21（Claude Code / Opus 4.8）— UI 改善: 置換ダイアログの永続化・移動 + メニュー並び ✅
 
 - **概要**: ①テキスト一括置換ダイアログの最後の選択（入力/採番/分割モード）と位置を localStorage に永続化。②ヘッダドラッグでダイアログを自由に移動（背景透明化・背後のコンプが見える）。③メニューバーの `clean`/`N op` 表示を Undo/Redo のすぐ右へ移動（マクロは その後）。

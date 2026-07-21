@@ -3,7 +3,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { currentTimelineComp, useEditorStore } from "../store";
-import { planBulkReplace, type OrderMode, type ReplaceMode } from "../macros/textBulkReplace";
+import { planBulkReplace, rowToleranceFor, type OrderMode, type ReplaceMode, type RowGrouping } from "../macros/textBulkReplace";
 import { textLayerPositions } from "../macros/textLayerPositions";
 
 const PREFS_KEY = "mafter-text-bulk-replace-v1";
@@ -13,12 +13,13 @@ interface DialogPrefs {
   input: string;
   mode: ReplaceMode;
   order: OrderMode;
+  rowGrouping: RowGrouping;
   x: number | null; // null = 未設定（中央に配置）
   y: number | null;
 }
 
 function loadPrefs(): DialogPrefs {
-  const fallback: DialogPrefs = { input: "", mode: "char", order: "content", x: null, y: null };
+  const fallback: DialogPrefs = { input: "", mode: "char", order: "content", rowGrouping: "lenient", x: null, y: null };
   try {
     const raw = localStorage.getItem(PREFS_KEY);
     if (!raw) return fallback;
@@ -27,6 +28,7 @@ function loadPrefs(): DialogPrefs {
       input: typeof p.input === "string" ? p.input : "",
       mode: p.mode === "word" ? "word" : "char",
       order: p.order === "reading" ? "reading" : "content",
+      rowGrouping: p.rowGrouping === "strict" ? "strict" : "lenient",
       x: typeof p.x === "number" ? p.x : null,
       y: typeof p.y === "number" ? p.y : null,
     };
@@ -50,6 +52,7 @@ export function TextBulkReplaceDialog({ onClose }: { onClose: () => void }) {
   const [input, setInput] = useState(prefs.input);
   const [mode, setMode] = useState<ReplaceMode>(prefs.mode);
   const [order, setOrder] = useState<OrderMode>(prefs.order);
+  const [rowGrouping, setRowGrouping] = useState<RowGrouping>(prefs.rowGrouping);
   const [pos, setPos] = useState<{ x: number; y: number }>(() =>
     prefs.x !== null && prefs.y !== null ? { x: prefs.x, y: prefs.y } : defaultPos(),
   );
@@ -58,11 +61,11 @@ export function TextBulkReplaceDialog({ onClose }: { onClose: () => void }) {
   // 選択内容・位置を永続化（次回起動でも維持）。
   useEffect(() => {
     try {
-      localStorage.setItem(PREFS_KEY, JSON.stringify({ input, mode, order, x: pos.x, y: pos.y }));
+      localStorage.setItem(PREFS_KEY, JSON.stringify({ input, mode, order, rowGrouping, x: pos.x, y: pos.y }));
     } catch {
       /* ignore */
     }
-  }, [input, mode, order, pos]);
+  }, [input, mode, order, rowGrouping, pos]);
 
   const onHeaderMouseDown = (e: React.MouseEvent) => {
     e.stopPropagation(); // 背景クリック（閉じる）と区別
@@ -98,15 +101,15 @@ export function TextBulkReplaceDialog({ onClose }: { onClose: () => void }) {
   );
 
   const plan = useMemo(
-    () => planBulkReplace(objects, input, mode, order, positions),
-    [objects, input, mode, order, positions],
+    () => planBulkReplace(objects, input, mode, order, positions, rowToleranceFor(rowGrouping)),
+    [objects, input, mode, order, positions, rowGrouping],
   );
 
   const numberedLayerCount = plan.targetCount + plan.skipped.length;
   const canApply = plan.assignments.length > 0;
 
   const onApply = () => {
-    applyTextBulkReplace(input, mode, order);
+    applyTextBulkReplace(input, mode, order, rowGrouping);
     onClose();
   };
 
@@ -153,6 +156,20 @@ export function TextBulkReplaceDialog({ onClose }: { onClose: () => void }) {
             配置順（左上→右下）
           </label>
         </div>
+
+        {order === "reading" && (
+          <div style={{ display: "flex", gap: 14, alignItems: "center", margin: "0 0 4px" }}>
+            <span style={{ fontSize: 11, color: "#999", width: 62 }}>行判定:</span>
+            <label style={radioLabel}>
+              <input type="radio" name="rowGrouping" checked={rowGrouping === "lenient"} onChange={() => setRowGrouping("lenient")} />
+              緩め（多少の上下は同じ行）
+            </label>
+            <label style={radioLabel}>
+              <input type="radio" name="rowGrouping" checked={rowGrouping === "strict"} onChange={() => setRowGrouping("strict")} />
+              厳格（座標が近いものだけ）
+            </label>
+          </div>
+        )}
 
         <div style={{ display: "flex", gap: 14, alignItems: "center", margin: "0 0 10px" }}>
           <span style={{ fontSize: 11, color: "#999", width: 62 }}>分割:</span>

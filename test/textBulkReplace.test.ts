@@ -4,7 +4,10 @@ import type { AnimatedProp, SceneObject } from "../src/core/schema";
 import {
   buildReplacedObjects,
   computeReadingOrder,
+  LENIENT_ROW_TOLERANCE,
   planBulkReplace,
+  rowToleranceFor,
+  STRICT_ROW_TOLERANCE,
   tokenize,
 } from "../src/editor/macros/textBulkReplace";
 
@@ -142,6 +145,47 @@ describe("computeReadingOrder — top-left → row → bottom-right", () => {
       { objectId: "a", x: 0, y: 0 },
     ];
     expect(computeReadingOrder(entries)).toEqual(["a", "z"]);
+  });
+
+  it("lenient groups a jittered row (left→right); strict flips to y order", () => {
+    // 同じ視覚行のつもりだが right が 20px 高い。
+    const entries = [
+      { objectId: "left", x: 0, y: 20 },
+      { objectId: "right", x: 200, y: 0 },
+    ];
+    // 緩め(64): 同じ行 → x 昇順 → left, right
+    expect(computeReadingOrder(entries, LENIENT_ROW_TOLERANCE)).toEqual(["left", "right"]);
+    // 厳格(4): 別行 → y 昇順 → right(上), left(下)
+    expect(computeReadingOrder(entries, STRICT_ROW_TOLERANCE)).toEqual(["right", "left"]);
+  });
+});
+
+describe("rowToleranceFor", () => {
+  it("maps grouping modes to tolerances; lenient is the larger (default) one", () => {
+    expect(rowToleranceFor("lenient")).toBe(LENIENT_ROW_TOLERANCE);
+    expect(rowToleranceFor("strict")).toBe(STRICT_ROW_TOLERANCE);
+    expect(LENIENT_ROW_TOLERANCE).toBeGreaterThan(STRICT_ROW_TOLERANCE);
+  });
+});
+
+describe("planBulkReplace — lenient vs strict changes reading-order numbering", () => {
+  const objs = [textObject("left", staticProp("x")), textObject("right", staticProp("y"))];
+  // 同じ行のつもりだが right が 20px 高い。
+  const positions = new Map([
+    ["left", { x: 0, y: 20 }],
+    ["right", { x: 200, y: 0 }],
+  ]);
+
+  it("lenient: left=1, right=2 (left→right within one row)", () => {
+    const plan = planBulkReplace(objs, "one two", "word", "reading", positions, LENIENT_ROW_TOLERANCE);
+    const byId = new Map(plan.assignments.map((a) => [a.objectId, a.newText]));
+    expect([byId.get("left"), byId.get("right")]).toEqual(["one", "two"]);
+  });
+
+  it("strict: right=1, left=2 (y order splits into two rows)", () => {
+    const plan = planBulkReplace(objs, "one two", "word", "reading", positions, STRICT_ROW_TOLERANCE);
+    const byId = new Map(plan.assignments.map((a) => [a.objectId, a.newText]));
+    expect([byId.get("right"), byId.get("left")]).toEqual(["one", "two"]);
   });
 });
 

@@ -12,8 +12,20 @@ export type ReplaceMode = "char" | "word";
 /** 採番の根拠。content=中身の整数 / reading=配置の読み順。 */
 export type OrderMode = "content" | "reading";
 
-/** 読み順で「同じ行」と見なす y 方向の許容差（comp px）。これを超える y 差で行が変わる。 */
-export const DEFAULT_ROW_TOLERANCE = 24;
+/** 読み順の行判定の緩さ。lenient=多少の上下は同じ行 / strict=座標が近いものだけ同じ行。 */
+export type RowGrouping = "lenient" | "strict";
+
+/** 緩め: この y 差までは同じ行と見なす（既定・多少の上下を許容）。 */
+export const LENIENT_ROW_TOLERANCE = 64;
+/** 厳格: ほぼ同座標のみ同じ行（丸め・サブピクセルだけ許容）。 */
+export const STRICT_ROW_TOLERANCE = 4;
+/** 既定の行許容差（= 緩め）。これを超える y 差で行が変わる。 */
+export const DEFAULT_ROW_TOLERANCE = LENIENT_ROW_TOLERANCE;
+
+/** 行判定モードから y 許容差（comp px）へ変換する。 */
+export function rowToleranceFor(grouping: RowGrouping): number {
+  return grouping === "strict" ? STRICT_ROW_TOLERANCE : LENIENT_ROW_TOLERANCE;
+}
 
 /** 入力文字列をモードに応じてトークン列へ分解する。 */
 export function tokenize(input: string, mode: ReplaceMode): string[] {

@@ -93,7 +93,7 @@ import {
   type UndoRedoStack,
 } from "./commands";
 import { buildGlyphDecomposeObjects, createCanvasMeasureContext, type GlyphDecomposeMode } from "./glyphDecompose";
-import { buildReplacedObjects, planBulkReplace, type BulkReplacePlan, type OrderMode, type ReplaceMode } from "./macros/textBulkReplace";
+import { buildReplacedObjects, planBulkReplace, rowToleranceFor, type BulkReplacePlan, type OrderMode, type ReplaceMode, type RowGrouping } from "./macros/textBulkReplace";
 import { textLayerPositions } from "./macros/textLayerPositions";
 import { bakeMergeShapeToPath } from "./shapeBake";
 import { loadWorkArea, saveWorkArea } from "./workAreaStorage";
@@ -304,8 +304,8 @@ export interface EditorStore {
   pasteObjects: (objects: SceneObject[]) => string[];
 
   // §32.1 マクロ: テキスト一括置換。現在コンプのテキストレイヤーへトークンを番号順に流し込む。
-  // order="content"（中身の整数）/ "reading"（配置の読み順）。
-  applyTextBulkReplace: (input: string, mode: ReplaceMode, order: OrderMode) => BulkReplacePlan | null;
+  // order="content"（中身の整数）/ "reading"（配置の読み順）。rowGrouping は reading の行判定（既定 lenient）。
+  applyTextBulkReplace: (input: string, mode: ReplaceMode, order: OrderMode, rowGrouping?: RowGrouping) => BulkReplacePlan | null;
 
   // ショートカット: オブジェクトを新規追加して ID を返す
   addSolid: (name?: string) => string | null;
@@ -676,13 +676,13 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     get().applyCommand({ label, before, after });
   },
 
-  applyTextBulkReplace: (input, mode, order) => {
+  applyTextBulkReplace: (input, mode, order, rowGrouping = "lenient") => {
     const before = get().project;
     if (!before) return null;
     const comp = currentTimelineComp(before, get().currentCompId);
     if (!comp) return null;
     const positions = order === "reading" ? textLayerPositions(comp, get().currentFrame) : undefined;
-    const plan = planBulkReplace(comp.objects, input, mode, order, positions);
+    const plan = planBulkReplace(comp.objects, input, mode, order, positions, rowToleranceFor(rowGrouping));
     if (plan.assignments.length === 0) return plan; // 置換対象なし: 状態を変えずに計画のみ返す
     const afterObjects = buildReplacedObjects(comp.objects, plan.assignments);
     const after: Project = {
