@@ -1,0 +1,66 @@
+{
+  "when": "2026-07-20T01:11:53.032Z",
+  "note": "Export benchmark — mp4 (compositeExportFrame + optional WebCodecs).",
+  "fixture": {
+    "mainId": "01KXYH81G2D7F0TESZE1VNVW5G",
+    "innerId": "01KXYH81FXJASTK59HSH97GHRV",
+    "staticImageId": null,
+    "videoId": "01KXYH81N7BN41YMBJYYFFFHMV",
+    "mainSize": [
+      1280,
+      720
+    ]
+  },
+  "export": {
+    "ok": true,
+    "err": null,
+    "totalMs": 20198.4,
+    "frames": 60,
+    "gpuFrames": 60,
+    "gpuDirectSurfaceFrames": 60,
+    "directVideoCaptureFrames": 60,
+    "directSolidCaptureFrames": 4,
+    "directImageCaptureFrames": 0,
+    "workerVideoExportFrames": 0,
+    "firstFrameMs": 1222.5,
+    "avgFrameMs": 314.2,
+    "api": {
+      "getImageData": {
+        "n": 239,
+        "ms": 1230.5
+      },
+      "putImageData": {
+        "n": 180,
+        "ms": 66.3
+      },
+      "drawImage": {
+        "n": 779,
+        "ms": 108.4
+      },
+      "toDataURL": {
+        "n": 180,
+        "ms": 4513.9
+      },
+      "createImageBitmap": {
+        "n": 0,
+        "ms": 0
+      },
+      "readPixels": {
+        "n": 0,
+        "ms": 0
+      },
+      "imageDecode": {
+        "n": 539,
+        "ms": 1782.4
+      }
+    },
+    "output": {
+      "bytes": 334188,
+      "type": "video/mp4",
+      "width": 1280,
+      "height": 720,
+      "duration": 2.005333
+    }
+  },
+  "pageErrors": []
+}

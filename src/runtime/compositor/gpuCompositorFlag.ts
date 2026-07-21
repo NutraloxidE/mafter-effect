@@ -4,6 +4,7 @@
 // flag は **非直列化の実行時フラグ**（project.json に保存しない・INV 非関与）。dev/bench 用。
 //
 //   globalThis.__mafterGpuCompositor = true   // 有効化
+//   globalThis.__mafterGpuDirectSurface = false // bench で従来の Canvas2D 最終コピーを強制
 //
 // 非対応・未指定なら常に CPU 経路（挙動不変）。
 
@@ -30,6 +31,12 @@ export function isWebGl2Capable(): boolean {
 export function isGpuCompositorEnabled(): boolean {
   const g = globalThis as { __mafterGpuCompositor?: unknown };
   return g.__mafterGpuCompositor === true && isWebGl2Capable();
+}
+
+/** 非透過 video encode への WebGL surface 直結。false 明示時だけ従来 copy（A/B bench 用）。 */
+export function isGpuDirectSurfaceEnabled(): boolean {
+  const g = globalThis as { __mafterGpuDirectSurface?: unknown };
+  return g.__mafterGpuDirectSurface !== false;
 }
 
 /** テスト用: capability キャッシュをリセット。 */

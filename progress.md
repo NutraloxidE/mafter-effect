@@ -1,5 +1,35 @@
 # Progress
 
+### 2026-07-20（Claude Opus 4.8）— browser export 最大高速化 Phase 6（実験的 multi-render-context）実装・計測・既定 OFF で採用
+
+- **依頼**: `claude/phase-6-implementation-test-n5u5zo` ブランチの続きとして `browser-export-max-speed-plan.md` の **Phase 6（Experimental multi-render-context）** を実装・テストし、いい感じならコミット。
+- **やったこと（spec 先行）**: §11.2 に「複数レンダリング context の実験的並行描画（実験・既定 OFF）」を散文追記。決定論 frame ステップを保ったまま frame を `fi % N` でラウンドロビン分配し複数の隔離 render context で並行描画、frame 結果は timestamp 昇順の bounded reorder queue で整列してから encoder/zip へ渡す契約、共有（イミュータブル font/image cache・純関数 evaluator）と分離（mutable DOM/renderer/HTML player）、GPU/直接 capture 系との排他、video/worker 併用時の無効化を明記（§5/INV/project.json 直列化は不変）。
+- **実装**:
+  - 新規 [src/runtime/multiRenderContext.ts](src/runtime/multiRenderContext.ts): 純関数ドライバ `runOrderedMultiContext`（N producer で並行描画→ frame 昇順で consumer へ整列供給。有界 reorder window でメモリ制御、error/abort 伝播）＋ フラグ（`__mafterMultiRenderContext` / `__mafterMultiRenderContextCount` 2..4 clamp・既定 2・非直列化）＋ `compTreeHasVideo`（ネスト先まで video component を再帰検出）。
+  - [src/runtime/exporter.ts](src/runtime/exporter.ts): 適格時に追加 render context（container+DomRenderer+HtmlCompPlayer、font/image cache と compEvaluators は primary と共有）を構築し、`runPngSeq` / `encodeVideoFrames` に multi-context 分岐を追加。**multi-context は常に純 Canvas2D 合成（`compositeExportFrame(...,{})`）** を使い GPU/direct 系と排他。除外条件: comp（ネスト先含む）に video を含む、video 形式で worker export 併用。既定 flag OFF のため既定経路は完全に不変。
+- **計測（実 Chromium / 実 WebGL・[verify-multi-render-context-export.mjs](verify-multi-render-context-export.mjs)・1280×720 video なし HTML-heavy fixture / N=2 / 24f）**:
+  - **正しさ（正準ゲート・PASS）**: single vs multi(2) の **per-frame PNG SHA-256 が 24/24 完全一致（mismatch 0）**、context 別描画 `[12,12]` 均等、single 側 mcFrames=0（既定経路未変更）、pageErrors 0。→ INV-2 成立。
+  - **性能（改善なし）**: PNG 連番 wall single **2533.4ms** → multi **2756.4ms**（やや悪化）。mp4 は headless で png-seq へフォールバックし絶対値は参考。
+- **判定**: PLAN Phase 6 の採用線「2 contexts で wall ≥20% 改善」に届かない（single main thread で foreignObject capture/`drawImage` が実質同期 CPU バウンド＝重ねる非同期 decode 待ちが少ない）。Phase 4（worker +2.9%）/ Phase 5（audio overlap +8.5%）同様、**正しく gate された opt-in 実験として温存し既定 OFF**。詳細: [doc/cloudplan/browser-export-phase6-multi-context-benchmark.md](doc/cloudplan/browser-export-phase6-multi-context-benchmark.md)。
+- **検証**: `npm run typecheck` PASS / 新規 [test/multiRenderContext.test.ts](test/multiRenderContext.test.ts) 10 件 PASS / export 関連（encoderBackpressure・exportVideoEncode・workerVideoExport・bundleExport・**playerBuildFreshness**）PASS。`player.js` は exporter を import しないため **再ビルド不要**（freshness 緑で確認）。full Vitest **1387 passed / 1 failed**（唯一の fail は既存 `effects.test.ts` liquidChrome 再登録漏れ。`git stash` で base tree でも同一 fail を確認・本変更と無関係）。
+- **Next steps**: 実 GPU で `img.decode()` が真に off-main-thread になる環境でなら overlap が効きうるが本 repo 相当環境では価値なし。Phase 6 で PLAN の全 Phase を実装完了。今後の browser export 高速化は残余 hotspot 再現時に profiler 起点で。
+
+### 2026-07-20（Codex）— browser export 最大高速化 Phase 5
+
+- **Audio overlap**: 音声source/48kHz stereo metadataを同期確定し、asset read/decode/OfflineAudioContext mixを映像renderと並行可能にした。60f音声付きMP4 A/Bは直列 **20.20s**、並行 **21.92s（+8.5%）** のため `__mafterAudioMixOverlap=true` のopt-in、既定OFF。
+- **MP4 bounded finalization**: `fastStart: "in-memory"` を、予想video/audio chunk数を予約するregular MP4へ変更。60f A/Bは2回とも改善（**6120.4→5955.9ms / 5139.5→4758.1ms**）、finalize直接計測 **2.3→1.2ms** で既定ON。旧方式へは `__mafterMp4ReservedFastStart=false` で戻せる。
+- **出力検証**: 予約MP4は1280×720 / 2.005s、音声48kHz stereo / RMS 0.085。WebMも1280×720 / 1.0s、音声48kHz stereo / RMS 0.083。page error 0。StreamTargetは最終`Blob`契約では全出力保持を除けず、位置指定writeもあるため今回は非採用。
+- **検証**: targeted audio/fast-start/player freshness 18 tests PASS、`npm run build` PASS。全Vitestは **1377 passed / 1 failed**（既知の`effects.test.ts` liquidChrome再登録、本変更と無関係）。
+- **Next steps**: 珍しいdecode失敗sourceを含むempty audio trackの互換確認と、File System Accessへ直接書く新しいstreaming保存APIは別タスク。§5/INV/project.json直列化は不変。
+
+### 2026-07-20（Codex）— browser export 最大高速化 Phase 4
+
+- **実装**: video-only MP4/WebM に DedicatedWorker encode/mux 経路を追加。Window は resolve/render/capture と transferable `VideoFrame` 生成まで、Worker は `VideoEncoder`・mux を担当。未ack frame は最大3枚、encoder dequeue と二重 backpressure。abort/error 時は保留frame・encoder・workerを解放する。
+- **互換性**: 音声付き・透過WebM・Worker非対応は従来Window経路。§5/INV/project.json直列化は不変。runtime変更のため `npm run build:player` 実行済み。
+- **A/B**: fixture A 24f MP4（GPU direct）で Window **3844.4ms**、Worker **3956.3ms（+2.9%）**。双方 5791 bytes / 1280×720 / 0.8s、page error 0。短尺wall改善がないため `__mafterWorkerVideoExport=true` の明示opt-in（既定OFF）とした。
+- **検証**: `npm run typecheck` / `npm run build` / targeted worker・player freshness tests PASS。全Vitestは **1374 passed / 1 failed**（既知の `effects.test.ts` liquidChrome再登録、本変更と無関係）。
+- **Next steps**: Phase 5で音声準備を映像renderと並行化し、長尺向けstreaming targetのメモリ/最終化コストを評価する。
+
 ### 2026-07-19（Codex）— `Master → main 1` 非破壊高速化 Phase 4〜5 と実データ検証を完了
 
 - **実データ計測**: `mafter-project (12).purini remix (1).zip`（589,976,631 bytes）から、大容量動画だけを除いたローカル専用 fixture を作成。`bench-master-nested-real.mjs` で実 PreviewPanel／Caching OFF／`Master` f376〜409 を走査し、代表 f400 の preview screenshot と `captureCompFramePng` の SHA-256 が legacy／最適化経路で完全一致。ページ例外なし、3D canvas 4枚・nested object 67個を確認。
@@ -2608,3 +2638,115 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
   2. **白テキスト+tint は彩度に写らない** → 色付き層 or 輝度で測る。
   3. **cache overlay を出す**には小 work area を全 frame scrub で焼いてから再生（再生中は build が pause する）。auto-cache は `mosaic`/full displacement 等 `compRequiresPreviewBake` で起動。overlay 表示 = live root が `visibility:hidden`。
   4. Playwright の checkbox クリックは rAF 再生中に stability timeout する → `evaluate` で native `cb.click()`。
+
+### 2026-07-19（Codex）— Browser Export 最大高速化の調査・実装 PLAN ✅（コード未変更）
+
+- **依頼**: ブラウザ書き出しを最大限高速化するアイデアを、現行実装・既存実測・WebCodecs/Remotion の一次資料と突き合わせて PLAN 化。
+- **成果物**: `doc/cloudplan/browser-export-max-speed-plan.md`。
+- **確定した現状**: 既存 1280×720 heavy fixture の PNG export は 253.8ms/frame。支配コストは foreignObject SVG decode 70.8ms/frame + Canvas2D `drawImage` 累積 63.4ms/frame。現行 MP4/WebM loop はさらに `nextTick`、`createImageBitmap`、16ms polling backpressure、in-memory mux/audio を持つが full-export stage 別計測は未実施。
+- **PLAN の中核**: Phase 0 full-export profiler → Phase 1 direct `VideoFrame(canvas)` / `dequeue` event / settle barrier 局在化 → Phase 2 WebGL compositor output を encoder へ直結 → Phase 3 layer-local surface cache + solid/image/video/canvas direct adapter（foreignObject 回数削減）→ Phase 4 Worker encode/mux → Phase 5 audio overlap/streaming mux → Phase 6 multi-render-context 実験。
+- **重要な禁止事項**: WebCodecs `latencyMode: "realtime"` は仕様上 frame drop を許すため canonical export の高速化に使わない。MediaRecorder/captureStream、export video の `play()` step に戻さない。
+- **不変性**: 調査・doc のみ。source/spec/§5/INV/project.json は未変更、テスト未実行。
+- **Next step**: 実装するなら PLAN 推奨どおり Phase 0 + Phase 1A/1B を最初の作業単位にし、先に spec §11.2 散文を更新する。
+
+### 2026-07-19（Codex）— Browser Export Phase 1 実装・before/after比較 ✅
+
+- **spec先行**: §11.2散文に、raster canvas→`VideoFrame` direct input、`encodeQueueSize`超過時の`dequeue` event待機、abort/closed時の待機解放を追記。§5/INV/project.json変更なし。
+- **実装**:
+  - `exporter.ts`: `createImageBitmap(canvas)`中間surfaceを廃止し`new VideoFrame(canvas, timestamp/duration)`へ直結。
+  - `encoderBackpressure.ts`: 16ms pollingを`dequeue` event駆動へ置換。queue drain競合の再check、AbortSignal、encoder closedを処理。
+  - `encoderBackpressure.test.ts`: 即時 / 複数dequeue / abort / closedの4 unit追加。
+  - `bench-gpu-raster-export-baseline.mjs`: Windows/LinuxのPlaywright実行をportable化し、PNG/MP4/WebM選択、出力Blob metadata decode検証を追加。
+- **性能比較**: 同一build MP4 paired A/B×4でwall median **4,030.5→3,902.0ms（-3.2%）**、定常frame median **123.8→115.5ms（-6.7%）**、direct canvasが4組中3勝。`createImageBitmap` 24→0。効果は小さく、主要ボトルネックはforeignObject captureのまま。詳細: `doc/cloudplan/browser-export-phase1-benchmark.md`。
+- **最終出力実機**: MP4/WebMとも1280×720・約0.8秒のmetadata decode成功、pageErrors 0。WebMはbefore単発3,964.2ms、direct 3run median3,747.5ms（参考 -5.5%）。
+- **検証**: typecheck PASS / targeted 11 tests PASS / full vitest 1348/1350（既知pre-existing liquidChrome 1件 + 初回player freshness。`npm run build:player`後freshness PASS）/ video monotonic onTarget25/25・reverse0・stuck0 PASS / export adjustment PASS / track matte 9/9 PASS。
+- **既知verifyノイズ**: `verify-video-export.mjs`は古い`video_test.mp4`に焼き込まれたplayer UIを検出してFAIL。今回変更より前段captureの既知asset問題。動き/決定論は`verify-video-export-monotonic`を正準ゲートとしてPASS。
+- **player**: runtime変更ルールに従い`npm run build:player`実行、`public/player.js`更新・freshness PASS。
+- **Next step**: `browser-export-max-speed-plan.md` Phase 2（WebGL最終surface直結）またはPhase 3（layer-local surface cache/direct media surface）。
+
+### 2026-07-20（Codex）— Browser Export Phase 2 GPU出口直結 + video export GPU優先 ✅
+
+- **spec先行**: §11.2に、非透過MP4/WebMのGPU compositor優先、native解像度でWebGL canvasを`VideoFrame`へ直結、透過/PNG/scaled/precomp/bundleはCanvas2D維持、GPU失敗時CPU fallbackを追記。§5/INV/project.json変更なし。
+- **実装**:
+  - `WebGl2Compositor.finish(copyToCanvas2d)`: video用に最終Canvas2D `drawImage`を省略できる出口を追加。既定引数はcopy=trueで既存呼び出し不変。
+  - `compositeExportFrame(..., options)`: `enableGpuCompositor` / `directGpuSurface`を追加。video exportだけ明示opt-inし、scale時はdirectを自動抑止。
+  - `exporter.ts`: `alpha=false`のMP4/WebMでGPU compositor + direct surfaceを選択。alpha=trueは従来CPU/Canvas2D。
+  - `gpuCompositorFlag.ts`: 同一build A/B用の非直列化`__mafterGpuDirectSurface=false` seamを追加（既定true）。
+  - `verify-gpu-direct-video-frame.mjs`: WebGL direct vs Canvas2D copyの`VideoFrame` RGBA parityゲートを追加。
+  - GPU bench/parity scriptsのPlaywright Chromium pathをWindows/Linux portable化。
+- **性能（1280×720 heavy fixture / 24fr）**:
+  - final copyのみ: MP4 steady median **110.8→103.45ms/fr（-6.6%、3/4勝）**、WebM **121.1→102.4ms/fr（-15.4%、3/3勝）**。tracked `drawImage` **407→383**（24回削減）。
+  - video export backend全体: CPU→GPU+directでwall median **4015.45→3469.4ms（-13.6%、4/4勝）**、steady **119.55→103.7ms/fr（-13.3%、3/4勝）**。
+  - 詳細: `doc/cloudplan/browser-export-phase2-benchmark.md`。
+- **parity/isolation**: direct/copy `VideoFrame` normal・blend各230,400 samplesでmaxAbs=0/differing=0。GPU normal 3frはCPU比maxAbs=0。scaled MP4はdirect 0/6・640×360 decode PASS。実利用既定（global GPU flag OFFのまま）でも非透過MP4がGPU/direct 6/6実走・metadata decode PASS。
+- **検証**: typecheck PASS / targeted 16/16 PASS / player rebuild+freshness PASS / full Vitest **1349/1350**（唯一のfailは既存`effects.test.ts` liquidChrome再登録漏れ。単独再実行でも同じ）。
+- **既知事項**: alpha WebMはdirect 0/6を確認したが、本環境Chromiumでは生成blobのmetadata decodeが失敗（既存alpha codec/browser制約）。本変更はalpha経路を変更していない。
+- **Next step**: 最大ボトルネックはforeignObject capture。`browser-export-max-speed-plan.md` Phase 3として、layer-local content surface + placement分離、solid/image/video/canvas direct adapter、bounded surface cacheをspec化して段階実装する。transform/perspective/matte/nestedのfallback境界が設計判断点。
+
+### 2026-07-20（Codex）— Browser Export Phase 3a bounded static capture cache ✅
+
+- **spec先行**: §11.2に、browser video export限定のeffect無し2D solid/text capture再利用、DOMレイヤーごと直近1枚、対象外（media/HTML/plugin/geom/matte/nested/adjustment/effect）、PNG/precomp/bundle非適用を追記。
+- **実装**:
+  - `staticLayerCaptureCache.ts`: safe対象判定 + resolved signature（world transform/opacity/components）とA/B seam。
+  - `DomRenderer`: 各`ExportLayer`へ安全な`captureCacheKey`を投影。
+  - `exportComposite.ts`: WeakMapでDOMレイヤー実体ごとに直近1 Promise/canvasのみ保持。signature変化で置換、rejectで削除。
+  - `exporter.ts`: browser MP4/WebMだけcache opt-in。
+  - `staticLayerCaptureCache.test.ts`: hit/miss/除外条件 + flagの4 unit。
+- **性能（MP4 / 1280×720 / 24fr / static safe 4層、同一build 4 pairs）**:
+  - SVG decode **311→219**、tracked drawImage **383→291**（各-92 = 4層×23再利用frame、全run一致）。
+  - wall median **3882.7→3795.65ms（-2.2%、2/4勝）**、steady **121.9→107.6ms/fr（-11.7%、3/4勝）**。
+  - 全OFF/ON runでMP4 5791 bytes・1280×720 metadata decode一致。詳細: `doc/cloudplan/browser-export-phase3-static-cache-benchmark.md`。
+- **決定論ゲート**: `verify-video-export-monotonic.mjs` PASS（onTarget 25/25、reversal 0、stuck 0）。videoはcache対象外。
+- **全回帰**: player rebuild+freshness PASS。full Vitest **1354/1355**（唯一のfailは既存`effects.test.ts` liquidChrome再登録漏れ。増分failなし）。
+- **Next step**: Phase 3b direct image/video/canvas surface、またはcontent/placement分離でtransform-only animationもcache hit化。matte/perspective/nestedはfallback維持から1軸ずつ拡張する。
+
+### 2026-07-20（Codex）— Browser Export Phase 3b static image capture cache ✅
+
+- **spec先行**: §11.2 static capture cache対象へ読込完了済み2D imageを追加。asset IDだけでなく実DOMの`currentSrc`・natural sizeをsignatureへ含め、未読込/差替えはmissと確定。
+- **実装**: `staticLayerCaptureSignature`でimageをsafe対象化。`DomRenderer.getExportLayers`で`complete`/natural sizeをgateし、resource signatureをresolved signatureへ合成。A/B用image-only seamとunitを追加。
+- **実測（可視PNG 1枚 / MP4 / 24fr / 3 pairs）**: SVG decode **243→220**、drawImage **315→292**（各-23、全run一致）。wall median **3250.9→2795.8ms（-14.0%、3/3勝）**、steady **92.7→77.6ms/fr（-16.3%、3/3勝）**。全run output **14035 bytes**・1280×720 decode一致。詳細: `doc/cloudplan/browser-export-phase3b-image-cache-benchmark.md`。
+- **対象外維持**: video/canvas/HTML/plugin/geom/nested/adjustment/effect/matte、PNG/precomp/bundle。
+- **回帰**: typecheck・player rebuild/freshness PASS。full Vitest **1355/1357**（既知liquidChrome +既知flaky projectBins）。projectBinsを含む関連38 testsは単独再実行で全PASS。
+- **Next step**: Phase 3c simple 2D video direct capture adapter。videoはframeごとに変わるためcacheせず、deterministic seek後のpresented frameをJPEG data URL + SVG decodeを経由せずfull-comp canvasへ直接描く。transform/opacity/fitのみ対応し、3D/effect/matte/nested/alphaは既存fallback。
+
+### 2026-07-20（Codex）— Browser Export Phase 3c simple 2D video direct capture ✅
+
+- **spec先行**: §11.2に、非透過MP4/WebM限定でseek済み単純2D videoをfull-comp canvasへ直接描画する契約を追記。world transform/opacity/fitを維持し、alpha/effect/matte/3D/nested/multi-component/未decode/非affineは従来fallback。PNG/precomp/bundle/previewは非適用。§5/INV/project.json変更なし。
+- **実装**:
+  - `directVideoCapture.ts`: resolved eligibility、Canvas2D affine gate、object-fit矩形、A/B seam。
+  - `DomRenderer`: eligible videoと同一resolved transform/opacity/fit、実`HTMLVideoElement`を`ExportLayer`へ投影。split/packed alphaのcanvas併存時は除外。
+  - `exportComposite.ts`: ready済みvideoを透明full-comp canvasへ直接draw。通常root一括capture可能なフレームもdirect videoがあればper-layerへ切替え、他の静的層は既存cacheを利用。失敗時は同frameでforeignObject fallback。
+  - `exporter.ts`: browser MP4/WebM loopだけopt-in。非直列化`__mafterDirectVideoCapture=false`で即時rollback可能。
+  - `directVideoCapture.test.ts`: eligibility/除外/affine/fit/flagの8 unit。
+- **実測（1280×720 heavy fixture + video / MP4 / 24fr / 3 pairs）**: wall median **5756.8→4717.8ms（-18.0%、3/3勝）**、steady **195.6→105.5ms/fr（-46.1%、3/3勝）**。`toDataURL`/SVG decode/`drawImage`は各 **-24 calls**。directはON runで24/24実走。詳細: `doc/cloudplan/browser-export-phase3c-video-direct-benchmark.md`。
+- **画素比較**: encoded midpoint 64×36 RGBでMAE **0.179/255**、max **9/255**、差>3は**0.839%**、差>10は0。差は従来の中間JPEG除去による品質改善。metadataは全run 1280×720・0.8秒、pageErrors 0。
+- **回帰**: typecheck・player rebuild/freshness・増分15 tests PASS。full Vitest **1364/1365**（唯一のfailは既知`effects.test.ts` liquidChrome再登録漏れ）。実ブラウザはvideo monotonic onTarget 25/25・reversal 0・stuck 0、adjustment export PASS、track matte 9/9 PASS。
+- **Next step**: Phase 3d content/placement分離。transform/opacityだけ動くsolid/text/imageでcontent surfaceを再利用し、placementをcompositor側へ移す。回転/scale/anchor/opacityのCanvas2D/WebGL parityを先に固定し、perspective/matte/nestedはfallback維持。
+
+### 2026-07-20（Codex）— Browser Export Phase 3d simple 2D solid direct capture ✅
+
+- **spec先行**: §11.2に、非透過MP4/WebM限定で単純2D solidをresolved affine transform/opacity/color/sizeからfull-comp canvasへ直接描画する契約を追記。effect/matte/adjustment/3D/nested/multi-component/不正値はfallback。§5/INV/project.json変更なし。
+- **実装**:
+  - `directSolidCapture.ts`: resolved eligibility、値検証、A/B seam。
+  - `DomRenderer`→`ExportLayer`: direct solid descriptorを投影。
+  - `exportComposite.ts`: Canvas2D transform+opacity+`rgbaCss`で直接fill。既存static cacheを先に照合し、direct結果も同cacheへ格納するため、静的solidは初回1回だけdirect、animated solidはsignature変化時だけdirect。
+  - `exporter.ts`: 非透過browser MP4/WebMのみopt-in。`__mafterDirectSolidCapture=false`でrollback可能。
+  - `directSolidCapture.test.ts`: eligibility/除外/値gate/flagの4 unit。
+- **実測（1280×720 heavy fixture・position animated solid 1層 / MP4 / 24fr / 3 pairs）**: wall median **3887.4→3365.3ms（-13.4%、3/3勝）**、steady **111.8→94.4ms/fr（-15.6%、3/3勝）**。SVG decode/drawImage各 **-27 calls**。directは各ON run 27回（静的4層の初回 + animated層の残り23frame）。詳細: `doc/cloudplan/browser-export-phase3d-solid-direct-benchmark.md`。
+- **parity**: 全6run MP4 **14880 bytes**、1280×720・0.8秒一致。全3 pairのmidpoint 64×36 RGBAは**byte-identical（maxAbs=0）**、pageErrors 0。
+- **回帰**: typecheck・player rebuild/freshness・増分19 tests PASS。full Vitest **1368/1369**（唯一のfailは既知`effects.test.ts` liquidChrome再登録漏れ）。実ブラウザ adjustment export PASS、track matte 9/9 PASS。
+- **Next step**: Phase 3e simple 2D image direct capture。decoded `HTMLImageElement`を同じaffine/opacity/fit adapterへ載せ、静的は既存cache、transform animated時だけdirect更新。cross-origin/未decode/effect/matte/3Dはfallback。
+
+### 2026-07-20（Codex）— Browser Export Phase 3e simple 2D image direct capture ✅
+
+- **spec先行**: §11.2に、非透過MP4/WebM限定で読込済み・same-origin/CORS-safe単純2D imageを実`HTMLImageElement`からresolved affine transform/opacity/fitで直接描画する契約を追記。未decode/cross-origin unsafe/effect/matte/adjustment/3D/nested/multi-componentはfallback。§5/INV/project.json変更なし。
+- **実装**:
+  - `directImageCapture.ts`: resolved eligibility、fit正規化、A/B seam。
+  - `DomRenderer`: DOM imageのcomplete/natural size/source originをgateして`ExportLayer`へ投影。
+  - `exportComposite.ts`: source/destination fit矩形 + affine/opacityで直接drawし、結果を既存one-entry cacheへ格納。
+  - `exporter.ts`: 非透過browser MP4/WebMのみopt-in。`__mafterDirectImageCapture=false`でrollback可能。
+  - `directImageCapture.test.ts`: eligibility/除外/fit/flagの4 unit。
+- **実測（1280×720 heavy fixture + position animated PNG / MP4 / 24fr / 3 pairs）**: wall median **4128.4→3371.8ms（-18.3%、3/3勝）**、steady **119.3→92.2ms/fr（-22.7%、3/3勝）**、SVG decode **239→215（-24）**。directは各ON run 24/24。詳細: `doc/cloudplan/browser-export-phase3e-image-direct-benchmark.md`。
+- **画素比較**: 全3 pairでmidpoint RGB MAE **0.054/255**、max **4/255**、差>3は**0.101%**、差>10は0。全run 1280×720・0.8秒、pageErrors 0。encoded sizeは70608→64059 bytes（Canvas2D直描画とSVG補間の微差）。
+- **回帰**: typecheck・player rebuild/freshness・増分23 tests PASS。full Vitest **1372/1373**（唯一のfailは既知`effects.test.ts` liquidChrome再登録漏れ）。実ブラウザ adjustment export PASS、track matte 9/9 PASS。
+- **Next step**: Phase 3f text content/placement分離、またはPhase 4 Worker encode/mux。textはfont/box/stroke/shadow/baselineのlocal bounds固定と回転・scale parityが必要なため、direct drawではなくlocal foreignObject surface cacheを優先する。

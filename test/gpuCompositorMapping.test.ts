@@ -4,6 +4,7 @@
 import { describe, it, expect } from "vitest";
 import { blendModeToGpuId } from "../src/runtime/compositor/WebGL2Compositor";
 import { isGpuEffectSupported } from "../src/runtime/compositor/gpuEffectRegistry";
+import { isGpuDirectSurfaceEnabled } from "../src/runtime/compositor/gpuCompositorFlag";
 import type { BlendMode } from "../src/core/schema";
 
 describe("blendModeToGpuId", () => {
@@ -37,6 +38,24 @@ describe("isGpuEffectSupported", () => {
   it("GPU pass 未実装の effect は false（chain 全落ちで CPU bridge・§7 案A）", () => {
     for (const t of ["wave", "ripple", "turbulentDisplace", "pixelSorter", "blur", "tint", "unknown"]) {
       expect(isGpuEffectSupported(t)).toBe(false);
+    }
+  });
+});
+
+describe("isGpuDirectSurfaceEnabled", () => {
+  it("既定 true、bench が false を明示したときだけ従来 copy に戻す", () => {
+    const g = globalThis as { __mafterGpuDirectSurface?: unknown };
+    const previous = g.__mafterGpuDirectSurface;
+    try {
+      delete g.__mafterGpuDirectSurface;
+      expect(isGpuDirectSurfaceEnabled()).toBe(true);
+      g.__mafterGpuDirectSurface = false;
+      expect(isGpuDirectSurfaceEnabled()).toBe(false);
+      g.__mafterGpuDirectSurface = true;
+      expect(isGpuDirectSurfaceEnabled()).toBe(true);
+    } finally {
+      if (previous === undefined) delete g.__mafterGpuDirectSurface;
+      else g.__mafterGpuDirectSurface = previous;
     }
   });
 });

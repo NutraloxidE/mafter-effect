@@ -96,6 +96,18 @@ import {
   showTrackMatteSourcesForTeardown,
 } from "./trackMatteDom";
 import { composeTrackMatteToCanvas } from "./trackMatteCapture";
+import { staticLayerCaptureSignature } from "./staticLayerCaptureCache";
+import {
+  directVideoCaptureDescriptor,
+  type DirectVideoCaptureDescriptor,
+  type DirectVideoCaptureSource,
+} from "./directVideoCapture";
+import { directSolidCaptureDescriptor, type DirectSolidCaptureDescriptor } from "./directSolidCapture";
+import {
+  directImageCaptureDescriptor,
+  type DirectImageCaptureDescriptor,
+  type DirectImageCaptureSource,
+} from "./directImageCapture";
 
 // §8 DomRenderer — フラット matrix3d レンダラ。
 // 各 ResolvedObject を root の兄弟 div として並べる。ネストしない。
@@ -141,6 +153,18 @@ function setBlendModeStyle(el: HTMLElement, blend: BlendMode): void {
   s.mixBlendMode = isCssBlendMode(blend) ? blend : "";
 }
 
+function layerCaptureCacheKeyWithResources(div: HTMLElement, baseKey: string | null): string | null {
+  if (!baseKey) return null;
+  const images = [...div.querySelectorAll("img")];
+  if (images.length === 0) return baseKey;
+  const resources: string[] = [];
+  for (const image of images) {
+    if (!image.complete || image.naturalWidth <= 0 || image.naturalHeight <= 0) return null;
+    resources.push(`${image.currentSrc || image.src}|${image.naturalWidth}x${image.naturalHeight}`);
+  }
+  return `${baseKey}|images:${resources.join(";")}`;
+}
+
 interface ObjectEntry {
   div: HTMLDivElement;
   /** §5.4f トラックマット塗り時は inner（transform+content）。それ以外は div。 */
@@ -176,6 +200,14 @@ interface ObjectEntry {
   isTrackMatteSource: boolean;
   /** §5.4f トラックマット塗り（full-comp host + mask） */
   hasTrackMatte: boolean;
+  /** browser video export用の安全なstatic capture signature。対象外はnull。 */
+  captureCacheKey: string | null;
+  /** browser video exportでforeignObjectを省ける単純2D video。対象外はnull。 */
+  directVideoCapture: DirectVideoCaptureDescriptor | null;
+  /** browser video exportでforeignObjectを省ける単純2D solid。対象外はnull。 */
+  directSolidCapture: DirectSolidCaptureDescriptor | null;
+  /** browser video exportでforeignObjectを省ける単純2D image。対象外はnull。 */
+  directImageCapture: DirectImageCaptureDescriptor | null;
   /**
    * 通常経路（非 matte・非 matte-source）ホスト transform/opacity の同値書込抑制用 last-value。
    * matte/matte-source/childrenRebuilt に入るフレームで null 化し、通常経路へ戻った初回に
@@ -190,6 +222,32 @@ interface ObjectEntry {
 interface RasterWorkItem {
   effect: ResolvedEffect;
   def: NonNullable<ReturnType<typeof globalPluginRegistry.getEffectDef>>;
+}
+
+function directVideoCaptureWithElement(entry: ObjectEntry): DirectVideoCaptureSource | null {
+  const descriptor = entry.directVideoCapture;
+  if (!descriptor) return null;
+  const videos = [...entry.div.querySelectorAll("video")];
+  if (videos.length !== 1 || entry.div.querySelector("canvas")) return null;
+  const video = videos[0];
+  if (!(video instanceof HTMLVideoElement)) return null;
+  return { ...descriptor, video };
+}
+
+function directImageCaptureWithElement(entry: ObjectEntry): DirectImageCaptureSource | null {
+  const descriptor = entry.directImageCapture;
+  if (!descriptor) return null;
+  const images = [...entry.div.querySelectorAll("img")];
+  if (images.length !== 1 || entry.div.querySelector("canvas")) return null;
+  const image = images[0];
+  if (!(image instanceof HTMLImageElement) || !image.complete || image.naturalWidth <= 0 || image.naturalHeight <= 0) return null;
+  try {
+    const url = new URL(image.currentSrc || image.src, document.baseURI);
+    if (url.protocol !== "blob:" && url.protocol !== "data:" && url.origin !== location.origin && image.crossOrigin === null) return null;
+  } catch {
+    return null;
+  }
+  return { ...descriptor, image };
 }
 
 export class DomRenderer implements Renderer {
@@ -556,6 +614,10 @@ export class DomRenderer implements Renderer {
           exportChain: null,
           isTrackMatteSource: false,
           hasTrackMatte: false,
+          captureCacheKey: null,
+          directVideoCapture: null,
+          directSolidCapture: null,
+          directImageCapture: null,
           lastTransform: null,
           lastOpacity: null,
         };
@@ -564,6 +626,10 @@ export class DomRenderer implements Renderer {
       entry.threeD = obj.threeD === true;
       entry.isTrackMatteSource = obj.isTrackMatteSource === true;
       entry.hasTrackMatte = obj.trackMatte !== undefined;
+      entry.captureCacheKey = staticLayerCaptureSignature(obj);
+      entry.directVideoCapture = directVideoCaptureDescriptor(obj);
+      entry.directSolidCapture = directSolidCaptureDescriptor(obj);
+      entry.directImageCapture = directImageCaptureDescriptor(obj);
 
       // §5.4f: 塗りを先に host 化し、マット源は fillHost の子（destination-in/out）。
       if (obj.trackMatte) {
@@ -1452,14 +1518,22 @@ export class DomRenderer implements Renderer {
         blendMode: e.blendMode,
         isAdjustment: e.isAdjustment,
         exportChain: e.isAdjustment ? e.exportChain : null,
+        captureCacheKey: layerCaptureCacheKeyWithResources(e.div, e.captureCacheKey),
+        directVideoCapture: directVideoCaptureWithElement(e),
+        directSolidCapture: e.directSolidCapture,
+        directImageCapture: directImageCaptureWithElement(e),
         z: Number(e.div.style.zIndex) || 0,
       }));
     layers.sort((a, b) => a.z - b.z);
-    return layers.map(({ div, blendMode, isAdjustment, exportChain }) => ({
+    return layers.map(({ div, blendMode, isAdjustment, exportChain, captureCacheKey, directVideoCapture, directSolidCapture, directImageCapture }) => ({
       div,
       blendMode,
       isAdjustment,
       exportChain,
+      captureCacheKey,
+      directVideoCapture,
+      directSolidCapture,
+      directImageCapture,
     }));
   }
 

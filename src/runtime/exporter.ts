@@ -15,11 +15,24 @@ import { ExpressionEngine } from "./expressionEngine";
 import { HtmlCompPlayer } from "./htmlComp";
 import { ModuleLoader } from "./moduleLoader";
 import { resolve, type ExpressionEvaluator } from "./resolve";
-import { compositeExportFrame } from "./exportComposite";
+import { compositeExportFrame, type ExportCompositeOptions } from "./exportComposite";
 import { collectFootageAudioSources, scheduleGainAutomation } from "./footageAudio";
 import { collectFadeClips, computeFadeSuppression, fadeSec, isAutoFadeEnabled, scheduleDeclickRamps } from "./footageAutoFade";
 import { resolveFootageAudioPath } from "./footagePlayback";
 import { resolveExportVideoEncode } from "./exportVideoEncode";
+import { waitForEncoderQueueAtMost } from "./encoderBackpressure";
+import { isGpuDirectSurfaceEnabled } from "./compositor/gpuCompositorFlag";
+import { isStaticLayerCaptureCacheEnabled } from "./staticLayerCaptureCache";
+import { isDirectVideoCaptureEnabled } from "./directVideoCapture";
+import { isDirectSolidCaptureEnabled } from "./directSolidCapture";
+import { isDirectImageCaptureEnabled } from "./directImageCapture";
+import { createWorkerVideoExportSession, isWorkerVideoExportEnabled } from "./workerVideoExport";
+import {
+  compTreeHasVideo,
+  isMultiRenderContextEnabled,
+  multiRenderContextCount,
+  runOrderedMultiContext,
+} from "./multiRenderContext";
 
 export type ExportPhase = "prepare" | "render" | "encode" | "audio" | "bake" | "pack" | "done" | "error";
 
@@ -101,6 +114,10 @@ export async function exportComposition(
   container.style.cssText = `position:fixed;left:-${nw + 20}px;top:0;width:${nw}px;height:${nh}px;overflow:hidden;z-index:-99999;pointer-events:none;`;
   document.body.appendChild(container);
 
+  // §11.2 Phase 6（実験・既定 OFF）: 複数レンダリング context を使うときの追加 renderer / container。
+  const extraRenderers: DomRenderer[] = [];
+  const extraContainers: HTMLElement[] = [];
+
   try {
     const loader = new ModuleLoader(fs);
     const engine = new ExpressionEngine(loader);
@@ -129,30 +146,67 @@ export async function exportComposition(
     onProgress({ phase: "prepare", frame: 0, totalFrames, message: "Loading expressions & HTML comps…" });
 
     let evaluator: ExpressionEvaluator | undefined;
+    let compEvaluators = new Map<string, ExpressionEvaluator>();
     await Promise.all([
       engine.prepare(tlComp).then(() => { evaluator = engine.makeEvaluator(tlComp); }),
       // §23.3b: ネスト comp の expression も export で評価する（preview と一致・INV-2）。
       Promise.all(timelineComps.map((c) => engine.prepare(c))).then(() => {
-        renderer.setCompEvaluators(new Map(timelineComps.map((c) => [c.id, engine.makeEvaluator(c)])));
+        compEvaluators = new Map(timelineComps.map((c) => [c.id, engine.makeEvaluator(c)]));
+        renderer.setCompEvaluators(compEvaluators);
       }),
       player.prepare(htmlComps, (id) => `${compositionDir(id)}/script.js`),
     ]);
 
     checkAbort(signal);
 
+    // §11.2 Phase 6（実験・既定 OFF）— 複数レンダリング context を構築する。
+    //  除外: comp（ネスト先含む）に video component を含む（decoder 重複回避）、video 形式で worker
+    //  export と併用（別実験・排他）。イミュータブルな font/image cache と純関数 evaluator は共有し、
+    //  mutable な DOM / renderer / HTML player は context ごとに分離する。
+    const multiContextEligible = isMultiRenderContextEnabled()
+      && !compTreeHasVideo(project, tlComp)
+      && !(config.format !== "png-seq" && isWorkerVideoExportEnabled());
+    if (multiContextEligible) {
+      const wantContexts = multiRenderContextCount();
+      for (let i = 1; i < wantContexts; i++) {
+        checkAbort(signal);
+        const c2 = document.createElement("div");
+        c2.style.cssText = `position:fixed;left:-${(nw + 20) * (i + 1)}px;top:0;width:${nw}px;height:${nh}px;overflow:hidden;z-index:-99999;pointer-events:none;`;
+        document.body.appendChild(c2);
+        extraContainers.push(c2);
+        const player2 = new HtmlCompPlayer(new ModuleLoader(fs));
+        const renderer2 = new DomRenderer();
+        renderer2.setHtmlPlayer(player2);
+        renderer2.setPreviewRenderOptions({ exportCompositeMode: true, exportVideoStep: true });
+        renderer2.setFontCache(fontCache);
+        renderer2.setImageCache(imageCache);
+        renderer2.setTextQuality(config.textRenderMode ?? "precise");
+        renderer2.mount(c2, tlComp);
+        renderer2.setHtmlComps(new Map(htmlComps.map((c) => [c.id, c])));
+        renderer2.setTimelineComps(new Map(timelineComps.map((c) => [c.id, c])));
+        renderer2.setCompEvaluators(compEvaluators);
+        await player2.prepare(htmlComps, (id) => `${compositionDir(id)}/script.js`);
+        extraRenderers.push(renderer2);
+      }
+    }
+
     if (config.format === "png-seq") {
       const blob = await runPngSeq(
         tlComp, renderer, evaluator, config,
-        startFrame, totalFrames, nw, nh, w, h, onProgress, signal,
+        startFrame, totalFrames, nw, nh, w, h, extraRenderers, onProgress, signal,
       );
       return { blob, format: "png-seq" };
     } else {
-      // Audio assets を先に収集・デコード（OfflineAudioContext が必要なため）
-      const audioMix = await buildAudioMix(project, tlComp, startFrame, endFrame, config.fps, fs);
+      // Source metadata is synchronous; the opt-in path may overlap decode/mix with deterministic video rendering.
+      let audioTask = createAudioMixTask(project, tlComp, startFrame, endFrame, config.fps, fs);
+      if (!isAudioMixOverlapEnabled() && audioTask.hasAudioSources) {
+        const audioMix = await audioTask.promise;
+        audioTask = { hasAudioSources: audioMix !== null, promise: Promise.resolve(audioMix) };
+      }
       try {
         const blob = await runVideo(
           tlComp, renderer, evaluator, config,
-          startFrame, totalFrames, nw, nh, w, h, audioMix, onProgress, signal,
+          startFrame, totalFrames, nw, nh, w, h, extraRenderers, audioTask, onProgress, signal,
         );
         return { blob, format: config.format };
       } catch (e) {
@@ -167,14 +221,45 @@ export async function exportComposition(
         });
         const blob = await runPngSeq(
           tlComp, renderer, evaluator, { ...config, format: "png-seq" },
-          startFrame, totalFrames, nw, nh, w, h, onProgress, signal,
+          startFrame, totalFrames, nw, nh, w, h, extraRenderers, onProgress, signal,
         );
         return { blob, format: "png-seq", fallbackReason: reason };
       }
     }
   } finally {
     container.remove();
+    for (const r of extraRenderers) {
+      try { r.dispose(); } catch { /* best-effort cleanup */ }
+    }
+    for (const c of extraContainers) c.remove();
   }
+}
+
+// §11.2 Phase 6 — 1 context の1フレーム描画（resolve → render → flush → composite）。
+async function renderContextFrameCanvas(
+  renderer: DomRenderer,
+  comp: TimelineComposition,
+  evaluator: ExpressionEvaluator | undefined,
+  frame: number,
+  nw: number, nh: number, w: number, h: number, bg: string,
+  options: ExportCompositeOptions,
+): Promise<HTMLCanvasElement> {
+  renderer.renderFrame(resolve(comp, frame, { expressions: evaluator }), frame);
+  // レイヤ直付け raster の完了のみ待つ。調整合成は compositeExportFrame が行う。
+  await renderer.flushRasterEffects();
+  await renderer.flushVideoFrames();
+  await nextTick();
+  return compositeExportFrame(renderer, nw, nh, w, h, bg, options);
+}
+
+/** multi-context 経路の frame 描画数を bench 用に記録する。 */
+function recordMultiContextFrames(totalFrames: number, contextFrameCounts: number[]): void {
+  const g = globalThis as {
+    __mafterMultiRenderContextFrames?: number;
+    __mafterMultiRenderContextDist?: number[];
+  };
+  g.__mafterMultiRenderContextFrames = (g.__mafterMultiRenderContextFrames ?? 0) + totalFrames;
+  g.__mafterMultiRenderContextDist = contextFrameCounts;
 }
 
 // ─── Frame capture ────────────────────────────────────────────────────────────
@@ -194,27 +279,42 @@ async function runPngSeq(
   startFrame: number,
   totalFrames: number,
   nw: number, nh: number, w: number, h: number,
+  extraRenderers: DomRenderer[],
   onProgress: ProgressCallback,
   signal?: AbortSignal,
 ): Promise<Blob> {
   const zip = new JSZip();
   const bg = config.alpha ? "transparent" : (comp.background ? rgbaToHex(comp.background) : "#000000");
-
-  for (let fi = 0; fi < totalFrames; fi++) {
-    checkAbort(signal);
-    const frame = startFrame + fi;
-    renderer.renderFrame(resolve(comp, frame, { expressions: evaluator }), frame);
-    onProgress({ phase: "render", frame: fi, totalFrames, message: `Frame ${fi + 1}/${totalFrames}` });
-
-    // レイヤ直付け raster（通常レイヤの displacement 等）の完了のみ待つ。調整合成は compositeExportFrame が行う。
-    await renderer.flushRasterEffects();
-    await renderer.flushVideoFrames();
-    // DOM が描画される次ティックまで待つ
-    await nextTick();
-
-    const canvas = await compositeExportFrame(renderer, nw, nh, w, h, bg);
+  // PNG 連番は元々オプション無し（純 Canvas2D）で合成する。multi-context も同じ経路を使う。
+  const addFrame = async (fi: number, canvas: HTMLCanvasElement): Promise<void> => {
     const pngBlob = await canvasToBlob(canvas, "image/png");
     zip.file(`frame_${String(fi).padStart(6, "0")}.png`, pngBlob);
+  };
+
+  if (extraRenderers.length > 0) {
+    // §11.2 Phase 6 — 複数 context で並行描画し、frame 昇順で zip に整列格納する。
+    const contexts = [renderer, ...extraRenderers];
+    let rendered = 0;
+    const res = await runOrderedMultiContext({
+      producers: contexts.map((r) => (frame: number) =>
+        renderContextFrameCanvas(r, comp, evaluator, frame, nw, nh, w, h, bg, {})),
+      totalFrames,
+      startFrame,
+      onRendered: () => {
+        rendered++;
+        onProgress({ phase: "render", frame: rendered - 1, totalFrames, message: `Frame ${rendered}/${totalFrames}` });
+      },
+      onFrame: addFrame,
+      checkAbort: () => checkAbort(signal),
+    });
+    recordMultiContextFrames(totalFrames, res.contextFrameCounts);
+  } else {
+    for (let fi = 0; fi < totalFrames; fi++) {
+      checkAbort(signal);
+      const canvas = await renderContextFrameCanvas(renderer, comp, evaluator, startFrame + fi, nw, nh, w, h, bg, {});
+      onProgress({ phase: "render", frame: fi, totalFrames, message: `Frame ${fi + 1}/${totalFrames}` });
+      await addFrame(fi, canvas);
+    }
   }
 
   onProgress({ phase: "encode", frame: totalFrames, totalFrames, message: "Packaging ZIP…" });
@@ -233,7 +333,8 @@ async function runVideo(
   startFrame: number,
   totalFrames: number,
   nw: number, nh: number, w: number, h: number,
-  audioMix: AudioMixResult | null,
+  extraRenderers: DomRenderer[],
+  audioTask: AudioMixTask,
   onProgress: ProgressCallback,
   signal?: AbortSignal,
 ): Promise<Blob> {
@@ -245,7 +346,7 @@ async function runVideo(
   // alpha export（webm VP9）では透明背景にする。PNG-seq の runPngSeq と同じ方針。
   // mp4(H.264) は alpha 非対応で UI も alpha を出さないため config.alpha は常に false。
   const bg = config.alpha ? "transparent" : (comp.background ? rgbaToHex(comp.background) : "#000000");
-  const hasAudio = audioMix !== null;
+  const hasAudio = audioTask.hasAudioSources;
 
   // ─ muxer セットアップ ─
   type ChunkAccum = { chunk: EncodedVideoChunk; meta: EncodedVideoChunkMetadata | undefined }[];
@@ -254,12 +355,12 @@ async function runVideo(
   if (config.format === "mp4") {
     return await runMp4(
       comp, renderer, evaluator, config, startFrame, totalFrames,
-      nw, nh, w, h, fps, bg, hasAudio, audioMix, videoChunks, onProgress, signal,
+      nw, nh, w, h, fps, bg, hasAudio, audioTask.promise, videoChunks, extraRenderers, onProgress, signal,
     );
   } else {
     return await runWebm(
       comp, renderer, evaluator, config, startFrame, totalFrames,
-      nw, nh, w, h, fps, bg, hasAudio, audioMix, videoChunks, onProgress, signal,
+      nw, nh, w, h, fps, bg, hasAudio, audioTask.promise, videoChunks, extraRenderers, onProgress, signal,
     );
   }
 }
@@ -275,19 +376,32 @@ async function runMp4(
   fps: number,
   bg: string,
   hasAudio: boolean,
-  audioMix: AudioMixResult | null,
+  audioMixPromise: Promise<AudioMixResult | null>,
   _videoChunks: unknown[],
+  extraRenderers: DomRenderer[],
   onProgress: ProgressCallback,
   signal?: AbortSignal,
 ): Promise<Blob> {
+  if (!hasAudio && isWorkerVideoExportEnabled()) {
+    const workerEncode = resolveExportVideoEncode(config);
+    return await runWorkerVideo(
+      "mp4", comp, renderer, evaluator, startFrame, totalFrames, nw, nh, w, h, fps, bg, false,
+      {
+        codec: avcCodecString(w, h, fps), width: w, height: h,
+        bitrate: workerEncode.bitrate, framerate: fps,
+        ...(workerEncode.latencyMode ? { latencyMode: workerEncode.latencyMode } : {}),
+      },
+      onProgress, signal,
+    );
+  }
   const target = new Mp4Target();
   const muxer = new Mp4Muxer({
     target,
     video: { codec: "avc", width: w, height: h, frameRate: fps },
-    ...(hasAudio && audioMix ? {
-      audio: { codec: "aac", numberOfChannels: audioMix.numberOfChannels, sampleRate: audioMix.sampleRate },
+    ...(hasAudio ? {
+      audio: { codec: "aac", numberOfChannels: 2, sampleRate: 48000 },
     } : {}),
-    fastStart: "in-memory",
+    fastStart: resolveMp4FastStart(totalFrames, hasAudio, totalFrames / fps),
     firstTimestampBehavior: "offset",
   });
 
@@ -308,12 +422,13 @@ async function runMp4(
 
     await encodeVideoFrames(
       comp, renderer, evaluator, startFrame, totalFrames, nw, nh, w, h, fps, bg,
-      videoEncoder, onProgress, signal,
+      videoEncoder, !config.alpha, !config.alpha && isGpuDirectSurfaceEnabled(), extraRenderers, onProgress, signal,
     );
     await videoEncoder.encoder.flush();
     if (videoEncoder.stats.error) throw videoEncoder.stats.error;
 
-    if (hasAudio && audioMix) {
+    const audioMix = await audioMixPromise;
+    if (audioMix) {
       onProgress({ phase: "audio", frame: totalFrames, totalFrames, message: "Encoding audio…" });
       try {
         await encodeAudioToMuxer(audioMix, (chunk, meta) => muxer.addAudioChunk(chunk, meta ?? undefined), "mp4a.40.2", config.audioBitrate, signal);
@@ -322,6 +437,7 @@ async function runMp4(
       }
     }
 
+    onProgress({ phase: "pack", frame: totalFrames, totalFrames, message: "Finalizing MP4…" });
     muxer.finalize();
     onProgress({ phase: "done", frame: totalFrames, totalFrames, message: "Done" });
     return new Blob([target.buffer], { type: "video/mp4" });
@@ -341,17 +457,30 @@ async function runWebm(
   fps: number,
   bg: string,
   hasAudio: boolean,
-  audioMix: AudioMixResult | null,
+  audioMixPromise: Promise<AudioMixResult | null>,
   _videoChunks: unknown[],
+  extraRenderers: DomRenderer[],
   onProgress: ProgressCallback,
   signal?: AbortSignal,
 ): Promise<Blob> {
+  if (!hasAudio && !config.alpha && isWorkerVideoExportEnabled()) {
+    const workerEncode = resolveExportVideoEncode(config);
+    return await runWorkerVideo(
+      "webm", comp, renderer, evaluator, startFrame, totalFrames, nw, nh, w, h, fps, bg, false,
+      {
+        codec: "vp09.00.10.08", width: w, height: h,
+        bitrate: workerEncode.bitrate, framerate: fps, alpha: "discard",
+        ...(workerEncode.latencyMode ? { latencyMode: workerEncode.latencyMode } : {}),
+      },
+      onProgress, signal,
+    );
+  }
   const target = new WebmTarget();
   const muxer = new WebmMuxer({
     target,
     video: { codec: "V_VP9", width: w, height: h, frameRate: fps, alpha: config.alpha },
-    ...(hasAudio && audioMix ? {
-      audio: { codec: "A_OPUS", numberOfChannels: audioMix.numberOfChannels, sampleRate: audioMix.sampleRate },
+    ...(hasAudio ? {
+      audio: { codec: "A_OPUS", numberOfChannels: 2, sampleRate: 48000 },
     } : {}),
   });
 
@@ -372,12 +501,13 @@ async function runWebm(
 
     await encodeVideoFrames(
       comp, renderer, evaluator, startFrame, totalFrames, nw, nh, w, h, fps, bg,
-      videoEncoder, onProgress, signal,
+      videoEncoder, !config.alpha, !config.alpha && isGpuDirectSurfaceEnabled(), extraRenderers, onProgress, signal,
     );
     await videoEncoder.encoder.flush();
     if (videoEncoder.stats.error) throw videoEncoder.stats.error;
 
-    if (hasAudio && audioMix) {
+    const audioMix = await audioMixPromise;
+    if (audioMix) {
       onProgress({ phase: "audio", frame: totalFrames, totalFrames, message: "Encoding audio…" });
       try {
         await encodeAudioToMuxer(audioMix, (chunk, meta) => muxer.addAudioChunk(chunk, meta ?? undefined), "opus", config.audioBitrate, signal);
@@ -386,6 +516,7 @@ async function runWebm(
       }
     }
 
+    onProgress({ phase: "pack", frame: totalFrames, totalFrames, message: "Finalizing WebM…" });
     muxer.finalize();
     onProgress({ phase: "done", frame: totalFrames, totalFrames, message: "Done" });
     return new Blob([target.buffer], { type: "video/webm" });
@@ -395,6 +526,57 @@ async function runWebm(
 }
 
 /** 全フレームを VideoEncoder に渡す共通ループ。 */
+async function runWorkerVideo(
+  format: "mp4" | "webm",
+  comp: TimelineComposition,
+  renderer: DomRenderer,
+  evaluator: ExpressionEvaluator | undefined,
+  startFrame: number,
+  totalFrames: number,
+  nw: number, nh: number, w: number, h: number,
+  fps: number,
+  bg: string,
+  alpha: boolean,
+  encoderConfig: VideoEncoderConfig,
+  onProgress: ProgressCallback,
+  signal?: AbortSignal,
+): Promise<Blob> {
+  const session = await createWorkerVideoExportSession({ format, width: w, height: h, fps, alpha, encoderConfig }, signal);
+  const usDuration = Math.round(1_000_000 / fps);
+  try {
+    for (let fi = 0; fi < totalFrames; fi++) {
+      checkAbort(signal);
+      const frame = startFrame + fi;
+      renderer.renderFrame(resolve(comp, frame, { expressions: evaluator }), frame);
+      onProgress({ phase: "render", frame: fi, totalFrames, message: `Rendering frame ${fi + 1}/${totalFrames}` });
+      await renderer.flushRasterEffects();
+      await renderer.flushVideoFrames();
+      await nextTick();
+      const canvas = await compositeExportFrame(renderer, nw, nh, w, h, bg, {
+        enableGpuCompositor: !alpha,
+        directGpuSurface: !alpha && isGpuDirectSurfaceEnabled(),
+        cacheStaticLayerCaptures: isStaticLayerCaptureCacheEnabled(),
+        directVideoCaptures: !alpha && isDirectVideoCaptureEnabled(),
+        directSolidCaptures: !alpha && isDirectSolidCaptureEnabled(),
+        directImageCaptures: !alpha && isDirectImageCaptureEnabled(),
+      });
+      const videoFrame = new VideoFrame(canvas, {
+        timestamp: fi * usDuration,
+        duration: usDuration,
+      });
+      await session.encode(videoFrame, fi, fi === 0 || fi % 30 === 0, signal);
+    }
+    const result = await session.finish(signal);
+    const g = globalThis as { __mafterWorkerVideoExportFrames?: number };
+    g.__mafterWorkerVideoExportFrames = (g.__mafterWorkerVideoExportFrames ?? 0) + totalFrames;
+    onProgress({ phase: "done", frame: totalFrames, totalFrames, message: "Done" });
+    return new Blob([result.buffer], { type: result.mimeType });
+  } catch (error) {
+    session.abort();
+    throw error;
+  }
+}
+
 async function encodeVideoFrames(
   comp: TimelineComposition,
   renderer: DomRenderer,
@@ -405,11 +587,45 @@ async function encodeVideoFrames(
   fps: number,
   bg: string,
   videoEncoder: { encoder: VideoEncoder; stats: VideoEncodeStats },
+  enableGpuCompositor: boolean,
+  directGpuSurface: boolean,
+  extraRenderers: DomRenderer[],
   onProgress: ProgressCallback,
   signal?: AbortSignal,
 ) {
   const { encoder, stats } = videoEncoder;
   const usDuration = Math.round(1_000_000 / fps);
+
+  // frame 昇順に encoder へ渡す consumer（timestamp / keyframe は fi のみで決まるので順序が正）。
+  const encodeInOrder = async (fi: number, canvas: HTMLCanvasElement): Promise<void> => {
+    if (stats.error) throw stats.error;
+    if (encoder.state === "closed") throw new Error("VideoEncoder closed unexpectedly");
+    const vf = new VideoFrame(canvas, { timestamp: fi * usDuration, duration: usDuration });
+    // キーフレーム: 先頭 + 30 フレームごと
+    encoder.encode(vf, { keyFrame: fi === 0 || fi % 30 === 0 });
+    vf.close();
+    await waitForEncoderQueueAtMost(encoder, 6, signal);
+  };
+
+  if (extraRenderers.length > 0) {
+    // §11.2 Phase 6 — 複数 context で並行描画。GPU / direct capture 系とは排他（純 Canvas2D）。
+    const contexts = [renderer, ...extraRenderers];
+    let rendered = 0;
+    const res = await runOrderedMultiContext({
+      producers: contexts.map((r) => (frame: number) =>
+        renderContextFrameCanvas(r, comp, evaluator, frame, nw, nh, w, h, bg, {})),
+      totalFrames,
+      startFrame,
+      onRendered: () => {
+        rendered++;
+        onProgress({ phase: "render", frame: rendered - 1, totalFrames, message: `Rendering frame ${rendered}/${totalFrames}` });
+      },
+      onFrame: encodeInOrder,
+      checkAbort: () => checkAbort(signal),
+    });
+    recordMultiContextFrames(totalFrames, res.contextFrameCounts);
+    return;
+  }
 
   for (let fi = 0; fi < totalFrames; fi++) {
     checkAbort(signal);
@@ -427,18 +643,23 @@ async function encodeVideoFrames(
     await renderer.flushVideoFrames();
     await nextTick();
 
-    const canvas = await compositeExportFrame(renderer, nw, nh, w, h, bg);
-    const bitmap = await createImageBitmap(canvas);
-    const vf = new VideoFrame(bitmap, {
+    const canvas = await compositeExportFrame(renderer, nw, nh, w, h, bg, {
+      enableGpuCompositor,
+      directGpuSurface,
+      cacheStaticLayerCaptures: isStaticLayerCaptureCacheEnabled(),
+      directVideoCaptures: enableGpuCompositor && isDirectVideoCaptureEnabled(),
+      directSolidCaptures: enableGpuCompositor && isDirectSolidCaptureEnabled(),
+      directImageCaptures: enableGpuCompositor && isDirectImageCaptureEnabled(),
+    });
+    const vf = new VideoFrame(canvas, {
       timestamp: fi * usDuration,
       duration: usDuration,
     });
     // キーフレーム: 先頭 + 30 フレームごと
     encoder.encode(vf, { keyFrame: fi === 0 || fi % 30 === 0 });
     vf.close();
-    bitmap.close();
 
-    await backpressureEncoderQueue(encoder);
+    await waitForEncoderQueueAtMost(encoder, 6, signal);
   }
 }
 
@@ -450,6 +671,35 @@ export interface AudioMixResult {
   numberOfChannels: number;
 }
 
+interface AudioMixTask {
+  hasAudioSources: boolean;
+  promise: Promise<AudioMixResult | null>;
+}
+
+export function isAudioMixOverlapEnabled(): boolean {
+  const g = globalThis as { __mafterAudioMixOverlap?: unknown };
+  return g.__mafterAudioMixOverlap === true;
+}
+
+function createAudioMixTask(
+  project: Project,
+  comp: TimelineComposition,
+  startFrame: number,
+  endFrame: number,
+  fps: number,
+  fs: FileSystem,
+): AudioMixTask {
+  const resolveComp = (compId: string): TimelineComposition | undefined => {
+    const candidate = project.compositions.find((composition) => composition.id === compId);
+    return candidate && candidate.kind === "timeline" ? candidate : undefined;
+  };
+  const mixSources = collectFootageAudioSources(comp, resolveComp);
+  if (mixSources.length === 0) return { hasAudioSources: false, promise: Promise.resolve(null) };
+  const promise = buildAudioMix(project, comp, startFrame, endFrame, fps, fs, mixSources);
+  void promise.catch(() => { /* consumed after video encode */ });
+  return { hasAudioSources: true, promise };
+}
+
 /** timeline の audio / video 内蔵音声コンポーネントを OfflineAudioContext で mix する。 */
 async function buildAudioMix(
   project: Project,
@@ -458,15 +708,10 @@ async function buildAudioMix(
   endFrame: number,
   fps: number,
   fs: FileSystem,
+  mixSources: ReturnType<typeof collectFootageAudioSources>,
 ): Promise<AudioMixResult | null> {
   if (typeof OfflineAudioContext === "undefined") return null;
 
-  const resolveComp = (compId: string): TimelineComposition | undefined => {
-    const c = project.compositions.find((c) => c.id === compId);
-    return c && c.kind === "timeline" ? c : undefined;
-  };
-  const mixSources = collectFootageAudioSources(comp, resolveComp);
-  if (mixSources.length === 0) return null;
   // §11.5.2 カット端 declick の抑制判定（シームレス境界の二重フェード防止）。preview と同一純関数。
   const fadeSuppression = computeFadeSuppression(collectFadeClips(comp));
 
@@ -605,6 +850,19 @@ export function resolveAudioBitrate(raw: number | undefined): number {
   return Math.max(32_000, Math.min(320_000, Math.round(raw)));
 }
 
+export function resolveMp4FastStart(
+  totalFrames: number,
+  hasAudio: boolean,
+  durationSec: number,
+): "in-memory" | { expectedVideoChunks: number; expectedAudioChunks?: number } {
+  const g = globalThis as { __mafterMp4ReservedFastStart?: unknown };
+  if (g.__mafterMp4ReservedFastStart === false) return "in-memory";
+  return {
+    expectedVideoChunks: Math.max(1, Math.ceil(totalFrames)),
+    ...(hasAudio ? { expectedAudioChunks: Math.max(1, Math.ceil(durationSec * 48000 / 1024) + 1) } : {}),
+  };
+}
+
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
 function checkAbort(signal?: AbortSignal) {
@@ -709,16 +967,6 @@ function createVideoEncoder(
     },
   });
   return { encoder, stats };
-}
-
-/**
- * キューが溢れすぎないよう間引く。毎フレーム queue===0 を待つと HW エンコーダ環境で
- * タイムアウト→ PNG-seq フォールバックになるため、閾値超過時のみ短い待機を行う。
- */
-async function backpressureEncoderQueue(encoder: VideoEncoder, maxQueue = 6): Promise<void> {
-  while (encoder.encodeQueueSize > maxQueue) {
-    await new Promise((r) => setTimeout(r, 16));
-  }
 }
 
 function safeCloseEncoder(encoder: VideoEncoder): void {

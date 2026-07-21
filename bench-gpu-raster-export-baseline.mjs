@@ -5,23 +5,50 @@
 // applyAdjustmentToMaster の getImageData/putImageData 往復）の実測を取る。
 //
 // 駆動: page から Vite dynamic-import で runtime の exportComposition を呼び、
-//   PNG 連番（WebCodecs 不要）で決定論 export を実行。pixel-API を wrap して
+//   PNG 連番（既定）または BENCH_FORMAT=mp4|webm で決定論 export を実行。pixel-API を wrap して
 //   capture/getImageData/putImageData/toDataURL/createImageBitmap の内訳を集計する。
 //   → bench-gpu-raster-export-baseline.json
 //
 // 使い方: `npm run dev` 起動後 `node bench-gpu-raster-export-baseline.mjs`
+//         `$env:BENCH_FORMAT='mp4'; $env:BENCH_OUT='bench-browser-export-before-mp4.json'; node bench-gpu-raster-export-baseline.mjs`
 
 import { chromium } from "playwright";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const PORT = process.env.VERIFY_PORT ?? "5173";
-const APP_URL = `https://localhost:${PORT}/`;
-const OUT_JSON = join(dirname(fileURLToPath(import.meta.url)), "bench-gpu-raster-export-baseline.json");
-const N_FRAMES = 24;
+const PROTOCOL = process.env.BENCH_PROTOCOL ?? "https";
+const APP_URL = `${PROTOCOL}://localhost:${PORT}/`;
+const FORMAT = process.env.BENCH_FORMAT ?? "png-seq";
+const GPU = process.env.BENCH_GPU === "1";
+const GPU_DIRECT = process.env.BENCH_GPU_DIRECT !== "0";
+const ALPHA = process.env.BENCH_ALPHA === "1";
+const SCALE = Number(process.env.BENCH_SCALE ?? "1");
+const STATIC_CACHE = process.env.BENCH_STATIC_CACHE !== "0";
+const STATIC_IMAGE = process.env.BENCH_STATIC_IMAGE === "1";
+const STATIC_IMAGE_CACHE = process.env.BENCH_STATIC_IMAGE_CACHE !== "0";
+const AUDIO_VIDEO = process.env.BENCH_AUDIO_VIDEO === "1";
+const VIDEO = process.env.BENCH_VIDEO === "1" || AUDIO_VIDEO;
+const DIRECT_VIDEO = process.env.BENCH_DIRECT_VIDEO !== "0";
+const OUTPUT_SAMPLE = process.env.BENCH_OUTPUT_SAMPLE === "1";
+const DIRECT_SOLID = process.env.BENCH_DIRECT_SOLID !== "0";
+const ANIMATED_SOLID = process.env.BENCH_ANIMATED_SOLID === "1";
+const DIRECT_IMAGE = process.env.BENCH_DIRECT_IMAGE !== "0";
+const ANIMATED_IMAGE = process.env.BENCH_ANIMATED_IMAGE === "1";
+const WORKER_VIDEO = process.env.BENCH_WORKER_VIDEO === "1";
+const MP4_RESERVED_FAST_START = process.env.BENCH_MP4_RESERVED_FAST_START !== "0";
+const AUDIO_MIX_OVERLAP = process.env.BENCH_AUDIO_MIX_OVERLAP !== "0";
+if (!["png-seq", "mp4", "webm"].includes(FORMAT)) throw new Error(`Unsupported BENCH_FORMAT: ${FORMAT}`);
+const OUT_JSON = join(dirname(fileURLToPath(import.meta.url)), process.env.BENCH_OUT ?? "bench-gpu-raster-export-baseline.json");
+const N_FRAMES = Number(process.env.BENCH_FRAMES ?? "24");
+const VIDEO_BASE64 = VIDEO
+  ? readFileSync(join(dirname(fileURLToPath(import.meta.url)), "for-debug-data", AUDIO_VIDEO ? "video_with_audio.mp4" : "video_motion.mp4")).toString("base64")
+  : null;
 
-const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium" });
+const browser = await chromium.launch({
+  executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || chromium.executablePath(),
+});
 const page = await browser.newPage({ viewport: { width: 1400, height: 900 }, ignoreHTTPSErrors: true });
 const pageErrors = [];
 page.on("pageerror", (e) => pageErrors.push(String(e)));
@@ -73,8 +100,10 @@ await ev(() => {
 });
 
 // ─── fixture（preview 版と同一 composite） ──────────────────────────────────
-const built = await ev(() => {
+const built = await ev(async (opts) => {
   const s = window.__mafterEditorStore.getState();
+  const objectById = (id) => window.__mafterEditorStore.getState().project.compositions
+    .flatMap((comp) => comp.objects ?? []).find((obj) => obj.id === id);
   const RASTER_W = 640, RASTER_H = 360, MAIN_W = 1280, MAIN_H = 720, DUR = 60;
   const solid = (name, color, size, z) => {
     const id = s.addSolid(name);
@@ -95,14 +124,70 @@ const built = await ev(() => {
   const b1 = solid("Mul", { r: 0.8, g: 0.6, b: 0.2, a: 1 }, { x: 800, y: 500, z: 0 }, 1); s.setBlendMode(b1, "multiply");
   const b2 = solid("Ovl", { r: 0.2, g: 0.7, b: 0.9, a: 1 }, { x: 700, y: 450, z: 0 }, 2); s.setBlendMode(b2, "overlay");
   const b3 = solid("Scr", { r: 0.9, g: 0.2, b: 0.5, a: 1 }, { x: 600, y: 400, z: 0 }, 3); s.setBlendMode(b3, "screen");
+  if (opts.animatedSolid) {
+    const current = objectById(b3).transform;
+    s.updateObject(b3, {
+      transform: {
+        ...current,
+        position: {
+          value: { x: 0, y: 0, z: 0 },
+          keyframes: [
+            { frame: 0, value: { x: 80, y: 60, z: 0 }, easing: { type: "linear" } },
+            { frame: 24, value: { x: 520, y: 260, z: 0 }, easing: { type: "linear" } },
+          ],
+        },
+      },
+    });
+  }
+  let staticImageId = null;
+  if (opts.staticImage) {
+    const source = document.createElement("canvas"); source.width = 320; source.height = 180;
+    const g = source.getContext("2d");
+    const grad = g.createLinearGradient(0, 0, 320, 180);
+    grad.addColorStop(0, "#ff3366"); grad.addColorStop(1, "#22bbff");
+    g.fillStyle = grad; g.fillRect(0, 0, 320, 180);
+    g.fillStyle = "rgba(255,255,255,.8)"; g.fillRect(48, 42, 224, 96);
+    const blob = await new Promise((resolve, reject) => source.toBlob((b) => b ? resolve(b) : reject(new Error("fixture png failed")), "image/png"));
+    const assetId = await s.importImageAsset(new File([blob], "bench-static.png", { type: "image/png" }));
+    if (!assetId) throw new Error("fixture image import failed");
+    staticImageId = s.addImageLayer(assetId, "StaticImage");
+    if (!staticImageId) throw new Error("fixture image layer failed");
+    s.updateObject(staticImageId, { zOrder: 8.5 });
+    if (opts.animatedImage) {
+      const current = objectById(staticImageId).transform;
+      s.updateObject(staticImageId, {
+        transform: {
+          ...current,
+          position: {
+            value: { x: 0, y: 0, z: 0 },
+            keyframes: [
+              { frame: 0, value: { x: 120, y: 100, z: 0 }, easing: { type: "linear" } },
+              { frame: 24, value: { x: 820, y: 420, z: 0 }, easing: { type: "linear" } },
+            ],
+          },
+        },
+      });
+    }
+  }
+  let videoId = null;
+  if (opts.videoBase64) {
+    const binary = atob(opts.videoBase64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const assetId = await s.importVideoAsset(new File([bytes], "video_motion.mp4", { type: "video/mp4" }));
+    if (!assetId) throw new Error("fixture video import failed");
+    videoId = s.addVideoLayer(assetId, "DirectVideo");
+    if (!videoId) throw new Error("fixture video layer failed");
+    s.updateObject(videoId, { zOrder: 8.75 });
+  }
   const rlayer = solid("MosaicLayer", { r: 0.3, g: 0.9, b: 0.4, a: 1 }, { x: 500, y: 500, z: 0 }, 4); s.addEffect(rlayer, "mosaic");
   solid("MatteSrc", { r: 1, g: 1, b: 1, a: 1 }, { x: 400, y: 400, z: 0 }, 6);
   const fill = solid("MatteFill", { r: 0.9, g: 0.8, b: 0.1, a: 1 }, { x: 400, y: 400, z: 0 }, 5); s.setTrackMatteMode(fill, "alpha");
   const adj = s.addRasterAdjustmentLayer("MainAdj"); s.updateObject(adj, { zOrder: 7 }); s.addEffect(adj, "mosaic");
   const nest = s.addCompLayer(innerId, "FX-Inner-Instance"); if (nest) s.updateObject(nest, { zOrder: 8 });
   s.setCurrentComp(mainId); s.setFrame(0);
-  return { mainId, innerId, mainSize: [MAIN_W, MAIN_H] };
-});
+  return { mainId, innerId, staticImageId, videoId, mainSize: [MAIN_W, MAIN_H] };
+}, { staticImage: STATIC_IMAGE, videoBase64: VIDEO_BASE64, animatedSolid: ANIMATED_SOLID, animatedImage: ANIMATED_IMAGE });
 console.log("built:", JSON.stringify(built));
 
 // FS へフラッシュ（exportComposition は project 引数を直接受けるが、fonts/assets を fs から読む）
@@ -115,21 +200,95 @@ const exp = await ev(async (opts) => {
   const project = s.project;
   const fs = s.getFs();
   const mod = await import("/src/runtime/exporter.ts");
+  globalThis.__mafterGpuCompositor = opts.gpu;
+  globalThis.__mafterGpuDirectSurface = opts.gpuDirect;
+  globalThis.__mafterStaticLayerCaptureCache = opts.staticCache;
+  globalThis.__mafterStaticImageCaptureCache = opts.staticImageCache;
+  globalThis.__mafterDirectVideoCapture = opts.directVideo;
+  globalThis.__mafterDirectSolidCapture = opts.directSolid;
+  globalThis.__mafterDirectImageCapture = opts.directImage;
+  globalThis.__mafterWorkerVideoExport = opts.workerVideo;
+  globalThis.__mafterMp4ReservedFastStart = opts.mp4ReservedFastStart;
+  globalThis.__mafterAudioMixOverlap = opts.audioMixOverlap;
+  globalThis.__mafterGpuCompositorFrames = 0;
+  globalThis.__mafterGpuDirectSurfaceFrames = 0;
+  globalThis.__mafterDirectVideoCaptureFrames = 0;
+  globalThis.__mafterDirectSolidCaptureFrames = 0;
+  globalThis.__mafterDirectImageCaptureFrames = 0;
+  globalThis.__mafterWorkerVideoExportFrames = 0;
 
   // 計測を export 区間だけにリセット
   for (const k of Object.keys(stats)) { if (k === "lastActivity") continue; stats[k] = { n: 0, ms: 0 }; }
 
   const perFrameMs = [];
   let lastT = performance.now();
+  let packStartedAt = null, doneAt = null;
   const onProgress = (p) => {
     if (p.phase === "render") { const now = performance.now(); perFrameMs.push(now - lastT); lastT = now; }
+    if (p.phase === "pack") packStartedAt = performance.now();
+    if (p.phase === "done") doneAt = performance.now();
   };
-  const cfg = { range: [0, opts.n], fps: 30, scale: 1, format: "png-seq", alpha: false, textRenderMode: "precise" };
+  const cfg = { range: [0, opts.n], fps: 30, scale: opts.scale, format: opts.format, alpha: opts.alpha, textRenderMode: "precise" };
   const t0 = performance.now();
-  let ok = true, err = null;
+  let ok = true, err = null, output = null;
   try {
     const res = await mod.exportComposition(project, opts.mainId, fs, cfg, onProgress);
     ok = !!res && !!res.blob;
+    if (res?.blob && opts.format !== "png-seq") {
+      const url = URL.createObjectURL(res.blob);
+      try {
+        const video = document.createElement("video");
+        video.preload = "metadata";
+        video.src = url;
+        await new Promise((resolve, reject) => {
+          video.onloadedmetadata = resolve;
+          video.onerror = () => reject(new Error("encoded video metadata decode failed"));
+        });
+        let sample = null;
+        if (opts.outputSample) {
+          video.currentTime = Math.min(video.duration / 2, Math.max(0, video.duration - 0.01));
+          await new Promise((resolve, reject) => {
+            video.onseeked = resolve;
+            video.onerror = () => reject(new Error("encoded video sample seek failed"));
+          });
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          const sampleCanvas = document.createElement("canvas");
+          sampleCanvas.width = 64; sampleCanvas.height = 36;
+          const sampleCtx = sampleCanvas.getContext("2d", { willReadFrequently: true });
+          sampleCtx.drawImage(video, 0, 0, 64, 36);
+          sample = Array.from(sampleCtx.getImageData(0, 0, 64, 36).data);
+        }
+        let decodedAudio = null;
+        if (opts.verifyAudio) {
+          const audioContext = new AudioContext();
+          try {
+            const decoded = await audioContext.decodeAudioData(await res.blob.arrayBuffer());
+            const channel = decoded.getChannelData(0);
+            let sum = 0;
+            for (let i = 0; i < channel.length; i += 16) sum += channel[i] * channel[i];
+            decodedAudio = {
+              channels: decoded.numberOfChannels,
+              sampleRate: decoded.sampleRate,
+              duration: decoded.duration,
+              rms: Math.sqrt(sum / Math.ceil(channel.length / 16)),
+            };
+          } finally {
+            await audioContext.close();
+          }
+        }
+        output = {
+          bytes: res.blob.size,
+          type: res.blob.type,
+          width: video.videoWidth,
+          height: video.videoHeight,
+          duration: video.duration,
+          ...(decodedAudio ? { decodedAudio } : {}),
+          ...(sample ? { sample } : {}),
+        };
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    }
   } catch (e) { ok = false; err = String(e); }
   const totalMs = performance.now() - t0;
 
@@ -138,14 +297,51 @@ const exp = await ev(async (opts) => {
   // 最初のフレームは prepare を含むので分けて集計
   const body = perFrameMs.slice(1);
   const avg = (arr) => arr.length ? +(arr.reduce((a, b) => a + b, 0) / arr.length).toFixed(1) : 0;
-  return { ok, err, totalMs: +totalMs.toFixed(1), frames: opts.n, firstFrameMs: +(perFrameMs[0] ?? 0).toFixed(1), avgFrameMs: avg(body), api };
-}, { mainId: built.mainId, n: N_FRAMES });
+  return {
+    ok,
+    err,
+    totalMs: +totalMs.toFixed(1),
+    frames: opts.n,
+    gpuFrames: globalThis.__mafterGpuCompositorFrames ?? 0,
+    gpuDirectSurfaceFrames: globalThis.__mafterGpuDirectSurfaceFrames ?? 0,
+    directVideoCaptureFrames: globalThis.__mafterDirectVideoCaptureFrames ?? 0,
+    directSolidCaptureFrames: globalThis.__mafterDirectSolidCaptureFrames ?? 0,
+    directImageCaptureFrames: globalThis.__mafterDirectImageCaptureFrames ?? 0,
+    workerVideoExportFrames: globalThis.__mafterWorkerVideoExportFrames ?? 0,
+    firstFrameMs: +(perFrameMs[0] ?? 0).toFixed(1),
+    avgFrameMs: avg(body),
+    finalizeMs: packStartedAt !== null && doneAt !== null ? +(doneAt - packStartedAt).toFixed(1) : null,
+    api,
+    output,
+  };
+}, {
+  mainId: built.mainId,
+  n: N_FRAMES,
+  format: FORMAT,
+  gpu: GPU,
+  gpuDirect: GPU_DIRECT,
+  alpha: ALPHA,
+  scale: SCALE,
+  staticCache: STATIC_CACHE,
+  staticImageCache: STATIC_IMAGE_CACHE,
+  directVideo: DIRECT_VIDEO,
+  directSolid: DIRECT_SOLID,
+  directImage: DIRECT_IMAGE,
+  workerVideo: WORKER_VIDEO,
+  mp4ReservedFastStart: MP4_RESERVED_FAST_START,
+  audioMixOverlap: AUDIO_MIX_OVERLAP,
+  verifyAudio: AUDIO_VIDEO,
+  outputSample: OUTPUT_SAMPLE,
+});
 
-console.log("export result:", JSON.stringify(exp, null, 2));
+const printable = exp.output?.sample
+  ? { ...exp, output: { ...exp.output, sample: `[${exp.output.sample.length} values]` } }
+  : exp;
+console.log("export result:", JSON.stringify(printable, null, 2));
 
 const result = {
   when: new Date().toISOString(),
-  note: "Phase 0 baseline — export 経路 (compositeExportFrame per-layer capture + Canvas2D z-order accumulate + applyAdjustmentToMaster). PNG 連番・WebCodecs 非依存。",
+  note: `Export benchmark — ${FORMAT} (compositeExportFrame + optional WebCodecs).`,
   fixture: built, export: exp, pageErrors: pageErrors.slice(0, 5),
 };
 writeFileSync(OUT_JSON, JSON.stringify(result, null, 2));

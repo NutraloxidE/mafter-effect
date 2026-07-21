@@ -29,6 +29,10 @@ import { isGpuEffectSupported } from "./compositor/gpuEffectRegistry";
 import { globalPluginRegistry } from "./pluginRegistry";
 import type { ResolvedEffect } from "./resolved";
 import type { BlendMode } from "../core/schema";
+import { videoDrawRect, type DirectVideoCaptureSource } from "./directVideoCapture";
+import type { DirectSolidCaptureDescriptor } from "./directSolidCapture";
+import { rgbaCss } from "./textRender";
+import type { DirectImageCaptureSource } from "./directImageCapture";
 
 const XHTML = "http://www.w3.org/1999/xhtml";
 
@@ -57,6 +61,14 @@ export interface ExportLayer {
   isAdjustment: boolean;
   /** 調整レイヤーのみ非 null。 */
   exportChain: ExportChain | null;
+  /** browser video exportで安全にforeignObject結果を再利用できる場合のresolved signature。 */
+  captureCacheKey?: string | null;
+  /** browser mp4/webm専用: seek済み単純2D videoを直接canvasへ描ける場合のsource。 */
+  directVideoCapture?: DirectVideoCaptureSource | null;
+  /** browser mp4/webm専用: 単純2D solidを直接canvasへ描ける場合のresolved値。 */
+  directSolidCapture?: DirectSolidCaptureDescriptor | null;
+  /** browser mp4/webm専用: 読込済み単純2D imageを直接canvasへ描ける場合のsource。 */
+  directImageCapture?: DirectImageCaptureSource | null;
 }
 
 /** §23.3d ネスト comp コンテナのメタ（renderNestedComp が export 時に付与）。 */
@@ -88,6 +100,26 @@ export interface ExportCompositeSource {
   /** 現フレームに threeD レイヤーがあるか（高速経路を外す判定）。 */
   hasThreeDContent(): boolean;
 }
+
+export interface ExportCompositeOptions {
+  /** 非透過 browser video export 専用。dev flag に依存せず GPU compositor を優先する。 */
+  enableGpuCompositor?: boolean;
+  /** 非透過 video encode 専用。GPU の最終 canvas を Canvas2D へ複製せず返す。 */
+  directGpuSurface?: boolean;
+  /** effect無し2D solid/textの直近foreignObject captureを再利用する。 */
+  cacheStaticLayerCaptures?: boolean;
+  /** seek済み単純2D videoをforeignObject/JPEGを介さず直接captureする。 */
+  directVideoCaptures?: boolean;
+  /** 単純2D solidをforeignObjectを介さず直接captureする。 */
+  directSolidCaptures?: boolean;
+  /** 読込済み単純2D imageをforeignObjectを介さず直接captureする。 */
+  directImageCaptures?: boolean;
+}
+
+const staticLayerCaptureCache = new WeakMap<HTMLElement, {
+  key: string;
+  capture: Promise<HTMLCanvasElement>;
+}>();
 
 function makeCanvas(w: number, h: number): HTMLCanvasElement {
   const c = document.createElement("canvas");
@@ -230,6 +262,134 @@ async function captureLayerNode(
   return rasterizeClonedLayer(cloned, perspective, perspectiveOrigin, nw, nh);
 }
 
+function captureDirectVideoLayer(
+  source: DirectVideoCaptureSource,
+  nw: number,
+  nh: number,
+): HTMLCanvasElement | null {
+  const { video, worldTransform: m } = source;
+  if (video.readyState < 2 || video.videoWidth <= 0 || video.videoHeight <= 0) return null;
+  const styleWidth = Number.parseFloat(video.style.width);
+  const styleHeight = Number.parseFloat(video.style.height);
+  const boxWidth = video.clientWidth || (Number.isFinite(styleWidth) ? styleWidth : video.videoWidth);
+  const boxHeight = video.clientHeight || (Number.isFinite(styleHeight) ? styleHeight : video.videoHeight);
+  const rect = videoDrawRect(video.videoWidth, video.videoHeight, boxWidth, boxHeight, source.fit);
+  if (!rect) return null;
+
+  const canvas = makeCanvas(nw, nh);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  ctx.globalAlpha = source.opacity;
+  ctx.setTransform(m[0], m[1], m[4], m[5], m[12], m[13]);
+  try {
+    ctx.drawImage(video, rect.sx, rect.sy, rect.sw, rect.sh, rect.dx, rect.dy, rect.dw, rect.dh);
+  } catch {
+    return null;
+  }
+  const g = globalThis as { __mafterDirectVideoCaptureFrames?: number };
+  g.__mafterDirectVideoCaptureFrames = (g.__mafterDirectVideoCaptureFrames ?? 0) + 1;
+  return canvas;
+}
+
+function captureDirectSolidLayer(
+  source: DirectSolidCaptureDescriptor,
+  nw: number,
+  nh: number,
+): HTMLCanvasElement | null {
+  const canvas = makeCanvas(nw, nh);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  const m = source.worldTransform;
+  ctx.globalAlpha = source.opacity;
+  ctx.setTransform(m[0], m[1], m[4], m[5], m[12], m[13]);
+  ctx.fillStyle = rgbaCss(source.color);
+  ctx.fillRect(0, 0, source.size.x, source.size.y);
+  const g = globalThis as { __mafterDirectSolidCaptureFrames?: number };
+  g.__mafterDirectSolidCaptureFrames = (g.__mafterDirectSolidCaptureFrames ?? 0) + 1;
+  return canvas;
+}
+
+function captureDirectImageLayer(
+  source: DirectImageCaptureSource,
+  nw: number,
+  nh: number,
+): HTMLCanvasElement | null {
+  const { image, worldTransform: m } = source;
+  if (!image.complete || image.naturalWidth <= 0 || image.naturalHeight <= 0) return null;
+  const styleWidth = Number.parseFloat(image.style.width);
+  const styleHeight = Number.parseFloat(image.style.height);
+  const boxWidth = image.clientWidth || (Number.isFinite(styleWidth) ? styleWidth : image.naturalWidth);
+  const boxHeight = image.clientHeight || (Number.isFinite(styleHeight) ? styleHeight : image.naturalHeight);
+  const rect = videoDrawRect(image.naturalWidth, image.naturalHeight, boxWidth, boxHeight, source.fit);
+  if (!rect) return null;
+
+  const canvas = makeCanvas(nw, nh);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  ctx.globalAlpha = source.opacity;
+  ctx.setTransform(m[0], m[1], m[4], m[5], m[12], m[13]);
+  try {
+    ctx.drawImage(image, rect.sx, rect.sy, rect.sw, rect.sh, rect.dx, rect.dy, rect.dw, rect.dh);
+  } catch {
+    return null;
+  }
+  const g = globalThis as { __mafterDirectImageCaptureFrames?: number };
+  g.__mafterDirectImageCaptureFrames = (g.__mafterDirectImageCaptureFrames ?? 0) + 1;
+  return canvas;
+}
+
+async function captureLayerNodeWithCache(
+  layer: ExportLayer,
+  perspective: string,
+  perspectiveOrigin: string,
+  nw: number,
+  nh: number,
+  cacheEnabled: boolean,
+  directVideoEnabled: boolean,
+  directSolidEnabled: boolean,
+  directImageEnabled: boolean,
+): Promise<HTMLCanvasElement> {
+  if (directVideoEnabled && layer.directVideoCapture) {
+    const direct = captureDirectVideoLayer(layer.directVideoCapture, nw, nh);
+    if (direct) return direct;
+  }
+  const cacheKey = cacheEnabled && layer.captureCacheKey
+    ? `${nw}x${nh}|${perspective}|${perspectiveOrigin}|${layer.captureCacheKey}`
+    : null;
+  if (cacheKey) {
+    const cached = staticLayerCaptureCache.get(layer.div);
+    if (cached?.key === cacheKey) return cached.capture;
+  }
+  if (directSolidEnabled && layer.directSolidCapture) {
+    const direct = captureDirectSolidLayer(layer.directSolidCapture, nw, nh);
+    if (direct) {
+      if (cacheKey) staticLayerCaptureCache.set(layer.div, { key: cacheKey, capture: Promise.resolve(direct) });
+      return direct;
+    }
+  }
+  if (directImageEnabled && layer.directImageCapture) {
+    const direct = captureDirectImageLayer(layer.directImageCapture, nw, nh);
+    if (direct) {
+      if (cacheKey) staticLayerCaptureCache.set(layer.div, { key: cacheKey, capture: Promise.resolve(direct) });
+      return direct;
+    }
+  }
+  if (!cacheKey) {
+    return captureLayerNode(layer.div, perspective, perspectiveOrigin, nw, nh);
+  }
+
+  const capture = captureLayerNode(layer.div, perspective, perspectiveOrigin, nw, nh);
+  staticLayerCaptureCache.set(layer.div, { key: cacheKey, capture });
+  try {
+    return await capture;
+  } catch (error) {
+    if (staticLayerCaptureCache.get(layer.div)?.capture === capture) {
+      staticLayerCaptureCache.delete(layer.div);
+    }
+    throw error;
+  }
+}
+
 /**
  * 1 フレームを comp ネイティブ解像度 (nw×nh) で合成し、必要なら (w×h) へスケールした canvas を返す。
  *
@@ -246,9 +406,17 @@ export async function compositeExportFrame(
   w: number,
   h: number,
   bg: string,
+  options: ExportCompositeOptions = {},
 ): Promise<HTMLCanvasElement> {
   const root = src.getRoot();
   if (!root) throw new Error("compositeExportFrame: no root");
+  const layers = src.getExportLayers();
+  const useDirectVideo = options.directVideoCaptures === true
+    && layers.some((layer) => layer.directVideoCapture != null);
+  const useDirectSolid = options.directSolidCaptures === true
+    && layers.some((layer) => layer.directSolidCapture != null);
+  const useDirectImage = options.directImageCaptures === true
+    && layers.some((layer) => layer.directImageCapture != null);
 
   // 高速経路: 調整 / blend / 再帰合成 / threeD が無いフレームは root を 1 枚 capture。
   // threeD は per-layer perspective capture が必要（root 一括 foreignObject は 3D を潰す）。
@@ -257,14 +425,15 @@ export async function compositeExportFrame(
     && !src.hasCssBlendLayers()
     && !src.hasNestedComposite()
     && !src.hasThreeDContent()
+    && !useDirectVideo
+    && !useDirectSolid
+    && !useDirectImage
   ) {
     return captureElementToCanvas(root, nw, nh, bg, w, h);
   }
 
   const perspective = root.style.perspective;
   const perspectiveOrigin = root.style.perspectiveOrigin || "50% 50%";
-  const layers = src.getExportLayers();
-
   // §Phase 2/3a/4 GPU 経路（flag ON かつ WebGL2 対応時のみ）:
   //   - normal blend: fixed-function 高速パス（Phase 2）
   //   - 非 normal 15 blend: ping-pong shader パス（Phase 3a）
@@ -273,7 +442,7 @@ export async function compositeExportFrame(
   // GPU 対象フレームは capture を先に集めてから合成するので、GL 失敗時は同じ capture/op 列で Canvas2D へ
   // 無コスト fallback できる（再 capture 不要）。matte は capture 段で焼込済（責務外）。
   const gpuEligible =
-    isGpuCompositorEnabled()
+    (options.enableGpuCompositor === true || isGpuCompositorEnabled())
     && canUseWebGl2Compositor()
     && layers.every((l) => !l.isAdjustment || (l.exportChain != null && isGpuAdjustmentChain(l.exportChain)));
 
@@ -287,11 +456,27 @@ export async function compositeExportFrame(
       }
       ops.push({
         kind: "draw",
-        canvas: await captureLayerNode(layer.div, perspective, perspectiveOrigin, nw, nh),
+        canvas: await captureLayerNodeWithCache(
+          layer,
+          perspective,
+          perspectiveOrigin,
+          nw,
+          nh,
+          options.cacheStaticLayerCaptures === true,
+          useDirectVideo,
+          useDirectSolid,
+          useDirectImage,
+        ),
         blendMode: layer.blendMode,
       });
     }
-    master = await compositeGpuOps(ops, nw, nh, bg);
+    master = await compositeGpuOps(
+      ops,
+      nw,
+      nh,
+      bg,
+      options.directGpuSurface === true && w === nw && h === nh,
+    );
   } else {
     const compositor = new Canvas2DCompositor(nw, nh, bg);
     for (const layer of layers) {
@@ -299,7 +484,17 @@ export async function compositeExportFrame(
         if (layer.exportChain) await compositor.applyAdjustment(layer.exportChain, nw, nh);
         continue;
       }
-      const sub = await captureLayerNode(layer.div, perspective, perspectiveOrigin, nw, nh);
+      const sub = await captureLayerNodeWithCache(
+        layer,
+        perspective,
+        perspectiveOrigin,
+        nw,
+        nh,
+        options.cacheStaticLayerCaptures === true,
+        useDirectVideo,
+        useDirectSolid,
+        useDirectImage,
+      );
       compositor.drawLayer(sub, layer.blendMode);
     }
     master = compositor.finish();
@@ -337,6 +532,7 @@ async function compositeGpuOps(
   nw: number,
   nh: number,
   bg: string,
+  directSurface: boolean,
 ): Promise<HTMLCanvasElement> {
   const hasAdjust = ops.some((o) => o.kind === "adjust");
   const allNormalDraw = !hasAdjust && ops.every((o) => o.kind === "draw" && o.blendMode === "normal");
@@ -350,7 +546,7 @@ async function compositeGpuOps(
         else await gl.applyAdjustment(o.chain, nw, nh);
       }
     }
-    return gl.finish();
+    return gl.finish(!directSurface);
   } catch {
     WebGl2Compositor.releaseLock();
     const cpu = new Canvas2DCompositor(nw, nh, bg);

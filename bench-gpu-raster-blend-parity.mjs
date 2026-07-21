@@ -26,7 +26,9 @@ const BLEND_MODES = [
   "difference", "exclusion", "hue", "saturation", "color", "luminosity",
 ];
 
-const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium" });
+const browser = await chromium.launch({
+  executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || chromium.executablePath(),
+});
 const page = await browser.newPage({ viewport: { width: 1400, height: 900 }, ignoreHTTPSErrors: true });
 const pageErrors = [];
 page.on("pageerror", (e) => pageErrors.push(String(e)));
