@@ -15,7 +15,7 @@ describe("buildSelectionCollectionPatches", () => {
     const patch = { components: [{ type: "text", props: { fontSize: staticProp(48) } }] } as Partial<SceneObject>;
 
     const patches = buildSelectionCollectionPatches(base, patch, "components", [base, target], 0);
-    const bPatch = patches.find((p) => p.id === "b")!.patch.components![0].props as Record<string, unknown>;
+    const bPatch = patches.find((p) => p.id === "b")!.patch.components![0]!.props as Record<string, unknown>;
     expect((bPatch.fontSize as { value: number }).value).toBe(28); // 20 + 8
     // base keeps the literal patch
     expect(patches.find((p) => p.id === "a")!.patch).toBe(patch);
@@ -27,7 +27,7 @@ describe("buildSelectionCollectionPatches", () => {
     const patch = { components: [{ type: "text", props: { bevelStyle: "round" } }] } as Partial<SceneObject>;
 
     const patches = buildSelectionCollectionPatches(base, patch, "components", [base, target], 0);
-    const bPatch = patches.find((p) => p.id === "b")!.patch.components![0].props as Record<string, unknown>;
+    const bPatch = patches.find((p) => p.id === "b")!.patch.components![0]!.props as Record<string, unknown>;
     expect(bPatch.bevelStyle).toBe("round");
   });
 
