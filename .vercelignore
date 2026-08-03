@@ -1,0 +1,31 @@
+# Vercel へアップロードしない開発用資材（ビルドに不要かつ巨大）。
+# gitignore と同じ書式。ルート限定のパターンは先頭 "/" を付けて
+# src/ public/ test/ 配下の同名ファイルを巻き込まないようにする。
+#
+# ビルドに必要なので絶対に除外しないもの:
+#   index.html / src/ / public/ / package.json / package-lock.json /
+#   tsconfig.json / vite.config.ts / vite.player.config.ts /
+#   test/（tsconfig.json の include に入っており `tsc --noEmit` が読む）
+
+node_modules
+dist
+dist-electron
+release
+
+# 開発資料・素材（web ビルドは参照しない）
+doc
+audio
+for-debug-data
+investigations
+feedback
+electron
+
+# 検証／プローブ／ベンチの成果物（ルート直下のみ）
+/verify-*
+/probe-*
+/bench-*
+/.verify-*
+/*.png
+/*.jpg
+/*.zip
+/*.cpuprofile

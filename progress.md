@@ -1,5 +1,21 @@
 # Progress
 
+### 2026-08-03（Claude Opus 5）— Vercel デプロイ対応（既存経路は非破壊）
+
+- **依頼**: 「vercel でも動くようにして、機能は非破壊で」。
+- **前提の確認**: エディタはクライアント完結（正本 IndexedDB / 書き出しはブラウザ内 / ルーティング無し）のため、Vercel 側にランタイムは不要。既存の SSH デプロイ（`npm run deploy:ssh`）・Electron 配布・dev サーバ設定・`src/` は**一切変更していない**。
+- **前提の破綻を先に修復**: `npm run build`（= `tsc --noEmit` を含む）が **main 時点で失敗**していた（`test/multiSelectPropEdit.test.ts` の `components![0].props` が `noUncheckedIndexedAccess` に抵触・TS2532 ×2）。`[0]!` を足して修復。これが直っていないと Vercel も `deploy:ssh --build` もビルド不能。
+- **追加物**:
+  - [vercel.json](vercel.json): `framework: vite` / `installCommand: npm ci` / `buildCommand: npm run build`（= player 再ビルドを含むので bundle player 鮮度条件をデプロイ側でも自動的に満たす）/ `outputDirectory: dist` / SPA rewrite / `/assets/*` のみ immutable キャッシュ。
+    - rewrite は `/((?!api/)[^.]*)`。**拡張子付きパスを除外**（不在アセットが 200+HTML になると「壊れたフォント」等に化けてデバッグ不能）、**`/api/*` を除外**（除外しないと `POST /api/feedback` が index.html で 200 を返し `feedbackCollector` が送信成功と誤認してフィードバックが消える）。
+    - `/fonts/**`・`/motion-track/**`・`/subject-extract/**` は content-hash が無いため長期キャッシュを付けない。
+  - [.vercelignore](.vercelignore): `doc/`・`for-debug-data/`・`audio/`・ルート直下の `verify-*`/`probe-*`/`bench-*`/`*.png`/`*.zip` 等 700MB 超を除外。**`test/` は `tsconfig.json` の include に入り `tsc --noEmit` が読むので除外しない**。
+  - [api/feedback.js](api/feedback.js): 既存 ingest オリジンへの薄い中継（既定オフ）。`MAFTER_FEEDBACK_ORIGIN` 未設定なら 501 を返すだけ。クライアントは非 ok を localStorage キューへ退避するので無効でも UI は壊れない。
+  - [doc/deploy-vercel.md](doc/deploy-vercel.md): 手順・環境変数表・rewrite の意図・既知の差分。
+- **検証**: [verify-vercel-static.mjs](verify-vercel-static.mjs) を追加（Vercel のルーティング順を再現した静的サーバ + 実 Chromium）。**PASS**: エディタ起動 / `publicAssetUrl("fonts")` 解決と内蔵フォント実ロード（`/fonts/NotoSans-Regular.ttf` 200・556,328 bytes）/ 不在アセットは 404 のまま / 拡張子なしパスのみ app shell / `/api/*` は rewrite されない / 想定外 404・page error 0。`npm run build` PASS、`npm test` **152 files・1437 tests 全 PASS**（`indexedDB is not defined` の unhandled rejection 4 件は clean tree でも出る既存事象）。
+- **既知の差分**: 静的アセット約 48MB（フォント 20MB / mediapipe wasm 19MB / opencv.js 8.7MB）。全て遅延ロードなので初期表示には影響しない。書き出し性能はブラウザ依存（配信先を問わない既存の性質）。
+- **Next steps**: 実際に Vercel へ import して初回デプロイを確認する（本セッションでは実デプロイ未実施）。フィードバックを Vercel 経由で受けるなら `MAFTER_FEEDBACK_ORIGIN` と `VITE_FEEDBACK_TOKEN` を設定する。
+
 ### 2026-07-20（Claude Opus 4.8）— browser export 最大高速化 Phase 6（実験的 multi-render-context）実装・計測・既定 OFF で採用
 
 - **依頼**: `claude/phase-6-implementation-test-n5u5zo` ブランチの続きとして `browser-export-max-speed-plan.md` の **Phase 6（Experimental multi-render-context）** を実装・テストし、いい感じならコミット。
