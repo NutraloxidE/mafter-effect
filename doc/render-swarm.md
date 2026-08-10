@@ -37,6 +37,12 @@ results, heartbeats, and performance telemetry never go through the server.
 The included server store is instance-local; a multi-instance deployment must
 replace `getVercelServerBackend()` with a short-lived shared signaling store.
 
+The existing static SSH deployment can expose the same six actions through
+`scripts/mafter_http_server.py`; it keeps only temporary rendezvous state in
+the server process and does not receive jobs or rendered frames. Re-run the
+static deployment after changing this server so the deployed API and editor
+client are updated together.
+
 ## Identity and recovery
 
 Workers create an anonymous ECDSA P-256 identity and persist it locally. The

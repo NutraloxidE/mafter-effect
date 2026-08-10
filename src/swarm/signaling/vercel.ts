@@ -89,7 +89,18 @@ export class VercelSignalingBackend implements SwarmSignalingBackend {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     });
-    const payload = await response.json() as VercelResponse<T>;
+    const raw = await response.text();
+    let payload: VercelResponse<T>;
+    try {
+      payload = JSON.parse(raw) as VercelResponse<T>;
+    } catch {
+      const detail = raw.trim().replace(/\s+/g, " ").slice(0, 200);
+      throw new Error(
+        detail
+          ? `Swarm signaling endpoint returned non-JSON (HTTP ${response.status}): ${detail}`
+          : `Swarm signaling endpoint returned an empty response (HTTP ${response.status})`,
+      );
+    }
     if (!response.ok || !payload.ok || payload.value === undefined) {
       throw new Error(payload.error ?? `Swarm signaling request failed: ${action}`);
     }

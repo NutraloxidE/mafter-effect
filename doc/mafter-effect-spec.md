@@ -3571,6 +3571,8 @@ always the correctness and completion fallback.
 - Vercel is an adapter for temporary session/signaling state only. The swarm core
   must not depend on Vercel APIs so another backend (including Cloudflare) can be
   substituted later.
+- The static SSH deployment may provide the same temporary signaling API through
+  the stdlib HTTP server; it never receives render jobs or rendered frames.
 - v1 distributes preview-cache work only. Final export distribution remains a
   conservative follow-up until host-side ordering, muxing, alpha, video, and
   nested-composition parity are proven end to end.

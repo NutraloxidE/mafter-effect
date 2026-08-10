@@ -11,6 +11,7 @@ import {
 import { buildSwarmRenderCacheKey, validateSwarmRenderResult } from "../src/swarm/core/cacheKey";
 import { SwarmScheduler } from "../src/swarm/core/scheduler";
 import { InMemorySwarmSignalingBackend } from "../src/swarm/signaling/inMemory";
+import { VercelSignalingBackend } from "../src/swarm/signaling/vercel";
 import type { SwarmRenderJob } from "../src/swarm/core/types";
 
 function job(id: string, frame: number, priority: SwarmRenderJob["priority"] = "background"): SwarmRenderJob {
@@ -86,5 +87,17 @@ describe("Render Swarm core", () => {
     expect(hostEvents).toEqual(["peer-join-request"]);
     await backend.approveJoin(host.sessionId, "host", "peer", true);
     expect(hostEvents).toEqual(["peer-join-request"]);
+  });
+
+  it("reports non-JSON signaling failures without leaking a JSON parser error", async () => {
+    const backend = new VercelSignalingBackend({
+      endpoint: "http://example.test/api/swarm",
+      fetchImpl: async () => new Response("A server error occurred", { status: 500 }),
+    });
+    await expect(backend.createSession({
+      hostPeerId: "host",
+      hostDeviceId: "device",
+      hostLabel: "Host",
+    })).rejects.toThrow("returned non-JSON (HTTP 500): A server error occurred");
   });
 });
