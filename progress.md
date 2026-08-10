@@ -2862,3 +2862,15 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
 - Documentation: recorded the static SSH signaling provider in `doc/render-swarm.md` and the Render Swarm spec section. Existing schema, invariants, and project serialization are unchanged.
 - Verification: `python -m py_compile scripts/mafter_http_server.py` PASS; `npm run typecheck` PASS; Render Swarm tests 6/6 PASS; `npm run build` PASS; Python HTTP smoke create/join/events PASS against the static server; browser smoke opened the Workers dialog, created a join URL, and reported zero console warnings/errors. Full Vitest: 153 files / 1443 tests PASS, with the existing 4 Node-only unhandled errors from `indexedDB`/`alert` in autosave tests.
 - Deployment note: rerun the static SSH deployment so the updated Python API and built editor are installed together.
+
+### 2026-08-11 (Claude Opus 5) - Swarm signaling 500 の根治と本番 backend の分離
+
+- 症状: `/api/swarm/events` が Vercel 素の `FUNCTION_INVOCATION_FAILED`（HTML 500）を返し、クライアントが「non-JSON (HTTP 500)」で落ちる。
+- 根因1（クラッシュ）: `collectEvents` が `void backend.subscribe(...)` と投げっぱなしで、unknown/expired セッション時の reject が handler の try/catch 外の floating rejection になり Function プロセスごと落ちていた。→ `subscribe` を await して try/catch 内へ、タイマーは `clearTimeout` で回収。
+- 根因2（設計）: `getVercelServerBackend()` の `InMemorySwarmSignalingBackend` はプロセス内 Map。Vercel は request ごとに別 instance へ回りうるため、create / join / events が別 instance に着くと session も long-poll listener も消える。→ **Cloudflare Durable Object を本番 signaling に採用**。
+  - `worker/swarmSignaling.ts`（Worker + `SwarmSessionObject`）と `src/swarm/signaling/durableSessionCore.ts`（DO storage 上の rendezvous ロジック、workerd なしで単体テスト可）を追加。session ごとに 1 DO（object 名 = join code、`sessionId` に join code を埋め込み全 action を同じ DO へルーティング）。
+  - 共有 store に置くのは session / pending join / offer / answer / ICE / 短命 event queue のみ。heartbeat・progress・job・結果は P2P のまま。
+  - `getVercelServerBackend()` は `VERCEL_ENV=production|preview` で明示エラー（InMemory は local/test 専用）。`wrangler.jsonc` / `tsconfig.worker.json` / devDeps `wrangler`・`@cloudflare/workers-types` を追加。
+- 追加修正: handler の `req.body` 取得と backend 取得を try/catch 内へ移動し `console.error` で stack を出力。worker は data channel 接続時に signaling を unsubscribe（従来は接続後も 20 秒ごとに long-poll が永久に走っていた＝`SERVER_SILENT` 遷移欠落）。
+- 検証: `npx tsc -p tsconfig.worker.json` PASS、`npm run typecheck` PASS、Render Swarm tests 8/8 PASS。DO 実機デプロイ（`npx wrangler deploy` + `VITE_SWARM_SIGNALING_URL`）は未実施。
+- Next: Worker をデプロイして host/worker 実機で create→join→approve→P2P→`SERVER_SILENT`（req/min = 0）を確認する。

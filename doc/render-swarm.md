@@ -34,8 +34,32 @@ unit/dev experiments; it is not cross-tab signaling.
 The Vercel route is `api/swarm/[action].ts`. It keeps only temporary rendezvous
 state and uses long-poll event delivery only until WebRTC is established. Jobs,
 results, heartbeats, and performance telemetry never go through the server.
-The included server store is instance-local; a multi-instance deployment must
-replace `getVercelServerBackend()` with a short-lived shared signaling store.
+Its store is **process-local and therefore local-dev/test only**: Vercel may
+route `/create`, `/join`, and `/events` to different instances, so sessions and
+long-poll listeners silently disappear. `getVercelServerBackend()` throws on
+Vercel preview/production instead of pretending to work.
+
+## Production signaling: Cloudflare Durable Object
+
+`worker/swarmSignaling.ts` serves the same six actions with one Durable Object
+per session (object name = join code, and `sessionId` embeds the join code so
+every action routes to the same object). Rendezvous state lives in DO storage:
+session, pending joins, offer/answer, ICE candidates, and a short-lived per-peer
+event queue — nothing else. `src/swarm/signaling/durableSessionCore.ts` holds
+that logic and is unit-tested without workerd.
+
+```bash
+npx wrangler deploy
+```
+
+Then point the editor at it:
+
+```bash
+VITE_SWARM_SIGNALING_URL=https://mafter-swarm-signaling.<account>.workers.dev
+```
+
+Once the data channel opens, the worker unsubscribes from signaling, so server
+requests per minute must drop to zero for the rest of the session.
 
 The existing static SSH deployment can expose the same six actions through
 `scripts/mafter_http_server.py`; it keeps only temporary rendezvous state in

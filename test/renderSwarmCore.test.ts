@@ -14,6 +14,7 @@ import { InMemorySwarmSignalingBackend } from "../src/swarm/signaling/inMemory";
 import { VercelSignalingBackend } from "../src/swarm/signaling/vercel";
 import type { SwarmRenderJob } from "../src/swarm/core/types";
 import swarmHandler from "../api/swarm/[action]";
+import { DurableSwarmSession, joinCodeFromSessionId } from "../src/swarm/signaling/durableSessionCore";
 
 function job(id: string, frame: number, priority: SwarmRenderJob["priority"] = "background"): SwarmRenderJob {
   return {
@@ -88,6 +89,40 @@ describe("Render Swarm core", () => {
     expect(hostEvents).toEqual(["peer-join-request"]);
     await backend.approveJoin(host.sessionId, "host", "peer", true);
     expect(hostEvents).toEqual(["peer-join-request"]);
+  });
+
+  it("keeps rendezvous state durable across separate handler instances", async () => {
+    // Durable storage is shared; each request builds a fresh session object, exactly like a
+    // Durable Object serving successive requests (and unlike the per-instance Vercel Map).
+    const storage = new Map<string, unknown>();
+    const kv = {
+      get: async <T,>(key: string) => storage.get(key) as T | undefined,
+      put: async (key: string, value: unknown) => { storage.set(key, value); },
+      delete: async (key: string) => { storage.delete(key); },
+    };
+    const created = await new DurableSwarmSession(kv).createSession(
+      { hostPeerId: "host", hostDeviceId: "host-device", hostLabel: "Host" },
+      "ABC123",
+      "RANDOM123456",
+    );
+    expect(joinCodeFromSessionId(created.sessionId)).toBe("ABC123");
+
+    const peer = { peerId: "peer", deviceId: "device", label: "Phone", publicKeyJwk: {}, requestedAt: 0 };
+    await new DurableSwarmSession(kv).joinSession({ joinCode: "ABC123", peer });
+    expect(await new DurableSwarmSession(kv).takeEvents(created.sessionId, "host"))
+      .toEqual([{ type: "peer-join-request", peer }]);
+    // Drained queues do not redeliver.
+    expect(await new DurableSwarmSession(kv).takeEvents(created.sessionId, "host")).toEqual([]);
+
+    await new DurableSwarmSession(kv).approveJoin(created.sessionId, "host", "peer", true);
+    await new DurableSwarmSession(kv).sendSignal(created.sessionId, "host", "peer", {
+      kind: "candidate", candidate: { candidate: "c" },
+    });
+    expect((await new DurableSwarmSession(kv).takeEvents(created.sessionId, "peer")).map((e) => e.type))
+      .toEqual(["peer-approved", "signal"]);
+
+    await expect(new DurableSwarmSession(kv).joinSession({ joinCode: "NOPE", peer }))
+      .rejects.toThrow("Unknown swarm join code");
   });
 
   it("answers events for an unknown session with a JSON error instead of crashing", async () => {

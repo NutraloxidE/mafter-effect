@@ -1,0 +1,10 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "mafter-swarm-signaling",
+  "main": "worker/swarmSignaling.ts",
+  "compatibility_date": "2026-08-01",
+  "durable_objects": {
+    "bindings": [{ "name": "SWARM_SESSION", "class_name": "SwarmSessionObject" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SwarmSessionObject"] }]
+}
