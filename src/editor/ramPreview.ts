@@ -18,6 +18,8 @@ import { compNeedsAutoPreviewCache } from "./previewCompAnalysis";
 import { precompRasterService } from "./precompRasterService";
 import type { PreviewCacheSettings } from "./previewCacheSettings";
 import type { WorkArea } from "./workAreaStorage";
+import type { RemotePreviewRequest } from "../swarm/cache/distributedPreviewCache";
+import type { SwarmRenderResult } from "../swarm/core/types";
 
 export type PreviewCacheDisplayStatus =
   | { kind: "idle" }
@@ -35,6 +37,8 @@ export interface RamPreviewConfig {
   proxyScale: number;
   workArea: WorkArea;
 }
+
+export type RemotePreviewRenderer = (request: RemotePreviewRequest) => Promise<SwarmRenderResult | null>;
 
 export class RamPreviewController {
   private config: RamPreviewConfig | null = null;
@@ -54,6 +58,7 @@ export class RamPreviewController {
   /** §28.9 session 限定 Auto Preview Cache。 */
   private autoCacheSession = false;
   onFrameCached?: () => void;
+  private remoteRenderer: RemotePreviewRenderer | null = null;
 
   constructor(
     private store: TieredCacheStore,
@@ -61,6 +66,10 @@ export class RamPreviewController {
     settings: PreviewCacheSettings,
   ) {
     this.settings = settings;
+  }
+
+  setRemoteRenderer(renderer: RemotePreviewRenderer | null): void {
+    this.remoteRenderer = renderer;
   }
 
   updateSettings(settings: PreviewCacheSettings): void {
@@ -343,6 +352,37 @@ export class RamPreviewController {
     if (existing) {
       this.bumpBuildProgress(frame);
       return;
+    }
+
+    if (this.remoteRenderer) {
+      try {
+        const remote = await this.remoteRenderer({
+          project: this.config.project,
+          comp: this.config.comp,
+          projectRevision: this.config.projectRevision,
+          frame,
+          quality: this.config.quality,
+          proxy: this.config.proxy,
+          width: Math.max(1, Math.round(this.config.comp.width * this.config.proxyScale)),
+          height: Math.max(1, Math.round(this.config.comp.height * this.config.proxyScale)),
+        });
+        if (remote && gen === this.frameQueue.getGeneration()) {
+          const text = atob(remote.bytesBase64);
+          const png = new Uint8Array(text.length);
+          for (let i = 0; i < text.length; i += 1) png[i] = text.charCodeAt(i);
+          await this.store.put(key, png, {
+            byteSize: png.byteLength,
+            width: remote.width,
+            height: remote.height,
+            format: "png",
+          });
+          this.onFrameCached?.();
+          this.bumpBuildProgress(frame);
+          return;
+        }
+      } catch {
+        /* remote workers are optional; the local capture below remains authoritative */
+      }
     }
 
     let ctx: CompFrameCaptureContext | null;

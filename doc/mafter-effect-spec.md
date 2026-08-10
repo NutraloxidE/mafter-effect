@@ -3551,3 +3551,28 @@ interface CommandNode { key: string; label: string; hint?: string; children: Com
 - [ ] Esc / 背景クリック / 無操作でキャンセルされる
 - [ ] `registerCommand` で足したコマンドがドロップダウンと HUD の両方に現れる
 - [ ] project.json byte 等価 roundtrip（スキーマ・直列化不変）
+## Render Swarm (runtime-only, v1)
+
+Render Swarm is an optional accelerator for preview-cache rendering. It does not
+change the serialized project schema, the renderer-facing project types, or any
+existing invariant. The host remains the coordinator and the local renderer is
+always the correctness and completion fallback.
+
+- Worker sessions use short-lived join codes/URLs and provider-neutral signaling.
+- After WebRTC establishment, jobs, results, liveness, and performance telemetry
+  use the peer data channel; signaling is only a rendezvous path.
+- Workers have anonymous persistent cryptographic device identities. A returning
+  device may reclaim a logical worker slot only after challenge-response proof.
+- Jobs are small dynamic leases. Only host-validated results matching the current
+  render revision, composition, frame, profile, dimensions, and runtime version
+  may be committed to the existing preview cache.
+- Disconnect, timeout, stale result, invalid result, or incompatible runtime
+  requeues work and continues locally without user intervention.
+- Vercel is an adapter for temporary session/signaling state only. The swarm core
+  must not depend on Vercel APIs so another backend (including Cloudflare) can be
+  substituted later.
+- The static SSH deployment may provide the same temporary signaling API through
+  the stdlib HTTP server; it never receives render jobs or rendered frames.
+- v1 distributes preview-cache work only. Final export distribution remains a
+  conservative follow-up until host-side ordering, muxing, alpha, video, and
+  nested-composition parity are proven end to end.

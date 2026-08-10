@@ -1,0 +1,392 @@
+import { isWorkerCompatible } from "./capability";
+import { createChallengeNonce, verifyChallenge, type DeviceIdentity } from "./identity";
+import { createSwarmMessage, isSwarmMessageType } from "./protocol";
+import { SwarmMetrics } from "./metrics";
+import { SwarmScheduler } from "./scheduler";
+import { validateSwarmRenderResult } from "./cacheKey";
+import { WebRtcPeer } from "../transport/WebRtcPeer";
+import type { SwarmSignalingBackend } from "../signaling/SignalingBackend";
+import type {
+  SwarmMessageEnvelope,
+  SwarmHelloPayload,
+} from "./protocol";
+import type {
+  SwarmPeerDescriptor,
+  SwarmRenderJob,
+  SwarmRenderResult,
+  SwarmSessionDescriptor,
+  SwarmSignalingEvent,
+  SwarmSignal,
+  SwarmJobId,
+  WorkerSnapshot,
+} from "./types";
+
+interface PendingJob {
+  job: SwarmRenderJob;
+  resolve: (result: SwarmRenderResult | null) => void;
+  timeoutId: number;
+}
+
+interface TrustedWorker {
+  deviceId: string;
+  publicKeyJwk: JsonWebKey;
+  slotId: string;
+  label: string;
+}
+
+interface ConnectedWorker {
+  peer: WebRtcPeer;
+  descriptor: SwarmPeerDescriptor;
+  slotId?: string;
+  challengeNonce?: string;
+  benchmarkInFlight: boolean;
+  snapshot: WorkerSnapshot;
+}
+
+export interface SwarmCoordinatorOptions {
+  backend: SwarmSignalingBackend;
+  session: SwarmSessionDescriptor;
+  hostPeerId: string;
+  hostIdentity: DeviceIdentity;
+  hostLabel: string;
+  runtimeVersion: string;
+}
+
+export class SwarmCoordinator {
+  readonly scheduler = new SwarmScheduler();
+  readonly metrics = new SwarmMetrics();
+  private readonly workers = new Map<string, ConnectedWorker>();
+  private readonly pending = new Map<string, SwarmPeerDescriptor>();
+  private readonly jobs = new Map<SwarmJobId, PendingJob>();
+  private readonly trusted = new Map<string, TrustedWorker>();
+  private readonly listeners = new Set<() => void>();
+  private unsubscribeSignaling: (() => void) | null = null;
+  private leaseTimer: number | null = null;
+
+  constructor(private readonly options: SwarmCoordinatorOptions) {
+    this.loadTrust();
+  }
+
+  async start(): Promise<void> {
+    this.unsubscribeSignaling = await this.options.backend.subscribe(
+      this.options.session.sessionId,
+      this.options.hostPeerId,
+      (event) => this.handleSignalingEvent(event),
+    );
+    this.leaseTimer = window.setInterval(() => {
+      this.scheduler.reclaimExpired(Date.now());
+      this.pumpJobs();
+      this.emitChange();
+    }, 1_000);
+  }
+
+  stop(): void {
+    this.unsubscribeSignaling?.();
+    this.unsubscribeSignaling = null;
+    if (this.leaseTimer !== null) window.clearInterval(this.leaseTimer);
+    this.leaseTimer = null;
+    for (const worker of this.workers.values()) worker.peer.close();
+    this.workers.clear();
+    this.pending.clear();
+    for (const job of this.jobs.values()) {
+      window.clearTimeout(job.timeoutId);
+      job.resolve(null);
+    }
+    this.jobs.clear();
+    this.emitChange();
+  }
+
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  get session(): SwarmSessionDescriptor {
+    return this.options.session;
+  }
+
+  getPendingWorkers(): SwarmPeerDescriptor[] {
+    return [...this.pending.values()];
+  }
+
+  getWorkers(): WorkerSnapshot[] {
+    return [...this.workers.values()].map((worker) => worker.snapshot);
+  }
+
+  getAvailableCompute(): number {
+    let total = 1;
+    for (const worker of this.workers.values()) {
+      if (worker.snapshot.state !== "connected") continue;
+      total += worker.snapshot.performance?.benchmarkScore ?? 0;
+    }
+    return total;
+  }
+
+  async approveWorker(peerId: string, approved: boolean): Promise<void> {
+    const peer = this.pending.get(peerId);
+    if (!peer) return;
+    await this.options.backend.approveJoin(this.options.session.sessionId, this.options.hostPeerId, peerId, approved);
+    this.pending.delete(peerId);
+    if (!approved) this.emitChange();
+    if (approved) {
+      const webRtc = new WebRtcPeer({ initiator: true });
+      const worker: ConnectedWorker = {
+        peer: webRtc,
+        descriptor: peer,
+        benchmarkInFlight: false,
+        snapshot: {
+          slotId: `pending-${peer.peerId}`,
+          peerId: peer.peerId,
+          deviceId: peer.deviceId,
+          label: peer.label,
+          state: "connecting",
+          transport: "unknown",
+        },
+      };
+      this.workers.set(peer.peerId, worker);
+      webRtc.onSignal = (signal) => void this.sendSignal(peer.peerId, signal);
+      webRtc.onMessage = (message) => void this.handleWorkerMessage(worker, message);
+      webRtc.onStateChange = (state) => this.handlePeerState(worker, state);
+      await webRtc.start();
+      this.emitChange();
+    }
+  }
+
+  hasAvailableWorker(): boolean {
+    return [...this.workers.values()].some((worker) => worker.slotId !== undefined && worker.snapshot.state === "connected");
+  }
+
+  async renderPreviewFrame(job: SwarmRenderJob): Promise<SwarmRenderResult | null> {
+    if (!this.hasAvailableWorker()) return null;
+    if (!this.isEligibleJob(job)) return null;
+    this.scheduler.enqueue(job);
+    const result = await new Promise<SwarmRenderResult | null>((resolve) => {
+      const timeoutId = window.setTimeout(() => {
+        this.jobs.delete(job.id);
+        this.scheduler.reclaimExpired(Date.now());
+        this.metrics.noteLocalFallback();
+        resolve(null);
+      }, 4_000);
+      this.jobs.set(job.id, { job, resolve, timeoutId });
+      this.requestBenchmarks(job);
+      this.pumpJobs();
+    });
+    return result;
+  }
+
+  private isEligibleJob(job: SwarmRenderJob): boolean {
+    const comp = job.project.compositions.find((candidate) => candidate.id === job.compositionId);
+    if (!comp || comp.kind !== "timeline") return false;
+    if (job.project.assets.length > 0) return false;
+    if (comp.objects.some((object) => object.components.some((component) => component.type === "video"))) return false;
+    if (comp.objects.some((object) => object.components.some((component) => {
+      return Object.values(component.props).some((value) => typeof value === "object" && value !== null && "expression" in value);
+    }))) return false;
+    return true;
+  }
+
+  private requestBenchmarks(job: SwarmRenderJob): void {
+    for (const worker of this.workers.values()) {
+      if (worker.slotId === undefined || worker.snapshot.state !== "connected" || worker.snapshot.performance || worker.benchmarkInFlight) continue;
+      worker.benchmarkInFlight = true;
+      void worker.peer.protocol?.send(createSwarmMessage("benchmark-request", { job }));
+    }
+  }
+
+  private pumpJobs(): void {
+    for (const worker of this.workers.values()) {
+      if (worker.slotId === undefined || worker.snapshot.state !== "connected" || worker.snapshot.currentJobId) continue;
+      const leased = this.scheduler.requestJob(worker.slotId, Date.now());
+      if (!leased) continue;
+      worker.snapshot.currentJobId = leased.id;
+      this.metrics.setJobs(this.scheduler.getSnapshot().pending, this.scheduler.getSnapshot().leased);
+      void worker.peer.protocol?.send(createSwarmMessage("job-offer", { job: leased }));
+      this.emitChange();
+    }
+  }
+
+  private async handleWorkerMessage(worker: ConnectedWorker, message: SwarmMessageEnvelope): Promise<void> {
+    if (isSwarmMessageType(message, "hello")) {
+      await this.handleHello(worker, message.payload);
+      return;
+    }
+    if (isSwarmMessageType(message, "capabilities")) {
+      worker.snapshot.capabilities = message.payload;
+      if (!isWorkerCompatible(message.payload, this.options.runtimeVersion)) {
+        worker.snapshot.state = "incompatible";
+        await worker.peer.protocol?.send(createSwarmMessage("worker-draining", { reason: "incompatible-runtime" }));
+        this.emitChange();
+      }
+      return;
+    }
+    if (isSwarmMessageType(message, "challenge-response")) {
+      await this.handleChallengeResponse(worker, message.payload.nonce, message.payload.signatureBase64);
+      return;
+    }
+    if (isSwarmMessageType(message, "benchmark-result")) {
+      worker.benchmarkInFlight = false;
+      worker.snapshot.performance = {
+        benchmarkScore: Math.max(0, message.payload.score),
+        recentFramesPerSecond: message.payload.framesPerSecond,
+        recentRenderMs: message.payload.renderMs,
+        reliability: 1,
+        lastUpdatedAt: Date.now(),
+      };
+      if (worker.slotId) this.scheduler.updateWorker({ slotId: worker.slotId, score: message.payload.score, reliability: 1, connected: true });
+      this.emitChange();
+      this.pumpJobs();
+      return;
+    }
+    if (isSwarmMessageType(message, "job-accepted")) {
+      if (worker.slotId) this.scheduler.markRendering(message.payload.jobId, worker.slotId);
+      return;
+    }
+    if (isSwarmMessageType(message, "job-progress")) {
+      if (worker.slotId) this.scheduler.markRendering(message.payload.jobId, worker.slotId);
+      return;
+    }
+    if (isSwarmMessageType(message, "job-result")) {
+      await this.handleResult(worker, message.payload);
+      return;
+    }
+    if (isSwarmMessageType(message, "job-failed")) {
+      if (worker.slotId) this.scheduler.fail(message.payload.jobId, worker.slotId);
+      worker.snapshot.currentJobId = undefined;
+      this.pumpJobs();
+    }
+  }
+
+  private async handleHello(worker: ConnectedWorker, hello: SwarmHelloPayload): Promise<void> {
+    if (hello.deviceId !== worker.descriptor.deviceId) {
+      worker.snapshot.state = "offline";
+      worker.peer.close();
+      return;
+    }
+    worker.descriptor = { ...worker.descriptor, label: hello.label, publicKeyJwk: hello.publicKeyJwk };
+    worker.snapshot.label = hello.label;
+    worker.challengeNonce = createChallengeNonce();
+    await worker.peer.protocol?.send(createSwarmMessage("challenge", { nonce: worker.challengeNonce }));
+    this.emitChange();
+  }
+
+  private async handleChallengeResponse(worker: ConnectedWorker, nonce: string, signatureBase64: string): Promise<void> {
+    if (!worker.challengeNonce || nonce !== worker.challengeNonce) return;
+    const verified = await verifyChallenge(worker.descriptor.publicKeyJwk, nonce, signatureBase64);
+    if (!verified) {
+      worker.snapshot.state = "offline";
+      await worker.peer.protocol?.send(createSwarmMessage("worker-draining", { reason: "identity-proof-failed" }));
+      worker.peer.close();
+      this.emitChange();
+      return;
+    }
+    const existing = this.trusted.get(worker.descriptor.deviceId);
+    const slotId = existing?.slotId ?? `worker-${globalThis.crypto?.randomUUID?.() ?? Date.now()}`;
+    this.trusted.set(worker.descriptor.deviceId, {
+      deviceId: worker.descriptor.deviceId,
+      publicKeyJwk: worker.descriptor.publicKeyJwk,
+      slotId,
+      label: worker.descriptor.label,
+    });
+    this.saveTrust();
+    worker.slotId = slotId;
+    worker.snapshot.slotId = slotId;
+    worker.snapshot.state = "connected";
+    this.scheduler.registerWorker({ slotId, score: 1, reliability: 1, connected: true });
+    this.emitChange();
+    this.pumpJobs();
+  }
+
+  private async handleResult(worker: ConnectedWorker, result: SwarmRenderResult): Promise<void> {
+    const waiter = this.jobs.get(result.jobId);
+    const job = this.scheduler.get(result.jobId);
+    if (!waiter || !job || !worker.slotId || !validateSwarmRenderResult(result, {
+      jobId: result.jobId,
+      renderRevision: job.renderRevision,
+      compositionId: job.compositionId,
+      frame: job.frameStart,
+      profile: job.profile,
+      runtimeVersion: job.runtimeVersion,
+    })) {
+      this.metrics.noteStaleResult();
+      return;
+    }
+    if (!this.scheduler.commit(result.jobId, worker.slotId)) return;
+    window.clearTimeout(waiter.timeoutId);
+    this.jobs.delete(result.jobId);
+    worker.snapshot.currentJobId = undefined;
+    waiter.resolve(result);
+    this.pumpJobs();
+    this.emitChange();
+  }
+
+  private handlePeerState(worker: ConnectedWorker, state: RTCPeerConnectionState | "connected" | "disconnected"): void {
+    if (state === "connected") {
+      worker.snapshot.state = "connecting";
+    } else if (state === "disconnected" || state === "failed" || state === "closed") {
+      worker.snapshot.state = "reconnecting";
+      if (worker.slotId) {
+        this.scheduler.removeWorker(worker.slotId);
+        worker.snapshot.currentJobId = undefined;
+      }
+      window.setTimeout(() => {
+        if (worker.snapshot.state === "reconnecting") {
+          worker.snapshot.state = "offline";
+          this.emitChange();
+        }
+      }, 10_000);
+    }
+    this.emitChange();
+  }
+
+  private async sendSignal(peerId: string, signal: SwarmSignal): Promise<void> {
+    const worker = this.workers.get(peerId);
+    if (!worker) return;
+    await this.options.backend.sendSignal(this.options.session.sessionId, this.options.hostPeerId, peerId, signal);
+    this.metrics.noteSignalingRequest();
+  }
+
+  private handleSignalingEvent(event: SwarmSignalingEvent): void {
+    if (event.type === "peer-join-request") {
+      this.pending.set(event.peer.peerId, event.peer);
+      this.emitChange();
+      return;
+    }
+    if (event.type === "signal") {
+      const worker = this.workers.get(event.fromPeerId);
+      if (worker) void worker.peer.applySignal(event.payload);
+      return;
+    }
+    if (event.type === "peer-left") {
+      const worker = this.workers.get(event.peerId);
+      if (worker) this.handlePeerState(worker, "disconnected");
+      return;
+    }
+    if (event.type === "session-expired") {
+      for (const worker of this.workers.values()) worker.snapshot.state = "offline";
+      this.emitChange();
+    }
+  }
+
+  private loadTrust(): void {
+    try {
+      const raw = localStorage.getItem(this.trustKey());
+      const values = raw ? JSON.parse(raw) as TrustedWorker[] : [];
+      for (const value of values) this.trusted.set(value.deviceId, value);
+    } catch {
+      /* trust is best effort and session-local */
+    }
+  }
+
+  private saveTrust(): void {
+    try { localStorage.setItem(this.trustKey(), JSON.stringify([...this.trusted.values()])); } catch { /* ignore */ }
+  }
+
+  private trustKey(): string {
+    return `mafter-render-swarm-trust:${this.options.session.sessionId}`;
+  }
+
+  private emitChange(): void {
+    this.metrics.setJobs(this.scheduler.getSnapshot().pending, this.scheduler.getSnapshot().leased);
+    for (const listener of this.listeners) listener();
+  }
+}

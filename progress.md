@@ -2846,3 +2846,45 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
 - **build:player**: editor-only のため未実行（runtime/player 未変更）。
 - **既知の天井**: 同一 type の effect/component が複数ある場合は最初の一致にのみ適用。live preview（scrub 中）は複数選択時オフ、commit で確定。
 - **残タスク**: 実ブラウザでの目視確認（未実施）。
+### 2026-08-10 (Codex) - Render Swarm v1 implementation
+
+- Spec-first: appended a runtime-only Render Swarm v1 section to `doc/mafter-effect-spec.md`; existing schema, INV-1..6, and `project.json` serialization are unchanged.
+- Implementation: added versioned protocol, ECDSA P-256 identity/challenge, capability collection and benchmark, priority pull scheduler, leases/requeue/stale-result validation, content-hash asset/cache primitives, provider-neutral signaling, Vercel long-poll adapter, WebRTC data-channel transport, host coordinator, worker runtime/render executor, and bounded worker cache under `src/swarm/`.
+- UI/integration: added the Workers + menu with QR/join URL/approval/connected-worker rows, `/w/<join-code>` worker page, preview-cache remote renderer with local fallback, and `api/swarm/[action].ts` routes for create/join/approve/signal/events/close.
+- Verification: `npm run typecheck` PASS, `npm run build` PASS, Render Swarm unit tests 5/5 PASS, browser smoke PASS for the Workers menu, QR canvas, worker page, and zero page errors. The full Vitest run currently has 152/153 files and 1441/1442 tests passing; the remaining failure is the existing `projectBins` test, which passes alone but can fail under parallel execution, and Node-only autosave emits existing `indexedDB` unhandled errors.
+- Known limitations: the Vercel rendezvous store is instance-local until a shared ephemeral store is added; asset-backed/animated-expression jobs use local fallback in v1; TURN is not configured; distributed final export is intentionally disabled.
+- Next steps: shared short-lived signaling store, content-addressed asset transfer, TURN/relay operations, then final-export distribution after parity validation.
+
+### 2026-08-11 (Codex) - Render Workers non-JSON signaling error fix
+
+- Root cause: the static SSH deployment serves the SPA through `scripts/mafter_http_server.py`, but its POST handler only recognized `/api/feedback`; `/api/swarm/*` returned the stdlib server's plain 404 body. `VercelSignalingBackend` then called `response.json()` unconditionally, producing `Unexpected token 'A'` for a plain-text server error.
+- Implementation: added the six temporary Render Swarm rendezvous/signaling actions to the existing stdlib server, with JSON-shaped validation/errors, bounded long-polling, short-lived in-memory state, peer approval, signal forwarding, and close/expiry events. The client now reports non-JSON responses with HTTP status and a bounded response detail.
+- Documentation: recorded the static SSH signaling provider in `doc/render-swarm.md` and the Render Swarm spec section. Existing schema, invariants, and project serialization are unchanged.
+- Verification: `python -m py_compile scripts/mafter_http_server.py` PASS; `npm run typecheck` PASS; Render Swarm tests 6/6 PASS; `npm run build` PASS; Python HTTP smoke create/join/events PASS against the static server; browser smoke opened the Workers dialog, created a join URL, and reported zero console warnings/errors. Full Vitest: 153 files / 1443 tests PASS, with the existing 4 Node-only unhandled errors from `indexedDB`/`alert` in autosave tests.
+- Deployment note: rerun the static SSH deployment so the updated Python API and built editor are installed together.
+
+### 2026-08-11 (Claude Opus 5) - Swarm signaling 500 の根治と本番 backend の分離
+
+- 症状: `/api/swarm/events` が Vercel 素の `FUNCTION_INVOCATION_FAILED`（HTML 500）を返し、クライアントが「non-JSON (HTTP 500)」で落ちる。
+- 根因1（クラッシュ）: `collectEvents` が `void backend.subscribe(...)` と投げっぱなしで、unknown/expired セッション時の reject が handler の try/catch 外の floating rejection になり Function プロセスごと落ちていた。→ `subscribe` を await して try/catch 内へ、タイマーは `clearTimeout` で回収。
+- 根因2（設計）: `getVercelServerBackend()` の `InMemorySwarmSignalingBackend` はプロセス内 Map。Vercel は request ごとに別 instance へ回りうるため、create / join / events が別 instance に着くと session も long-poll listener も消える。→ **Cloudflare Durable Object を本番 signaling に採用**。
+  - `worker/swarmSignaling.ts`（Worker + `SwarmSessionObject`）と `src/swarm/signaling/durableSessionCore.ts`（DO storage 上の rendezvous ロジック、workerd なしで単体テスト可）を追加。session ごとに 1 DO（object 名 = join code、`sessionId` に join code を埋め込み全 action を同じ DO へルーティング）。
+  - 共有 store に置くのは session / pending join / offer / answer / ICE / 短命 event queue のみ。heartbeat・progress・job・結果は P2P のまま。
+  - `getVercelServerBackend()` は `VERCEL_ENV=production|preview` で明示エラー（InMemory は local/test 専用）。`wrangler.jsonc` / `tsconfig.worker.json` / devDeps `wrangler`・`@cloudflare/workers-types` を追加。
+- 追加修正: handler の `req.body` 取得と backend 取得を try/catch 内へ移動し `console.error` で stack を出力。worker は data channel 接続時に signaling を unsubscribe（従来は接続後も 20 秒ごとに long-poll が永久に走っていた＝`SERVER_SILENT` 遷移欠落）。
+- 検証: `npx tsc -p tsconfig.worker.json` PASS、`npm run typecheck` PASS、Render Swarm tests 8/8 PASS。DO 実機デプロイ（`npx wrangler deploy` + `VITE_SWARM_SIGNALING_URL`）は未実施。
+- Next: Worker をデプロイして host/worker 実機で create→join→approve→P2P→`SERVER_SILENT`（req/min = 0）を確認する。
+
+### 2026-08-11 (Claude Opus 5) - Durable Object signaling を本番デプロイ
+
+- Cloudflare account を `r1cefarm.dev@gmail.com`（`e728b8b71fefdb9968861ac296202f7a`）に切り替えて `npx wrangler deploy` 実行。
+- 公開 URL: `https://mafter-swarm-signaling.r1cefarm-dev.workers.dev`（Version `0423a60b-fab0-4070-87b2-d84653f4335e`、DO binding `SWARM_SESSION` = `SwarmSessionObject`）。`workers_dev: true` と observability を有効化。
+- 実機疎通: create → join → host events（`peer-join-request`）→ approve → peer events（`peer-approved`）→ close が全て JSON で成功。未知 sessionId は `{"ok":false,"error":"Unknown swarm session"}`（500 ではない）。
+- 独自ドメイン（maftereffect.gycp.party 等）への割り当てはユーザーが自分で設定する。
+- Next: `VITE_SWARM_SIGNALING_URL` をエディタのビルドに設定し、host/worker 実機で P2P 確立後の server req/min = 0 を確認する。
+
+### 2026-08-11 (Claude Opus 5) - signaling 既定エンドポイントを Worker に切り替え
+
+- `defaultSignalingEndpoint()` の既定を `/api/swarm` から `DEFAULT_SWARM_SIGNALING_URL = https://mafter-swarm-signaling.r1cefarm-dev.workers.dev` に変更（`VITE_SWARM_SIGNALING_URL` があればそちらを優先。空文字は無視）。
+- これで静的ホスト（VPS / Pages / Electron）どこにビルドを置いても設定なしで signaling に到達する。独自ドメインを Worker に割り当てたら定数か env を差し替えて再ビルドする（Vite 定数置換なのでビルド時固定）。
+- 検証: `npm run typecheck` PASS、Render Swarm tests 9/9 PASS。
