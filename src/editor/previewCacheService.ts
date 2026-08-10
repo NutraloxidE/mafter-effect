@@ -15,6 +15,7 @@ import {
 import type { WorkArea } from "./workAreaStorage";
 import { TieredFrameRenderCache } from "../runtime/tieredFrameRenderCache";
 import type { FrameRenderCache } from "../runtime/frameRenderCache";
+import type { RemotePreviewRenderer } from "./ramPreview";
 import { LAYER_FRAME_CACHE_PREFIX, parseLayerFrameKey } from "../cache/layerFrameKey";
 import { PRECOMP_FRAME_CACHE_PREFIX, parsePrecompFrameKey } from "../cache/precompFrameKey";
 
@@ -33,6 +34,7 @@ class PreviewCacheService {
   private layerListeners = new Set<CachedLayerFramesListener>();
   private precompListeners = new Set<CachedPrecompFramesListener>();
   private pollId: number | null = null;
+  private remoteRenderer: RemotePreviewRenderer | null = null;
 
   init(fs: FileSystem, settings: PreviewCacheSettings = loadPreviewCacheSettings()): void {
     if (this.store) return;
@@ -43,6 +45,7 @@ class PreviewCacheService {
       disk,
     });
     this.controller = new RamPreviewController(this.store, fs, settings);
+    this.controller.setRemoteRenderer(this.remoteRenderer);
     this.controller.onFrameCached = () => void this.notifyCachedFrames();
     this.frameRenderCache = new TieredFrameRenderCache(this.store);
     this.startPolling();
@@ -58,6 +61,11 @@ class PreviewCacheService {
 
   getFrameRenderCache(): FrameRenderCache | null {
     return this.frameRenderCache;
+  }
+
+  setRemoteRenderer(renderer: RemotePreviewRenderer | null): void {
+    this.remoteRenderer = renderer;
+    this.controller?.setRemoteRenderer(renderer);
   }
 
   updateSettings(settings: PreviewCacheSettings): void {
@@ -180,6 +188,7 @@ class PreviewCacheService {
     this.controller = null;
     this.store = null;
     this.frameRenderCache = null;
+    this.remoteRenderer = null;
     this.listeners.clear();
     this.layerListeners.clear();
     this.precompListeners.clear();

@@ -9,6 +9,8 @@ import { MacroMenu } from "./editor/menu/MacroMenu";
 import { TextBulkReplaceDialog } from "./editor/menu/TextBulkReplaceDialog";
 import { CommandMenuOverlay } from "./editor/commandMenu/CommandMenuOverlay";
 import { registerCommand } from "./editor/commandMenu/commandRegistry";
+import { WorkerMenu } from "./swarm/ui/WorkerMenu";
+import { WorkerJoinView } from "./swarm/ui/WorkerJoinView";
 
 const WORKSPACE_KEY = "mafter-workspace-v1";
 
@@ -56,6 +58,13 @@ function updateLayoutTabs(node: LayoutNode, path: number[], active: number): Lay
 }
 
 export function App() {
+  if (typeof window !== "undefined" && /^\/w\/[^/]+/i.test(window.location.pathname)) {
+    return <WorkerJoinView />;
+  }
+  return <EditorApp />;
+}
+
+function EditorApp() {
   const [workspace, setWorkspace] = useState<WorkspaceState>(loadWorkspace);
   const [showFeedbackModal, setShowFeedbackModal] = useState(false);
   const [showTextBulkReplace, setShowTextBulkReplace] = useState(false);
@@ -151,6 +160,7 @@ export function App() {
         </span>
         <span style={{ color: "#444", marginLeft: 4 }}>|</span>
         <MacroMenu />
+        <WorkerMenu />
         <span style={{ flex: 1 }} />
         {isFeedbackEnabled() && (
           <button onClick={() => setShowFeedbackModal(true)} style={feedbackLinkStyle}>

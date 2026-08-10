@@ -2846,3 +2846,11 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
 - **build:player**: editor-only のため未実行（runtime/player 未変更）。
 - **既知の天井**: 同一 type の effect/component が複数ある場合は最初の一致にのみ適用。live preview（scrub 中）は複数選択時オフ、commit で確定。
 - **残タスク**: 実ブラウザでの目視確認（未実施）。
+### 2026-08-10 (Codex) - Render Swarm v1 implementation
+
+- Spec-first: appended a runtime-only Render Swarm v1 section to `doc/mafter-effect-spec.md`; existing schema, INV-1..6, and `project.json` serialization are unchanged.
+- Implementation: added versioned protocol, ECDSA P-256 identity/challenge, capability collection and benchmark, priority pull scheduler, leases/requeue/stale-result validation, content-hash asset/cache primitives, provider-neutral signaling, Vercel long-poll adapter, WebRTC data-channel transport, host coordinator, worker runtime/render executor, and bounded worker cache under `src/swarm/`.
+- UI/integration: added the Workers + menu with QR/join URL/approval/connected-worker rows, `/w/<join-code>` worker page, preview-cache remote renderer with local fallback, and `api/swarm/[action].ts` routes for create/join/approve/signal/events/close.
+- Verification: `npm run typecheck` PASS, `npm run build` PASS, Render Swarm unit tests 5/5 PASS, browser smoke PASS for the Workers menu, QR canvas, worker page, and zero page errors. The full Vitest run currently has 152/153 files and 1441/1442 tests passing; the remaining failure is the existing `projectBins` test, which passes alone but can fail under parallel execution, and Node-only autosave emits existing `indexedDB` unhandled errors.
+- Known limitations: the Vercel rendezvous store is instance-local until a shared ephemeral store is added; asset-backed/animated-expression jobs use local fallback in v1; TURN is not configured; distributed final export is intentionally disabled.
+- Next steps: shared short-lived signaling store, content-addressed asset transfer, TURN/relay operations, then final-export distribution after parity validation.
