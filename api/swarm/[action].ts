@@ -31,9 +31,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     res.status(405).json({ ok: false, error: "POST required" });
     return;
   }
-  const body = record(req.body);
-  const backend = getVercelServerBackend();
   try {
+    // body access and backend bootstrap can throw too; keep them inside the catch so the
+    // client always sees JSON instead of a raw FUNCTION_INVOCATION_FAILED page.
+    const body = record(req.body);
+    const backend = getVercelServerBackend();
     const action = actionFromRequest(req);
     if (action === "create") {
       const value = await backend.createSession(body as unknown as CreateSwarmSessionInput);
@@ -67,6 +69,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     }
     res.status(404).json({ ok: false, error: "Unknown swarm action" });
   } catch (error) {
+    console.error("swarm handler failed", error);
     res.status(400).json({ ok: false, error: error instanceof Error ? error.message : "Swarm request failed" });
   }
 }

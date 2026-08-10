@@ -101,6 +101,9 @@ export class WorkerRuntime {
     peer.onMessage = (message) => void this.handleMessage(message);
     peer.onStateChange = (state) => {
       if (state === "connected") {
+        // P2P is up: stop long-polling the signaling server (server req/min must reach 0).
+        this.unsubscribeSignaling?.();
+        this.unsubscribeSignaling = null;
         this.setState("connected");
         void this.sendHello();
       }
