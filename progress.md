@@ -2874,3 +2874,11 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
 - 追加修正: handler の `req.body` 取得と backend 取得を try/catch 内へ移動し `console.error` で stack を出力。worker は data channel 接続時に signaling を unsubscribe（従来は接続後も 20 秒ごとに long-poll が永久に走っていた＝`SERVER_SILENT` 遷移欠落）。
 - 検証: `npx tsc -p tsconfig.worker.json` PASS、`npm run typecheck` PASS、Render Swarm tests 8/8 PASS。DO 実機デプロイ（`npx wrangler deploy` + `VITE_SWARM_SIGNALING_URL`）は未実施。
 - Next: Worker をデプロイして host/worker 実機で create→join→approve→P2P→`SERVER_SILENT`（req/min = 0）を確認する。
+
+### 2026-08-11 (Claude Opus 5) - Durable Object signaling を本番デプロイ
+
+- Cloudflare account を `r1cefarm.dev@gmail.com`（`e728b8b71fefdb9968861ac296202f7a`）に切り替えて `npx wrangler deploy` 実行。
+- 公開 URL: `https://mafter-swarm-signaling.r1cefarm-dev.workers.dev`（Version `0423a60b-fab0-4070-87b2-d84653f4335e`、DO binding `SWARM_SESSION` = `SwarmSessionObject`）。`workers_dev: true` と observability を有効化。
+- 実機疎通: create → join → host events（`peer-join-request`）→ approve → peer events（`peer-approved`）→ close が全て JSON で成功。未知 sessionId は `{"ok":false,"error":"Unknown swarm session"}`（500 ではない）。
+- 独自ドメイン（maftereffect.gycp.party 等）への割り当てはユーザーが自分で設定する。
+- Next: `VITE_SWARM_SIGNALING_URL` をエディタのビルドに設定し、host/worker 実機で P2P 確立後の server req/min = 0 を確認する。
