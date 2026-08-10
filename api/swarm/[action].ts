@@ -78,14 +78,23 @@ async function collectEvents(
   waitMs: number,
 ): Promise<unknown[]> {
   const events: unknown[] = [];
-  let unsubscribe: (() => void) | undefined;
-  const result = new Promise<void>((resolve) => {
-    void backend.subscribe(sessionId, peerId, (event) => {
-      events.push(event);
-      resolve();
-    }).then((cleanup) => { unsubscribe = cleanup; });
+  let notify: () => void = () => {};
+  const firstEvent = new Promise<void>((resolve) => { notify = resolve; });
+  // subscribe() rejects for unknown/expired sessions; awaiting it keeps that inside the
+  // handler's try/catch (a floating rejection here crashes the function = HTTP 500).
+  const unsubscribe = await backend.subscribe(sessionId, peerId, (event) => {
+    events.push(event);
+    notify();
   });
-  await Promise.race([result, new Promise<void>((resolve) => setTimeout(resolve, Math.min(25_000, Math.max(100, waitMs))))]);
-  unsubscribe?.();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      firstEvent,
+      new Promise<void>((resolve) => { timer = setTimeout(resolve, Math.min(25_000, Math.max(100, waitMs))); }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    unsubscribe();
+  }
   return events;
 }

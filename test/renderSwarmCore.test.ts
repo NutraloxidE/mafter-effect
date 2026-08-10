@@ -13,6 +13,7 @@ import { SwarmScheduler } from "../src/swarm/core/scheduler";
 import { InMemorySwarmSignalingBackend } from "../src/swarm/signaling/inMemory";
 import { VercelSignalingBackend } from "../src/swarm/signaling/vercel";
 import type { SwarmRenderJob } from "../src/swarm/core/types";
+import swarmHandler from "../api/swarm/[action]";
 
 function job(id: string, frame: number, priority: SwarmRenderJob["priority"] = "background"): SwarmRenderJob {
   return {
@@ -87,6 +88,22 @@ describe("Render Swarm core", () => {
     expect(hostEvents).toEqual(["peer-join-request"]);
     await backend.approveJoin(host.sessionId, "host", "peer", true);
     expect(hostEvents).toEqual(["peer-join-request"]);
+  });
+
+  it("answers events for an unknown session with a JSON error instead of crashing", async () => {
+    let status = 0;
+    let payload: unknown;
+    const res = {
+      status(code: number) { status = code; return res; },
+      json(value: unknown) { payload = value; return res; },
+      end() {},
+    };
+    await swarmHandler(
+      { method: "POST", query: { action: "events" }, body: { sessionId: "missing", peerId: "peer", waitMs: 100 } },
+      res,
+    );
+    expect(status).toBe(400);
+    expect(payload).toEqual({ ok: false, error: "Unknown swarm session" });
   });
 
   it("reports non-JSON signaling failures without leaking a JSON parser error", async () => {
