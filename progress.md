@@ -2882,3 +2882,9 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
 - 実機疎通: create → join → host events（`peer-join-request`）→ approve → peer events（`peer-approved`）→ close が全て JSON で成功。未知 sessionId は `{"ok":false,"error":"Unknown swarm session"}`（500 ではない）。
 - 独自ドメイン（maftereffect.gycp.party 等）への割り当てはユーザーが自分で設定する。
 - Next: `VITE_SWARM_SIGNALING_URL` をエディタのビルドに設定し、host/worker 実機で P2P 確立後の server req/min = 0 を確認する。
+
+### 2026-08-11 (Claude Opus 5) - signaling 既定エンドポイントを Worker に切り替え
+
+- `defaultSignalingEndpoint()` の既定を `/api/swarm` から `DEFAULT_SWARM_SIGNALING_URL = https://mafter-swarm-signaling.r1cefarm-dev.workers.dev` に変更（`VITE_SWARM_SIGNALING_URL` があればそちらを優先。空文字は無視）。
+- これで静的ホスト（VPS / Pages / Electron）どこにビルドを置いても設定なしで signaling に到達する。独自ドメインを Worker に割り当てたら定数か env を差し替えて再ビルドする（Vite 定数置換なのでビルド時固定）。
+- 検証: `npm run typecheck` PASS、Render Swarm tests 9/9 PASS。

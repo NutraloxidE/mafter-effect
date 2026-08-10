@@ -27,8 +27,12 @@ session and displays a copyable URL, join code, and QR code. Open `/w/<code>` on
 another Chromium browser and press `Join as Worker`; the host must approve an
 unknown device.
 
-Set `VITE_SWARM_SIGNALING_URL` to the deployed `/api/swarm` base URL when using
-the Vercel adapter. `VITE_SWARM_USE_IN_MEMORY=1` is intended only for same-page
+Signaling defaults to the deployed Durable Object worker
+(`https://mafter-swarm-signaling.r1cefarm-dev.workers.dev`, see
+`DEFAULT_SWARM_SIGNALING_URL`), so a plain static build talks to it with no
+configuration. Set `VITE_SWARM_SIGNALING_URL` at build time to point elsewhere
+— a self-hosted `/api/swarm` base, or a custom domain in front of the worker.
+`VITE_SWARM_USE_IN_MEMORY=1` is intended only for same-page
 unit/dev experiments; it is not cross-tab signaling.
 
 The Vercel route is `api/swarm/[action].ts`. It keeps only temporary rendezvous

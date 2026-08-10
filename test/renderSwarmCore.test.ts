@@ -11,7 +11,7 @@ import {
 import { buildSwarmRenderCacheKey, validateSwarmRenderResult } from "../src/swarm/core/cacheKey";
 import { SwarmScheduler } from "../src/swarm/core/scheduler";
 import { InMemorySwarmSignalingBackend } from "../src/swarm/signaling/inMemory";
-import { VercelSignalingBackend } from "../src/swarm/signaling/vercel";
+import { DEFAULT_SWARM_SIGNALING_URL, defaultSignalingEndpoint, VercelSignalingBackend } from "../src/swarm/signaling/vercel";
 import type { SwarmRenderJob } from "../src/swarm/core/types";
 import swarmHandler from "../api/swarm/[action]";
 import { DurableSwarmSession, joinCodeFromSessionId } from "../src/swarm/signaling/durableSessionCore";
@@ -139,6 +139,11 @@ describe("Render Swarm core", () => {
     );
     expect(status).toBe(400);
     expect(payload).toEqual({ ok: false, error: "Unknown swarm session" });
+  });
+
+  it("defaults signaling to the deployed durable object worker", () => {
+    expect(defaultSignalingEndpoint()).toBe(DEFAULT_SWARM_SIGNALING_URL);
+    expect(DEFAULT_SWARM_SIGNALING_URL.startsWith("https://")).toBe(true);
   });
 
   it("reports non-JSON signaling failures without leaking a JSON parser error", async () => {

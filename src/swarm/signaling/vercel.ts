@@ -108,7 +108,10 @@ export class VercelSignalingBackend implements SwarmSignalingBackend {
   }
 }
 
+/** Deployed Durable Object signaling worker; overridable per build via VITE_SWARM_SIGNALING_URL. */
+export const DEFAULT_SWARM_SIGNALING_URL = "https://mafter-swarm-signaling.r1cefarm-dev.workers.dev";
+
 export function defaultSignalingEndpoint(): string {
   const configured = import.meta.env.VITE_SWARM_SIGNALING_URL as string | undefined;
-  return configured ?? "/api/swarm";
+  return configured?.trim() || DEFAULT_SWARM_SIGNALING_URL;
 }
