@@ -31,3 +31,5 @@ release.zip
 swarm-export-*.zip
 swarm-export-ab.mjs
 swarm-host-session.mjs
+swarm-multictx-check.mjs
+multictx-*.zip
