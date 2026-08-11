@@ -1,3 +1,4 @@
+import { previewCacheService } from "../../editor/previewCacheService";
 import { loadOrCreateDeviceIdentity } from "../core/identity";
 import { SwarmCoordinator } from "../core/coordinator";
 import { createSignalingBackend } from "../signaling/SignalingService";
@@ -56,6 +57,7 @@ class SwarmUiStore {
         hostIdentity: identity,
         hostLabel: "Mafter Host",
         runtimeVersion: "mafter-render-runtime-v1",
+        onLateResult: (result) => void this.storeLateResult(result),
       });
       coordinator.subscribe(() => this.refresh(coordinator));
       await coordinator.start();
@@ -87,6 +89,13 @@ class SwarmUiStore {
 
   async renderPreviewFrame(job: SwarmRenderJob, timeoutMs?: number): Promise<SwarmRenderResult | null> {
     return this.coordinator?.renderPreviewFrame(job, timeoutMs) ?? null;
+  }
+
+  private async storeLateResult(result: SwarmRenderResult): Promise<void> {
+    const text = atob(result.bytesBase64);
+    const png = new Uint8Array(text.length);
+    for (let i = 0; i < text.length; i += 1) png[i] = text.charCodeAt(i);
+    await previewCacheService.acceptLateRemoteFrame(result.renderRevision, result.frameStart, png, result.width, result.height);
   }
 
   private refresh(coordinator: SwarmCoordinator | null): void {

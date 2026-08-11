@@ -70,6 +70,10 @@ class PreviewCacheService {
     this.controller?.setRemoteRenderer(renderer, remoteCapacity);
   }
 
+  async acceptLateRemoteFrame(renderRevision: string, frame: number, png: Uint8Array, width: number, height: number): Promise<void> {
+    await this.controller?.acceptLateRemoteFrame(renderRevision, frame, png, width, height);
+  }
+
   updateSettings(settings: PreviewCacheSettings): void {
     this.controller?.updateSettings(settings);
     if (this.store instanceof DefaultTieredCacheStore) {
