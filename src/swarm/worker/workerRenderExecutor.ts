@@ -2,6 +2,7 @@ import { MemoryFs } from "../../fs/MemoryFs";
 import { captureCompFramePng, createCompFrameCaptureContext } from "../../runtime/compFrameCapture";
 import { sha256Hex } from "../core/assetManifest";
 import { runRenderBenchmark } from "../core/benchmark";
+import type { TimelineComposition } from "../../core/schema";
 import type { SwarmAssetTransfer, SwarmRenderJob, SwarmRenderResult } from "../core/types";
 import { BoundedWorkerAssetCache } from "./workerCache";
 
@@ -11,8 +12,15 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(text);
 }
 
+interface CachedContext {
+  key: string;
+  fs: MemoryFs;
+  context: Awaited<ReturnType<typeof createCompFrameCaptureContext>>;
+}
+
 export class WorkerRenderExecutor {
   private readonly assetCache = new BoundedWorkerAssetCache();
+  private cached: CachedContext | null = null;
 
   /** Stores a fully reassembled file; the cache verifies its content hash before accepting it. */
   async cacheAsset(transfer: SwarmAssetTransfer): Promise<boolean> {
@@ -35,11 +43,8 @@ export class WorkerRenderExecutor {
     }
     const composition = job.project.compositions.find((comp) => comp.id === job.compositionId);
     if (!composition || composition.kind !== "timeline") throw new Error("Worker job composition is not a timeline");
-    const context = await createCompFrameCaptureContext(job.project, job.compositionId, fs, {
-      textQuality: job.profile.quality,
-      proxyScale: job.profile.width / Math.max(1, composition.width),
-    });
-    try {
+    const context = await this.contextFor(job, composition, fs);
+    {
       const bytes = await captureCompFramePng(
         context,
         composition,
@@ -59,9 +64,40 @@ export class WorkerRenderExecutor {
         contentHash: await sha256Hex(bytes),
         runtimeVersion: job.runtimeVersion,
       };
-    } finally {
-      context.dispose();
     }
+  }
+
+  /**
+   * Reuses one capture context across jobs for the same composition and profile. Building it per
+   * frame reloads the footage and restarts decoding every time, which both costs more than the
+   * render and occasionally exceeds the decode wait, returning a frame with the video missing.
+   */
+  private async contextFor(
+    job: SwarmRenderJob,
+    composition: TimelineComposition,
+    fs: MemoryFs,
+  ): Promise<Awaited<ReturnType<typeof createCompFrameCaptureContext>>> {
+    const key = [
+      job.renderRevision,
+      job.compositionId,
+      job.profile.quality,
+      job.profile.width,
+      job.profile.height,
+    ].join("|");
+    if (this.cached?.key === key) return this.cached.context;
+    this.dispose();
+    const context = await createCompFrameCaptureContext(job.project, job.compositionId, fs, {
+      textQuality: job.profile.quality,
+      proxyScale: job.profile.width / Math.max(1, composition.width),
+    });
+    this.cached = { key, fs, context };
+    return context;
+  }
+
+  /** Frees the renderer, its DOM and any GL contexts it holds. */
+  dispose(): void {
+    this.cached?.context.dispose();
+    this.cached = null;
   }
 
   async benchmark(job: SwarmRenderJob): Promise<{ score: number; framesPerSecond: number; renderMs: number }> {
