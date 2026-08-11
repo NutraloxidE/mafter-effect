@@ -1,6 +1,6 @@
 import { createBenchmarkJob, normalizedBenchmarkScore } from "./benchmark";
 import { isSwarmJobSelfContained } from "./jobFiles";
-import { splitAssetIntoChunks } from "../transport/assetChunks";
+import { ResultChunkAssembler, splitAssetIntoChunks } from "../transport/assetChunks";
 import { WorkerRenderExecutor } from "../worker/workerRenderExecutor";
 import { isWorkerCompatible } from "./capability";
 import { createChallengeNonce, verifyChallenge, type DeviceIdentity } from "./identity";
@@ -35,6 +35,8 @@ interface PendingJob {
   job: SwarmRenderJob;
   resolve: (result: SwarmRenderResult | null) => void;
   timeoutId: number;
+  /** Lease長 = 呼び出し側が待つ時間。短いリースは描画中のジョブを再配布してしまう。 */
+  leaseMs: number;
 }
 
 interface TrustedWorker {
@@ -77,6 +79,7 @@ export class SwarmCoordinator {
   private unsubscribeSignaling: (() => void) | null = null;
   private leaseTimer: number | null = null;
   private localBenchmarkScore: Promise<number> | null = null;
+  private readonly resultChunks = new ResultChunkAssembler();
 
   constructor(private readonly options: SwarmCoordinatorOptions) {
     this.loadTrust();
@@ -222,7 +225,7 @@ export class SwarmCoordinator {
         this.metrics.noteLocalFallback();
         resolve(null);
       }, Math.min(SWARM_MAX_JOB_TIMEOUT_MS, Math.max(SWARM_DEFAULT_JOB_TIMEOUT_MS, timeoutMs)));
-      this.jobs.set(job.id, { job, resolve, timeoutId });
+      this.jobs.set(job.id, { job, resolve, timeoutId, leaseMs: Math.min(SWARM_MAX_JOB_TIMEOUT_MS, Math.max(SWARM_DEFAULT_JOB_TIMEOUT_MS, timeoutMs)) });
       this.requestBenchmarks(job);
       this.pumpJobs();
     });
@@ -258,6 +261,12 @@ export class SwarmCoordinator {
     // Assets and expression scripts are allowed as long as their bytes travel with the job; a job
     // whose footage or script could not be attached renders locally instead of losing content.
     return isSwarmJobSelfContained(job, comp);
+  }
+
+  private nextLeaseMs(): number {
+    let leaseMs = SWARM_DEFAULT_JOB_TIMEOUT_MS;
+    for (const pending of this.jobs.values()) leaseMs = Math.max(leaseMs, pending.leaseMs);
+    return leaseMs;
   }
 
   private ensureLocalBenchmarkScore(): Promise<number> {
@@ -304,7 +313,9 @@ export class SwarmCoordinator {
   private pumpJobs(): void {
     for (const worker of this.workers.values()) {
       if (!this.isWorkerReady(worker) || worker.snapshot.currentJobId) continue;
-      const leased = this.scheduler.requestJob(worker.slotId, Date.now());
+      // The lease must outlive the render: expiring it mid-render re-offers the same frame and the
+      // worker ends up drawing it several times at once, which only makes it slower still.
+      const leased = this.scheduler.requestJob(worker.slotId, Date.now(), this.nextLeaseMs());
       if (!leased) continue;
       worker.snapshot.currentJobId = leased.id;
       this.metrics.setJobs(this.scheduler.getSnapshot().pending, this.scheduler.getSnapshot().leased);
@@ -363,8 +374,13 @@ export class SwarmCoordinator {
       if (worker.slotId) this.scheduler.markRendering(message.payload.jobId, worker.slotId);
       return;
     }
+    if (isSwarmMessageType(message, "job-result-chunk")) {
+      this.resultChunks.accept(message.payload);
+      return;
+    }
     if (isSwarmMessageType(message, "job-result")) {
-      await this.handleResult(worker, message.payload);
+      const bytesBase64 = message.payload.bytesBase64 || this.resultChunks.take(message.payload.jobId) || "";
+      await this.handleResult(worker, { ...message.payload, bytesBase64 });
       return;
     }
     if (isSwarmMessageType(message, "job-failed")) {
