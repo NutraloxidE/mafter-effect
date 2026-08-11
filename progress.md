@@ -3227,3 +3227,11 @@ worker が 30% を引き受け、しかも速いマシンなのに **1.85 倍遅
 テスト: 「詰まった producer から仕事を奪い、全 frame がちょうど 1 回ずつ描かれ、emit は昇順」を回帰テストで固定（`test/multiRenderContext.test.ts`）。`npm test` 153 files / 1457 tests 全 PASS。
 
 実機での効果測定は次。
+
+### 2026-08-12 (Claude Opus 5) - 同一端末の再接続で古い peer が残る問題
+
+実機で worker が `Offline` 表示のまま P2P が確立しない事象が発生。原因は、worker ページの再読込・再接続が**新しい peer として到着する**のに、**古い peer が workers マップに残り続ける**こと。パネルには Offline の worker が並び、スケジューラは誰も見ていない slot にフレームをリースしうる。
+
+`dropStaleConnections()` を追加し、challenge 検証を通った時点で**同じ deviceId の古い接続を切って登録から外す**。deviceId は永続的な端末 ID（INV-6 の stable ID と同系）なので、これで「1 端末 = 1 接続」が保たれる。
+
+なお、この事象が起きた実行では分散なしで 90.9 秒（ベースライン 90.8 秒）だったため、**ブロック割り当て導入によるローカル単独性能の回帰は無い**ことも確認できた（差 0.1%）。

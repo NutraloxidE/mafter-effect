@@ -402,6 +402,20 @@ export class SwarmCoordinator {
     this.emitChange();
   }
 
+  /**
+   * Drops an earlier connection from the same device. A worker page that reloads or reconnects
+   * arrives as a new peer, and leaving the stale one registered makes the panel show an Offline
+   * worker and lets the scheduler lease frames to a slot nobody is serving.
+   */
+  private dropStaleConnections(keep: ConnectedWorker): void {
+    for (const [peerId, worker] of this.workers) {
+      if (worker === keep || worker.descriptor.deviceId !== keep.descriptor.deviceId) continue;
+      if (worker.slotId) this.scheduler.removeWorker(worker.slotId);
+      worker.peer.close();
+      this.workers.delete(peerId);
+    }
+  }
+
   private async handleChallengeResponse(worker: ConnectedWorker, nonce: string, signatureBase64: string): Promise<void> {
     if (!worker.challengeNonce || nonce !== worker.challengeNonce) return;
     const verified = await verifyChallenge(worker.descriptor.publicKeyJwk, nonce, signatureBase64);
@@ -421,6 +435,7 @@ export class SwarmCoordinator {
       label: worker.descriptor.label,
     });
     this.saveTrust();
+    this.dropStaleConnections(worker);
     worker.slotId = slotId;
     worker.snapshot.slotId = slotId;
     worker.snapshot.state = "connected";
