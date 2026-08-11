@@ -3073,3 +3073,15 @@ WP-6 の第一スライス（実装済み）:
 - `src/swarm/worker/workerUpdateCheck.ts` を追加。エントリバンドルは content hash 付きファイル名なので、**そのファイル名をビルド ID として扱う**（追加のデプロイメタデータ不要・どの静的ホストでも動く）。
 - worker ページは 60 秒ごとに `/?swarm-update-check=1` を `cache: "no-store"` で取得し、配信中のエントリ名が変わっていれば `location.reload()`。**レンダリング中は再読込しない**。リロード後は URL の code から自動参加するので、人手は不要。
 - 取得失敗・解析不能・HTTP エラーのときは**何もしない**（チェックの失敗が稼働中の worker を落とさない）。純関数 `extractBuildTag()` と失敗時の挙動をテストで固定。
+
+### 2026-08-11 (Claude Opus 5) - 空白フレームの根本原因: worker がフレームごとに context を作り直していた
+
+- `WorkerRenderExecutor.render()` は**ジョブ（＝1 フレーム）ごとに `createCompFrameCaptureContext()` を呼び、finally で dispose していた**。つまり毎フレーム renderer・DOM・video 要素を新規作成し、動画を blob URL からロードし直してシークしている。
+- これが空白フレームの真因。`captureCompFramePng` は `primeMountedVideos(fps, 4000)` / `flushVideoFrames(4000)` で待つが、**毎回コールドスタートなので時々 4 秒を超え**、動画抜きのフレームがそのまま返る。約 5 フレームおきに 12KB のフレームが出ていた分布と整合する。速度が出なかった理由でもある。
+- 修正: `renderRevision / compositionId / quality / width / height` をキーに context を使い回す。キーが変われば破棄して作り直す。`dispose()` を公開し、GL context を溜めない（[[webgl-context-limit-global]] の教訓）。
+- 検証: typecheck PASS、`npm test` 153 files / 1455 tests 全 PASS。実機での空白フレーム消滅確認はデプロイ後に実施。
+
+### 計測ハーネスの常駐化
+
+- `swarm-host-session.mjs`（.gitignore 済み）で **実 Chrome の可視ウィンドウにホストを常駐**させ、CDP を 9222 で開く。参加要求は自動承認。
+- 目的: 埋め込みブラウザのペインは `visibilityState: hidden` でスロットリングされるためホストに使えない。また join code がプロセス終了で失われると、その都度ユーザーに再接続を頼むことになる。CDP 常駐なら**同じセッションに後から再接続**して計測を続けられる。
