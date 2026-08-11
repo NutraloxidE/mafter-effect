@@ -182,6 +182,22 @@ Zustand ストアは **IndexedDbFs の投影**（§17）。UI はストア、zip
 
 詳細チェックリストは [.claude/skills/add-layer-component-type/SKILL.md](.claude/skills/add-layer-component-type/SKILL.md) の export 節と [.claude/skills/implementation-loop/SKILL.md](.claude/skills/implementation-loop/SKILL.md) Phase 4c を参照。
 
+### 分散描画の性能結論（必須・「効いているように見えて 1 枚も使われていない」事故の防止）
+
+Render Swarm など**リモートで作った成果物**について速度の結論を述べる前に、**先に 2 点を証明する**:
+
+1. **採用されたか** — その成果物が最終出力（zip / 動画）に実際に入ったか。応答が返った・カウンタが増えた、は採用の証拠にならない。
+2. **同じ画か** — ホストがローカルで描いた場合と許容差以内で一致するか。
+
+2026-08-12 に、`Frames from workers: 10` を分散が効いた証拠として扱ったが、実際は**受信数**を数えていただけで採用は 0 枚だった（worker の zip はフレームを範囲先頭からの 0 始まりで命名するのに、ホストが絶対フレーム番号として読んでいた）。ホストが 150 枚すべて描き直した上に往復待ちを払い、「分散したのに遅い」という誤った結論に到達しかけた。同日、動画レイヤーの抜けた劣化ブロックも「返ってきた」ので成功扱いされかけている。
+
+**守ること:**
+
+- 指標を根拠に使う前に**負のコントロール**を取る（対象を外したら値が変わることを確認する）。
+- カウンタは「到着数」ではなく「**出力に採用された数**」を数える。
+- 回帰・平均を出す前に、その標本が**測りたい経路を通っているか**確認する（フォールバック・劣化したジョブを混ぜない）。
+- コード側の対応物: `strictFootage`（フッテージが目標時刻に届かなければジョブを失敗させる）＋スポットチェック照合。**報告の基準もこれと同じにする。**
+
 ### bundle player の再ビルド（必須・「動画は出るが新機能だけ効かない」事故の防止）
 
 Web bundle export（§11.7）は **ビルド済み成果物 [`public/player.js`](public/player.js)** を zip にそのまま埋め込む（[`bundleExporter.ts`](src/runtime/bundleExporter.ts) の `loadPlayerScript`）。`src/player/` または **`src/runtime/`（player が import する範囲＝expression / resolve / DomRenderer 等ほぼ全部）** を変えたら、`public/player.js` を**再ビルドしない限り HTML 書き出しには古い player が乗る**。症状は「動画は出るが、追加した機能（例: expression preset の wiggle）だけ HTML 出力で無音で効かない」。
