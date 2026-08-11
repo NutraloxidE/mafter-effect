@@ -30,7 +30,7 @@ export function WorkerJoinView() {
       <section style={cardStyle}>
         <div style={{ color: "#7fb8f0", fontSize: 13, fontWeight: 700, marginBottom: 14 }}>Mafter Render Worker</div>
         <div style={{ color: "#ddd", fontSize: 20, marginBottom: 8 }}>Use this device to help render.</div>
-        <div style={{ color: "#999", fontSize: 13, lineHeight: 1.5, marginBottom: 18 }}>Rendering may use significant CPU/GPU and battery. This device receives render jobs only; it cannot edit the host project.</div>
+        <div style={{ color: "#999", fontSize: 13, lineHeight: 1.5, marginBottom: 18 }}>Keep this tab in the foreground: browsers throttle background tabs so hard that render jobs miss their deadline and the host takes the work back. Rendering may use significant CPU/GPU and battery. This device receives render jobs only; it cannot edit the host project.</div>
         <label style={{ display: "block", color: "#999", fontSize: 12, marginBottom: 5 }}>Join code</label>
         <input value={code} onChange={(event) => setCode(event.target.value.toUpperCase())} placeholder="8KD3F2" style={inputStyle} disabled={snapshot.state !== "idle" && snapshot.state !== "error"} />
         {snapshot.error && <div style={{ color: "#e9a3a3", fontSize: 12, marginTop: 8 }}>{snapshot.error}</div>}

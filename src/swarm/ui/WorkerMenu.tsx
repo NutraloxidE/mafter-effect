@@ -32,7 +32,7 @@ export function WorkerMenu() {
       // Ship the footage and expression scripts the comp references; without them the worker
       // would render a frame with missing content, so attachJobFiles failing keeps the job local.
       const withFiles = await attachJobFiles(job, typed.comp, useEditorStore.getState().getFs());
-      return swarmUiStore.renderPreviewFrame(withFiles);
+      return swarmUiStore.renderPreviewFrame(withFiles, typed.timeoutMs);
     }, connectedWorkers);
     return () => previewCacheService.setRemoteRenderer(null);
   }, [connectedWorkers]);

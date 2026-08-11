@@ -17,6 +17,7 @@ export type SwarmMessageType =
   | "heartbeat"
   | "ping"
   | "pong"
+  | "worker-availability"
   | "worker-draining"
   | "worker-goodbye";
 
@@ -78,6 +79,7 @@ export interface SwarmMessagePayloads {
   "job-result": SwarmRenderResult;
   "job-cancel": { jobId: string };
   "job-failed": SwarmJobFailedPayload;
+  "worker-availability": { available: boolean; reason?: string };
   heartbeat: { at: number };
   ping: { at: number };
   pong: { at: number };
@@ -116,7 +118,7 @@ function isMessageType(value: unknown): value is SwarmMessageType {
   return typeof value === "string" && [
     "hello", "capabilities", "challenge", "challenge-response", "benchmark-request",
     "benchmark-result", "asset-chunk", "job-offer", "job-accepted", "job-progress", "job-result",
-    "job-cancel", "job-failed", "heartbeat", "ping", "pong", "worker-draining",
+    "job-cancel", "job-failed", "heartbeat", "ping", "pong", "worker-availability", "worker-draining",
     "worker-goodbye",
   ].includes(value);
 }
@@ -155,6 +157,8 @@ function isPayloadShape(type: SwarmMessageType, payload: Record<string, unknown>
         typeof payload.bytesBase64 === "string";
     case "job-offer":
       return isRecord(payload.job) && hasString(payload.job, "id");
+    case "worker-availability":
+      return typeof payload.available === "boolean";
     case "job-accepted":
     case "job-cancel":
       return hasString(payload, "jobId");

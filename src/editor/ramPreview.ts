@@ -53,6 +53,8 @@ export class RamPreviewController {
   private playbackAttempts = 0;
   private blobUrlCache = new Map<string, string>();
   private localCaptureChain: Promise<void> = Promise.resolve();
+  /** Rolling cost of one local frame, used to size how long a worker may keep a frame. */
+  private localFrameMs = 0;
   private readonly frameQueue = new FrameCacheQueue();
   /** §28.4 — 再生中は bake 休止（読み取りのみ）。 */
   private playbackActive = false;
@@ -366,6 +368,9 @@ export class RamPreviewController {
     if (this.remoteRenderer) {
       try {
         const remote = await this.remoteRenderer({
+          // A worker is at best a few times faster than this host, so allow several local frame
+          // costs before giving up; a fixed short deadline discards heavy frames every time.
+          timeoutMs: this.localFrameMs > 0 ? this.localFrameMs * 4 : 0,
           project: this.config.project,
           comp: this.config.comp,
           projectRevision: this.config.projectRevision,
@@ -424,7 +429,10 @@ export class RamPreviewController {
     const pw = ctx.nw;
     const ph = ctx.nh;
     try {
+      const startedAt = performance.now();
       const png = await captureCompFramePng(ctx, this.config.comp, frame);
+      const elapsed = performance.now() - startedAt;
+      this.localFrameMs = this.localFrameMs === 0 ? elapsed : this.localFrameMs + 0.25 * (elapsed - this.localFrameMs);
       if (gen !== this.frameQueue.getGeneration()) return;
       await this.store.put(key, png, {
         byteSize: png.byteLength,
