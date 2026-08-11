@@ -220,4 +220,50 @@ describe("runOrderedMultiContext", () => {
     // The stalled producer keeps the frame it was on and loses only untouched ones.
     expect(rendered[0]!).toContain(1);
   });
+
+  it("keeps a tail-pulling producer away from the frame being written", async () => {
+    const total = 24;
+    const claimed: number[][] = [[], []];
+    const producers = [
+      async (frame: number) => { claimed[0]!.push(frame); return fakeCanvas(frame); },
+      // The slow one pulls from the tail, so its latency is never in front of the next write.
+      async (frame: number) => {
+        claimed[1]!.push(frame);
+        await new Promise((r) => setTimeout(r, 3));
+        return fakeCanvas(frame);
+      },
+    ];
+    const emitted: number[] = [];
+    const res = await runOrderedMultiContext({
+      producers,
+      totalFrames: total,
+      startFrame: 0,
+      blockFrames: 4,
+      maxReorderAhead: total,
+      pullFromTail: [false, true],
+      onFrame: async (fi) => { emitted.push(fi); },
+      checkAbort: () => {},
+    });
+
+    expect(emitted).toEqual(Array.from({ length: total }, (_, i) => i));
+    expect(res.contextFrameCounts.reduce((a, b) => a + b, 0)).toBe(total);
+    // The tail producer worked at the end of the range, the head producer at the start.
+    // (Its very last frames may have been stolen back by the faster head producer, which is fine.)
+    expect(Math.min(...claimed[1]!)).toBeGreaterThan(Math.min(...claimed[0]!));
+    expect(Math.max(...claimed[1]!)).toBeGreaterThan(total * 0.6);
+    expect(Math.min(...claimed[0]!)).toBe(0);
+  });
+
+  it("passes frames through prepare before buffering them", async () => {
+    const emitted: string[] = [];
+    await runOrderedMultiContext<string>({
+      producers: [async (frame: number) => fakeCanvas(frame)],
+      totalFrames: 3,
+      startFrame: 0,
+      prepare: async (canvas) => `encoded-${(canvas as unknown as { __frame: number }).__frame}`,
+      onFrame: async (_fi, value) => { emitted.push(value); },
+      checkAbort: () => {},
+    });
+    expect(emitted).toEqual(["encoded-0", "encoded-1", "encoded-2"]);
+  });
 });
