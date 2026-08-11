@@ -3006,3 +3006,18 @@ WP 分割（この順で実装する）:
 - **500MB 級のプロジェクトは現状測れない**: 5 秒にトリムしても素材原本のサイズは変わらず、`SWARM_JOB_FILE_BUDGET_BYTES`（128MB）超で全ジョブが `kept local` になる。動画は再エンコードせず原本を送る決定（spec v2）どおりの挙動。
 - 検証レシピ（ユーザーの通常ブラウザ・全タブ前面）: ①`⬆ zip` で verify-comp33 を読む ②Caching ON でスクラブし `◐ Caching N%` を確認 ③worker なしで 30 秒の % 増加を記録（1% = 1.5 フレーム）④worker を前面のまま参加・承認 ⑤同条件で % 増加と `Frames from workers` を記録。③と⑤の差が分散の実効。
 - 検証補助として Cloudflare Pages に `mafter-test-assets` プロジェクトを作成し `comp33.zip` を公開（CORS 全許可）。ブラウザから直接読み込ませるため。不要になれば `npx wrangler pages project delete mafter-test-assets`。
+
+### 2026-08-11 (Claude Opus 5) - 実 Chrome 計測の結果と、export へのフォーカス切り替え
+
+実 Chrome（Playwright, channel:"chrome", headless:false）でホスト・worker を別ウィンドウに並べ、両方 `visibilityState: "visible"` を確認したうえで検証:
+
+- `verify-comp33-mini-project.zip`（4 objects / 動画 2 本 / 150f）を読み込み、Caching ON、worker 接続（`1.2〜1.3× local`, Direct, Active）。
+- 結果: **バッジは `● Realtime` のまま、bake が一度も走らず、`Frames from workers: 0`**。実マシンではこのコンプが realtime に収まるため、preview cache 経路には仕事が発生しない。埋め込みブラウザで `◐ Caching` が出ていたのは**タブがスロットリングされて遅かったからにすぎない**。
+- つまり preview cache は「いつ焼くか」の判定が環境依存で、分散の土台として不安定。**ユーザー判断で、以後は Pre-render / 書き出しにフォーカスし、キャッシュ最適化は後回しとする。**
+
+WP-6 の第一スライス（実装済み）:
+- `src/swarm/core/remoteFrameProducer.ts` — `runOrderedMultiContext` が既に駆動している producer と同じ形（`(frame) => Promise<HTMLCanvasElement>`）で swarm を包む。swarm が断る・フレーム番号が違う・revision が古い・例外、のいずれでも**ローカル描画にフォールバック**するので、export がフレームを失うことはない。順序・音声 mux・alpha は呼び出し側＝ホストに残したまま。
+- `spotCheckFrames()` — spec が要求する抜き取り照合の対象フレーム選択（既定 5%、必ず先頭を含む。先頭の不一致はフォント/アセット欠落を示し、以降全フレームに波及するため）。
+- テスト 15/15 PASS（フォールバック 4 経路と照合フレーム選択を純関数で固定）。
+
+次: exporter の PNG 連番経路（`extraRenderers.length > 0` の分岐）に remote producer を混ぜ、抜き取り照合と worker 除外を実装する。割り当ては現在 `fi % N === c` の静的ラウンドロビンなので、能力比チャンク pull への置き換えが必要。

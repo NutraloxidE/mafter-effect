@@ -10,6 +10,7 @@ import {
 } from "../src/swarm/core/protocol";
 import { createBenchmarkJob, normalizedBenchmarkScore } from "../src/swarm/core/benchmark";
 import { collectJobFilePaths, isSwarmJobSelfContained } from "../src/swarm/core/jobFiles";
+import { buildExportSwarmJob, createRemoteFrameProducer, spotCheckFrames } from "../src/swarm/core/remoteFrameProducer";
 import { AssetChunkAssembler, splitAssetIntoChunks } from "../src/swarm/transport/assetChunks";
 import { buildSwarmRenderCacheKey, validateSwarmRenderResult } from "../src/swarm/core/cacheKey";
 import { SwarmScheduler } from "../src/swarm/core/scheduler";
@@ -92,6 +93,43 @@ describe("Render Swarm core", () => {
     expect(hostEvents).toEqual(["peer-join-request"]);
     await backend.approveJoin(host.sessionId, "host", "peer", true);
     expect(hostEvents).toEqual(["peer-join-request"]);
+  });
+
+  it("falls back to local rendering whenever the swarm cannot supply an export frame", async () => {
+    const comp = { id: "comp-1", name: "Main", kind: "timeline" as const, width: 320, height: 180, fps: 30, duration: 10, objects: [] } as never;
+    const project = { schemaVersion: 1, meta: { name: "t", createdAt: "", updatedAt: "" }, assets: [], compositions: [comp], rootComposition: "comp-1", pluginRefs: [] } as never;
+    const remoteCanvas = {} as HTMLCanvasElement;
+    const localCanvas = {} as HTMLCanvasElement;
+    const base = {
+      project, comp, renderRevision: "rev-1",
+      profile: { quality: "draft" as const, proxy: "full", width: 320, height: 180 },
+      renderLocally: async () => localCanvas,
+      decodePng: async () => remoteCanvas,
+      timeoutMs: 30_000,
+    };
+    const result = (frame: number, renderRevision = "rev-1") => ({
+      jobId: "j", renderRevision, compositionId: "comp-1", frameStart: frame, frameEnd: frame + 1,
+      width: 320, height: 180, format: "png" as const, bytesBase64: "AQ==", byteLength: 1, runtimeVersion: "runtime-1",
+    });
+
+    expect(await createRemoteFrameProducer({ ...base, submit: async () => result(7) })(7)).toBe(remoteCanvas);
+    // Declined, wrong frame, stale revision and a throwing transport all render locally.
+    expect(await createRemoteFrameProducer({ ...base, submit: async () => null })(7)).toBe(localCanvas);
+    expect(await createRemoteFrameProducer({ ...base, submit: async () => result(8) })(7)).toBe(localCanvas);
+    expect(await createRemoteFrameProducer({ ...base, submit: async () => result(7, "old") })(7)).toBe(localCanvas);
+    expect(await createRemoteFrameProducer({ ...base, submit: async () => { throw new Error("gone"); } })(7)).toBe(localCanvas);
+
+    const job = buildExportSwarmJob(base, 4);
+    expect([job.frameStart, job.frameEnd, job.compositionId]).toEqual([4, 5, "comp-1"]);
+  });
+
+  it("spot-checks a sample of frames including the first", () => {
+    expect(spotCheckFrames(0)).toEqual([]);
+    expect(spotCheckFrames(150)).toContain(0);
+    expect(spotCheckFrames(150).length).toBeGreaterThanOrEqual(7);
+    expect(spotCheckFrames(150).every((f) => f >= 0 && f < 150)).toBe(true);
+    // A tiny export still verifies something.
+    expect(spotCheckFrames(3)).toEqual([0]);
   });
 
   it("round-trips the worker availability message", () => {
