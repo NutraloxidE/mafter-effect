@@ -34,7 +34,10 @@ export default {
     try {
       const action = new URL(request.url).pathname.split("/").filter(Boolean).pop() ?? "";
       const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
-      const name = action === "create" ? randomToken(6) : sessionName(action, body);
+      const requested = String(body.joinCode ?? "").trim().toUpperCase();
+      const name = action === "create"
+        ? (/^[A-Z0-9]{4,12}$/.test(requested) ? requested : randomToken(6))
+        : sessionName(action, body);
       if (!name) return json(400, { ok: false, error: "Unknown swarm session" });
       const stub = env.SWARM_SESSION.get(env.SWARM_SESSION.idFromName(name));
       return await stub.fetch(new Request(`https://swarm/${action}`, {
