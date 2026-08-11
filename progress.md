@@ -2915,3 +2915,12 @@ WP 分割（この順で実装する）:
 - **WP-6 export 分散** — フレームリースを export 経路に拡張。抜き取り照合（既定 5%）と不一致時の worker 除外＋ローカル再描画。順序・音声 mux・alpha はホスト側に残す。
 
 現時点の完了: v1 の signaling 根治と DO 移行、transport / available compute の表示バグ修正。WP-1 以降は未着手。
+
+### 2026-08-11 (Claude Opus 5) - WP-1 / WP-2: asset・expression 脚本の同梱とゲート解除
+
+- `src/swarm/core/jobFiles.ts` を追加。`collectJobFilePaths()` がコンプを汎用走査して、参照 asset（id 参照・パス直書きの両方）と有効な expression 脚本のパスを集める。component 型ごとの prop 名を知らなくても効くよう、型別分岐ではなく走査で解決している。
+- `attachJobFiles()` がホスト FS（`store.getFs()`）から読んで content hash 付きで job に同梱。読めない／インライン予算（24MB）超過なら**同梱せずに返す**。
+- `isEligibleJob` の一律拒否（`assets.length > 0` / `video` 型 / `expression` prop）を `isSwarmJobSelfContained()` に置換。参照ファイルが全部乗っていれば分散し、乗っていなければローカルで描く。**「送れないから拒否」から「送れたものは分散」へ**変わった。
+- worker 側 executor は既存実装（hash 検証 + MemoryFs 展開）のまま無変更。
+- 予算内なら動画も通る。数百 MB の素材は chunkTransport 化（WP-3）まではローカルのままフォールバックする。
+- 検証: typecheck PASS、Render Swarm tests 11/11 PASS（参照収集と自己完結判定を純関数テストで固定）。実機 2 端末での分散確認は未実施（WP-5）。
