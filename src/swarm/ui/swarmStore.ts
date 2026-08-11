@@ -132,11 +132,12 @@ export const swarmUiStore = new SwarmUiStore();
  * must take exactly the path it always took.
  */
 export function swarmExportHooks(): ExportSwarmHooks | undefined {
-  // Opt-in. Two local exports of the same range are byte-identical, so the differences a
-  // distributed export shows are caused by distribution, not by rendering noise — and they appear
-  // in frames the host rendered itself, most likely because parallel pulling seeks the footage out
-  // of order. Until that is understood, an export must not change just because a worker is around.
-  if (globalThis.localStorage?.getItem("mafter.swarm.export") !== "1") return undefined;
+  // A distributed export is not byte-identical to a local one when the composition has footage,
+  // because browsers decode video differently depending on how many decoders are alive. That is
+  // rasterization fidelity, which INV-2 allows to differ by means; scene values still match and
+  // missing content is rejected. See "Frame identity under parallel production" in the spec.
+  // Set "mafter.swarm.export" to "0" to keep an export fully local.
+  if (globalThis.localStorage?.getItem("mafter.swarm.export") === "0") return undefined;
   const snapshot = swarmUiStore.getSnapshot();
   const workerCount = snapshot.workers.filter((worker) => worker.state === "connected" && worker.available !== false).length;
   if (workerCount === 0) return undefined;

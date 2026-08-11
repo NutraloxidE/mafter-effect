@@ -3609,6 +3609,36 @@ is stated as a fallback rather than a best effort.
 - Any verification failure degrades to local rendering. A distributed export must
   never produce an artifact a fully local export would not have produced.
 
+#### Frame identity under parallel production
+
+Producing frames in parallel — on extra local contexts or on workers — is not
+bit-identical to producing them one at a time when the composition contains
+footage. Measured on Chrome: a footage-free composition is byte-identical across
+both paths, while a composition with video differs in most frames by ~18 bytes of
+PNG, and the difference appears even when only one producer does work but several
+video elements exist. Browsers decode differently depending on how many decoders
+are alive and on the order frames were reached.
+
+This is within INV-2 as written: INV-2 requires the *scene resolution* to match
+across paths and explicitly allows rasterization fidelity to differ by means. A
+video decoder's exact output is rasterization, not scene resolution.
+
+What a distributed export therefore guarantees:
+
+- the same scene values for every frame, so timing, transforms, effects and layer
+  order are identical;
+- no missing or degraded content: a frame whose footage failed to decode is
+  rejected and rendered locally, both by the sampled comparison and by the
+  flatness guard applied to every remote frame.
+
+What it does not guarantee: byte-identical files between a local and a
+distributed export of the same range. Two *local* exports of the same range do
+remain byte-identical.
+
+If a difference is ever observed that is visible rather than numeric, the
+transport is not the right layer to patch: decode the footage once on the host
+and distribute decoded frames instead.
+
 #### When remote work is allowed to run (§28.4 interaction)
 
 Preview-cache baking is suppressed locally in two situations: while playback is
