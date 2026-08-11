@@ -22,7 +22,7 @@ export interface RemoteFrameProducerOptions {
   /** Renders the frame on this device; used when the swarm declines or misses the deadline. */
   renderLocally: (frame: number) => Promise<HTMLCanvasElement>;
   decodePng: (bytesBase64: string, width: number, height: number) => Promise<HTMLCanvasElement>;
-  /** Unpacks a range job's zip into its frames, keyed by absolute frame index. */
+  /** Unpacks a range job's zip into its frames, keyed by offset from the block's first frame. */
   decodeZip: (bytesBase64: string, width: number, height: number) => Promise<Map<number, HTMLCanvasElement>>;
   /** Exclusive end of the export range, so a block never asks for frames outside it. */
   totalFrameEnd?: number;
@@ -82,10 +82,14 @@ export function createRemoteFrameProducer(
         });
         if (result.format === "png-zip") {
           const frames = await options.decodeZip(result.bytesBase64, result.width, result.height);
+          // A worker renders the block through `exportComposition`, which names frames from the
+          // start of the range it was given, not by absolute frame. Reading those names as
+          // absolute made every block miss both its own frame and the prefetch, so the host
+          // silently re-rendered everything the worker produced.
           for (const [index, canvas] of frames) {
-            if (index !== frame) prefetched.set(index, Promise.resolve(canvas));
+            if (index !== 0) prefetched.set(frame + index, Promise.resolve(canvas));
           }
-          const own = frames.get(frame);
+          const own = frames.get(0);
           if (own) return own;
         } else {
           return await options.decodePng(result.bytesBase64, result.width, result.height);

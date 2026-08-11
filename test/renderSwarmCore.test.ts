@@ -126,6 +126,38 @@ describe("Render Swarm core", () => {
     expect([job.frameStart, job.frameEnd, job.compositionId]).toEqual([4, 5, "comp-1"]);
   });
 
+  it("reads a range job's zip by offset from the block start, not by absolute frame", async () => {
+    const comp = { id: "comp-1", name: "Main", kind: "timeline" as const, width: 320, height: 180, fps: 30, duration: 10, objects: [] } as never;
+    const project = { schemaVersion: 1, meta: { name: "t", createdAt: "", updatedAt: "" }, assets: [], compositions: [comp], rootComposition: "comp-1", pluginRefs: [] } as never;
+    const localCanvas = {} as HTMLCanvasElement;
+    // The worker renders the block through exportComposition, whose zip names frames from the
+    // start of the range it was given: a block at frame 142 arrives as 0..2, not 142..144.
+    const blockCanvases = [{}, {}, {}] as HTMLCanvasElement[];
+    let submitted = 0;
+    const produce = createRemoteFrameProducer({
+      project, comp, renderRevision: "rev-1",
+      profile: { quality: "draft" as const, proxy: "full", width: 320, height: 180 },
+      renderLocally: async () => localCanvas,
+      decodePng: async () => localCanvas,
+      decodeZip: async () => new Map(blockCanvases.map((canvas, index) => [index, canvas])),
+      timeoutMs: 30_000,
+      totalFrameEnd: 145,
+      submit: async () => {
+        submitted += 1;
+        return {
+          jobId: "j", renderRevision: "rev-1", compositionId: "comp-1", frameStart: 142, frameEnd: 145,
+          width: 320, height: 180, format: "png-zip" as const, bytesBase64: "AQ==", byteLength: 1, runtimeVersion: "runtime-1",
+        };
+      },
+    });
+
+    expect(await produce(142)).toBe(blockCanvases[0]);
+    // The rest of the block is served from the prefetch instead of costing another round trip.
+    expect(await produce(143)).toBe(blockCanvases[1]);
+    expect(await produce(144)).toBe(blockCanvases[2]);
+    expect(submitted).toBe(1);
+  });
+
   it("accepts rasterizer-level noise but rejects a frame with missing content", () => {
     const size = 64 * 64 * 4;
     const base = new Uint8ClampedArray(size).fill(128);
