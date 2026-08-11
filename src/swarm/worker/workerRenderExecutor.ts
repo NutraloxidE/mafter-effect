@@ -1,3 +1,4 @@
+import { exportComposition } from "../../runtime/exporter";
 import { MemoryFs } from "../../fs/MemoryFs";
 import { captureCompFramePng, createCompFrameCaptureContext } from "../../runtime/compFrameCapture";
 import { sha256Hex } from "../core/assetManifest";
@@ -37,6 +38,40 @@ export class WorkerRenderExecutor {
     return this.assetCache.put(transfer);
   }
 
+  /**
+   * Renders a frame range through `exportComposition` — the host's own export path — instead of a
+   * worker-specific capture. Every divergence found so far (background, layout scale, a missing
+   * text layer, footage timing) came from having a second path; sharing one removes the class.
+   */
+  async renderRange(job: SwarmRenderJob, fs: MemoryFs, composition: TimelineComposition): Promise<SwarmRenderResult> {
+    const startedAt = performance.now();
+    const scale = job.profile.width / Math.max(1, composition.width);
+    const result = await exportComposition(job.project, job.compositionId, fs, {
+      range: [job.frameStart, job.frameEnd],
+      fps: composition.fps,
+      scale,
+      format: "png-seq",
+      alpha: job.profile.alpha ?? false,
+      textRenderMode: job.profile.quality === "draft" ? "draft" : "precise",
+    }, () => {});
+    const bytes = new Uint8Array(await result.blob.arrayBuffer());
+    return {
+      jobId: job.id,
+      renderRevision: job.renderRevision,
+      compositionId: job.compositionId,
+      frameStart: job.frameStart,
+      frameEnd: job.frameEnd,
+      width: job.profile.width,
+      height: job.profile.height,
+      format: "png-zip",
+      bytesBase64: bytesToBase64(bytes),
+      byteLength: bytes.byteLength,
+      contentHash: await sha256Hex(bytes),
+      runtimeVersion: job.runtimeVersion,
+      renderMs: performance.now() - startedAt,
+    };
+  }
+
   async render(job: SwarmRenderJob): Promise<SwarmRenderResult> {
     const fs = new MemoryFs();
     for (const asset of job.assets ?? []) {
@@ -53,6 +88,7 @@ export class WorkerRenderExecutor {
     }
     const composition = job.project.compositions.find((comp) => comp.id === job.compositionId);
     if (!composition || composition.kind !== "timeline") throw new Error("Worker job composition is not a timeline");
+    if (job.frameEnd - job.frameStart > 1) return this.renderRange(job, fs, composition);
     const context = await this.contextFor(job, composition, fs);
     {
       const startedAt = performance.now();

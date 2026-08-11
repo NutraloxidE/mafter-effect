@@ -7,7 +7,7 @@ import { Muxer as Mp4Muxer, ArrayBufferTarget as Mp4Target } from "mp4-muxer";
 import { Muxer as WebmMuxer, ArrayBufferTarget as WebmTarget } from "webm-muxer";
 import { compositionDir } from "../core/paths";
 import { SwarmFrameMismatchError } from "../swarm/core/frameVerification";
-import { buildRemoteFrameProducers, spotCheckFrames } from "../swarm/core/remoteFrameProducer";
+import { buildRemoteFrameProducers, spotCheckFrames, SWARM_EXPORT_BLOCK_FRAMES } from "../swarm/core/remoteFrameProducer";
 import type { SwarmRenderJob, SwarmRenderResult } from "../swarm/core/types";
 import type { ExportConfig, HtmlComposition, Project, TimelineComposition } from "../core/schema";
 import type { FileSystem } from "../fs/FileSystem";
@@ -338,6 +338,7 @@ async function runPngSeq(
       alpha: config.alpha,
     },
     renderLocally: renderLocallySerialized,
+    totalFrameEnd: startFrame + totalFrames,
     verifyFrames: new Set(spotCheckFrames(totalFrames).map((fi) => startFrame + fi)),
   }) : [];
 
@@ -375,6 +376,9 @@ async function runPngSeq(
       // Frames are buffered as PNG, so the window can span the export: a worker may work far
       // ahead of what has been written without ever gating it.
       maxReorderAhead: remoteProducers.length > 0 ? totalFrames : undefined,
+      // A remote job renders a whole block, so claiming frame-by-frame would leave most of a
+      // fetched block unused when the host steals the rest.
+      blockFrames: remoteProducers.length > 0 ? SWARM_EXPORT_BLOCK_FRAMES : undefined,
       // Remote producers take work from the end of the range so their latency never sits in
       // front of the next frame to write.
       pullFromTail: [

@@ -107,6 +107,7 @@ describe("Render Swarm core", () => {
       profile: { quality: "draft" as const, proxy: "full", width: 320, height: 180 },
       renderLocally: async () => localCanvas,
       decodePng: async () => remoteCanvas,
+      decodeZip: async () => new Map<number, HTMLCanvasElement>(),
       timeoutMs: 30_000,
     };
     const result = (frame: number, renderRevision = "rev-1") => ({

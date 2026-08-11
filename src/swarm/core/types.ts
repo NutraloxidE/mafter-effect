@@ -150,7 +150,7 @@ export interface SwarmRenderResult {
   frameEnd: number;
   width: number;
   height: number;
-  format: "png";
+  format: "png" | "png-zip";
   bytesBase64: string;
   byteLength: number;
   contentHash?: string;

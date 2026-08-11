@@ -1,7 +1,15 @@
+import JSZip from "jszip";
 import type { Project, TimelineComposition } from "../../core/schema";
 import { canvasSpread, compareFrames, looksEmptyAgainst, SwarmFrameMismatchError, SWARM_FRAME_TOLERANCE } from "./frameVerification";
 import type { RenderProfile, SwarmRenderJob, SwarmRenderResult } from "./types";
 import { SWARM_RUNTIME_VERSION } from "./types";
+
+/**
+ * Frames a worker renders per job. Setting up an export (fonts, images, expressions, footage
+ * decode) costs far more than one frame, so a job covers the block the producer is about to be
+ * asked for; requests beyond it simply miss the prefetch and start the next job.
+ */
+export const SWARM_EXPORT_BLOCK_FRAMES = 8;
 
 export interface RemoteFrameProducerOptions {
   project: Project;
@@ -14,12 +22,17 @@ export interface RemoteFrameProducerOptions {
   /** Renders the frame on this device; used when the swarm declines or misses the deadline. */
   renderLocally: (frame: number) => Promise<HTMLCanvasElement>;
   decodePng: (bytesBase64: string, width: number, height: number) => Promise<HTMLCanvasElement>;
+  /** Unpacks a range job's zip into its frames, keyed by absolute frame index. */
+  decodeZip: (bytesBase64: string, width: number, height: number) => Promise<Map<number, HTMLCanvasElement>>;
+  /** Exclusive end of the export range, so a block never asks for frames outside it. */
+  totalFrameEnd?: number;
   timeoutMs: number;
 }
 
 export function buildExportSwarmJob(
   options: Pick<RemoteFrameProducerOptions, "project" | "comp" | "renderRevision" | "profile">,
   frame: number,
+  frameEnd = frame + 1,
 ): SwarmRenderJob {
   return {
     id: `export-${options.renderRevision}-${frame}-${globalThis.crypto?.randomUUID?.() ?? Date.now()}`,
@@ -27,7 +40,7 @@ export function buildExportSwarmJob(
     renderRevision: options.renderRevision,
     compositionId: options.comp.id,
     frameStart: frame,
-    frameEnd: frame + 1,
+    frameEnd: Math.max(frame + 1, frameEnd),
     priority: "background",
     profile: options.profile,
     runtimeVersion: SWARM_RUNTIME_VERSION,
@@ -44,10 +57,19 @@ export function buildExportSwarmJob(
 export function createRemoteFrameProducer(
   options: RemoteFrameProducerOptions,
 ): (frame: number) => Promise<HTMLCanvasElement> {
+  // Frames already fetched as part of a range job, waiting to be asked for.
+  const prefetched = new Map<number, Promise<HTMLCanvasElement>>();
+
   return async (frame: number): Promise<HTMLCanvasElement> => {
+    const ready = prefetched.get(frame);
+    if (ready) {
+      prefetched.delete(frame);
+      return ready;
+    }
     try {
       const startedAt = performance.now();
-      const result = await options.submit(buildExportSwarmJob(options, frame), options.timeoutMs);
+      const blockEnd = Math.min(options.totalFrameEnd ?? frame + SWARM_EXPORT_BLOCK_FRAMES, frame + SWARM_EXPORT_BLOCK_FRAMES);
+      const result = await options.submit(buildExportSwarmJob(options, frame, blockEnd), options.timeoutMs);
       if (result && result.frameStart === frame && result.renderRevision === options.renderRevision) {
         const roundTripMs = performance.now() - startedAt;
         // Render vs transport: a worker that draws fast but delivers slowly needs a different fix
@@ -58,7 +80,16 @@ export function createRemoteFrameProducer(
           transportMs: Math.round(roundTripMs - (result.renderMs ?? 0)),
           bytes: result.byteLength,
         });
-        return await options.decodePng(result.bytesBase64, result.width, result.height);
+        if (result.format === "png-zip") {
+          const frames = await options.decodeZip(result.bytesBase64, result.width, result.height);
+          for (const [index, canvas] of frames) {
+            if (index !== frame) prefetched.set(index, Promise.resolve(canvas));
+          }
+          const own = frames.get(frame);
+          if (own) return own;
+        } else {
+          return await options.decodePng(result.bytesBase64, result.width, result.height);
+        }
       }
     } catch {
       /* the local render below is the fallback for every swarm failure */
@@ -76,6 +107,8 @@ export interface RemoteProducerSetup {
   renderRevision: string;
   profile: RenderProfile;
   renderLocally: (frame: number) => Promise<HTMLCanvasElement>;
+  /** Exclusive end of the export range, so a prefetch block never runs past it. */
+  totalFrameEnd?: number;
 }
 
 async function decodePngToCanvas(bytesBase64: string, width: number, height: number): Promise<HTMLCanvasElement> {
@@ -91,6 +124,27 @@ async function decodePngToCanvas(bytesBase64: string, width: number, height: num
   ctx.drawImage(bitmap, 0, 0, width, height);
   bitmap.close?.();
   return canvas;
+}
+
+async function decodeZipToFrames(bytesBase64: string, width: number, height: number): Promise<Map<number, HTMLCanvasElement>> {
+  const text = atob(bytesBase64);
+  const bytes = new Uint8Array(text.length);
+  for (let i = 0; i < text.length; i += 1) bytes[i] = text.charCodeAt(i);
+  const zip = await JSZip.loadAsync(bytes);
+  const frames = new Map<number, HTMLCanvasElement>();
+  await Promise.all(Object.values(zip.files).map(async (entry) => {
+    const match = /frame_(\d+)\.png$/.exec(entry.name);
+    if (!match || entry.dir) return;
+    const blob = await entry.async("blob");
+    const bitmap = await createImageBitmap(blob);
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    canvas.getContext("2d")?.drawImage(bitmap, 0, 0, width, height);
+    bitmap.close?.();
+    frames.set(Number(match[1]), canvas);
+  }));
+  return frames;
 }
 
 /** One producer per connected worker, or none at all when the swarm is not in play. */
@@ -125,6 +179,8 @@ export function buildRemoteFrameProducers(setup: RemoteProducerSetup): ((frame: 
     submit: setup.swarm!.submit,
     renderLocally: setup.renderLocally,
     decodePng: decodePngToCanvas,
+    decodeZip: decodeZipToFrames,
+    ...(setup.totalFrameEnd === undefined ? {} : { totalFrameEnd: setup.totalFrameEnd }),
     timeoutMs: setup.swarm!.timeoutMs ?? 60_000,
   })));
 }

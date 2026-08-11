@@ -36,11 +36,11 @@ export function validateSwarmRenderResult(
     && result.renderRevision === expected.renderRevision
     && result.compositionId === expected.compositionId
     && result.frameStart === expected.frame
-    && result.frameEnd === expected.frame + 1
+    && result.frameEnd > result.frameStart
     && result.width === expected.profile.width
     && result.height === expected.profile.height
-    && result.format === "png"
+    && (result.format === "png" || result.format === "png-zip")
     && result.runtimeVersion === expected.runtimeVersion
     && result.byteLength > 0
-    && result.byteLength <= 32 * 1024 * 1024;
+    && result.byteLength <= 256 * 1024 * 1024;
 }
