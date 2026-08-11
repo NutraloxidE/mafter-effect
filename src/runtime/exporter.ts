@@ -386,6 +386,15 @@ async function runPngSeq(
     try {
       const res = await runOrderedMultiContext(multiOptions);
       recordMultiContextFrames(totalFrames, res.contextFrameCounts);
+      // Who waited, and on whom: frame counts alone cannot tell a stalled pipeline from a
+      // correctly balanced one.
+      console.info("[swarm] export shape", {
+        elapsedMs: res.elapsedMs,
+        consumerWaitMs: res.consumerWaitMs,
+        frames: res.contextFrameCounts,
+        busyMs: res.contextBusyMs,
+        remoteProducers: remoteProducers.length,
+      });
     } catch (error) {
       if (!(error instanceof SwarmFrameMismatchError)) throw error;
       // A worker produced pixels this device disagrees with. Discard everything it contributed

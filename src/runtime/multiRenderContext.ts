@@ -104,6 +104,12 @@ export interface OrderedMultiContextResult {
   /** context ごとに描画した frame 数（負荷分散の観測用）。 */
   contextFrameCounts: number[];
   maxReorderAhead: number;
+  /** producer ごとの実描画時間 ms。合計と経過時間の差が「待っていた時間」。 */
+  contextBusyMs: number[];
+  /** consumer が次の frame 到着を待った合計 ms。ここが大きい＝誰かが emit 位置を塞いでいる。 */
+  consumerWaitMs: number;
+  /** 全体の経過 ms。 */
+  elapsedMs: number;
 }
 
 /**
@@ -125,6 +131,9 @@ export async function runOrderedMultiContext<TFrame = HTMLCanvasElement>(
   const prepare = opts.prepare ?? (async (canvas: HTMLCanvasElement) => canvas as unknown as TFrame);
   const ready: Deferred[] = Array.from({ length: totalFrames }, () => makeDeferred());
   const contextFrameCounts = new Array<number>(N).fill(0);
+  const contextBusyMs = new Array<number>(N).fill(0);
+  let consumerWaitMs = 0;
+  const startedAt = performance.now();
 
   let nextEmit = 0;
   // consumer が進むたびに resolve される gate（backpressure 解放通知）。
@@ -199,8 +208,10 @@ export async function runOrderedMultiContext<TFrame = HTMLCanvasElement>(
         await gate.promise;
       }
       if (fatal !== null) return;
+      const producedAt = performance.now();
       const canvas = await producers[c]!(startFrame + fi);
       results.set(fi, await prepare(canvas, fi));
+      contextBusyMs[c] = (contextBusyMs[c] ?? 0) + (performance.now() - producedAt);
       contextFrameCounts[c] = (contextFrameCounts[c] ?? 0) + 1;
       onRendered?.(fi);
       ready[fi]!.resolve();
@@ -209,7 +220,9 @@ export async function runOrderedMultiContext<TFrame = HTMLCanvasElement>(
 
   const runConsumer = async (): Promise<void> => {
     for (let fi = 0; fi < totalFrames; fi++) {
+      const waitedFrom = performance.now();
       await ready[fi]!.promise;
+      consumerWaitMs += performance.now() - waitedFrom;
       if (fatal !== null) throw fatal;
       checkAbort();
       const frame = results.get(fi)!;
@@ -226,5 +239,11 @@ export async function runOrderedMultiContext<TFrame = HTMLCanvasElement>(
   ]);
   if (fatal !== null) throw fatal;
 
-  return { contextFrameCounts, maxReorderAhead };
+  return {
+    contextFrameCounts,
+    maxReorderAhead,
+    contextBusyMs: contextBusyMs.map((ms) => Math.round(ms)),
+    consumerWaitMs: Math.round(consumerWaitMs),
+    elapsedMs: Math.round(performance.now() - startedAt),
+  };
 }
