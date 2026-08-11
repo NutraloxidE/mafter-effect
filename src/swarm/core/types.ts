@@ -129,6 +129,8 @@ export interface SwarmRenderJob {
 }
 
 export interface SwarmRenderResult {
+  /** Worker-side render time. Separates render cost from transport cost in the host's timing. */
+  renderMs?: number;
   jobId: SwarmJobId;
   renderRevision: string;
   compositionId: string;

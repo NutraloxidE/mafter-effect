@@ -46,8 +46,18 @@ export function createRemoteFrameProducer(
 ): (frame: number) => Promise<HTMLCanvasElement> {
   return async (frame: number): Promise<HTMLCanvasElement> => {
     try {
+      const startedAt = performance.now();
       const result = await options.submit(buildExportSwarmJob(options, frame), options.timeoutMs);
       if (result && result.frameStart === frame && result.renderRevision === options.renderRevision) {
+        const roundTripMs = performance.now() - startedAt;
+        // Render vs transport: a worker that draws fast but delivers slowly needs a different fix
+        // than one that is simply slow, and guessing between them has cost us a session already.
+        console.info("[swarm] remote frame", frame, {
+          roundTripMs: Math.round(roundTripMs),
+          renderMs: Math.round(result.renderMs ?? -1),
+          transportMs: Math.round(roundTripMs - (result.renderMs ?? 0)),
+          bytes: result.byteLength,
+        });
         return await options.decodePng(result.bytesBase64, result.width, result.height);
       }
     } catch {
