@@ -175,4 +175,49 @@ describe("runOrderedMultiContext", () => {
       checkAbort: () => {},
     })).rejects.toThrow("aborted");
   });
+
+  it("takes work off a stalled producer once the queue is empty", async () => {
+    const total = 32;
+    const rendered: number[][] = [[], []];
+    let release: null | (() => void) = null;
+    const setRelease = (fn: () => void): void => { release = fn; };
+    const producers = [
+      // Producer 0 stalls partway through its block until the test releases it.
+      async (frame: number) => {
+        rendered[0]!.push(frame);
+        if (frame === 1) await new Promise<void>((r) => setRelease(r));
+        return fakeCanvas(frame);
+      },
+      async (frame: number) => {
+        rendered[1]!.push(frame);
+        return fakeCanvas(frame);
+      },
+    ];
+
+    const emitted: number[] = [];
+    const run = runOrderedMultiContext({
+      producers,
+      totalFrames: total,
+      startFrame: 0,
+      blockFrames: 8,
+      maxReorderAhead: 64,
+      onFrame: async (fi) => { emitted.push(fi); },
+      checkAbort: () => {},
+    });
+    // Release only once the fast producer has drained every unclaimed block and had to steal.
+    for (let i = 0; i < 200 && rendered[1]!.length < total - 8; i += 1) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    (release as null | (() => void))?.();
+    await run;
+
+    expect(emitted).toEqual(Array.from({ length: total }, (_, i) => i));
+    // Every frame produced exactly once, across both producers.
+    const all = [...rendered[0]!, ...rendered[1]!].sort((a, b) => a - b);
+    expect(all).toEqual(Array.from({ length: total }, (_, i) => i));
+    // The fast producer ended up with far more than its blocks, i.e. it stole.
+    expect(rendered[1]!.length).toBeGreaterThan(total * 0.6);
+    // The stalled producer keeps the frame it was on and loses only untouched ones.
+    expect(rendered[0]!).toContain(1);
+  });
 });

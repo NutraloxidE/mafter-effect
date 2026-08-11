@@ -356,6 +356,12 @@ async function runPngSeq(
       ],
       totalFrames,
       startFrame,
+      // Local contexts run at the same speed, so a window of 2*N is enough for them. A worker is
+      // slower per frame (render + transfer), and with the default window the fast local producer
+      // blocks a few frames after the remote one, leaving the host idle for most of the export.
+      maxReorderAhead: remoteProducers.length > 0
+        ? Math.max(32, 8 * (extraRenderers.length + 1 + remoteProducers.length))
+        : undefined,
       onRendered: () => {
         rendered++;
         onProgress({ phase: "render", frame: rendered - 1, totalFrames, message: `Frame ${rendered}/${totalFrames}` });
