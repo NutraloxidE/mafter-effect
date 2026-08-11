@@ -240,6 +240,19 @@ export class RamPreviewController {
     this.pumpCacheQueue();
   }
 
+  /**
+   * Stores a remote frame that arrived after its deadline. The revision guard keeps a frame from
+   * an older project state out of the cache; a late frame for the current state is still correct.
+   */
+  async acceptLateRemoteFrame(renderRevision: string, frame: number, png: Uint8Array, width: number, height: number): Promise<void> {
+    if (!this.settings.enabled || !this.config) return;
+    if (renderRevision !== `project-revision-${this.config.projectRevision}`) return;
+    const key = this.frameCacheKey(frame);
+    if (!key || await this.store.get(key)) return;
+    await this.store.put(key, png, { byteSize: png.byteLength, width, height, format: "png" });
+    this.onFrameCached?.();
+  }
+
   frameCacheKey(frame: number): string | null {
     if (!this.config) return null;
     const pw = Math.max(1, Math.round(this.config.comp.width * this.config.proxyScale));

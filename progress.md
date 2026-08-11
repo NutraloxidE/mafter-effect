@@ -2990,3 +2990,10 @@ WP 分割（この順で実装する）:
 検証: typecheck PASS、`npm test` 153 files / 1451 tests **全 PASS**（前回失敗した `projectBins` は既知フレーキーで今回は緑）。
 
 **計測上の制約**: この可視性ガードにより、同一ブラウザの裏タブを worker にした自己計測はできなくなった（設計どおり）。並列化後の fps は、worker タブを前面に保った実機でのみ取得できる。ベースラインは 2.80 fps（直列・worker 1 台）。
+
+### 2026-08-11 (Claude Opus 5) - 期限切れ後に届いた結果を捨てない
+
+- デッドラインを適応化しても、遅れて届いた結果は `handleResult` で待機者不在＝ stale 破棄されていた（worker の計算が丸ごと無駄）。
+- `SwarmCoordinatorOptions.onLateResult` を追加。待機者は居ないが **job の検証（jobId / revision / comp / frame / 寸法 / 形式 / runtime）に通る**結果は、`RamPreviewController.acceptLateRemoteFrame()` 経由でキャッシュに入れる。revision 不一致（プロジェクトが編集済み）と既存キー有りは弾く。
+- 効果: 遅い worker でも「間に合わなかったフレーム」が次回のスクラブ・再生で効く。ローカル描画の結果を上書きすることはない（既存キーがあれば無視）。
+- 検証: typecheck PASS、`npm test` 153 files / 1451 tests 全 PASS。

@@ -61,6 +61,8 @@ export interface SwarmCoordinatorOptions {
   hostIdentity: DeviceIdentity;
   hostLabel: string;
   runtimeVersion: string;
+  /** Receives frames that arrive after their deadline, so a slow worker's render is still used. */
+  onLateResult?: (result: SwarmRenderResult) => void;
 }
 
 export class SwarmCoordinator {
@@ -379,6 +381,23 @@ export class SwarmCoordinator {
   private async handleResult(worker: ConnectedWorker, result: SwarmRenderResult): Promise<void> {
     const waiter = this.jobs.get(result.jobId);
     const job = this.scheduler.get(result.jobId);
+    const valid = job !== undefined && validateSwarmRenderResult(result, {
+      jobId: result.jobId,
+      renderRevision: job.renderRevision,
+      compositionId: job.compositionId,
+      frame: job.frameStart,
+      profile: job.profile,
+      runtimeVersion: job.runtimeVersion,
+    });
+    // The frame missed its deadline and was rendered locally instead, but it is still a valid
+    // frame for this revision: cache it rather than throwing the worker's effort away.
+    if (!waiter && valid) {
+      this.metrics.noteRemoteFrame();
+      this.options.onLateResult?.(result);
+      worker.snapshot.currentJobId = undefined;
+      this.pumpJobs();
+      return;
+    }
     if (!waiter || !job || !worker.slotId || !validateSwarmRenderResult(result, {
       jobId: result.jobId,
       renderRevision: job.renderRevision,
