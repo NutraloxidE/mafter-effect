@@ -3145,3 +3145,23 @@ context 再利用（前項）で空白フレームは消えたが、今度は **
 → **既定 ON を撤回し、`localStorage["mafter.swarm.export"] === "1"` のオプトインに戻した。** 「worker が居るかどうかで書き出し結果が変わる」状態を既定にはできない。
 
 次にやること: 非単調 seek の影響を切り分ける。①ローカル producer には昇順のフレームだけを割り当てる（リモートには任意順を許す）②または export 経路の video seek を毎フレーム「必ず目的時刻へ pause+seek し直す」形にして順序非依存にする。②が本筋（INV-2: 同一 frame は経路に依らず同一）。
+
+### 2026-08-11 (Claude Opus 5) - 仮説確定: 並列フレーム生成そのものが画素を変える（swarm 無関係）
+
+分散を一切使わず、`__mafterMultiRenderContext = true` / count 3 で同一範囲を書き出して比較:
+
+| 比較 | 結果 |
+|---|---|
+| ローカル単一 context 2 回 | **150 / 150 バイト一致**（決定論） |
+| 単一 context vs 複数 context(3) | **24 枚中 23 枚が differ**（平均 24 バイト、最大 60） |
+
+→ **これは swarm のバグではない。** `runOrderedMultiContext`（§11.2 Phase 6・既定 OFF の実験機能）が持つ既存の欠陥で、remote producer を足したことで初めて露出した。INV-2（同一 frame は経路に依らず同一）に対する違反であり、Phase 6 を既定 ON にする前に必ず解く必要がある。
+
+原因候補（未検証、この順で疑う）:
+1. **context ごとに別の `<video>` 要素＝別のデコーダ**。同時に複数のデコーダが走ると Chrome がハードウェア→ソフトウェアデコードへ落ちる場合があり、出力画素が僅かに変わる。差が「広範囲・小さい」分布と整合する。
+2. `syncVideoElementExportStep` の `Math.abs(video.currentTime - seekTo) > halfFrame` ガードが**アクセス順に依存**する（単調順と stride 順で seek するか否かの判断が変わる）。
+3. seek 後デコードと逐次デコードで、境界フレームの選択が 1 フレームずれる。
+
+検証手順（次回）: ①動画を含まないコンプ（solid/text のみ）で同じ比較をする。**差が消えれば動画デコーダが原因**、残れば描画側。②残る場合は raster/font キャッシュの context 間差異を疑う。
+
+swarm の export 分散はオプトインのまま（`localStorage["mafter.swarm.export"]="1"`）。この INV-2 違反が解けるまで既定 ON にはしない。
