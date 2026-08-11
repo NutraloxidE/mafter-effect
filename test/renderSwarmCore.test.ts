@@ -20,7 +20,7 @@ import { DEFAULT_SWARM_SIGNALING_URL, defaultSignalingEndpoint, VercelSignalingB
 import type { SwarmRenderJob } from "../src/swarm/core/types";
 import { extractBuildTag, isWorkerOutdated } from "../src/swarm/worker/workerUpdateCheck";
 import swarmHandler from "../api/swarm/[action]";
-import { DurableSwarmSession, joinCodeFromSessionId } from "../src/swarm/signaling/durableSessionCore";
+import { DurableSwarmSession, joinCodeFromSessionId, SWARM_SESSION_TTL_MS } from "../src/swarm/signaling/durableSessionCore";
 
 function job(id: string, frame: number, priority: SwarmRenderJob["priority"] = "background"): SwarmRenderJob {
   return {
@@ -280,6 +280,8 @@ describe("Render Swarm core", () => {
       "RANDOM123456",
     );
     expect(joinCodeFromSessionId(created.sessionId)).toBe("ABC123");
+    // The join window outlives a working session: peers are P2P once connected.
+    expect(created.expiresAt - Date.now()).toBeGreaterThan(SWARM_SESSION_TTL_MS - 60_000);
 
     const peer = { peerId: "peer", deviceId: "device", label: "Phone", publicKeyJwk: {}, requestedAt: 0 };
     await new DurableSwarmSession(kv).joinSession({ joinCode: "ABC123", peer });
