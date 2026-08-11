@@ -2924,3 +2924,12 @@ WP 分割（この順で実装する）:
 - worker 側 executor は既存実装（hash 検証 + MemoryFs 展開）のまま無変更。
 - 予算内なら動画も通る。数百 MB の素材は chunkTransport 化（WP-3）まではローカルのままフォールバックする。
 - 検証: typecheck PASS、Render Swarm tests 11/11 PASS（参照収集と自己完結判定を純関数テストで固定）。実機 2 端末での分散確認は未実施（WP-5）。
+
+### 2026-08-11 (Claude Opus 5) - WP-3: asset の分割転送と hash 単位の重複排除
+
+- WP-1 の実装は **同じ素材を毎フレーム base64 で job に同梱して再送**していた（1 フレーム 1 ジョブなので画像 1 枚でも毎回転送）。加えて 1 メッセージに収まるサイズが上限になっていた。
+- `asset-chunk` メッセージを protocol に追加（`src/swarm/transport/assetChunks.ts`: `splitAssetIntoChunks` / `AssetChunkAssembler`）。ホストは job-offer の前に未送信の content hash だけをチャンク送信し、job には**参照のみ**（`bytesBase64: ""`）を載せる。
+- worker は受信チャンクを hash ごとに組み立て、完成したら `BoundedWorkerAssetCache` に投入（従来どおり hash 検証あり）。executor は **キャッシュ優先**で解決し、無ければインライン bytes、それも無ければジョブを失敗させてホストのローカル描画に戻す。
+- 送信途中で失敗したら `sentAssetHashes` から取り消す（半端に「送った」と記憶して以後キャッシュミスし続けるのを防ぐ）。
+- インライン予算 24MB → 128MB に引き上げ（メッセージサイズ制約ではなくメモリ制約になったため。worker cache 上限と一致）。
+- 検証: typecheck PASS、Render Swarm tests 12/12 PASS（順不同・重複チャンクでの再構成を純関数テストで固定）。実機での動画分散は未確認（WP-5）。

@@ -1,5 +1,6 @@
 import { createBenchmarkJob, normalizedBenchmarkScore } from "./benchmark";
 import { isSwarmJobSelfContained } from "./jobFiles";
+import { splitAssetIntoChunks } from "../transport/assetChunks";
 import { WorkerRenderExecutor } from "../worker/workerRenderExecutor";
 import { isWorkerCompatible } from "./capability";
 import { createChallengeNonce, verifyChallenge, type DeviceIdentity } from "./identity";
@@ -44,6 +45,8 @@ interface ConnectedWorker {
   challengeNonce?: string;
   benchmarkInFlight: boolean;
   snapshot: WorkerSnapshot;
+  /** Content hashes already streamed to this worker, so footage is sent once and not per frame. */
+  sentAssetHashes: Set<string>;
 }
 
 export interface SwarmCoordinatorOptions {
@@ -138,6 +141,7 @@ export class SwarmCoordinator {
         peer: webRtc,
         descriptor: peer,
         benchmarkInFlight: false,
+        sentAssetHashes: new Set<string>(),
         snapshot: {
           slotId: `pending-${peer.peerId}`,
           peerId: peer.peerId,
@@ -198,6 +202,32 @@ export class SwarmCoordinator {
     return this.localBenchmarkScore;
   }
 
+  /**
+   * Streams any not-yet-delivered footage as chunks, then offers the job carrying references only.
+   * Sending bytes inline on every job would re-transmit the same file for each frame and would cap
+   * footage at one data-channel message.
+   */
+  private async offerJob(worker: ConnectedWorker, job: SwarmRenderJob): Promise<void> {
+    const assets = job.assets ?? [];
+    try {
+      for (const asset of assets) {
+        if (!asset.bytesBase64 || worker.sentAssetHashes.has(asset.contentHash)) continue;
+        for (const chunk of splitAssetIntoChunks(asset)) {
+          await worker.peer.protocol?.send(createSwarmMessage("asset-chunk", chunk));
+        }
+        worker.sentAssetHashes.add(asset.contentHash);
+      }
+      const references = assets.map((asset) => ({ ...asset, bytesBase64: "" }));
+      await worker.peer.protocol?.send(createSwarmMessage("job-offer", { job: { ...job, assets: references } }));
+    } catch {
+      // A half-sent file must not be remembered as delivered.
+      for (const asset of assets) worker.sentAssetHashes.delete(asset.contentHash);
+      if (worker.slotId) this.scheduler.fail(job.id, worker.slotId);
+      worker.snapshot.currentJobId = undefined;
+      this.emitChange();
+    }
+  }
+
   private requestBenchmarks(job: SwarmRenderJob): void {
     for (const worker of this.workers.values()) {
       if (worker.slotId === undefined || worker.snapshot.state !== "connected" || worker.snapshot.performance || worker.benchmarkInFlight) continue;
@@ -213,7 +243,7 @@ export class SwarmCoordinator {
       if (!leased) continue;
       worker.snapshot.currentJobId = leased.id;
       this.metrics.setJobs(this.scheduler.getSnapshot().pending, this.scheduler.getSnapshot().leased);
-      void worker.peer.protocol?.send(createSwarmMessage("job-offer", { job: leased }));
+      void this.offerJob(worker, leased);
       this.emitChange();
     }
   }

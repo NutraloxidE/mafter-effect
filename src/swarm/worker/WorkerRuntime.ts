@@ -2,6 +2,7 @@ import { collectWorkerCapabilities } from "../core/capability";
 import { loadOrCreateDeviceIdentity, signChallenge, type DeviceIdentity } from "../core/identity";
 import { createSwarmMessage, isSwarmMessageType } from "../core/protocol";
 import { WebRtcPeer } from "../transport/WebRtcPeer";
+import { AssetChunkAssembler } from "../transport/assetChunks";
 import type { SwarmSignalingBackend } from "../signaling/SignalingBackend";
 import { WorkerRenderExecutor } from "./workerRenderExecutor";
 import type { SwarmSessionDescriptor, SwarmPeerDescriptor, SwarmSignalingEvent } from "../core/types";
@@ -25,6 +26,7 @@ export class WorkerRuntime {
   private state: WorkerRuntimeState = "idle";
   private listeners = new Set<() => void>();
   private currentJobId: string | null = null;
+  private readonly assembler = new AssetChunkAssembler();
   private connectionKind: "unknown" | "direct" | "relay" = "unknown";
   private lastError: string | null = null;
   private snapshot = { state: this.state, currentJobId: this.currentJobId, connection: this.connectionKind, error: this.lastError, session: this.session };
@@ -132,6 +134,11 @@ export class WorkerRuntime {
       if (!this.identity || !this.peer?.protocol) return;
       const signatureBase64 = await signChallenge(this.identity, message.payload.nonce);
       await this.peer.protocol.send(createSwarmMessage("challenge-response", { nonce: message.payload.nonce, signatureBase64 }));
+      return;
+    }
+    if (isSwarmMessageType(message, "asset-chunk")) {
+      const transfer = this.assembler.accept(message.payload);
+      if (transfer) await this.executor.cacheAsset(transfer);
       return;
     }
     if (isSwarmMessageType(message, "benchmark-request")) {

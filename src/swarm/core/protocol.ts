@@ -7,6 +7,7 @@ export type SwarmMessageType =
   | "challenge-response"
   | "benchmark-request"
   | "benchmark-result"
+  | "asset-chunk"
   | "job-offer"
   | "job-accepted"
   | "job-progress"
@@ -53,6 +54,16 @@ export interface SwarmJobProgressPayload {
   totalFrames: number;
 }
 
+/** One slice of a content-addressed file, sent ahead of the jobs that need it. */
+export interface SwarmAssetChunkPayload {
+  path: string;
+  contentHash: string;
+  mimeType?: string;
+  index: number;
+  count: number;
+  bytesBase64: string;
+}
+
 export interface SwarmMessagePayloads {
   hello: SwarmHelloPayload;
   capabilities: WorkerCapabilities;
@@ -60,6 +71,7 @@ export interface SwarmMessagePayloads {
   "challenge-response": SwarmChallengeResponsePayload;
   "benchmark-request": { job?: SwarmRenderJob };
   "benchmark-result": SwarmBenchmarkResultPayload;
+  "asset-chunk": SwarmAssetChunkPayload;
   "job-offer": { job: SwarmRenderJob };
   "job-accepted": { jobId: string };
   "job-progress": SwarmJobProgressPayload;
@@ -103,7 +115,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function isMessageType(value: unknown): value is SwarmMessageType {
   return typeof value === "string" && [
     "hello", "capabilities", "challenge", "challenge-response", "benchmark-request",
-    "benchmark-result", "job-offer", "job-accepted", "job-progress", "job-result",
+    "benchmark-result", "asset-chunk", "job-offer", "job-accepted", "job-progress", "job-result",
     "job-cancel", "job-failed", "heartbeat", "ping", "pong", "worker-draining",
     "worker-goodbye",
   ].includes(value);
@@ -137,6 +149,10 @@ function isPayloadShape(type: SwarmMessageType, payload: Record<string, unknown>
     case "benchmark-result":
       return hasFiniteNumber(payload, "score") && hasFiniteNumber(payload, "framesPerSecond") &&
         hasFiniteNumber(payload, "renderMs");
+    case "asset-chunk":
+      return hasString(payload, "path") && hasString(payload, "contentHash") &&
+        hasFiniteNumber(payload, "index") && hasFiniteNumber(payload, "count") &&
+        typeof payload.bytesBase64 === "string";
     case "job-offer":
       return isRecord(payload.job) && hasString(payload.job, "id");
     case "job-accepted":
