@@ -12,6 +12,7 @@ export type SwarmMessageType =
   | "job-accepted"
   | "job-progress"
   | "job-result"
+  | "job-result-chunk"
   | "job-cancel"
   | "job-failed"
   | "heartbeat"
@@ -65,6 +66,14 @@ export interface SwarmAssetChunkPayload {
   bytesBase64: string;
 }
 
+/** One slice of a rendered frame; frames exceed the data channel's single-message limit. */
+export interface SwarmResultChunkPayload {
+  jobId: string;
+  index: number;
+  count: number;
+  bytesBase64: string;
+}
+
 export interface SwarmMessagePayloads {
   hello: SwarmHelloPayload;
   capabilities: WorkerCapabilities;
@@ -77,6 +86,7 @@ export interface SwarmMessagePayloads {
   "job-accepted": { jobId: string };
   "job-progress": SwarmJobProgressPayload;
   "job-result": SwarmRenderResult;
+  "job-result-chunk": SwarmResultChunkPayload;
   "job-cancel": { jobId: string };
   "job-failed": SwarmJobFailedPayload;
   "worker-availability": { available: boolean; reason?: string };
@@ -118,7 +128,7 @@ function isMessageType(value: unknown): value is SwarmMessageType {
   return typeof value === "string" && [
     "hello", "capabilities", "challenge", "challenge-response", "benchmark-request",
     "benchmark-result", "asset-chunk", "job-offer", "job-accepted", "job-progress", "job-result",
-    "job-cancel", "job-failed", "heartbeat", "ping", "pong", "worker-availability", "worker-draining",
+    "job-result-chunk", "job-cancel", "job-failed", "heartbeat", "ping", "pong", "worker-availability", "worker-draining",
     "worker-goodbye",
   ].includes(value);
 }
@@ -159,6 +169,9 @@ function isPayloadShape(type: SwarmMessageType, payload: Record<string, unknown>
       return isRecord(payload.job) && hasString(payload.job, "id");
     case "worker-availability":
       return typeof payload.available === "boolean";
+    case "job-result-chunk":
+      return hasString(payload, "jobId") && hasFiniteNumber(payload, "index") &&
+        hasFiniteNumber(payload, "count") && typeof payload.bytesBase64 === "string";
     case "job-accepted":
     case "job-cancel":
       return hasString(payload, "jobId");
@@ -167,7 +180,9 @@ function isPayloadShape(type: SwarmMessageType, payload: Record<string, unknown>
         hasFiniteNumber(payload, "totalFrames");
     case "job-result":
       return hasString(payload, "jobId") && hasString(payload, "renderRevision") &&
-        hasString(payload, "compositionId") && hasString(payload, "bytesBase64") &&
+        hasString(payload, "compositionId") &&
+        // Pixels normally arrive as job-result-chunk messages, leaving this empty on purpose.
+        typeof payload.bytesBase64 === "string" &&
         hasFiniteNumber(payload, "frameStart") && hasFiniteNumber(payload, "frameEnd") &&
         hasFiniteNumber(payload, "width") && hasFiniteNumber(payload, "height") &&
         hasFiniteNumber(payload, "byteLength") && hasString(payload, "runtimeVersion");

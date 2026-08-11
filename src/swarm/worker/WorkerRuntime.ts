@@ -2,10 +2,10 @@ import { collectWorkerCapabilities } from "../core/capability";
 import { loadOrCreateDeviceIdentity, signChallenge, type DeviceIdentity } from "../core/identity";
 import { createSwarmMessage, isSwarmMessageType } from "../core/protocol";
 import { WebRtcPeer } from "../transport/WebRtcPeer";
-import { AssetChunkAssembler } from "../transport/assetChunks";
+import { AssetChunkAssembler, splitResultBytes } from "../transport/assetChunks";
 import type { SwarmSignalingBackend } from "../signaling/SignalingBackend";
 import { WorkerRenderExecutor } from "./workerRenderExecutor";
-import type { SwarmSessionDescriptor, SwarmPeerDescriptor, SwarmSignalingEvent } from "../core/types";
+import type { SwarmRenderResult, SwarmSessionDescriptor, SwarmPeerDescriptor, SwarmSignalingEvent } from "../core/types";
 
 export interface WorkerRuntimeOptions {
   backend: SwarmSignalingBackend;
@@ -153,6 +153,18 @@ export class WorkerRuntime {
     }, delay);
   }
 
+  /**
+   * A rendered frame is far larger than a data channel message, so the pixels travel as chunks and
+   * the result itself carries only its metadata. Sending it whole silently delivered nothing.
+   */
+  private async sendResult(result: SwarmRenderResult): Promise<void> {
+    const protocol = this.peer?.protocol;
+    if (!protocol) return;
+    const chunks = splitResultBytes(result.jobId, result.bytesBase64);
+    for (const chunk of chunks) await protocol.send(createSwarmMessage("job-result-chunk", chunk));
+    await protocol.send(createSwarmMessage("job-result", { ...result, bytesBase64: "" }));
+  }
+
   private bindVisibilityReporting(): void {
     if (this.unbindVisibility || typeof document === "undefined") return;
     const report = (): void => {
@@ -198,12 +210,21 @@ export class WorkerRuntime {
     }
     if (isSwarmMessageType(message, "job-offer")) {
       if (!this.peer?.protocol) return;
+      // Two renders sharing one capture context corrupt each other and both get slower, so a
+      // re-offer that arrives mid-render is refused rather than started.
+      if (this.currentJobId !== null) {
+        await this.peer.protocol.send(createSwarmMessage("job-failed", {
+          jobId: message.payload.job.id,
+          message: "Worker is already rendering another frame",
+        }));
+        return;
+      }
       this.currentJobId = message.payload.job.id;
       this.setState("rendering");
       await this.peer.protocol.send(createSwarmMessage("job-accepted", { jobId: this.currentJobId }));
       try {
         const result = await this.executor.render(message.payload.job);
-        await this.peer.protocol.send(createSwarmMessage("job-result", result));
+        await this.sendResult(result);
       } catch (error) {
         await this.peer.protocol.send(createSwarmMessage("job-failed", {
           jobId: message.payload.job.id,

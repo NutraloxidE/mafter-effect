@@ -1,4 +1,4 @@
-import type { SwarmAssetChunkPayload } from "../core/protocol";
+import type { SwarmAssetChunkPayload, SwarmResultChunkPayload } from "../core/protocol";
 import type { SwarmAssetTransfer } from "../core/types";
 
 /**
@@ -26,6 +26,42 @@ export function splitAssetIntoChunks(
     });
   }
   return chunks;
+}
+
+export function splitResultBytes(jobId: string, bytesBase64: string, chunkChars = SWARM_ASSET_CHUNK_CHARS): SwarmResultChunkPayload[] {
+  const size = Math.max(1, chunkChars);
+  const count = Math.max(1, Math.ceil(bytesBase64.length / size));
+  return Array.from({ length: count }, (_, index) => ({
+    jobId,
+    index,
+    count,
+    bytesBase64: bytesBase64.slice(index * size, (index + 1) * size),
+  }));
+}
+
+/** Reassembles frame chunks per job; the caller drops them if the result never arrives. */
+export class ResultChunkAssembler {
+  private pending = new Map<string, { parts: string[]; received: number }>();
+
+  accept(chunk: SwarmResultChunkPayload): void {
+    if (chunk.count <= 0 || chunk.index < 0 || chunk.index >= chunk.count) return;
+    const entry = this.pending.get(chunk.jobId) ?? { parts: new Array<string>(chunk.count).fill(""), received: 0 };
+    if (entry.parts.length !== chunk.count) return;
+    if (entry.parts[chunk.index] === "") entry.received += 1;
+    entry.parts[chunk.index] = chunk.bytesBase64;
+    this.pending.set(chunk.jobId, entry);
+  }
+
+  take(jobId: string): string | null {
+    const entry = this.pending.get(jobId);
+    if (!entry || entry.received < entry.parts.length) return null;
+    this.pending.delete(jobId);
+    return entry.parts.join("");
+  }
+
+  drop(jobId: string): void {
+    this.pending.delete(jobId);
+  }
 }
 
 /**

@@ -12,7 +12,7 @@ import { createBenchmarkJob, normalizedBenchmarkScore } from "../src/swarm/core/
 import { collectJobFilePaths, isSwarmJobSelfContained } from "../src/swarm/core/jobFiles";
 import { buildExportSwarmJob, createRemoteFrameProducer, spotCheckFrames } from "../src/swarm/core/remoteFrameProducer";
 import { meanAbsoluteDifference, pixelSpread, SWARM_FRAME_TOLERANCE } from "../src/swarm/core/frameVerification";
-import { AssetChunkAssembler, splitAssetIntoChunks } from "../src/swarm/transport/assetChunks";
+import { AssetChunkAssembler, ResultChunkAssembler, splitAssetIntoChunks, splitResultBytes } from "../src/swarm/transport/assetChunks";
 import { buildSwarmRenderCacheKey, validateSwarmRenderResult } from "../src/swarm/core/cacheKey";
 import { SwarmScheduler } from "../src/swarm/core/scheduler";
 import { InMemorySwarmSignalingBackend } from "../src/swarm/signaling/inMemory";
@@ -191,6 +191,26 @@ describe("Render Swarm core", () => {
     expect((parsed?.payload as { available: boolean }).available).toBe(false);
     // A missing flag must not be read as "available".
     expect(parseSwarmMessage(JSON.stringify({ ...message, payload: {} }))).toBeNull();
+  });
+
+  it("carries a rendered frame as chunks and accepts a result whose pixels travelled separately", () => {
+    const chunks = splitResultBytes("job-1", "ABCDEFGHIJ", 4);
+    expect(chunks.map((c) => c.bytesBase64)).toEqual(["ABCD", "EFGH", "IJ"]);
+
+    const assembler = new ResultChunkAssembler();
+    expect(assembler.take("job-1")).toBeNull();
+    for (const chunk of [chunks[2]!, chunks[0]!, chunks[1]!]) assembler.accept(chunk);
+    expect(assembler.take("job-1")).toBe("ABCDEFGHIJ");
+    expect(assembler.take("job-1")).toBeNull();
+
+    // A frame this size cannot ride in one message, so the result message carries no pixels and
+    // must still parse — requiring a non-empty string here silently dropped every result.
+    const result = {
+      jobId: "job-1", renderRevision: "rev-1", compositionId: "comp-1", frameStart: 0, frameEnd: 1,
+      width: 960, height: 540, format: "png" as const, bytesBase64: "", byteLength: 350_000,
+      runtimeVersion: "runtime-1",
+    };
+    expect(parseSwarmMessage(serializeSwarmMessage(createSwarmMessage("job-result", result)))?.type).toBe("job-result");
   });
 
   it("splits and reassembles a file across chunks, ignoring order and duplicates", () => {
