@@ -959,6 +959,24 @@ export class DomRenderer implements Renderer {
     });
   }
 
+  /**
+   * 各 video が export の目標時刻に乗っているか。`waitForVideoFrame` は best-effort で、
+   * timeout すると前の位置のまま合成されてしまう。返ってきた画素が正しいかは呼び出し側でしか
+   * 判定できないため、位置ズレを検出する手段を出す。
+   */
+  videosAtExportTarget(fps: number): boolean {
+    if (!this.root) return true;
+    const tolerance = 1 / Math.max(1, fps) + 1e-3;
+    for (const video of this.root.querySelectorAll("video")) {
+      const raw = video.getAttribute(EXPORT_VIDEO_TARGET_ATTR);
+      if (raw === null || raw === "") continue;
+      const target = Number(raw);
+      if (!Number.isFinite(target)) continue;
+      if (Math.abs(video.currentTime - target) > tolerance) return false;
+    }
+    return true;
+  }
+
   /** export 前に video seek / decode 完了を待つ（foreignObject は video を描けない）。 */
   async flushVideoFrames(timeoutMs?: number): Promise<void> {
     if (!this.root) return;

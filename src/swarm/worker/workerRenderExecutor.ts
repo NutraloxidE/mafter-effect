@@ -46,11 +46,16 @@ export class WorkerRenderExecutor {
     const context = await this.contextFor(job, composition, fs);
     {
       const startedAt = performance.now();
-      const bytes = await captureCompFramePng(
-        context,
-        composition,
-        job.frameStart,
-      );
+      let bytes = await captureCompFramePng(context, composition, job.frameStart);
+      // The decode wait is best-effort: on timeout the frame is composited with the footage still
+      // at its previous position, which looks plausible and is simply wrong. Retry once, then let
+      // the host render it rather than returning pixels we know are off.
+      if (!context.renderer.videosAtExportTarget(composition.fps)) {
+        bytes = await captureCompFramePng(context, composition, job.frameStart);
+        if (!context.renderer.videosAtExportTarget(composition.fps)) {
+          throw new Error(`Worker footage did not reach frame ${job.frameStart}`);
+        }
+      }
       const renderMs = performance.now() - startedAt;
       return {
         renderMs,
