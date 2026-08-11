@@ -2888,3 +2888,12 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
 - `defaultSignalingEndpoint()` の既定を `/api/swarm` から `DEFAULT_SWARM_SIGNALING_URL = https://mafter-swarm-signaling.r1cefarm-dev.workers.dev` に変更（`VITE_SWARM_SIGNALING_URL` があればそちらを優先。空文字は無視）。
 - これで静的ホスト（VPS / Pages / Electron）どこにビルドを置いても設定なしで signaling に到達する。独自ドメインを Worker に割り当てたら定数か env を差し替えて再ビルドする（Vite 定数置換なのでビルド時固定）。
 - 検証: `npm run typecheck` PASS、Render Swarm tests 9/9 PASS。
+
+### 2026-08-11 (Claude Opus 5) - swarm 表示バグ（transport / available compute）の根治
+
+- 症状: worker 側が `Connection: unknown`、ホスト側は `Direct`、`Available compute` が `1.0× local` から動かない。
+- 真因1: **transport 種別をどちらの側も算出していなかった**。ホストの `Direct` は [WorkerStatusRow.tsx](src/swarm/ui/WorkerStatusRow.tsx) が `unknown` を `Direct` と読み替えていただけの偽装表示で、worker の `unknown`（`WorkerRuntime.connectionKind` が初期値のまま未代入）が正直な方だった。→ `WebRtcPeer.detectTransportKind()` を追加し `getStats()` の選択候補ペアから direct/relay を判定、data channel open 時に実行して host / worker 両方へ配線。UI の偽装フォールバックは `…` に変更。
+- 真因2: `requestBenchmarks` が `renderPreviewFrame` の中でしか呼ばれず、分散可能なジョブが投入されるまで一度もベンチが走らない。今のゲート（assets があると不可）では永久に走らないケースがある。→ 承認・identity 検証完了時に `createBenchmarkJob()`（空の 320x180 timeline、プロジェクト非依存）でベンチを投げる。
+- 真因3: `getAvailableCompute()` が **生の FPS を加算**していた（`normalizedBenchmarkScore` は実装済みだが未使用の死にコード）。ベンチが走った瞬間「31.0× local」のような値になる。→ ホスト自身が同一ベンチジョブを実行してスコアを正規化（worker がホストの 2 倍速なら +2.0×）。
+- 検証: `npm run typecheck` PASS、Render Swarm tests 10/10 PASS（`createBenchmarkJob` のプロジェクト非依存性と正規化を純関数テストで固定）。実機の 2 端末確認は CI デプロイ後に実施予定。
+- 未着手（ユーザー要望・別 WP）: ①最終書き出しの分散、②Pre-render の分散実測、③video / expression を含むコンプの分散。①③は §11 export パリティと INV-2 に触るため spec 先行が必要。なお worker 側 executor は既に `job.assets` の content-hash 検証と MemoryFs 展開を実装済みで、不足しているのは**ホスト側の asset 同梱とゲート解除**。

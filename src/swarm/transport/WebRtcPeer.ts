@@ -6,12 +6,16 @@ export interface WebRtcPeerOptions {
   configuration?: RTCConfiguration;
 }
 
+export type SwarmTransportKind = "unknown" | "direct" | "relay";
+
 export class WebRtcPeer {
   readonly connection: RTCPeerConnection;
   protocol: DataChannelProtocol | null = null;
+  transportKind: SwarmTransportKind = "unknown";
   onSignal?: (signal: SwarmSignal) => void;
   onMessage?: (message: Parameters<NonNullable<DataChannelProtocol["onMessage"]>>[0]) => void;
   onStateChange?: (state: RTCPeerConnectionState) => void;
+  onTransportKind?: (kind: SwarmTransportKind) => void;
   private started = false;
 
   constructor(private readonly options: WebRtcPeerOptions) {
@@ -50,6 +54,26 @@ export class WebRtcPeer {
     }
   }
 
+  /** Reads the negotiated candidate pair; a relay on either end means the traffic goes through TURN. */
+  async detectTransportKind(): Promise<SwarmTransportKind> {
+    const stats = await this.connection.getStats();
+    const byId = new Map<string, { type?: string; candidateType?: string; state?: string; nominated?: boolean; selected?: boolean; localCandidateId?: string; remoteCandidateId?: string }>();
+    stats.forEach((report) => byId.set(report.id, report as never));
+    const pair = [...byId.values()].find((report) =>
+      report.type === "candidate-pair" && (report.selected === true || (report.state === "succeeded" && report.nominated !== false)),
+    );
+    const endpoints = [pair?.localCandidateId, pair?.remoteCandidateId]
+      .map((id) => (id ? byId.get(id)?.candidateType : undefined));
+    const kind: SwarmTransportKind = !pair || endpoints.some((type) => type === undefined)
+      ? "unknown"
+      : endpoints.includes("relay") ? "relay" : "direct";
+    if (kind !== this.transportKind) {
+      this.transportKind = kind;
+      this.onTransportKind?.(kind);
+    }
+    return kind;
+  }
+
   close(): void {
     this.protocol?.close();
     this.connection.close();
@@ -60,7 +84,10 @@ export class WebRtcPeer {
     this.protocol = protocol;
     protocol.onMessage = (message) => this.onMessage?.(message);
     protocol.onStateChange = (state) => {
-      if (state === "open") this.onStateChange?.("connected");
+      if (state === "open") {
+        this.onStateChange?.("connected");
+        void this.detectTransportKind();
+      }
       if (state === "closed") this.onStateChange?.("disconnected");
     };
   }

@@ -1,3 +1,5 @@
+import { createBenchmarkJob, normalizedBenchmarkScore } from "./benchmark";
+import { WorkerRenderExecutor } from "../worker/workerRenderExecutor";
 import { isWorkerCompatible } from "./capability";
 import { createChallengeNonce, verifyChallenge, type DeviceIdentity } from "./identity";
 import { createSwarmMessage, isSwarmMessageType } from "./protocol";
@@ -62,6 +64,7 @@ export class SwarmCoordinator {
   private readonly listeners = new Set<() => void>();
   private unsubscribeSignaling: (() => void) | null = null;
   private leaseTimer: number | null = null;
+  private localBenchmarkScore: Promise<number> | null = null;
 
   constructor(private readonly options: SwarmCoordinatorOptions) {
     this.loadTrust();
@@ -147,6 +150,10 @@ export class SwarmCoordinator {
       webRtc.onSignal = (signal) => void this.sendSignal(peer.peerId, signal);
       webRtc.onMessage = (message) => void this.handleWorkerMessage(worker, message);
       webRtc.onStateChange = (state) => this.handlePeerState(worker, state);
+      webRtc.onTransportKind = (kind) => {
+        worker.snapshot.transport = kind;
+        this.emitChange();
+      };
       await webRtc.start();
       this.emitChange();
     }
@@ -183,6 +190,14 @@ export class SwarmCoordinator {
       return Object.values(component.props).some((value) => typeof value === "object" && value !== null && "expression" in value);
     }))) return false;
     return true;
+  }
+
+  private ensureLocalBenchmarkScore(): Promise<number> {
+    this.localBenchmarkScore ??= new WorkerRenderExecutor()
+      .benchmark(createBenchmarkJob(this.options.runtimeVersion))
+      .then((result) => result.score)
+      .catch(() => 0);
+    return this.localBenchmarkScore;
   }
 
   private requestBenchmarks(job: SwarmRenderJob): void {
@@ -225,14 +240,18 @@ export class SwarmCoordinator {
     }
     if (isSwarmMessageType(message, "benchmark-result")) {
       worker.benchmarkInFlight = false;
+      // Scores are frames/second on that device; compute is only meaningful relative to the host,
+      // so normalize against the host running the identical benchmark job.
+      const localScore = await this.ensureLocalBenchmarkScore();
+      const relativeScore = normalizedBenchmarkScore(message.payload.score, localScore);
       worker.snapshot.performance = {
-        benchmarkScore: Math.max(0, message.payload.score),
+        benchmarkScore: relativeScore,
         recentFramesPerSecond: message.payload.framesPerSecond,
         recentRenderMs: message.payload.renderMs,
         reliability: 1,
         lastUpdatedAt: Date.now(),
       };
-      if (worker.slotId) this.scheduler.updateWorker({ slotId: worker.slotId, score: message.payload.score, reliability: 1, connected: true });
+      if (worker.slotId) this.scheduler.updateWorker({ slotId: worker.slotId, score: relativeScore, reliability: 1, connected: true });
       this.emitChange();
       this.pumpJobs();
       return;
@@ -293,6 +312,9 @@ export class SwarmCoordinator {
     worker.snapshot.state = "connected";
     this.scheduler.registerWorker({ slotId, score: 1, reliability: 1, connected: true });
     this.emitChange();
+    // Score the worker now; otherwise available compute stays at 1.0x local until the first
+    // distributable preview job happens to be submitted.
+    this.requestBenchmarks(createBenchmarkJob(this.options.runtimeVersion));
     this.pumpJobs();
   }
 

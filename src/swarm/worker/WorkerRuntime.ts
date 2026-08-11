@@ -99,6 +99,10 @@ export class WorkerRuntime {
     this.peer = peer;
     peer.onSignal = (signal) => void this.backend.sendSignal(this.session!.sessionId, workerPeerId, hostPeerId, signal);
     peer.onMessage = (message) => void this.handleMessage(message);
+    peer.onTransportKind = (kind) => {
+      this.connectionKind = kind;
+      this.setState(this.state);
+    };
     peer.onStateChange = (state) => {
       if (state === "connected") {
         // P2P is up: stop long-polling the signaling server (server req/min must reach 0).
