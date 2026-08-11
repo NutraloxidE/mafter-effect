@@ -188,11 +188,14 @@ export class SwarmCoordinator {
       if (!this.isWorkerReady(worker)) return;
       for (const asset of assets) {
         if (!asset.bytesBase64 || worker.sentAssetHashes.has(asset.contentHash)) continue;
+        // Claimed before the transfer, not after: a preload and a job offer can run at once, and
+        // both would otherwise send the same file. The data channel is ordered, so a job offer that
+        // skips an in-flight asset still arrives behind its chunks.
+        worker.sentAssetHashes.add(asset.contentHash);
         try {
           for (const chunk of splitAssetIntoChunks(asset)) {
             await worker.peer.protocol?.send(createSwarmMessage("asset-chunk", chunk));
           }
-          worker.sentAssetHashes.add(asset.contentHash);
         } catch {
           worker.sentAssetHashes.delete(asset.contentHash);
           return;
@@ -287,10 +290,10 @@ export class SwarmCoordinator {
     try {
       for (const asset of assets) {
         if (!asset.bytesBase64 || worker.sentAssetHashes.has(asset.contentHash)) continue;
+        worker.sentAssetHashes.add(asset.contentHash);
         for (const chunk of splitAssetIntoChunks(asset)) {
           await worker.peer.protocol?.send(createSwarmMessage("asset-chunk", chunk));
         }
-        worker.sentAssetHashes.add(asset.contentHash);
       }
       const references = assets.map((asset) => ({ ...asset, bytesBase64: "" }));
       await worker.peer.protocol?.send(createSwarmMessage("job-offer", { job: { ...job, assets: references } }));

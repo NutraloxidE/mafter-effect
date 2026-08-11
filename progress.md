@@ -1,5 +1,17 @@
 # Progress
 
+### 2026-08-12（Claude Opus 5）— swarm: 接続時にアセットを先送り＋差分更新
+
+- **依頼**: 「繋いだ時点で、ホストからワーカーに P2P でデータを送る、追加アセットがあったら逐一更新」。
+- **これまでの挙動**: アセット転送は **export 開始時の `preload`** と **job-offer の直前**だけ。ワーカーが接続してから最初の書き出しまでの待ち時間（＝一番暇な時間）に何も送っておらず、最初のジョブが転送を丸ごと被ってデッドラインを落としていた。
+- **やったこと**（配線のみ・プロトコル/スキーマ不変）:
+  - [src/swarm/ui/swarmStore.ts](src/swarm/ui/swarmStore.ts): `syncWorkerAssets()` を追加し、**(a) ワーカーが connected になった時**（`refresh` で connected peerId 集合の変化を検出）と **(b) プロジェクト編集で参照ファイル一覧が変わった時**（`useEditorStore.subscribe` → 1.5s デバウンス）に現在コンプの footage/script を push。
+  - 再送判定は **peerId** で行う（slotId は trust 再利用で同じ値のまま戻るため、リロードしたワーカーに再送されない）。
+  - 編集ごとの再読込を避けるため、`collectJobFilePaths` の**パス一覧が変わった時だけ**再送（全 footage の再 read+hash を通常編集の裏で走らせない）。
+  - [src/swarm/core/coordinator.ts](src/swarm/core/coordinator.ts): `sentAssetHashes` を**送信前に**登録（従来は送信後）。preload と job-offer が同時に走ると同じファイルを二重送信していた。data channel は順序保証があるので、転送中のアセットを skip した job-offer もチャンクの後ろに届く。
+- **効果**: 転送はワーカーが暇な間に済み、以後は差分のみ。`preloadAssets` は contentHash 単位で dedupe するので何度呼んでも余分な送信は起きない。
+- **テスト**: `npx tsc --noEmit` クリーン、`npx vitest run` 153 files / 1460 tests PASS。`src/runtime` 不変のため `build:player` 不要。
+
 ### 2026-07-20（Claude Opus 4.8）— browser export 最大高速化 Phase 6（実験的 multi-render-context）実装・計測・既定 OFF で採用
 
 - **依頼**: `claude/phase-6-implementation-test-n5u5zo` ブランチの続きとして `browser-export-max-speed-plan.md` の **Phase 6（Experimental multi-render-context）** を実装・テストし、いい感じならコミット。

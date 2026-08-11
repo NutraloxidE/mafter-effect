@@ -1,6 +1,6 @@
 import { previewCacheService } from "../../editor/previewCacheService";
 import { useEditorStore } from "../../editor/store";
-import { attachJobFilesCached } from "../core/jobFiles";
+import { attachJobFilesCached, collectJobFilePaths } from "../core/jobFiles";
 import type { ExportSwarmHooks } from "../../runtime/exporter";
 import { loadOrCreateDeviceIdentity } from "../core/identity";
 import { SwarmCoordinator } from "../core/coordinator";
@@ -31,6 +31,10 @@ class SwarmUiStore {
   };
   private listeners = new Set<() => void>();
   private coordinator: SwarmCoordinator | null = null;
+  private connectedSlots = "";
+  private lastPreloadedPaths = "";
+  private preloadTimer: ReturnType<typeof setTimeout> | null = null;
+  private unsubscribeProject: (() => void) | null = null;
   private backend = createSignalingBackend({
     useInMemory: import.meta.env.VITE_SWARM_USE_IN_MEMORY === "1",
   });
@@ -69,6 +73,7 @@ class SwarmUiStore {
       coordinator.subscribe(() => this.refresh(coordinator));
       await coordinator.start();
       this.coordinator = coordinator;
+      this.unsubscribeProject = useEditorStore.subscribe(() => this.scheduleAssetSync());
       this.update({
         status: "active",
         session,
@@ -91,6 +96,12 @@ class SwarmUiStore {
   stop(): void {
     this.coordinator?.stop();
     this.coordinator = null;
+    this.unsubscribeProject?.();
+    this.unsubscribeProject = null;
+    if (this.preloadTimer !== null) clearTimeout(this.preloadTimer);
+    this.preloadTimer = null;
+    this.connectedSlots = "";
+    this.lastPreloadedPaths = "";
     this.update({ status: "idle", session: null, joinUrl: null, pendingWorkers: [], workers: [], availableCompute: 1, error: null });
   }
 
@@ -102,6 +113,41 @@ class SwarmUiStore {
     return this.coordinator?.renderPreviewFrame(job, timeoutMs) ?? null;
   }
 
+  /**
+   * Pushes the current composition's footage and scripts to every connected worker, so a job offer
+   * carries references to bytes the worker already holds instead of waiting on a transfer that can
+   * outlast the frame's own deadline. `preloadAssets` skips content hashes a worker already has, so
+   * calling this repeatedly only ever sends what changed.
+   */
+  private async syncWorkerAssets(): Promise<void> {
+    const coordinator = this.coordinator;
+    if (!coordinator) return;
+    const state = useEditorStore.getState();
+    const project = state.project;
+    const comp = project?.compositions.find((candidate) => candidate.id === state.currentCompId);
+    if (!project || comp?.kind !== "timeline") return;
+    this.lastPreloadedPaths = collectJobFilePaths(project, comp).join("|");
+    const job = { project, compositionId: comp.id } as unknown as Parameters<typeof attachJobFilesCached>[0];
+    const withFiles = await attachJobFilesCached(job, comp, state.getFs(), String(state.projectRevision ?? 0));
+    await coordinator.preloadAssets(withFiles.assets ?? []);
+  }
+
+  /**
+   * Re-sends after an edit, but only when the referenced files changed: re-reading and re-hashing
+   * every video on each revision bump would put a multi-megabyte read behind ordinary editing.
+   */
+  private scheduleAssetSync(): void {
+    if (this.preloadTimer !== null) return;
+    this.preloadTimer = setTimeout(() => {
+      this.preloadTimer = null;
+      const state = useEditorStore.getState();
+      const comp = state.project?.compositions.find((candidate) => candidate.id === state.currentCompId);
+      if (!state.project || comp?.kind !== "timeline") return;
+      if (collectJobFilePaths(state.project, comp).join("|") === this.lastPreloadedPaths) return;
+      void this.syncWorkerAssets();
+    }, 1_500);
+  }
+
   private async storeLateResult(result: SwarmRenderResult): Promise<void> {
     const text = atob(result.bytesBase64);
     const png = new Uint8Array(text.length);
@@ -111,6 +157,16 @@ class SwarmUiStore {
 
   private refresh(coordinator: SwarmCoordinator | null): void {
     if (!coordinator) return;
+    const workers = coordinator.getWorkers();
+    // A worker that just came up holds nothing. Transferring now, while it is idle, is the whole
+    // point: by the time it is offered a frame the footage is already there.
+    // Keyed by peerId, not slotId: a worker that reloads keeps its trusted slot but arrives as a
+    // new connection with an empty cache, and would otherwise never be re-sent anything.
+    const slots = workers.filter((worker) => worker.state === "connected").map((worker) => worker.peerId).sort().join("|");
+    if (slots !== this.connectedSlots) {
+      this.connectedSlots = slots;
+      if (slots) void this.syncWorkerAssets();
+    }
     this.update({
       status: "active",
       session: coordinator.session,
