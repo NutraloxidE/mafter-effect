@@ -2897,3 +2897,21 @@ Playwright 実機で「proxy は正しく生成されるが、mounted `<video>` 
 - 真因3: `getAvailableCompute()` が **生の FPS を加算**していた（`normalizedBenchmarkScore` は実装済みだが未使用の死にコード）。ベンチが走った瞬間「31.0× local」のような値になる。→ ホスト自身が同一ベンチジョブを実行してスコアを正規化（worker がホストの 2 倍速なら +2.0×）。
 - 検証: `npm run typecheck` PASS、Render Swarm tests 10/10 PASS（`createBenchmarkJob` のプロジェクト非依存性と正規化を純関数テストで固定）。実機の 2 端末確認は CI デプロイ後に実施予定。
 - 未着手（ユーザー要望・別 WP）: ①最終書き出しの分散、②Pre-render の分散実測、③video / expression を含むコンプの分散。①③は §11 export パリティと INV-2 に触るため spec 先行が必要。なお worker 側 executor は既に `job.assets` の content-hash 検証と MemoryFs 展開を実装済みで、不足しているのは**ホスト側の asset 同梱とゲート解除**。
+
+### 2026-08-11 (Claude Opus 5) - Render Swarm v2 の spec 確定と WP 分割
+
+ユーザー決定:
+- 動画アセットは **元ファイル丸ごと転送**（再エンコードのプロキシは作らない）。加えて、同じデータを既に持つ **他 worker から取得**できるようにする（peer-assisted transfer）。
+- 最終書き出しは **検証＋抜き取りローカル再レンダで照合**し、疑わしい worker は外して全フレームをローカルで描き直す。
+
+spec `## Render Swarm (runtime-only, v1)` に v2 節を追記（§5 型・INV は不変。すべて「失敗時はローカルにフォールバック」として記述）。
+
+WP 分割（この順で実装する）:
+- **WP-1 asset 同梱とゲート解除** — ホスト側でコンプが実際に参照する asset を FS から読み、content hash 付きで job に同梱する。`isEligibleJob` の `assets.length > 0` 一律拒否を「参照 asset を同梱できたか」に置き換える。worker 側 executor は実装済み（hash 検証 + MemoryFs 展開）なので追加不要。まず画像で通す。
+- **WP-2 expression 脚本の同梱** — `scripts/<objectId>/*.js` を同じ経路で送り、`expression` prop の一律拒否を解除。INV-1 により評価は純関数なので値は一致するはず。runtime version 不一致 worker は既存の incompatible 経路で除外。
+- **WP-3 動画 asset** — 元ファイル丸ごとを chunkTransport で転送。数百 MB を想定し、転送中はローカルにフォールバックしたまま進行させる（ブロックしない）。
+- **WP-4 peer-assisted transfer** — worker 間の WebRTC 接続を追加（現状は host を中心とするスター型）。asset の content hash を鍵に、保持している worker から取得。転送最適化のみで、届くバイト列は hash 検証により不変。
+- **WP-5 Pre-render / preview cache の実測** — 実 2 端末でジョブが飛ぶこと・ローカル単独比で速くなることを計測（本命の検証）。
+- **WP-6 export 分散** — フレームリースを export 経路に拡張。抜き取り照合（既定 5%）と不一致時の worker 除外＋ローカル再描画。順序・音声 mux・alpha はホスト側に残す。
+
+現時点の完了: v1 の signaling 根治と DO 移行、transport / available compute の表示バグ修正。WP-1 以降は未着手。

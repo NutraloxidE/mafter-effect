@@ -3576,3 +3576,35 @@ always the correctness and completion fallback.
 - v1 distributes preview-cache work only. Final export distribution remains a
   conservative follow-up until host-side ordering, muxing, alpha, video, and
   nested-composition parity are proven end to end.
+
+### Render Swarm v2 (planned): assets, expressions, export distribution
+
+v2 widens what may be distributed. It still changes no serialized schema and no
+invariant; INV-2 continues to require that a distributed frame is
+indistinguishable from the locally rendered one, which is why every rule below
+is stated as a fallback rather than a best effort.
+
+- **Asset transfer.** A job carries the content-addressed assets its composition
+  actually references. Workers verify each content hash before use and reject
+  mismatches; a rejected or missing asset fails the job back to the host, which
+  renders it locally. Video assets are transferred as the original file, never a
+  re-encoded proxy, so a distributed frame decodes the same bytes the host would.
+- **Peer-assisted transfer.** A worker that needs an asset a *sibling* worker
+  already holds may fetch it from that worker instead of the host, verifying the
+  same content hash on arrival. This is a transport optimization only: it can
+  never change which bytes a worker ends up with, and the host remains the
+  authority and the fallback source.
+- **Expressions.** Expression scripts are project text files and travel with the
+  job like any other content-addressed file. Expression evaluation is already
+  pure (INV-1), so a worker evaluating the same script at the same frame must
+  produce the same values; a worker whose runtime version differs is rejected
+  before it receives work.
+- **Export distribution.** Final export may lease frames to workers. Committing a
+  remote frame into the output requires the existing result validation (job id,
+  render revision, composition, frame, dimensions, format, runtime version) *and*
+  a spot check: a sampled subset of frames is also rendered locally and compared.
+  A worker whose sampled frame does not match is dropped from the export and all
+  of its frames are re-rendered locally. Frame ordering, audio muxing, and alpha
+  remain host-side and are never delegated.
+- Any verification failure degrades to local rendering. A distributed export must
+  never produce an artifact a fully local export would not have produced.
