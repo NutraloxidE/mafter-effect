@@ -487,6 +487,9 @@ export class SwarmCoordinator {
     if (event.type === "peer-join-request") {
       this.pending.set(event.peer.peerId, event.peer);
       this.emitChange();
+      // Re-approving a device that was already approved in this session adds no safety and makes
+      // every reconnect need a human.
+      if (this.trusted.has(event.peer.deviceId)) void this.approveWorker(event.peer.peerId, true);
       return;
     }
     if (event.type === "signal") {

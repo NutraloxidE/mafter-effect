@@ -25,6 +25,11 @@ export function WorkerJoinView() {
   }, [runtime]);
 
   const join = () => { void runtime.join(code); };
+
+  // The /w/<code> link already carries consent to help; joining by hand adds nothing.
+  useEffect(() => {
+    if (initialCode.trim().length >= 4) void runtime.join(initialCode);
+  }, [runtime, initialCode]);
   return (
     <main style={pageStyle}>
       <section style={cardStyle}>

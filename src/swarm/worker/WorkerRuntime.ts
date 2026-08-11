@@ -28,6 +28,10 @@ export class WorkerRuntime {
   private currentJobId: string | null = null;
   private readonly assembler = new AssetChunkAssembler();
   private unbindVisibility: (() => void) | null = null;
+  private lastJoinCode = "";
+  private stopped = false;
+  private reconnectAttempts = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private connectionKind: "unknown" | "direct" | "relay" = "unknown";
   private lastError: string | null = null;
   private snapshot = { state: this.state, currentJobId: this.currentJobId, connection: this.connectionKind, error: this.lastError, session: this.session };
@@ -46,6 +50,8 @@ export class WorkerRuntime {
   getSnapshot = () => this.snapshot;
 
   async join(joinCode: string): Promise<void> {
+    this.stopped = false;
+    this.lastJoinCode = joinCode.trim().toUpperCase();
     this.setState("joining");
     try {
       this.identity ??= await loadOrCreateDeviceIdentity(localStorage);
@@ -68,6 +74,9 @@ export class WorkerRuntime {
   }
 
   stop(): void {
+    this.stopped = true;
+    if (this.reconnectTimer !== null) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
     this.unbindVisibility?.();
     this.unbindVisibility = null;
     this.unsubscribeSignaling?.();
@@ -113,14 +122,35 @@ export class WorkerRuntime {
         // P2P is up: stop long-polling the signaling server (server req/min must reach 0).
         this.unsubscribeSignaling?.();
         this.unsubscribeSignaling = null;
+        this.reconnectAttempts = 0;
         this.setState("connected");
         void this.sendHello();
         // Background tabs are throttled hard enough that leased frames always miss their
         // deadline; tell the host to stop sending work instead of wasting it.
         this.bindVisibilityReporting();
       }
-      if (state === "disconnected" || state === "failed" || state === "closed") this.setState("error");
+      if (state === "disconnected" || state === "failed" || state === "closed") {
+        this.setState("error");
+        this.scheduleReconnect();
+      }
     };
+  }
+
+  /**
+   * Rejoins after a drop. A worker that silently stays disconnected means someone has to notice
+   * and re-approve by hand, which is the main cost of running a swarm during development.
+   */
+  private scheduleReconnect(): void {
+    if (this.stopped || !this.lastJoinCode || this.reconnectTimer !== null) return;
+    this.reconnectAttempts += 1;
+    const delay = Math.min(30_000, 1_000 * 2 ** Math.min(5, this.reconnectAttempts - 1));
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (this.stopped) return;
+      this.peer?.close();
+      this.peer = null;
+      void this.join(this.lastJoinCode).catch(() => this.scheduleReconnect());
+    }, delay);
   }
 
   private bindVisibilityReporting(): void {

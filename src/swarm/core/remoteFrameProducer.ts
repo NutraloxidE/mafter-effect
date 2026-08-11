@@ -1,5 +1,5 @@
 import type { Project, TimelineComposition } from "../../core/schema";
-import { compareFrames, SwarmFrameMismatchError, SWARM_FRAME_TOLERANCE } from "./frameVerification";
+import { canvasSpread, compareFrames, looksEmptyAgainst, SwarmFrameMismatchError, SWARM_FRAME_TOLERANCE } from "./frameVerification";
 import type { RenderProfile, SwarmRenderJob, SwarmRenderResult } from "./types";
 import { SWARM_RUNTIME_VERSION } from "./types";
 
@@ -88,13 +88,21 @@ export function buildRemoteFrameProducers(setup: RemoteProducerSetup): ((frame: 
   const count = setup.swarm?.workerCount ?? 0;
   if (count <= 0 || !setup.swarm) return [];
   const verify = setup.verifyFrames;
+  // Reference "how much is in a frame", learned from the frames we render here anyway.
+  let referenceSpread = 0;
   const wrap = (produce: (frame: number) => Promise<HTMLCanvasElement>) =>
     async (frame: number): Promise<HTMLCanvasElement> => {
       const remote = await produce(frame);
-      if (!verify?.has(frame)) return remote;
+      if (!verify?.has(frame)) {
+        // Cheap guard on every remote frame: a worker that rendered before its footage decoded
+        // returns a near-flat frame, and sampling alone would only catch it by luck.
+        if (looksEmptyAgainst(remote, referenceSpread)) return setup.renderLocally(frame);
+        return remote;
+      }
       // Spot check: render it here too and keep the local frame, so a verified frame in the
       // output never depends on the worker's rasterizer.
       const local = await setup.renderLocally(frame);
+      referenceSpread = Math.max(referenceSpread, canvasSpread(local));
       const difference = compareFrames(remote, local);
       if (difference > SWARM_FRAME_TOLERANCE) throw new SwarmFrameMismatchError(frame, difference);
       return local;
@@ -116,9 +124,10 @@ export function buildRemoteFrameProducers(setup: RemoteProducerSetup): ((frame: 
  * caught before its output reaches the file. Always includes the first frame: a mismatch there
  * usually means a missing font or asset, which affects every later frame too.
  */
-export function spotCheckFrames(totalFrames: number, ratio = 0.05): number[] {
+export function spotCheckFrames(totalFrames: number, ratio = 0.05, minimum = 4): number[] {
   if (totalFrames <= 0) return [];
-  const count = Math.min(totalFrames, Math.max(1, Math.round(totalFrames * ratio)));
+  // A ratio alone leaves a short export with a single checked frame, which is no coverage at all.
+  const count = Math.min(totalFrames, Math.max(minimum, Math.round(totalFrames * ratio)));
   const stride = totalFrames / count;
   const frames = new Set<number>([0]);
   for (let i = 1; i < count; i += 1) frames.add(Math.min(totalFrames - 1, Math.round(i * stride)));
