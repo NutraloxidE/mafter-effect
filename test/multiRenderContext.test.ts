@@ -89,7 +89,7 @@ describe("runOrderedMultiContext", () => {
     const total = 12;
     const N = 3;
     const emitted: number[] = [];
-    // producer c は fi % N === c を担当。奇数 context ほど遅延させて完了順を撹乱する。
+    // producer c ほど遅い。動的 pull なので担当は固定されず、速い producer が多く引く。
     const producers = Array.from({ length: N }, (_, c) => async (frame: number) => {
       await new Promise((r) => setTimeout(r, (c + 1) * 3 + ((frame * 7) % 5)));
       return fakeCanvas(frame);
@@ -105,8 +105,9 @@ describe("runOrderedMultiContext", () => {
       checkAbort: () => {},
     });
     expect(emitted).toEqual(Array.from({ length: total }, (_, i) => i));
-    // ラウンドロビン分配: 12 frame / 3 context = 各 4。
-    expect(res.contextFrameCounts).toEqual([4, 4, 4]);
+    // 動的 pull: 合計は必ず全 frame で、速度差はそのまま担当数の差になる（静的な各 4 ではない）。
+    expect(res.contextFrameCounts.reduce((a, b) => a + b, 0)).toBe(total);
+    expect(res.contextFrameCounts[0]!).toBeGreaterThanOrEqual(res.contextFrameCounts[2]!);
   });
 
   it("respects the bounded reorder window (never renders too far ahead of emit)", async () => {

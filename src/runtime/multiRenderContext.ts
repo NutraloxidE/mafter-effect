@@ -121,9 +121,15 @@ export async function runOrderedMultiContext(
     bump();
   };
 
+  // 動的 pull（work stealing）。producer ごとの静的割り当て（fi % N）は全 producer 同速前提で、
+  // 速度差があると遅い担当分の tail で全体が待たされる。速い producer が自然に多く引く形にする。
+  let nextPull = 0;
   const runProducer = async (c: number): Promise<void> => {
-    for (let fi = c; fi < totalFrames; fi += N) {
+    for (;;) {
       if (fatal !== null) return;
+      const fi = nextPull;
+      if (fi >= totalFrames) return;
+      nextPull += 1;
       checkAbort();
       // 有界 reorder window: next-to-emit から遠すぎる frame は consumer を待つ。
       // 条件チェックと gate の await の間に他コードは走らない（single-thread）ため wakeup 取りこぼしなし。

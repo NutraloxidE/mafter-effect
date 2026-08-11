@@ -6,6 +6,8 @@ import JSZip from "jszip";
 import { Muxer as Mp4Muxer, ArrayBufferTarget as Mp4Target } from "mp4-muxer";
 import { Muxer as WebmMuxer, ArrayBufferTarget as WebmTarget } from "webm-muxer";
 import { compositionDir } from "../core/paths";
+import { buildRemoteFrameProducers } from "../swarm/core/remoteFrameProducer";
+import type { SwarmRenderJob, SwarmRenderResult } from "../swarm/core/types";
 import type { ExportConfig, HtmlComposition, Project, TimelineComposition } from "../core/schema";
 import type { FileSystem } from "../fs/FileSystem";
 import { DomRenderer } from "./DomRenderer";
@@ -80,6 +82,16 @@ interface VideoEncodeStats {
  * §11.2 — 指定 comp をオフスクリーン DOM でフレームステップしてエクスポートする。
  * Preview と同じ resolve → DomRenderer パイプラインを使い INV-2 を保証する。
  */
+/**
+ * Optional swarm hooks. Kept out of ExportConfig (a §5 type) because this is transport wiring,
+ * not export settings, and an export must behave identically when it is absent.
+ */
+export interface ExportSwarmHooks {
+  workerCount: number;
+  submit: (job: SwarmRenderJob, timeoutMs: number) => Promise<SwarmRenderResult | null>;
+  timeoutMs?: number;
+}
+
 export async function exportComposition(
   project: Project,
   compId: string,
@@ -87,6 +99,7 @@ export async function exportComposition(
   config: ExportConfig,
   onProgress: ProgressCallback,
   signal?: AbortSignal,
+  swarm?: ExportSwarmHooks,
 ): Promise<ExportResult> {
   const comp = project.compositions.find((c) => c.id === compId);
   if (!comp || comp.kind !== "timeline") {
@@ -194,6 +207,7 @@ export async function exportComposition(
       const blob = await runPngSeq(
         tlComp, renderer, evaluator, config,
         startFrame, totalFrames, nw, nh, w, h, extraRenderers, onProgress, signal,
+        { project, compId, endFrame, swarm },
       );
       return { blob, format: "png-seq" };
     } else {
@@ -222,6 +236,7 @@ export async function exportComposition(
         const blob = await runPngSeq(
           tlComp, renderer, evaluator, { ...config, format: "png-seq" },
           startFrame, totalFrames, nw, nh, w, h, extraRenderers, onProgress, signal,
+          { project, compId, endFrame, swarm },
         );
         return { blob, format: "png-seq", fallbackReason: reason };
       }
@@ -282,6 +297,7 @@ async function runPngSeq(
   extraRenderers: DomRenderer[],
   onProgress: ProgressCallback,
   signal?: AbortSignal,
+  remote?: { project: Project; compId: string; endFrame: number; swarm?: ExportSwarmHooks },
 ): Promise<Blob> {
   const zip = new JSZip();
   const bg = config.alpha ? "transparent" : (comp.background ? rgbaToHex(comp.background) : "#000000");
@@ -291,13 +307,35 @@ async function runPngSeq(
     zip.file(`frame_${String(fi).padStart(6, "0")}.png`, pngBlob);
   };
 
-  if (extraRenderers.length > 0) {
+  // ローカル描画は context を共有するので直列化する。remote producer のフォールバックもここを通る。
+  let localChain: Promise<unknown> = Promise.resolve();
+  const renderLocallySerialized = (frame: number): Promise<HTMLCanvasElement> => {
+    const run = localChain.then(() =>
+      renderContextFrameCanvas(renderer, comp, evaluator, frame, nw, nh, w, h, bg, {}));
+    localChain = run.catch(() => undefined);
+    return run;
+  };
+  const remoteProducers = remote?.swarm ? buildRemoteFrameProducers({
+    swarm: remote.swarm,
+    project: remote.project,
+    comp,
+    renderRevision: `export-${remote.compId}-${startFrame}-${remote.endFrame}-${w}x${h}`,
+    profile: { quality: config.textRenderMode === "draft" ? "draft" : "precise", proxy: "full", width: w, height: h },
+    renderLocally: renderLocallySerialized,
+  }) : [];
+
+  if (extraRenderers.length > 0 || remoteProducers.length > 0) {
     // §11.2 Phase 6 — 複数 context で並行描画し、frame 昇順で zip に整列格納する。
     const contexts = [renderer, ...extraRenderers];
     let rendered = 0;
     const res = await runOrderedMultiContext({
-      producers: contexts.map((r) => (frame: number) =>
-        renderContextFrameCanvas(r, comp, evaluator, frame, nw, nh, w, h, bg, {})),
+      producers: [
+        ...contexts.map((r) => (frame: number) =>
+          r === renderer
+            ? renderLocallySerialized(frame)
+            : renderContextFrameCanvas(r, comp, evaluator, frame, nw, nh, w, h, bg, {})),
+        ...remoteProducers,
+      ],
       totalFrames,
       startFrame,
       onRendered: () => {
