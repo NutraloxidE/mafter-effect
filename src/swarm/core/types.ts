@@ -106,6 +106,12 @@ export type RenderJobPriority = "playhead" | "upcoming" | "previous" | "visible"
 export type RenderJobState = "pending" | "leased" | "rendering" | "uploading" | "committed";
 
 export interface RenderProfile {
+  /**
+   * Export alpha setting. Without it a worker falls back to "unset background = transparent",
+   * while an opaque export composites onto black — the same frame, rendered on two devices,
+   * with different backgrounds.
+   */
+  alpha?: boolean;
   quality: "draft" | "precise";
   proxy: string;
   width: number;

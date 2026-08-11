@@ -330,7 +330,13 @@ async function runPngSeq(
     project: remote.project,
     comp,
     renderRevision: `export-${remote.compId}-${startFrame}-${remote.endFrame}-${w}x${h}`,
-    profile: { quality: config.textRenderMode === "draft" ? "draft" : "precise", proxy: "full", width: w, height: h },
+    profile: {
+      quality: config.textRenderMode === "draft" ? "draft" : "precise",
+      proxy: "full",
+      width: w,
+      height: h,
+      alpha: config.alpha,
+    },
     renderLocally: renderLocallySerialized,
     verifyFrames: new Set(spotCheckFrames(totalFrames).map((fi) => startFrame + fi)),
   }) : [];

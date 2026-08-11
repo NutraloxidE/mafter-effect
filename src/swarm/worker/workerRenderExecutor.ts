@@ -18,6 +18,16 @@ interface CachedContext {
   context: Awaited<ReturnType<typeof createCompFrameCaptureContext>>;
 }
 
+/** Mirrors the exporter: transparent for an alpha export, else the comp background or black. */
+function exportBackground(job: SwarmRenderJob, comp: TimelineComposition): string | undefined {
+  if (job.profile.alpha === undefined) return undefined;
+  if (job.profile.alpha) return "transparent";
+  const background = comp.background;
+  if (!background) return "#000000";
+  const hex = (value: number): string => Math.round(Math.max(0, Math.min(1, value)) * 255).toString(16).padStart(2, "0");
+  return `#${hex(background.r)}${hex(background.g)}${hex(background.b)}`;
+}
+
 export class WorkerRenderExecutor {
   private readonly assetCache = new BoundedWorkerAssetCache();
   private cached: CachedContext | null = null;
@@ -46,12 +56,13 @@ export class WorkerRenderExecutor {
     const context = await this.contextFor(job, composition, fs);
     {
       const startedAt = performance.now();
-      let bytes = await captureCompFramePng(context, composition, job.frameStart);
+      const background = exportBackground(job, composition);
+      let bytes = await captureCompFramePng(context, composition, job.frameStart, background);
       // The decode wait is best-effort: on timeout the frame is composited with the footage still
       // at its previous position, which looks plausible and is simply wrong. Retry once, then let
       // the host render it rather than returning pixels we know are off.
       if (!context.renderer.videosAtExportTarget(composition.fps)) {
-        bytes = await captureCompFramePng(context, composition, job.frameStart);
+        bytes = await captureCompFramePng(context, composition, job.frameStart, background);
         if (!context.renderer.videosAtExportTarget(composition.fps)) {
           throw new Error(`Worker footage did not reach frame ${job.frameStart}`);
         }

@@ -142,6 +142,8 @@ export async function captureCompFramePng(
   ctx: CompFrameCaptureContext,
   comp: TimelineComposition,
   frame: number,
+  /** Overrides the composition background, so a caller can match an export's alpha setting. */
+  background?: string,
 ): Promise<Uint8Array> {
   ctx.renderer.renderFrame(resolve(comp, frame, { expressions: ctx.evaluator }), frame);
   // レイヤ直付け raster の完了のみ待つ。調整合成は compositeExportFrame が行う。
@@ -150,7 +152,7 @@ export async function captureCompFramePng(
   await ctx.renderer.primeMountedVideos(comp.fps, 4000);
   await ctx.renderer.flushVideoFrames(4000);
   await nextTick();
-  const bg = compBackground(comp);
+  const bg = background ?? compBackground(comp);
   const canvas = await compositeExportFrame(ctx.renderer, ctx.nw, ctx.nh, ctx.nw, ctx.nh, bg);
   return canvasToPngBytes(canvas);
 }
