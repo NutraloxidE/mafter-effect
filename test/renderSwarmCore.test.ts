@@ -18,6 +18,7 @@ import { SwarmScheduler } from "../src/swarm/core/scheduler";
 import { InMemorySwarmSignalingBackend } from "../src/swarm/signaling/inMemory";
 import { DEFAULT_SWARM_SIGNALING_URL, defaultSignalingEndpoint, VercelSignalingBackend } from "../src/swarm/signaling/vercel";
 import type { SwarmRenderJob } from "../src/swarm/core/types";
+import { extractBuildTag, isWorkerOutdated } from "../src/swarm/worker/workerUpdateCheck";
 import swarmHandler from "../api/swarm/[action]";
 import { DurableSwarmSession, joinCodeFromSessionId } from "../src/swarm/signaling/durableSessionCore";
 
@@ -160,6 +161,27 @@ describe("Render Swarm core", () => {
     for (let i = 0; i < real.length; i += 1) real[i] = (i * 37) % 256;
     const blank = new Uint8ClampedArray(64 * 64 * 4).fill(16);
     expect(pixelSpread(blank)).toBeLessThan(pixelSpread(real) * 0.2);
+  });
+
+  it("reloads a worker only when the deployment actually changed", async () => {
+    const page = (tag: string) => `<!doctype html><script type="module" crossorigin src="${tag}"></script>`;
+    expect(extractBuildTag(page("/assets/index-AzvKVu_0.js"))).toBe("/assets/index-AzvKVu_0.js");
+    expect(extractBuildTag("<html><body>no bundle</body></html>")).toBeNull();
+
+    // Minimal stand-in for the running document: only the script src matters.
+    const doc = {
+      querySelectorAll: () => [{ getAttribute: () => "/assets/index-OLD00000.js" }],
+    } as unknown as Document;
+    const check = (body: string, ok = true) => isWorkerOutdated({
+      doc,
+      fetchImpl: async () => new Response(body, { status: ok ? 200 : 500 }),
+    });
+    await expect(check(page("/assets/index-NEW11111.js"))).resolves.toBe(true);
+    await expect(check(page("/assets/index-OLD00000.js"))).resolves.toBe(false);
+    // A failed or unparsable check must never take a working worker offline.
+    await expect(check(page("/assets/index-NEW11111.js"), false)).resolves.toBe(false);
+    await expect(check("<html>proxy error</html>")).resolves.toBe(false);
+    await expect(isWorkerOutdated({ doc, fetchImpl: async () => { throw new Error("offline"); } })).resolves.toBe(false);
   });
 
   it("round-trips the worker availability message", () => {

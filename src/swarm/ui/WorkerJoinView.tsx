@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { createSignalingBackend } from "../signaling/SignalingService";
 import { WorkerRuntime } from "../worker/WorkerRuntime";
+import { isWorkerOutdated } from "../worker/workerUpdateCheck";
 
 function codeFromPath(): string {
   const match = /^\/w\/([^/]+)/i.exec(window.location.pathname);
@@ -30,6 +31,21 @@ export function WorkerJoinView() {
   useEffect(() => {
     if (initialCode.trim().length >= 4) void runtime.join(initialCode);
   }, [runtime, initialCode]);
+
+  // Pick up a new deployment between jobs. Reloading rejoins automatically from the URL, so this
+  // costs nothing but keeps workers off stale bundles.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (runtime.getSnapshot().state === "rendering") return;
+      void isWorkerOutdated().then((outdated) => {
+        if (outdated && runtime.getSnapshot().state !== "rendering") {
+          runtime.stop();
+          window.location.reload();
+        }
+      });
+    }, 60_000);
+    return () => clearInterval(timer);
+  }, [runtime]);
   return (
     <main style={pageStyle}>
       <section style={cardStyle}>
