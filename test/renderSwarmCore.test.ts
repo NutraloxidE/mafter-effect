@@ -10,6 +10,7 @@ import {
 } from "../src/swarm/core/protocol";
 import { createBenchmarkJob, normalizedBenchmarkScore } from "../src/swarm/core/benchmark";
 import { collectJobFilePaths, isSwarmJobSelfContained } from "../src/swarm/core/jobFiles";
+import { AssetChunkAssembler, splitAssetIntoChunks } from "../src/swarm/transport/assetChunks";
 import { buildSwarmRenderCacheKey, validateSwarmRenderResult } from "../src/swarm/core/cacheKey";
 import { SwarmScheduler } from "../src/swarm/core/scheduler";
 import { InMemorySwarmSignalingBackend } from "../src/swarm/signaling/inMemory";
@@ -91,6 +92,19 @@ describe("Render Swarm core", () => {
     expect(hostEvents).toEqual(["peer-join-request"]);
     await backend.approveJoin(host.sessionId, "host", "peer", true);
     expect(hostEvents).toEqual(["peer-join-request"]);
+  });
+
+  it("splits and reassembles a file across chunks, ignoring order and duplicates", () => {
+    const transfer = { path: "assets/clip.mp4", contentHash: "hash-1", mimeType: "video/mp4", bytesBase64: "ABCDEFGHIJ" };
+    const chunks = splitAssetIntoChunks(transfer, 3);
+    expect(chunks.map((c) => c.bytesBase64)).toEqual(["ABC", "DEF", "GHI", "J"]);
+
+    const assembler = new AssetChunkAssembler();
+    const shuffled = [chunks[3]!, chunks[1]!, chunks[1]!, chunks[0]!];
+    for (const chunk of shuffled) expect(assembler.accept(chunk)).toBeNull();
+    expect(assembler.accept(chunks[2]!)).toEqual(transfer);
+    // Nothing is left pending once a file completes.
+    expect(assembler.accept(chunks[0]!)).toBeNull();
   });
 
   it("collects the files a composition needs and keeps under-supplied jobs local", () => {

@@ -3,8 +3,11 @@ import type { FileSystem } from "../../fs/FileSystem";
 import { toAssetTransfer } from "./assetManifest";
 import type { SwarmAssetTransfer, SwarmRenderJob } from "./types";
 
-/** Total attached bytes a single job may carry inline; larger footage stays local until chunked transfer lands. */
-export const SWARM_JOB_FILE_BUDGET_BYTES = 24 * 1024 * 1024;
+/**
+ * Total base64 length a job may reference. Files travel as chunks, so this is a memory bound
+ * (host string + worker cache), not a message-size one; it matches the worker asset cache ceiling.
+ */
+export const SWARM_JOB_FILE_BUDGET_BYTES = 128 * 1024 * 1024;
 
 function walk(value: unknown, visit: (node: Record<string, unknown>) => void): void {
   if (Array.isArray(value)) {
@@ -43,7 +46,7 @@ export function collectJobFilePaths(project: Project, comp: TimelineComposition)
 
 /**
  * Attaches the referenced files to the job. Returns the job unchanged when anything is missing or
- * the payload exceeds the inline budget — `isSwarmJobSelfContained` then keeps the job local
+ * the payload exceeds the budget — `isSwarmJobSelfContained` then keeps the job local
  * rather than shipping a render that would silently lose footage.
  */
 export async function attachJobFiles(

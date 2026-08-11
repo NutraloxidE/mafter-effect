@@ -2,7 +2,7 @@ import { MemoryFs } from "../../fs/MemoryFs";
 import { captureCompFramePng, createCompFrameCaptureContext } from "../../runtime/compFrameCapture";
 import { sha256Hex } from "../core/assetManifest";
 import { runRenderBenchmark } from "../core/benchmark";
-import type { SwarmRenderJob, SwarmRenderResult } from "../core/types";
+import type { SwarmAssetTransfer, SwarmRenderJob, SwarmRenderResult } from "../core/types";
 import { BoundedWorkerAssetCache } from "./workerCache";
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -14,11 +14,22 @@ function bytesToBase64(bytes: Uint8Array): string {
 export class WorkerRenderExecutor {
   private readonly assetCache = new BoundedWorkerAssetCache();
 
+  /** Stores a fully reassembled file; the cache verifies its content hash before accepting it. */
+  async cacheAsset(transfer: SwarmAssetTransfer): Promise<boolean> {
+    return this.assetCache.put(transfer);
+  }
+
   async render(job: SwarmRenderJob): Promise<SwarmRenderResult> {
     const fs = new MemoryFs();
     for (const asset of job.assets ?? []) {
-      if (!(await this.assetCache.put(asset))) throw new Error(`Worker rejected asset hash: ${asset.path}`);
-      const bytes = this.assetCache.get(asset.contentHash);
+      // Files usually arrive ahead of the job as chunks; inline bytes remain valid for small ones.
+      let bytes = this.assetCache.get(asset.contentHash);
+      if (!bytes) {
+        if (!asset.bytesBase64 || !(await this.assetCache.put(asset))) {
+          throw new Error(`Worker is missing asset: ${asset.path}`);
+        }
+        bytes = this.assetCache.get(asset.contentHash);
+      }
       if (!bytes) throw new Error(`Worker asset cache miss: ${asset.path}`);
       await fs.write(asset.path, bytes);
     }
