@@ -95,6 +95,104 @@ export interface ExportSwarmHooks {
   timeoutMs?: number;
 }
 
+/**
+ * Non-schema export wiring. `strictFootage` turns a frame whose video never reached its target
+ * time into an error instead of a silently footage-less frame. A swarm worker sets it: it renders
+ * a block nobody watches, on a machine that may be slow enough for the decode wait to time out,
+ * and returning plausible-looking wrong pixels is worse there than returning nothing.
+ */
+export interface ExportRuntimeOptions {
+  strictFootage?: boolean;
+  /**
+   * Holder for a reusable offscreen world. Pass the same holder across calls to build it once;
+   * the caller owns its lifetime and calls `dispose` on the session it finds inside. Leave it out
+   * and every export builds and tears down its own, exactly as before.
+   */
+  session?: { current: ExportSession | null };
+}
+
+/**
+ * The offscreen world an export renders into. Building it costs roughly as much as rendering eight
+ * frames and reloads every video from scratch, which is why a caller that exports the same
+ * composition repeatedly — a swarm worker rendering one block per job — wants to keep it.
+ */
+export interface ExportSession {
+  container: HTMLElement;
+  renderer: DomRenderer;
+  evaluator: ExpressionEvaluator | undefined;
+  compEvaluators: Map<string, ExpressionEvaluator>;
+  fontCache: FontOutlineCache;
+  imageCache: ImageAssetCache;
+  dispose(): void;
+}
+
+async function buildExportSession(input: {
+  project: Project;
+  comp: TimelineComposition;
+  htmlComps: HtmlComposition[];
+  timelineComps: TimelineComposition[];
+  fs: FileSystem;
+  config: ExportConfig;
+  nw: number;
+  nh: number;
+  totalFrames: number;
+  onProgress: ProgressCallback;
+}): Promise<ExportSession> {
+  const { project, comp, htmlComps, timelineComps, fs, config, nw, nh, totalFrames, onProgress } = input;
+  // オフスクリーンコンテナを画面外に配置（レイアウト影響なし）
+  const container = document.createElement("div");
+  container.style.cssText = `position:fixed;left:-${nw + 20}px;top:0;width:${nw}px;height:${nh}px;overflow:hidden;z-index:-99999;pointer-events:none;`;
+  document.body.appendChild(container);
+
+  const loader = new ModuleLoader(fs);
+  const engine = new ExpressionEngine(loader);
+  const htmlLoader = new ModuleLoader(fs);
+  const player = new HtmlCompPlayer(htmlLoader);
+  const renderer = new DomRenderer();
+  renderer.setHtmlPlayer(player);
+  // §27.4 / INV-2 — captureElementToCanvas（foreignObject）は backdrop-filter 非対応のため、
+  // Live 調整は exportComposite.ts のオフDOM・ステートレス z 順コンポジタで背面 master に焼く。
+  // exportCompositeMode 中、DomRenderer は調整レイヤーの live DOM を破壊せず effect chain を
+  // entry.exportChain に保存するだけ（旧 forceAdjustmentRaster bake のちらつきを根絶）。
+  renderer.setPreviewRenderOptions({ exportCompositeMode: true, exportVideoStep: true });
+  const fontCache = new FontOutlineCache();
+  const imageCache = new ImageAssetCache();
+  await Promise.all([
+    fontCache.loadFromProject(project, fs),
+    imageCache.loadFromProject(project, fs),
+  ]);
+  renderer.setFontCache(fontCache);
+  renderer.setImageCache(imageCache);
+  renderer.setTextQuality(config.textRenderMode ?? "precise");
+  renderer.mount(container, comp);
+  renderer.setHtmlComps(new Map(htmlComps.map((c) => [c.id, c])));
+  renderer.setTimelineComps(new Map(timelineComps.map((c) => [c.id, c])));
+
+  onProgress({ phase: "prepare", frame: 0, totalFrames, message: "Loading expressions & HTML comps…" });
+
+  let evaluator: ExpressionEvaluator | undefined;
+  let compEvaluators = new Map<string, ExpressionEvaluator>();
+  await Promise.all([
+    engine.prepare(comp).then(() => { evaluator = engine.makeEvaluator(comp); }),
+    // §23.3b: ネスト comp の expression も export で評価する（preview と一致・INV-2）。
+    Promise.all(timelineComps.map((c) => engine.prepare(c))).then(() => {
+      compEvaluators = new Map(timelineComps.map((c) => [c.id, engine.makeEvaluator(c)]));
+      renderer.setCompEvaluators(compEvaluators);
+    }),
+    player.prepare(htmlComps, (id) => `${compositionDir(id)}/script.js`),
+  ]);
+
+  return {
+    container,
+    renderer,
+    evaluator,
+    compEvaluators,
+    fontCache,
+    imageCache,
+    dispose: () => container.remove(),
+  };
+}
+
 export async function exportComposition(
   project: Project,
   compId: string,
@@ -103,6 +201,7 @@ export async function exportComposition(
   onProgress: ProgressCallback,
   signal?: AbortSignal,
   swarm?: ExportSwarmHooks,
+  options?: ExportRuntimeOptions,
 ): Promise<ExportResult> {
   const comp = project.compositions.find((c) => c.id === compId);
   if (!comp || comp.kind !== "timeline") {
@@ -125,54 +224,18 @@ export async function exportComposition(
   const w = evenDim(nw * config.scale);
   const h = evenDim(nh * config.scale);
 
-  // オフスクリーンコンテナを画面外に配置（レイアウト影響なし）
-  const container = document.createElement("div");
-  container.style.cssText = `position:fixed;left:-${nw + 20}px;top:0;width:${nw}px;height:${nh}px;overflow:hidden;z-index:-99999;pointer-events:none;`;
-  document.body.appendChild(container);
-
   // §11.2 Phase 6（実験・既定 OFF）: 複数レンダリング context を使うときの追加 renderer / container。
   const extraRenderers: DomRenderer[] = [];
   const extraContainers: HTMLElement[] = [];
 
+  const session = options?.session?.current
+    ?? await buildExportSession({ project, comp: tlComp, htmlComps, timelineComps, fs, config, nw, nh, totalFrames, onProgress });
+  if (options?.session) options.session.current = session;
+  const { renderer, evaluator, compEvaluators, fontCache, imageCache } = session;
+  // Cheap, and the only setting a reused session can disagree with the current export about.
+  renderer.setTextQuality(config.textRenderMode ?? "precise");
+
   try {
-    const loader = new ModuleLoader(fs);
-    const engine = new ExpressionEngine(loader);
-    const htmlLoader = new ModuleLoader(fs);
-    const player = new HtmlCompPlayer(htmlLoader);
-    const renderer = new DomRenderer();
-    renderer.setHtmlPlayer(player);
-    // §27.4 / INV-2 — captureElementToCanvas（foreignObject）は backdrop-filter 非対応のため、
-    // Live 調整は exportComposite.ts のオフDOM・ステートレス z 順コンポジタで背面 master に焼く。
-    // exportCompositeMode 中、DomRenderer は調整レイヤーの live DOM を破壊せず effect chain を
-    // entry.exportChain に保存するだけ（旧 forceAdjustmentRaster bake のちらつきを根絶）。
-    renderer.setPreviewRenderOptions({ exportCompositeMode: true, exportVideoStep: true });
-    const fontCache = new FontOutlineCache();
-    const imageCache = new ImageAssetCache();
-    await Promise.all([
-      fontCache.loadFromProject(project, fs),
-      imageCache.loadFromProject(project, fs),
-    ]);
-    renderer.setFontCache(fontCache);
-    renderer.setImageCache(imageCache);
-    renderer.setTextQuality(config.textRenderMode ?? "precise");
-    renderer.mount(container, tlComp);
-    renderer.setHtmlComps(new Map(htmlComps.map((c) => [c.id, c])));
-    renderer.setTimelineComps(new Map(timelineComps.map((c) => [c.id, c])));
-
-    onProgress({ phase: "prepare", frame: 0, totalFrames, message: "Loading expressions & HTML comps…" });
-
-    let evaluator: ExpressionEvaluator | undefined;
-    let compEvaluators = new Map<string, ExpressionEvaluator>();
-    await Promise.all([
-      engine.prepare(tlComp).then(() => { evaluator = engine.makeEvaluator(tlComp); }),
-      // §23.3b: ネスト comp の expression も export で評価する（preview と一致・INV-2）。
-      Promise.all(timelineComps.map((c) => engine.prepare(c))).then(() => {
-        compEvaluators = new Map(timelineComps.map((c) => [c.id, engine.makeEvaluator(c)]));
-        renderer.setCompEvaluators(compEvaluators);
-      }),
-      player.prepare(htmlComps, (id) => `${compositionDir(id)}/script.js`),
-    ]);
-
     checkAbort(signal);
 
     // §11.2 Phase 6（実験・既定 OFF）— 複数レンダリング context を構築する。
@@ -210,7 +273,7 @@ export async function exportComposition(
       const blob = await runPngSeq(
         tlComp, renderer, evaluator, config,
         startFrame, totalFrames, nw, nh, w, h, extraRenderers, onProgress, signal,
-        { project, compId, endFrame, swarm },
+        { project, compId, endFrame, swarm, strictFootage: options?.strictFootage },
       );
       return { blob, format: "png-seq" };
     } else {
@@ -239,13 +302,14 @@ export async function exportComposition(
         const blob = await runPngSeq(
           tlComp, renderer, evaluator, { ...config, format: "png-seq" },
           startFrame, totalFrames, nw, nh, w, h, extraRenderers, onProgress, signal,
-          { project, compId, endFrame, swarm },
+          { project, compId, endFrame, swarm, strictFootage: options?.strictFootage },
         );
         return { blob, format: "png-seq", fallbackReason: reason };
       }
     }
   } finally {
-    container.remove();
+    // A caller-owned session outlives this call; only tear down a world we built ourselves.
+    if (!options?.session) session.dispose();
     for (const r of extraRenderers) {
       try { r.dispose(); } catch { /* best-effort cleanup */ }
     }
@@ -300,7 +364,7 @@ async function runPngSeq(
   extraRenderers: DomRenderer[],
   onProgress: ProgressCallback,
   signal?: AbortSignal,
-  remote?: { project: Project; compId: string; endFrame: number; swarm?: ExportSwarmHooks },
+  remote?: { project: Project; compId: string; endFrame: number; swarm?: ExportSwarmHooks; strictFootage?: boolean },
 ): Promise<Blob> {
   const zip = new JSZip();
   const bg = config.alpha ? "transparent" : (comp.background ? rgbaToHex(comp.background) : "#000000");
@@ -320,8 +384,19 @@ async function runPngSeq(
   // ローカル描画は context を共有するので直列化する。remote producer のフォールバックもここを通る。
   let localChain: Promise<unknown> = Promise.resolve();
   const renderLocallySerialized = (frame: number): Promise<HTMLCanvasElement> => {
-    const run = localChain.then(() =>
-      renderContextFrameCanvas(renderer, comp, evaluator, frame, nw, nh, w, h, bg, {}));
+    const run = localChain.then(async () => {
+      let canvas = await renderContextFrameCanvas(renderer, comp, evaluator, frame, nw, nh, w, h, bg, {});
+      // The decode wait is best-effort: on timeout the frame composites with the footage still at
+      // its previous position, which looks plausible and is simply wrong. Rendering again is what
+      // gives the seek more time, so retry once before deciding the frame is unusable.
+      if (!renderer.videosAtExportTarget(config.fps)) {
+        canvas = await renderContextFrameCanvas(renderer, comp, evaluator, frame, nw, nh, w, h, bg, {});
+        if (remote?.strictFootage && !renderer.videosAtExportTarget(config.fps)) {
+          throw new Error(`Footage did not reach frame ${frame}`);
+        }
+      }
+      return canvas;
+    });
     localChain = run.catch(() => undefined);
     return run;
   };

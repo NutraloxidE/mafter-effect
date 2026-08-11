@@ -24,6 +24,15 @@
 - **修正**: [remoteFrameProducer.ts](src/swarm/core/remoteFrameProducer.ts) で zip のキーを**ブロック先頭からのオフセット**として読む（`frames.get(0)` が自分、`frame + index` を prefetch に登録）。回帰テストを `test/renderSwarmCore.test.ts` に追加（1 回の submit で 142/143/144 が全部返ること）。
 - **副産物: ジョブごとの export セットアップは重くない**。バグのおかげで 7,6,5,4,3,2 枚のジョブが揃ったので所要を回帰すると **1 フレーム約 1.57 秒・切片（準備コスト）約 50ms**。前セッションで「次の最適化候補＝worker の export セッション再利用」と書いたが、**この仮説は棄却**。ワーカーが遅いのは準備コストではなく素の描画が遅い（ホスト 0.53 秒/フレームに対し約 3 倍）。
 - **理論上限**: ホスト 1.87 fps ＋ ワーカー 0.61 fps ＝ 2.48 fps → 150 枚で **約 60 秒**（ローカル単独比 25% 短縮）。1 台構成ではワーカーの取り分は全体の約 25% が上限。
+- **ローカル単独の基準（同一ビルド・同一マシン）**: 80.5 秒 / zip 51392011 バイト。pages.dev ビルドの 80.3 秒・**同一バイト数**なので比較可能。
+
+### 2026-08-12（Claude Opus 5）— swarm: ホスト再起動でワーカーが永久に取り残される（シグナリング）
+
+- **症状**: 2 回目の計測でワーカーが 4 分待っても再参加せず（`panel: undefined`）、単独書き出しになった。
+- **真因**（[durableSessionCore.ts](src/swarm/signaling/durableSessionCore.ts)）: ホストが落ちるとワーカーは自力で `join()` し直すが、**セッションはホストより長生きなので join 自体は成功**し `waiting-approval` に落ち着く。この状態では `scheduleReconnect` が回らない（失敗していないので）。一方 `joinSession` は `peer-join-request` を**その時点の `hostPeerId` のキュー**に積むため、再起動して新しい `hostPeerId` で polling し始めたホストはその要求を一生読まない。→ **ホスト再起動のたびに、その間に再参加したワーカーが恒久的に取り残される。**
+- **修正**: `createSession` の再アタッチ経路で、既知ピアを**新しい hostPeerId へ announce し直す**（旧ホストのキューは破棄）。あわせて `newestPeerPerDevice` でデバイスごとに最新の peerId だけを残す（ワーカーは再参加のたびに peerId が変わるので、長寿命セッションが死んだ id を溜め込み、再アタッチしたホストに大量の死んだピアを渡してしまう）。
+- **テスト**: `re-announces workers that rejoined while the host was down` を追加。`npx vitest run` 1462 tests PASS、`tsc` クリーン。
+- **デプロイ**: DO は Cloudflare 側で動くので `npx wrangler deploy` 実行済み（version c8f6e9d7）。
 
 ### 2026-07-20（Claude Opus 4.8）— browser export 最大高速化 Phase 6（実験的 multi-render-context）実装・計測・既定 OFF で採用
 
