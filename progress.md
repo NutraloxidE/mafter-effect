@@ -2997,3 +2997,12 @@ WP 分割（この順で実装する）:
 - `SwarmCoordinatorOptions.onLateResult` を追加。待機者は居ないが **job の検証（jobId / revision / comp / frame / 寸法 / 形式 / runtime）に通る**結果は、`RamPreviewController.acceptLateRemoteFrame()` 経由でキャッシュに入れる。revision 不一致（プロジェクトが編集済み）と既存キー有りは弾く。
 - 効果: 遅い worker でも「間に合わなかったフレーム」が次回のスクラブ・再生で効く。ローカル描画の結果を上書きすることはない（既存キーがあれば無視）。
 - 検証: typecheck PASS、`npm test` 153 files / 1451 tests 全 PASS。
+
+### 2026-08-11 (Claude Opus 5) - 計測環境の落とし穴と検証レシピ
+
+- **埋め込みブラウザ（Claude Browser ペイン）は `document.visibilityState === "hidden"`**。つまりエージェントが操作するホストタブ自身がスロットリングされる。動画入りコンプの bake が 1% で停止したのはこれが原因で、**この環境から出す絶対値 fps は信用できない**。既出の 2.80 fps（直列）/ 2.01 fps（並列）は同条件同士なので比較は公平だが、絶対値は実際より悲観的。
+- 教訓: swarm のスループット計測は **ホストも worker も前面タブ**でなければならない。片方でも裏だと数字が壊れる。実 Chrome を使う既存の教訓（perf-testing-real-chrome-not-headless）と同型。
+- **重いコンプの検証素材はリポジトリに既存**: `verify-comp33-mini-project.zip`（1920×1080 / 150f / 4 objects / mp4+webm、23MB）と `verify-comp32-mini-project.zip`（8 objects、split-alpha 込み、28MB）。読み込むと非 realtime 判定になり `◐ Caching` が出る＝ローカル bake が走る条件を満たす。レイヤー枚数をいくら増やしても realtime のままなので、**枚数ではなく動画・エフェクトで重くする**のが正しい。
+- **500MB 級のプロジェクトは現状測れない**: 5 秒にトリムしても素材原本のサイズは変わらず、`SWARM_JOB_FILE_BUDGET_BYTES`（128MB）超で全ジョブが `kept local` になる。動画は再エンコードせず原本を送る決定（spec v2）どおりの挙動。
+- 検証レシピ（ユーザーの通常ブラウザ・全タブ前面）: ①`⬆ zip` で verify-comp33 を読む ②Caching ON でスクラブし `◐ Caching N%` を確認 ③worker なしで 30 秒の % 増加を記録（1% = 1.5 フレーム）④worker を前面のまま参加・承認 ⑤同条件で % 増加と `Frames from workers` を記録。③と⑤の差が分散の実効。
+- 検証補助として Cloudflare Pages に `mafter-test-assets` プロジェクトを作成し `comp33.zip` を公開（CORS 全許可）。ブラウザから直接読み込ませるため。不要になれば `npx wrangler pages project delete mafter-test-assets`。
