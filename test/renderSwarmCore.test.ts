@@ -9,6 +9,7 @@ import {
   serializeSwarmMessage,
 } from "../src/swarm/core/protocol";
 import { createBenchmarkJob, normalizedBenchmarkScore } from "../src/swarm/core/benchmark";
+import { collectJobFilePaths, isSwarmJobSelfContained } from "../src/swarm/core/jobFiles";
 import { buildSwarmRenderCacheKey, validateSwarmRenderResult } from "../src/swarm/core/cacheKey";
 import { SwarmScheduler } from "../src/swarm/core/scheduler";
 import { InMemorySwarmSignalingBackend } from "../src/swarm/signaling/inMemory";
@@ -90,6 +91,33 @@ describe("Render Swarm core", () => {
     expect(hostEvents).toEqual(["peer-join-request"]);
     await backend.approveJoin(host.sessionId, "host", "peer", true);
     expect(hostEvents).toEqual(["peer-join-request"]);
+  });
+
+  it("collects the files a composition needs and keeps under-supplied jobs local", () => {
+    const comp = {
+      id: "comp-1", name: "Main", kind: "timeline" as const, width: 320, height: 180, fps: 30, duration: 10,
+      objects: [{
+        id: "obj-1",
+        components: [{ id: "c1", type: "image", props: { assetId: "asset-1" } }],
+        transform: { position: { value: [0, 0, 0], expression: { path: "scripts/obj-1/position.js", enabled: true } } },
+      }],
+    } as never;
+    const project = {
+      schemaVersion: 1, meta: { name: "t", createdAt: "", updatedAt: "" },
+      assets: [{ id: "asset-1", path: "assets/logo.png", kind: "image" as const }],
+      compositions: [comp], rootComposition: "comp-1", pluginRefs: [],
+    } as never;
+
+    // Asset referenced by id, expression script referenced by path.
+    expect(collectJobFilePaths(project, comp)).toEqual(["assets/logo.png", "scripts/obj-1/position.js"]);
+
+    const base = { ...job("j", 0), compositionId: "comp-1", project };
+    expect(isSwarmJobSelfContained(base, comp)).toBe(false);
+    expect(isSwarmJobSelfContained({ ...base, assets: [{ path: "assets/logo.png", contentHash: "h", bytesBase64: "" }] }, comp)).toBe(false);
+    expect(isSwarmJobSelfContained({ ...base, assets: [
+      { path: "assets/logo.png", contentHash: "h", bytesBase64: "" },
+      { path: "scripts/obj-1/position.js", contentHash: "h2", bytesBase64: "" },
+    ] }, comp)).toBe(true);
   });
 
   it("scores workers relative to the host on a self-contained benchmark job", () => {

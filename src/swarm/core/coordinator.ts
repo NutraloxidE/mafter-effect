@@ -1,4 +1,5 @@
 import { createBenchmarkJob, normalizedBenchmarkScore } from "./benchmark";
+import { isSwarmJobSelfContained } from "./jobFiles";
 import { WorkerRenderExecutor } from "../worker/workerRenderExecutor";
 import { isWorkerCompatible } from "./capability";
 import { createChallengeNonce, verifyChallenge, type DeviceIdentity } from "./identity";
@@ -184,12 +185,9 @@ export class SwarmCoordinator {
   private isEligibleJob(job: SwarmRenderJob): boolean {
     const comp = job.project.compositions.find((candidate) => candidate.id === job.compositionId);
     if (!comp || comp.kind !== "timeline") return false;
-    if (job.project.assets.length > 0) return false;
-    if (comp.objects.some((object) => object.components.some((component) => component.type === "video"))) return false;
-    if (comp.objects.some((object) => object.components.some((component) => {
-      return Object.values(component.props).some((value) => typeof value === "object" && value !== null && "expression" in value);
-    }))) return false;
-    return true;
+    // Assets and expression scripts are allowed as long as their bytes travel with the job; a job
+    // whose footage or script could not be attached renders locally instead of losing content.
+    return isSwarmJobSelfContained(job, comp);
   }
 
   private ensureLocalBenchmarkScore(): Promise<number> {

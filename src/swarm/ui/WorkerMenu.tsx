@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { useSyncExternalStore } from "react";
 import { previewCacheService } from "../../editor/previewCacheService";
 import { buildPreviewSwarmJob, type RemotePreviewRequest } from "../cache/distributedPreviewCache";
+import { attachJobFiles } from "../core/jobFiles";
+import { useEditorStore } from "../../editor/store";
 import { swarmUiStore } from "./swarmStore";
 import { WorkerQr } from "./WorkerQr";
 import { WorkerStatusRow } from "./WorkerStatusRow";
@@ -16,9 +18,13 @@ export function WorkerMenu() {
   const rootRef = useRef<HTMLSpanElement>(null);
 
   useEffect(() => {
-    previewCacheService.setRemoteRenderer((request) => {
-      const job = buildPreviewSwarmJob(request as RemotePreviewRequest);
-      return swarmUiStore.renderPreviewFrame(job);
+    previewCacheService.setRemoteRenderer(async (request) => {
+      const typed = request as RemotePreviewRequest;
+      const job = buildPreviewSwarmJob(typed);
+      // Ship the footage and expression scripts the comp references; without them the worker
+      // would render a frame with missing content, so attachJobFiles failing keeps the job local.
+      const withFiles = await attachJobFiles(job, typed.comp, useEditorStore.getState().getFs());
+      return swarmUiStore.renderPreviewFrame(withFiles);
     });
     return () => previewCacheService.setRemoteRenderer(null);
   }, []);
