@@ -1,8 +1,12 @@
 import type { SwarmAssetChunkPayload } from "../core/protocol";
 import type { SwarmAssetTransfer } from "../core/types";
 
-/** Base64 characters per chunk; stays well under the bounded data-channel message size. */
-export const SWARM_ASSET_CHUNK_CHARS = 256 * 1024;
+/**
+ * Base64 characters per chunk. A WebRTC data channel negotiates a maximum message size that is
+ * commonly 256KB and can be far lower; oversized sends fail and can tear down the channel, so
+ * this stays small enough that the JSON envelope around it is still comfortably within it.
+ */
+export const SWARM_ASSET_CHUNK_CHARS = 32 * 1024;
 
 export function splitAssetIntoChunks(
   transfer: SwarmAssetTransfer,

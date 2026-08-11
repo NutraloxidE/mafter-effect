@@ -21,6 +21,7 @@ import type {
   SwarmSessionDescriptor,
   SwarmSignalingEvent,
   SwarmSignal,
+  SwarmAssetTransfer,
   SwarmJobId,
   SwarmMetricsSnapshot,
   WorkerSnapshot,
@@ -175,6 +176,28 @@ export class SwarmCoordinator {
     }
   }
 
+  /**
+   * Streams footage to every connected worker up front. Transferring inside a job makes the first
+   * frame absorb the whole file and miss its deadline, which wastes the transfer and the render.
+   */
+  async preloadAssets(assets: SwarmAssetTransfer[]): Promise<void> {
+    await Promise.all([...this.workers.values()].map(async (worker) => {
+      if (!this.isWorkerReady(worker)) return;
+      for (const asset of assets) {
+        if (!asset.bytesBase64 || worker.sentAssetHashes.has(asset.contentHash)) continue;
+        try {
+          for (const chunk of splitAssetIntoChunks(asset)) {
+            await worker.peer.protocol?.send(createSwarmMessage("asset-chunk", chunk));
+          }
+          worker.sentAssetHashes.add(asset.contentHash);
+        } catch {
+          worker.sentAssetHashes.delete(asset.contentHash);
+          return;
+        }
+      }
+    }));
+  }
+
   hasAvailableWorker(): boolean {
     return [...this.workers.values()].some((worker) => this.isWorkerReady(worker));
   }
@@ -204,6 +227,23 @@ export class SwarmCoordinator {
       this.pumpJobs();
     });
     return result;
+  }
+
+  /**
+   * Ends a job that cannot be delivered. Without this the caller keeps waiting for the full
+   * deadline even though the frame is already known to be lost.
+   */
+  private releaseJob(worker: ConnectedWorker, jobId: SwarmJobId): void {
+    worker.snapshot.currentJobId = undefined;
+    const waiter = this.jobs.get(jobId);
+    if (waiter) {
+      window.clearTimeout(waiter.timeoutId);
+      this.jobs.delete(jobId);
+      this.metrics.noteLocalFallback();
+      waiter.resolve(null);
+    }
+    this.pumpJobs();
+    this.emitChange();
   }
 
   private isWorkerReady(worker: ConnectedWorker): worker is ConnectedWorker & { slotId: string } {
@@ -249,8 +289,7 @@ export class SwarmCoordinator {
       // A half-sent file must not be remembered as delivered.
       for (const asset of assets) worker.sentAssetHashes.delete(asset.contentHash);
       if (worker.slotId) this.scheduler.fail(job.id, worker.slotId);
-      worker.snapshot.currentJobId = undefined;
-      this.emitChange();
+      this.releaseJob(worker, job.id);
     }
   }
 
@@ -330,8 +369,7 @@ export class SwarmCoordinator {
     }
     if (isSwarmMessageType(message, "job-failed")) {
       if (worker.slotId) this.scheduler.fail(message.payload.jobId, worker.slotId);
-      worker.snapshot.currentJobId = undefined;
-      this.pumpJobs();
+      this.releaseJob(worker, message.payload.jobId);
     }
   }
 

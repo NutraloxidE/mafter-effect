@@ -73,6 +73,55 @@ export async function attachJobFiles(
   return { ...job, assets };
 }
 
+const transferCache = new Map<string, { key: string; transfers: Promise<SwarmAssetTransfer[] | null> }>();
+
+/**
+ * Same as `attachJobFiles`, but reads and hashes each file once per (composition, revision)
+ * instead of once per frame. An export submits one job per frame, and re-encoding tens of
+ * megabytes of footage for every one of them costs far more than the render it is accelerating.
+ */
+export async function attachJobFilesCached(
+  job: SwarmRenderJob,
+  comp: TimelineComposition,
+  fs: FileSystem,
+  revision: string,
+  budgetBytes = SWARM_JOB_FILE_BUDGET_BYTES,
+): Promise<SwarmRenderJob> {
+  const paths = collectJobFilePaths(job.project, comp);
+  if (paths.length === 0) return { ...job, assets: [] };
+  const key = `${revision}::${paths.join("|")}`;
+  const cached = transferCache.get(comp.id);
+  if (!cached || cached.key !== key) {
+    transferCache.set(comp.id, {
+      key,
+      transfers: readTransfers(paths, fs, budgetBytes),
+    });
+  }
+  const transfers = await transferCache.get(comp.id)!.transfers;
+  return transfers ? { ...job, assets: transfers } : job;
+}
+
+async function readTransfers(
+  paths: string[],
+  fs: FileSystem,
+  budgetBytes: number,
+): Promise<SwarmAssetTransfer[] | null> {
+  const assets: SwarmAssetTransfer[] = [];
+  let total = 0;
+  for (const path of paths) {
+    let transfer: SwarmAssetTransfer;
+    try {
+      transfer = await toAssetTransfer(fs, path);
+    } catch {
+      return null;
+    }
+    total += transfer.bytesBase64.length;
+    if (total > budgetBytes) return null;
+    assets.push(transfer);
+  }
+  return assets;
+}
+
 /** True when every file the composition references travels with the job. */
 export function isSwarmJobSelfContained(job: SwarmRenderJob, comp: TimelineComposition): boolean {
   const required = collectJobFilePaths(job.project, comp);

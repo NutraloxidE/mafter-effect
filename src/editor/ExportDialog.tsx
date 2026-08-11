@@ -17,6 +17,7 @@ import {
 } from "../runtime/exportVideoEncode";
 import { probeVideoFile } from "../runtime/videoAssetProbe";
 import { applyPreRenderToProject } from "./preRender";
+import { swarmExportHooks } from "../swarm/ui/swarmStore";
 import { useEditorStore } from "./store";
 import { feedbackCollector } from "./feedbackCollector";
 
@@ -159,7 +160,7 @@ export function ExportDialog({ project, compId, mode = "download", onClose }: Pr
           setError("Pre-render は MP4 / WebM のみ対応です。");
           return;
         }
-        const result = await exportComposition(exportProject, compId, useEditorStore.getState().getFs(), cfg, setProgress, ctrl.signal);
+        const result = await exportComposition(exportProject, compId, useEditorStore.getState().getFs(), cfg, setProgress, ctrl.signal, swarmExportHooks());
         if (result.format !== "mp4" && result.format !== "webm") {
           setError(
             "Pre-render に失敗しました（動画として書き出せませんでした）。"
@@ -224,7 +225,7 @@ export function ExportDialog({ project, compId, mode = "download", onClose }: Pr
         succeeded = true;
         return;
       }
-      const result = await exportComposition(exportProject, compId, useEditorStore.getState().getFs(), cfg, setProgress, ctrl.signal);
+      const result = await exportComposition(exportProject, compId, useEditorStore.getState().getFs(), cfg, setProgress, ctrl.signal, swarmExportHooks());
       const ext = result.format === "png-seq" ? "zip" : result.format;
       const name = `${tl.name.replace(/\s+/g, "_")}.${ext}`;
       triggerDownload(result.blob, name);

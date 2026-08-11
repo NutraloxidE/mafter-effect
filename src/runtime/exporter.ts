@@ -6,7 +6,8 @@ import JSZip from "jszip";
 import { Muxer as Mp4Muxer, ArrayBufferTarget as Mp4Target } from "mp4-muxer";
 import { Muxer as WebmMuxer, ArrayBufferTarget as WebmTarget } from "webm-muxer";
 import { compositionDir } from "../core/paths";
-import { buildRemoteFrameProducers } from "../swarm/core/remoteFrameProducer";
+import { SwarmFrameMismatchError } from "../swarm/core/frameVerification";
+import { buildRemoteFrameProducers, spotCheckFrames } from "../swarm/core/remoteFrameProducer";
 import type { SwarmRenderJob, SwarmRenderResult } from "../swarm/core/types";
 import type { ExportConfig, HtmlComposition, Project, TimelineComposition } from "../core/schema";
 import type { FileSystem } from "../fs/FileSystem";
@@ -89,6 +90,8 @@ interface VideoEncodeStats {
 export interface ExportSwarmHooks {
   workerCount: number;
   submit: (job: SwarmRenderJob, timeoutMs: number) => Promise<SwarmRenderResult | null>;
+  /** Ships footage before the first frame is leased, so no job pays for the transfer. */
+  preload?: (project: Project, comp: TimelineComposition) => Promise<void>;
   timeoutMs?: number;
 }
 
@@ -322,13 +325,28 @@ async function runPngSeq(
     renderRevision: `export-${remote.compId}-${startFrame}-${remote.endFrame}-${w}x${h}`,
     profile: { quality: config.textRenderMode === "draft" ? "draft" : "precise", proxy: "full", width: w, height: h },
     renderLocally: renderLocallySerialized,
+    verifyFrames: new Set(spotCheckFrames(totalFrames).map((fi) => startFrame + fi)),
   }) : [];
+
+  if (remote?.swarm?.preload && remoteProducers.length > 0) {
+    onProgress({ phase: "prepare", frame: 0, totalFrames, message: "Sending footage to workers…" });
+    await remote.swarm.preload(remote.project, comp);
+  }
+
+  const renderSerially = async (): Promise<void> => {
+    for (let fi = 0; fi < totalFrames; fi++) {
+      checkAbort(signal);
+      const canvas = await renderLocallySerialized(startFrame + fi);
+      onProgress({ phase: "render", frame: fi, totalFrames, message: `Frame ${fi + 1}/${totalFrames}` });
+      await addFrame(fi, canvas);
+    }
+  };
 
   if (extraRenderers.length > 0 || remoteProducers.length > 0) {
     // §11.2 Phase 6 — 複数 context で並行描画し、frame 昇順で zip に整列格納する。
     const contexts = [renderer, ...extraRenderers];
     let rendered = 0;
-    const res = await runOrderedMultiContext({
+    const multiOptions = {
       producers: [
         ...contexts.map((r) => (frame: number) =>
           r === renderer
@@ -344,15 +362,26 @@ async function runPngSeq(
       },
       onFrame: addFrame,
       checkAbort: () => checkAbort(signal),
-    });
-    recordMultiContextFrames(totalFrames, res.contextFrameCounts);
-  } else {
-    for (let fi = 0; fi < totalFrames; fi++) {
-      checkAbort(signal);
-      const canvas = await renderContextFrameCanvas(renderer, comp, evaluator, startFrame + fi, nw, nh, w, h, bg, {});
-      onProgress({ phase: "render", frame: fi, totalFrames, message: `Frame ${fi + 1}/${totalFrames}` });
-      await addFrame(fi, canvas);
+    };
+    try {
+      const res = await runOrderedMultiContext(multiOptions);
+      recordMultiContextFrames(totalFrames, res.contextFrameCounts);
+    } catch (error) {
+      if (!(error instanceof SwarmFrameMismatchError)) throw error;
+      // A worker produced pixels this device disagrees with. Discard everything it contributed
+      // and render the whole sequence locally rather than shipping a file we cannot vouch for.
+      onProgress({
+        phase: "render",
+        frame: 0,
+        totalFrames,
+        message: `Worker output rejected (${error.message}); rendering locally`,
+      });
+      zip.remove("");
+      for (const name of Object.keys(zip.files)) zip.remove(name);
+      await renderSerially();
     }
+  } else {
+    await renderSerially();
   }
 
   onProgress({ phase: "encode", frame: totalFrames, totalFrames, message: "Packaging ZIP…" });
