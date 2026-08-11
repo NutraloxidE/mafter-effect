@@ -23,6 +23,13 @@ interface SessionRecord {
 
 const SESSION_KEY = "session";
 
+/**
+ * How long a join code stays usable. Expiry only closes the door to *new* joins — established
+ * peers talk directly and do not touch the server again — so a short window buys no safety and
+ * just forces a working swarm to be rebuilt by hand.
+ */
+export const SWARM_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+
 const queueKey = (peerId: string): string => `q:${peerId}`;
 
 /** Session ids embed the join code so every action routes to the same Durable Object. */
@@ -46,7 +53,7 @@ export class DurableSwarmSession {
     const descriptor: SwarmSessionDescriptor = {
       sessionId: makeSessionId(joinCode, random),
       joinCode,
-      expiresAt: Date.now() + Math.max(60_000, input.expiresInMs ?? 30 * 60_000),
+      expiresAt: Date.now() + Math.max(60_000, input.expiresInMs ?? SWARM_SESSION_TTL_MS),
     };
     await this.kv.put(SESSION_KEY, { descriptor, hostPeerId: input.hostPeerId, peers: {} } satisfies SessionRecord);
     return descriptor;
