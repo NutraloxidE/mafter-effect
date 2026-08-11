@@ -94,6 +94,15 @@ describe("Render Swarm core", () => {
     expect(hostEvents).toEqual(["peer-join-request"]);
   });
 
+  it("round-trips the worker availability message", () => {
+    const message = createSwarmMessage("worker-availability", { available: false, reason: "page-visibility" });
+    const parsed = parseSwarmMessage(serializeSwarmMessage(message));
+    expect(parsed?.type).toBe("worker-availability");
+    expect((parsed?.payload as { available: boolean }).available).toBe(false);
+    // A missing flag must not be read as "available".
+    expect(parseSwarmMessage(JSON.stringify({ ...message, payload: {} }))).toBeNull();
+  });
+
   it("splits and reassembles a file across chunks, ignoring order and duplicates", () => {
     const transfer = { path: "assets/clip.mp4", contentHash: "hash-1", mimeType: "video/mp4", bytesBase64: "ABCDEFGHIJ" };
     const chunks = splitAssetIntoChunks(transfer, 3);

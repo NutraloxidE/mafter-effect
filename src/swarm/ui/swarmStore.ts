@@ -85,8 +85,8 @@ class SwarmUiStore {
     this.update({ status: "idle", session: null, joinUrl: null, pendingWorkers: [], workers: [], availableCompute: 1, error: null });
   }
 
-  async renderPreviewFrame(job: SwarmRenderJob): Promise<SwarmRenderResult | null> {
-    return this.coordinator?.renderPreviewFrame(job) ?? null;
+  async renderPreviewFrame(job: SwarmRenderJob, timeoutMs?: number): Promise<SwarmRenderResult | null> {
+    return this.coordinator?.renderPreviewFrame(job, timeoutMs) ?? null;
   }
 
   private refresh(coordinator: SwarmCoordinator | null): void {

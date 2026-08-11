@@ -91,6 +91,9 @@ export interface WorkerSnapshot {
   performance?: WorkerPerformance;
   currentJobId?: SwarmJobId;
   transport: "unknown" | "direct" | "relay";
+  /** false while the worker page is hidden: browsers throttle background tabs so heavily that
+   * leased frames miss every deadline and the work is discarded. */
+  available?: boolean;
 }
 
 export type RenderJobPriority = "playhead" | "upcoming" | "previous" | "visible" | "background";

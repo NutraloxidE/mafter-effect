@@ -27,6 +27,7 @@ export class WorkerRuntime {
   private listeners = new Set<() => void>();
   private currentJobId: string | null = null;
   private readonly assembler = new AssetChunkAssembler();
+  private unbindVisibility: (() => void) | null = null;
   private connectionKind: "unknown" | "direct" | "relay" = "unknown";
   private lastError: string | null = null;
   private snapshot = { state: this.state, currentJobId: this.currentJobId, connection: this.connectionKind, error: this.lastError, session: this.session };
@@ -67,6 +68,8 @@ export class WorkerRuntime {
   }
 
   stop(): void {
+    this.unbindVisibility?.();
+    this.unbindVisibility = null;
     this.unsubscribeSignaling?.();
     this.unsubscribeSignaling = null;
     this.peer?.close();
@@ -112,9 +115,25 @@ export class WorkerRuntime {
         this.unsubscribeSignaling = null;
         this.setState("connected");
         void this.sendHello();
+        // Background tabs are throttled hard enough that leased frames always miss their
+        // deadline; tell the host to stop sending work instead of wasting it.
+        this.bindVisibilityReporting();
       }
       if (state === "disconnected" || state === "failed" || state === "closed") this.setState("error");
     };
+  }
+
+  private bindVisibilityReporting(): void {
+    if (this.unbindVisibility || typeof document === "undefined") return;
+    const report = (): void => {
+      void this.peer?.protocol?.send(createSwarmMessage("worker-availability", {
+        available: document.visibilityState === "visible",
+        reason: "page-visibility",
+      }));
+    };
+    document.addEventListener("visibilitychange", report);
+    this.unbindVisibility = () => document.removeEventListener("visibilitychange", report);
+    report();
   }
 
   private async sendHello(): Promise<void> {

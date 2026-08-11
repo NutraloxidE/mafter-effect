@@ -26,6 +26,10 @@ import type {
   WorkerSnapshot,
 } from "./types";
 
+/** Floor and ceiling for how long a preview frame may stay with a worker. */
+export const SWARM_DEFAULT_JOB_TIMEOUT_MS = 4_000;
+export const SWARM_MAX_JOB_TIMEOUT_MS = 60_000;
+
 interface PendingJob {
   job: SwarmRenderJob;
   resolve: (result: SwarmRenderResult | null) => void;
@@ -170,10 +174,16 @@ export class SwarmCoordinator {
   }
 
   hasAvailableWorker(): boolean {
-    return [...this.workers.values()].some((worker) => worker.slotId !== undefined && worker.snapshot.state === "connected");
+    return [...this.workers.values()].some((worker) => this.isWorkerReady(worker));
   }
 
-  async renderPreviewFrame(job: SwarmRenderJob): Promise<SwarmRenderResult | null> {
+  /**
+   * @param timeoutMs deadline before the frame is rendered locally instead. A fixed short deadline
+   * makes heavy comps — the ones that need help — always fall back while the worker keeps
+   * rendering a result nobody waits for, so callers pass a deadline derived from what the frame
+   * actually costs.
+   */
+  async renderPreviewFrame(job: SwarmRenderJob, timeoutMs = SWARM_DEFAULT_JOB_TIMEOUT_MS): Promise<SwarmRenderResult | null> {
     if (!this.hasAvailableWorker()) return null;
     if (!this.isEligibleJob(job)) {
       this.metrics.noteIneligibleJob();
@@ -186,12 +196,18 @@ export class SwarmCoordinator {
         this.scheduler.reclaimExpired(Date.now());
         this.metrics.noteLocalFallback();
         resolve(null);
-      }, 4_000);
+      }, Math.min(SWARM_MAX_JOB_TIMEOUT_MS, Math.max(SWARM_DEFAULT_JOB_TIMEOUT_MS, timeoutMs)));
       this.jobs.set(job.id, { job, resolve, timeoutId });
       this.requestBenchmarks(job);
       this.pumpJobs();
     });
     return result;
+  }
+
+  private isWorkerReady(worker: ConnectedWorker): worker is ConnectedWorker & { slotId: string } {
+    return worker.slotId !== undefined
+      && worker.snapshot.state === "connected"
+      && worker.snapshot.available !== false;
   }
 
   private isEligibleJob(job: SwarmRenderJob): boolean {
@@ -246,7 +262,7 @@ export class SwarmCoordinator {
 
   private pumpJobs(): void {
     for (const worker of this.workers.values()) {
-      if (worker.slotId === undefined || worker.snapshot.state !== "connected" || worker.snapshot.currentJobId) continue;
+      if (!this.isWorkerReady(worker) || worker.snapshot.currentJobId) continue;
       const leased = this.scheduler.requestJob(worker.slotId, Date.now());
       if (!leased) continue;
       worker.snapshot.currentJobId = leased.id;
@@ -268,6 +284,12 @@ export class SwarmCoordinator {
         await worker.peer.protocol?.send(createSwarmMessage("worker-draining", { reason: "incompatible-runtime" }));
         this.emitChange();
       }
+      return;
+    }
+    if (isSwarmMessageType(message, "worker-availability")) {
+      worker.snapshot.available = message.payload.available;
+      this.emitChange();
+      if (message.payload.available) this.pumpJobs();
       return;
     }
     if (isSwarmMessageType(message, "challenge-response")) {

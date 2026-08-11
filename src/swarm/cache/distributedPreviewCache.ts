@@ -10,6 +10,8 @@ export interface RemotePreviewRequest {
   proxy: string;
   width: number;
   height: number;
+  /** 0 = no local measurement yet; the coordinator then uses its own floor. */
+  timeoutMs?: number;
 }
 
 export function buildPreviewSwarmJob(request: RemotePreviewRequest): SwarmRenderJob {
