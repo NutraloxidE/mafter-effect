@@ -309,6 +309,13 @@ async function runPngSeq(
     const pngBlob = await canvasToBlob(canvas, "image/png");
     zip.file(`frame_${String(fi).padStart(6, "0")}.png`, pngBlob);
   };
+  // Encoding at production time lets the reorder buffer hold ~350KB PNGs instead of ~2MB
+  // canvases, which is what makes a window large enough to keep a slow producer off the
+  // critical path affordable.
+  const encodeFrame = (canvas: HTMLCanvasElement): Promise<Blob> => canvasToBlob(canvas, "image/png");
+  const storeFrame = async (fi: number, pngBlob: Blob): Promise<void> => {
+    zip.file(`frame_${String(fi).padStart(6, "0")}.png`, pngBlob);
+  };
 
   // ローカル描画は context を共有するので直列化する。remote producer のフォールバックもここを通る。
   let localChain: Promise<unknown> = Promise.resolve();
@@ -359,14 +366,21 @@ async function runPngSeq(
       // Local contexts run at the same speed, so a window of 2*N is enough for them. A worker is
       // slower per frame (render + transfer), and with the default window the fast local producer
       // blocks a few frames after the remote one, leaving the host idle for most of the export.
-      maxReorderAhead: remoteProducers.length > 0
-        ? Math.max(32, 8 * (extraRenderers.length + 1 + remoteProducers.length))
-        : undefined,
+      // Frames are buffered as PNG, so the window can span the export: a worker may work far
+      // ahead of what has been written without ever gating it.
+      maxReorderAhead: remoteProducers.length > 0 ? totalFrames : undefined,
+      // Remote producers take work from the end of the range so their latency never sits in
+      // front of the next frame to write.
+      pullFromTail: [
+        ...contexts.map(() => false),
+        ...remoteProducers.map(() => true),
+      ],
+      prepare: encodeFrame,
       onRendered: () => {
         rendered++;
         onProgress({ phase: "render", frame: rendered - 1, totalFrames, message: `Frame ${rendered}/${totalFrames}` });
       },
-      onFrame: addFrame,
+      onFrame: storeFrame,
       checkAbort: () => checkAbort(signal),
     };
     try {
