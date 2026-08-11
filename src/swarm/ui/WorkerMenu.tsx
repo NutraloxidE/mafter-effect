@@ -17,7 +17,15 @@ export function WorkerMenu() {
   const snapshot = useSyncExternalStore(subscribeSwarmUi, getSwarmUiSnapshot, getSwarmUiSnapshot);
   const rootRef = useRef<HTMLSpanElement>(null);
 
+  const connectedWorkers = snapshot.workers.filter((worker) => worker.state === "connected").length;
+
   useEffect(() => {
+    // Installing the renderer is what tells the preview cache remote capacity exists, so only do
+    // it while a worker is actually connected.
+    if (connectedWorkers === 0) {
+      previewCacheService.setRemoteRenderer(null);
+      return;
+    }
     previewCacheService.setRemoteRenderer(async (request) => {
       const typed = request as RemotePreviewRequest;
       const job = buildPreviewSwarmJob(typed);
@@ -27,7 +35,7 @@ export function WorkerMenu() {
       return swarmUiStore.renderPreviewFrame(withFiles);
     });
     return () => previewCacheService.setRemoteRenderer(null);
-  }, []);
+  }, [connectedWorkers]);
 
   useEffect(() => {
     if (open) void swarmUiStore.start();

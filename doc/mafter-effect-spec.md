@@ -3608,3 +3608,17 @@ is stated as a fallback rather than a best effort.
   remain host-side and are never delegated.
 - Any verification failure degrades to local rendering. A distributed export must
   never produce an artifact a fully local export would not have produced.
+
+#### When remote work is allowed to run (§28.4 interaction)
+
+Preview-cache baking is suppressed locally in two situations: while playback is
+running (§28.4, so baking cannot steal CPU from live rendering) and for comps
+that already render in realtime (no cache is needed). Both reasons are about
+*host* CPU, so neither applies to a connected worker:
+
+- While playback runs, connected workers may keep baking cache frames. The host
+  still never bakes locally during playback.
+- A realtime-capable comp may be baked on otherwise idle workers, which costs the
+  host nothing and makes later scrubbing instant.
+
+With no worker connected the previous behaviour is unchanged in both cases.

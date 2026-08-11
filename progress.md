@@ -2933,3 +2933,19 @@ WP 分割（この順で実装する）:
 - 送信途中で失敗したら `sentAssetHashes` から取り消す（半端に「送った」と記憶して以後キャッシュミスし続けるのを防ぐ）。
 - インライン予算 24MB → 128MB に引き上げ（メッセージサイズ制約ではなくメモリ制約になったため。worker cache 上限と一致）。
 - 検証: typecheck PASS、Render Swarm tests 12/12 PASS（順不同・重複チャンクでの再構成を純関数テストで固定）。実機での動画分散は未確認（WP-5）。
+
+### 2026-08-11 (Claude Opus 5) - WP-5 実測: 「繋がるが何も起きない」の真因
+
+実機（ホスト 1 + worker 2、実 Chrome、本番デプロイ）で確認:
+
+- 承認 → DataChannel 確立 → ベンチ → `Available compute: 3.1× local`（1.0 + 約1.05×2）まで**正常**。transport も実 ICE 判定で `Direct`。今回直した表示修正が実機で効いていることを確認。
+- **しかしジョブが 1 件も飛ばない。** レイヤーを 48 枚まで増やしても preview cache が `Realtime` 判定のままで、キャッシュ自体が走らないため分散の入口に到達しない。
+- コードで裏取り: `startBackgroundBuildIfNeeded()` は `isRealtimeCapable()` で即 return、さらに `enqueueFrame` / `pumpCacheQueue` は `playbackActive` で return（§28.4 再生中 bake 停止）。つまり **①realtime なコンプ ②再生中** のどちらでも bake が走らず、swarm は永久に待機する。「重くて停止中」の場合しか働かない。
+- 追加の観測性: worker が実際に何かしたのかが UI に一切出ていなかったため、`remoteFrames` / `localFallbackJobs` / `ineligibleJobs` を metrics に追加し Workers パネルに表示。
+
+修正（spec に §28.4 との関係を明記のうえ実装）:
+- **再生中でも worker は bake を続けられる**（ホストは従来どおりローカル bake しない。§28.4 の理由はホスト CPU 競合であり、リモートには当てはまらない）。
+- **realtime なコンプでも遊んでいる worker で bake してよい**（ホストのコストはゼロ、後のスクラブが即時になる）。
+- worker が 0 のときは**従来挙動と完全に同じ**。`setRemoteRenderer` は接続 worker がいる間だけ設定する（常設だと realtime コンプをローカルで焼き始めてしまうため）。
+
+未実施: この変更後の実機再計測（デプロイ待ち）。WP-4 / WP-6 は未着手。
