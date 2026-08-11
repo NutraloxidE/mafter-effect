@@ -3205,3 +3205,25 @@ spec の Render Swarm v2 節に「Frame identity under parallel production」を
 `swarmExportHooks()` を既定 ON に戻した（`localStorage["mafter.swarm.export"] = "0"` で完全ローカルに退避可能）。
 
 検証: typecheck PASS、`npm test` 1455/1456（唯一の失敗は既知フレーキー `projectBins`、単独では 7/7 PASS）。
+
+### 2026-08-12 (Claude Opus 5) - 分担方式を「連続ブロック + work stealing」に、reorder window を拡大
+
+実測（150 フレーム、ホスト + worker 1 台、worker はホストの約 1.9 倍速）:
+
+| | 所要 | fps | リモート担当 |
+|---|---|---|---|
+| local-only | 90.8s | 1.65 | — |
+| with-worker（1 フレームずつ交互 pull） | **168.5s** | 0.89 | 45 / 150 |
+
+worker が 30% を引き受け、しかも速いマシンなのに **1.85 倍遅くなった**。ホストの実作業は 105 枚 ≈ 64 秒分しかなく、**残り約 100 秒はホストが待たされていた**。
+
+真因: `maxReorderAhead = 2 × producer 数 = 4`。出力は frame 昇順でしか吐けないため、**リモートが握っている frame が遅いと速いホストは 4 枚先で停止する**。ローカル context 同士（速度が揃う前提）の設計値がリモートにそのまま適用されていた。
+
+修正（ユーザーと相談のうえ折衷案を採用）:
+1. **連続ブロック単位の動的 pull**（既定 8 枚）。ホストが早い frame を担当しがちになるので emit が止まりにくい。各 producer が昇順に進むのでデコーダの挙動も単調。
+2. **work stealing** — ブロックを配り切ったあと、空いた producer が「最も未着手が多い producer」の**後ろ半分**を奪う。奪われた側は次の frame を始める前に停止する（JS シングルスレッドなので追加のロックは不要）。これで末尾のストラグラーが自動解消され、静的分割の弱点を回避できる。
+3. **export でリモートが混ざるときだけ reorder window を拡大**（32 以上）。ローカル context 同士は従来の `2*N` のまま。
+
+テスト: 「詰まった producer から仕事を奪い、全 frame がちょうど 1 回ずつ描かれ、emit は昇順」を回帰テストで固定（`test/multiRenderContext.test.ts`）。`npm test` 153 files / 1457 tests 全 PASS。
+
+実機での効果測定は次。

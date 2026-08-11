@@ -78,6 +78,12 @@ export interface OrderedMultiContextOptions {
   onRendered?: (frameIndex: number) => void;
   /** 有界 reorder window（既定 2*N）。next-to-emit からこの距離以上先の frame は描画を待たせる。 */
   maxReorderAhead?: number;
+  /**
+   * 1 回の pull で 1 producer が確保する連続フレーム数（既定 8）。
+   * 連続で確保すると各 producer が昇順に進むので、早い frame ほど早く emit され consumer が
+   * 止まりにくい。1 枚ずつ交互に配ると遅い producer が握った frame で全体が待たされる。
+   */
+  blockFrames?: number;
   /** abort チェック（throw で中断）。 */
   checkAbort: () => void;
 }
@@ -98,7 +104,10 @@ export async function runOrderedMultiContext(
 ): Promise<OrderedMultiContextResult> {
   const { producers, totalFrames, startFrame, onFrame, onRendered, checkAbort } = opts;
   const N = producers.length;
+  const requestedBlock = Math.max(1, Math.floor(opts.blockFrames ?? 8));
   const maxReorderAhead = Math.max(opts.maxReorderAhead ?? 2 * N, N + 1);
+  // 明示された reorder window は縮めない。入らないならブロック側を詰める。
+  const blockFrames = Math.max(1, Math.min(requestedBlock, Math.floor(maxReorderAhead / N)));
 
   const results = new Map<number, HTMLCanvasElement>();
   const ready: Deferred[] = Array.from({ length: totalFrames }, () => makeDeferred());
@@ -121,15 +130,48 @@ export async function runOrderedMultiContext(
     bump();
   };
 
-  // 動的 pull（work stealing）。producer ごとの静的割り当て（fi % N）は全 producer 同速前提で、
-  // 速度差があると遅い担当分の tail で全体が待たされる。速い producer が自然に多く引く形にする。
+  // 連続ブロックの動的 pull + work stealing。静的割り当て（fi % N）は全 producer 同速前提で、
+  // 速度差があると遅い担当分で全体が待たされる。ブロックを配り切ったあとは、空いた producer が
+  // 詰まっている producer の未着手分を後ろから半分もらうので、末尾のストラグラーも解消される。
   let nextPull = 0;
+  const claims: { next: number; end: number }[] = Array.from({ length: N }, () => ({ next: 0, end: 0 }));
+
+  const claimBlock = (c: number): boolean => {
+    if (nextPull >= totalFrames) return false;
+    const start = nextPull;
+    nextPull = Math.min(totalFrames, start + blockFrames);
+    claims[c] = { next: start, end: nextPull };
+    return true;
+  };
+
+  /** 最も未着手が多い producer から後ろ半分を奪う。奪われた側は次の frame を始める前に止まる。 */
+  const stealWork = (c: number): boolean => {
+    let victim = -1;
+    let best = 1;
+    for (let i = 0; i < N; i += 1) {
+      if (i === c) continue;
+      const remaining = claims[i]!.end - claims[i]!.next;
+      if (remaining > best) {
+        best = remaining;
+        victim = i;
+      }
+    }
+    if (victim < 0) return false;
+    const take = Math.floor(best / 2);
+    if (take < 1) return false;
+    const from = claims[victim]!.end - take;
+    claims[victim]!.end = from;
+    claims[c] = { next: from, end: from + take };
+    return true;
+  };
+
   const runProducer = async (c: number): Promise<void> => {
     for (;;) {
       if (fatal !== null) return;
-      const fi = nextPull;
-      if (fi >= totalFrames) return;
-      nextPull += 1;
+      if (claims[c]!.next >= claims[c]!.end && !claimBlock(c) && !stealWork(c)) return;
+      const fi = claims[c]!.next;
+      if (fi >= claims[c]!.end) continue;
+      claims[c]!.next = fi + 1;
       checkAbort();
       // 有界 reorder window: next-to-emit から遠すぎる frame は consumer を待つ。
       // 条件チェックと gate の await の間に他コードは走らない（single-thread）ため wakeup 取りこぼしなし。
