@@ -132,10 +132,11 @@ export const swarmUiStore = new SwarmUiStore();
  * must take exactly the path it always took.
  */
 export function swarmExportHooks(): ExportSwarmHooks | undefined {
-  // Measured on a 24-frame export: no missing content, and remote frames differ from local ones
-  // by ~13 bytes of PNG — the same spread two local runs show, because video seek jitter moves
-  // pixels slightly either way. Set "mafter.swarm.export" to "0" to keep an export fully local.
-  if (globalThis.localStorage?.getItem("mafter.swarm.export") === "0") return undefined;
+  // Opt-in. Two local exports of the same range are byte-identical, so the differences a
+  // distributed export shows are caused by distribution, not by rendering noise — and they appear
+  // in frames the host rendered itself, most likely because parallel pulling seeks the footage out
+  // of order. Until that is understood, an export must not change just because a worker is around.
+  if (globalThis.localStorage?.getItem("mafter.swarm.export") !== "1") return undefined;
   const snapshot = swarmUiStore.getSnapshot();
   const workerCount = snapshot.workers.filter((worker) => worker.state === "connected" && worker.available !== false).length;
   if (workerCount === 0) return undefined;
