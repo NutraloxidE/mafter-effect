@@ -20,7 +20,9 @@ export class FrameCacheQueue {
   private pending = new Map<number, QueueJob>();
   private seq = 0;
   private generation = 0;
-  private pumping = false;
+  private active = 0;
+  /** Remote workers render in parallel, so the queue may keep more than one frame in flight. */
+  private concurrency = 1;
   /** §28.4 — 再生中は bake を止め、停止後に resume。 */
   private paused = false;
 
@@ -38,6 +40,10 @@ export class FrameCacheQueue {
 
   pendingCount(): number {
     return this.pending.size;
+  }
+
+  setConcurrency(value: number): void {
+    this.concurrency = Math.max(1, Math.floor(value));
   }
 
   isPaused(): boolean {
@@ -59,7 +65,9 @@ export class FrameCacheQueue {
   }
 
   pump(processor: FrameCacheProcessor): void {
-    void this.runPump(processor);
+    while (this.active < this.concurrency && !this.paused && this.pending.size > 0) {
+      void this.runPump(processor);
+    }
   }
 
   private pickNext(): QueueJob | null {
@@ -76,8 +84,8 @@ export class FrameCacheQueue {
   }
 
   private async runPump(processor: FrameCacheProcessor): Promise<void> {
-    if (this.pumping || this.paused) return;
-    this.pumping = true;
+    if (this.active >= this.concurrency || this.paused) return;
+    this.active += 1;
     const gen = this.generation;
     try {
       while (gen === this.generation && !this.paused) {
@@ -88,7 +96,7 @@ export class FrameCacheQueue {
         await yieldToMain();
       }
     } finally {
-      this.pumping = false;
+      this.active -= 1;
       if (!this.paused && this.pending.size > 0 && gen === this.generation) {
         void this.runPump(processor);
       }
