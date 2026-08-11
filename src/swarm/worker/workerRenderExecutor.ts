@@ -45,12 +45,15 @@ export class WorkerRenderExecutor {
     if (!composition || composition.kind !== "timeline") throw new Error("Worker job composition is not a timeline");
     const context = await this.contextFor(job, composition, fs);
     {
+      const startedAt = performance.now();
       const bytes = await captureCompFramePng(
         context,
         composition,
         job.frameStart,
       );
+      const renderMs = performance.now() - startedAt;
       return {
+        renderMs,
         jobId: job.id,
         renderRevision: job.renderRevision,
         compositionId: job.compositionId,
