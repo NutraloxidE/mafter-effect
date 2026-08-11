@@ -2965,3 +2965,15 @@ WP 分割（この順で実装する）:
 - テスト: `test/frameCacheQueue.test.ts` に並列度の回帰を追加（既定 1 で peak in-flight = 1、容量 3 で 1 < peak <= 3）。
 
 検証: typecheck PASS、frameCacheQueue 4/4 PASS、swarm 12/12 PASS。`npm test` は 1449/1450 PASS で、唯一の失敗は既知フレーキーの `projectBins`（単独実行では 7/7 PASS）。
+
+### 2026-08-11 (Claude Opus 5) - WP-6 事前調査: export 分散の挿入点
+
+コードを読んだ結果、**export 分散に新しいパイプラインは要らない**ことが分かった。
+
+- [`src/runtime/multiRenderContext.ts`](src/runtime/multiRenderContext.ts) の `runOrderedMultiContext()` が既に「N 個の producer で並行描画 → frame 昇順で consumer へ整列供給」を実装済み（有界 reorder window + backpressure 付き）。§11.2 Phase 6（既定 OFF）で複数ローカル context 用に使われている。
+- producer の型は `(frame: number) => Promise<HTMLCanvasElement>` なので、**リモート worker は producer を 1 本増やすだけ**で載る（返ってきた PNG を canvas へデコードする薄いアダプタが要るのみ）。順序・音声 mux・alpha は consumer 側＝ホストに残るので、spec の「順序と mux は委譲しない」を自然に満たす。
+- 残る実装は ①リモート producer アダプタ ②spec が要求する抜き取り照合（サンプルしたフレームをホストでも描いて比較・不一致なら当該 worker を外して全フレームをローカル再描画）③export 用ジョブ種別（現状 `kind: "preview-frame"` のみ）。
+
+**設計上の注意（先に記録）**: 現在の producer 割り当ては `fi % N === c` の**静的ラウンドロビン**。速度が同じローカル context 前提の分配なので、遅いスマホが 1 台混ざると担当分で全体が待たされる（reorder window で頭打ちになる）。リモートを混ぜるなら**動的な pull 割り当て**（既存 `SwarmScheduler` が既に持っている）へ変える必要がある。
+
+**着手判断**: WP-6 は **A/B 計測（並列化後の実測 fps）を見てから**にする。リモート 1 フレームの往復がローカル描画より遅いなら、export を分散すると**遅くなる**ため。現時点の既知数値はベースライン 2.80 fps（直列・worker 1 台）のみで、並列化後の数値は未取得（ホスト再読込＝セッション再作成が必要で、worker の再参加待ち）。
