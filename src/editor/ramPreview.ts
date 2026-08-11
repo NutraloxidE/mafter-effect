@@ -227,7 +227,10 @@ export class RamPreviewController {
   }
 
   private enqueueFrame(frame: number, priority: "scrub" | "playback" | "background"): void {
-    if (!this.settings.enabled || !this.config || this.playbackActive) return;
+    if (!this.settings.enabled || !this.config) return;
+    // §28.4 pauses baking during playback so it cannot steal CPU from live rendering. Remote
+    // workers do not compete for it, so they may keep filling the cache while playback runs.
+    if (this.playbackActive && !this.remoteRenderer) return;
     this.frameQueue.enqueue(frame, priority);
     this.pumpCacheQueue();
   }
@@ -285,8 +288,11 @@ export class RamPreviewController {
   }
 
   startBackgroundBuildIfNeeded(): void {
-    if (!this.settings.enabled || !this.config || this.playbackActive) return;
-    if (this.isRealtimeCapable()) return;
+    if (!this.settings.enabled || !this.config) return;
+    if (this.playbackActive && !this.remoteRenderer) return;
+    // A realtime-capable comp needs no local cache, but building it on idle workers is free for
+    // the host and makes later scrubbing instant.
+    if (this.isRealtimeCapable() && !this.remoteRenderer) return;
     const { start, end } = this.getBuildRange();
     const total = Math.max(0, end - start);
     if (total === 0) return;
@@ -338,7 +344,7 @@ export class RamPreviewController {
   }
 
   private pumpCacheQueue(): void {
-    if (this.playbackActive) return;
+    if (this.playbackActive && !this.remoteRenderer) return;
     this.frameQueue.pump((frame, gen) => this.processCacheFrame(frame, gen));
   }
 
@@ -384,6 +390,10 @@ export class RamPreviewController {
         /* remote workers are optional; the local capture below remains authoritative */
       }
     }
+
+    // Falling through to a local capture during playback would reintroduce exactly the CPU
+    // contention §28.4 avoids; remote-only baking is the point of continuing here.
+    if (this.playbackActive) return;
 
     let ctx: CompFrameCaptureContext | null;
     try {

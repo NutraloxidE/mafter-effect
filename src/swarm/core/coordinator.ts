@@ -22,6 +22,7 @@ import type {
   SwarmSignalingEvent,
   SwarmSignal,
   SwarmJobId,
+  SwarmMetricsSnapshot,
   WorkerSnapshot,
 } from "./types";
 
@@ -120,6 +121,10 @@ export class SwarmCoordinator {
     return [...this.workers.values()].map((worker) => worker.snapshot);
   }
 
+  getMetrics(): SwarmMetricsSnapshot {
+    return this.metrics.snapshot();
+  }
+
   getAvailableCompute(): number {
     let total = 1;
     for (const worker of this.workers.values()) {
@@ -170,7 +175,10 @@ export class SwarmCoordinator {
 
   async renderPreviewFrame(job: SwarmRenderJob): Promise<SwarmRenderResult | null> {
     if (!this.hasAvailableWorker()) return null;
-    if (!this.isEligibleJob(job)) return null;
+    if (!this.isEligibleJob(job)) {
+      this.metrics.noteIneligibleJob();
+      return null;
+    }
     this.scheduler.enqueue(job);
     const result = await new Promise<SwarmRenderResult | null>((resolve) => {
       const timeoutId = window.setTimeout(() => {
@@ -361,6 +369,7 @@ export class SwarmCoordinator {
       return;
     }
     if (!this.scheduler.commit(result.jobId, worker.slotId)) return;
+    this.metrics.noteRemoteFrame();
     window.clearTimeout(waiter.timeoutId);
     this.jobs.delete(result.jobId);
     worker.snapshot.currentJobId = undefined;

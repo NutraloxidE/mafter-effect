@@ -153,6 +153,10 @@ export interface LeasedRenderJob extends SwarmRenderJob {
 }
 
 export interface SwarmMetricsSnapshot {
+  /** Frames actually rendered by a worker and accepted into the preview cache. */
+  remoteFrames: number;
+  /** Preview frames the swarm declined, e.g. files that could not travel with the job. */
+  ineligibleJobs: number;
   signalingRequests: number;
   p2pMessages: number;
   p2pRxBytes: number;

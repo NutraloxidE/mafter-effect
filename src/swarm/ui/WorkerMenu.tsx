@@ -17,7 +17,15 @@ export function WorkerMenu() {
   const snapshot = useSyncExternalStore(subscribeSwarmUi, getSwarmUiSnapshot, getSwarmUiSnapshot);
   const rootRef = useRef<HTMLSpanElement>(null);
 
+  const connectedWorkers = snapshot.workers.filter((worker) => worker.state === "connected").length;
+
   useEffect(() => {
+    // Installing the renderer is what tells the preview cache remote capacity exists, so only do
+    // it while a worker is actually connected.
+    if (connectedWorkers === 0) {
+      previewCacheService.setRemoteRenderer(null);
+      return;
+    }
     previewCacheService.setRemoteRenderer(async (request) => {
       const typed = request as RemotePreviewRequest;
       const job = buildPreviewSwarmJob(typed);
@@ -27,7 +35,7 @@ export function WorkerMenu() {
       return swarmUiStore.renderPreviewFrame(withFiles);
     });
     return () => previewCacheService.setRemoteRenderer(null);
-  }, []);
+  }, [connectedWorkers]);
 
   useEffect(() => {
     if (open) void swarmUiStore.start();
@@ -69,7 +77,18 @@ export function WorkerMenu() {
             )}
             {snapshot.pendingWorkers.length > 0 && <div style={{ marginTop: 10 }}><label style={labelStyle}>Waiting for approval</label>{snapshot.pendingWorkers.map((peer) => <div key={peer.peerId} style={pendingStyle}><span style={{ flex: 1 }}>{peer.label} wants to join</span><button style={allowButtonStyle} onClick={() => void swarmUiStore.approveWorker(peer.peerId, true)}>Allow</button><button style={rejectButtonStyle} onClick={() => void swarmUiStore.approveWorker(peer.peerId, false)}>Reject</button></div>)}</div>}
             {snapshot.workers.length > 0 && <div style={{ marginTop: 10 }}><label style={labelStyle}>Connected</label>{snapshot.workers.map((worker) => <WorkerStatusRow key={worker.slotId} worker={worker} />)}</div>}
-            {snapshot.session && <div style={computeStyle}>Available compute: {snapshot.availableCompute.toFixed(1)}× local</div>}
+            {snapshot.session && (
+              <div style={computeStyle}>
+                <div>Available compute: {snapshot.availableCompute.toFixed(1)}× local</div>
+                {snapshot.metrics && (
+                  <div style={{ color: "#8a8a8a", marginTop: 3 }}>
+                    Frames from workers: {snapshot.metrics.remoteFrames}
+                    {snapshot.metrics.localFallbackJobs > 0 && ` · fell back locally: ${snapshot.metrics.localFallbackJobs}`}
+                    {snapshot.metrics.ineligibleJobs > 0 && ` · kept local: ${snapshot.metrics.ineligibleJobs}`}
+                  </div>
+                )}
+              </div>
+            )}
             {snapshot.status === "active" && <button style={{ ...secondaryButtonStyle, marginTop: 10 }} onClick={() => swarmUiStore.stop()}>Stop worker session</button>}
           </div>
         </>
