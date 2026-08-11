@@ -1,4 +1,5 @@
 import type { Project, TimelineComposition } from "../../core/schema";
+import { compareFrames, SwarmFrameMismatchError, SWARM_FRAME_TOLERANCE } from "./frameVerification";
 import type { RenderProfile, SwarmRenderJob, SwarmRenderResult } from "./types";
 import { SWARM_RUNTIME_VERSION } from "./types";
 
@@ -57,6 +58,8 @@ export function createRemoteFrameProducer(
 }
 
 export interface RemoteProducerSetup {
+  /** Absolute frames to re-render locally and compare before trusting remote pixels. */
+  verifyFrames?: Set<number>;
   swarm?: { workerCount: number; submit: RemoteFrameProducerOptions["submit"]; timeoutMs?: number };
   project: Project;
   comp: TimelineComposition;
@@ -84,7 +87,19 @@ async function decodePngToCanvas(bytesBase64: string, width: number, height: num
 export function buildRemoteFrameProducers(setup: RemoteProducerSetup): ((frame: number) => Promise<HTMLCanvasElement>)[] {
   const count = setup.swarm?.workerCount ?? 0;
   if (count <= 0 || !setup.swarm) return [];
-  return Array.from({ length: count }, () => createRemoteFrameProducer({
+  const verify = setup.verifyFrames;
+  const wrap = (produce: (frame: number) => Promise<HTMLCanvasElement>) =>
+    async (frame: number): Promise<HTMLCanvasElement> => {
+      const remote = await produce(frame);
+      if (!verify?.has(frame)) return remote;
+      // Spot check: render it here too and keep the local frame, so a verified frame in the
+      // output never depends on the worker's rasterizer.
+      const local = await setup.renderLocally(frame);
+      const difference = compareFrames(remote, local);
+      if (difference > SWARM_FRAME_TOLERANCE) throw new SwarmFrameMismatchError(frame, difference);
+      return local;
+    };
+  return Array.from({ length: count }, () => wrap(createRemoteFrameProducer({
     project: setup.project,
     comp: setup.comp,
     renderRevision: setup.renderRevision,
@@ -93,7 +108,7 @@ export function buildRemoteFrameProducers(setup: RemoteProducerSetup): ((frame: 
     renderLocally: setup.renderLocally,
     decodePng: decodePngToCanvas,
     timeoutMs: setup.swarm!.timeoutMs ?? 60_000,
-  }));
+  })));
 }
 
 /**

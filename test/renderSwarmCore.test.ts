@@ -11,6 +11,7 @@ import {
 import { createBenchmarkJob, normalizedBenchmarkScore } from "../src/swarm/core/benchmark";
 import { collectJobFilePaths, isSwarmJobSelfContained } from "../src/swarm/core/jobFiles";
 import { buildExportSwarmJob, createRemoteFrameProducer, spotCheckFrames } from "../src/swarm/core/remoteFrameProducer";
+import { meanAbsoluteDifference, SWARM_FRAME_TOLERANCE } from "../src/swarm/core/frameVerification";
 import { AssetChunkAssembler, splitAssetIntoChunks } from "../src/swarm/transport/assetChunks";
 import { buildSwarmRenderCacheKey, validateSwarmRenderResult } from "../src/swarm/core/cacheKey";
 import { SwarmScheduler } from "../src/swarm/core/scheduler";
@@ -121,6 +122,28 @@ describe("Render Swarm core", () => {
 
     const job = buildExportSwarmJob(base, 4);
     expect([job.frameStart, job.frameEnd, job.compositionId]).toEqual([4, 5, "comp-1"]);
+  });
+
+  it("accepts rasterizer-level noise but rejects a frame with missing content", () => {
+    const size = 64 * 64 * 4;
+    const base = new Uint8ClampedArray(size).fill(128);
+
+    // Same pixels.
+    expect(meanAbsoluteDifference(base, base)).toBe(0);
+
+    // A different GPU / font rasterizer nudges channels slightly: still the same frame.
+    const noisy = new Uint8ClampedArray(base);
+    for (let i = 0; i < noisy.length; i += 1) noisy[i] = 128 + (i % 3);
+    expect(meanAbsoluteDifference(base, noisy)).toBeLessThan(SWARM_FRAME_TOLERANCE);
+
+    // A missing font or asset leaves whole regions blank.
+    const missing = new Uint8ClampedArray(base);
+    missing.fill(0, 0, Math.floor(size / 4));
+    expect(meanAbsoluteDifference(base, missing)).toBeGreaterThan(SWARM_FRAME_TOLERANCE);
+
+    // Different dimensions are never acceptable.
+    expect(meanAbsoluteDifference(base, new Uint8ClampedArray(size / 2).fill(128))).toBe(Infinity);
+    expect(meanAbsoluteDifference(new Uint8ClampedArray(0), new Uint8ClampedArray(0))).toBe(Infinity);
   });
 
   it("spot-checks a sample of frames including the first", () => {

@@ -1,8 +1,11 @@
 import { previewCacheService } from "../../editor/previewCacheService";
+import { useEditorStore } from "../../editor/store";
+import { attachJobFilesCached } from "../core/jobFiles";
+import type { ExportSwarmHooks } from "../../runtime/exporter";
 import { loadOrCreateDeviceIdentity } from "../core/identity";
 import { SwarmCoordinator } from "../core/coordinator";
 import { createSignalingBackend } from "../signaling/SignalingService";
-import type { SwarmMetricsSnapshot, SwarmRenderJob, SwarmRenderResult, SwarmSessionDescriptor, SwarmPeerDescriptor, WorkerSnapshot } from "../core/types";
+import type { SwarmAssetTransfer, SwarmMetricsSnapshot, SwarmRenderJob, SwarmRenderResult, SwarmSessionDescriptor, SwarmPeerDescriptor, WorkerSnapshot } from "../core/types";
 
 export interface SwarmUiSnapshot {
   status: "idle" | "starting" | "active" | "error";
@@ -87,6 +90,10 @@ class SwarmUiStore {
     this.update({ status: "idle", session: null, joinUrl: null, pendingWorkers: [], workers: [], availableCompute: 1, error: null });
   }
 
+  async preloadAssets(assets: SwarmAssetTransfer[]): Promise<void> {
+    await this.coordinator?.preloadAssets(assets);
+  }
+
   async renderPreviewFrame(job: SwarmRenderJob, timeoutMs?: number): Promise<SwarmRenderResult | null> {
     return this.coordinator?.renderPreviewFrame(job, timeoutMs) ?? null;
   }
@@ -119,3 +126,34 @@ class SwarmUiStore {
 }
 
 export const swarmUiStore = new SwarmUiStore();
+
+/**
+ * Export-time swarm hooks, or undefined when no worker is connected — an export with no workers
+ * must take exactly the path it always took.
+ */
+export function swarmExportHooks(): ExportSwarmHooks | undefined {
+  // Opt-in until remote frames are proven byte-comparable: a distributed export currently
+  // produces a different zip size than the local one, so it may not be pixel-identical yet.
+  if (globalThis.localStorage?.getItem("mafter.swarm.export") !== "1") return undefined;
+  const snapshot = swarmUiStore.getSnapshot();
+  const workerCount = snapshot.workers.filter((worker) => worker.state === "connected" && worker.available !== false).length;
+  if (workerCount === 0) return undefined;
+  return {
+    workerCount,
+    preload: async (project, comp) => {
+      const state = useEditorStore.getState();
+      const job = { project, compositionId: comp.id } as unknown as Parameters<typeof attachJobFilesCached>[0];
+      const withFiles = await attachJobFilesCached(job, comp, state.getFs(), String(state.projectRevision ?? 0));
+      await swarmUiStore.preloadAssets(withFiles.assets ?? []);
+    },
+    submit: async (job, timeoutMs) => {
+      const comp = job.project.compositions.find((candidate) => candidate.id === job.compositionId);
+      if (!comp || comp.kind !== "timeline") return null;
+      // Export jobs need their footage and scripts attached exactly like preview jobs do;
+      // without this every job is declined as not self-contained.
+      const state = useEditorStore.getState();
+      const withFiles = await attachJobFilesCached(job, comp, state.getFs(), String(state.projectRevision ?? 0));
+      return swarmUiStore.renderPreviewFrame(withFiles, timeoutMs);
+    },
+  };
+}
