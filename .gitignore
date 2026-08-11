@@ -27,3 +27,6 @@ coverage/
 feedback/inbox/
 feedback/reports/
 release.zip
+
+swarm-export-*.zip
+swarm-export-ab.mjs

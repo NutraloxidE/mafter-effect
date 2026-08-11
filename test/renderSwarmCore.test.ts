@@ -11,7 +11,7 @@ import {
 import { createBenchmarkJob, normalizedBenchmarkScore } from "../src/swarm/core/benchmark";
 import { collectJobFilePaths, isSwarmJobSelfContained } from "../src/swarm/core/jobFiles";
 import { buildExportSwarmJob, createRemoteFrameProducer, spotCheckFrames } from "../src/swarm/core/remoteFrameProducer";
-import { meanAbsoluteDifference, SWARM_FRAME_TOLERANCE } from "../src/swarm/core/frameVerification";
+import { meanAbsoluteDifference, pixelSpread, SWARM_FRAME_TOLERANCE } from "../src/swarm/core/frameVerification";
 import { AssetChunkAssembler, splitAssetIntoChunks } from "../src/swarm/transport/assetChunks";
 import { buildSwarmRenderCacheKey, validateSwarmRenderResult } from "../src/swarm/core/cacheKey";
 import { SwarmScheduler } from "../src/swarm/core/scheduler";
@@ -151,8 +151,15 @@ describe("Render Swarm core", () => {
     expect(spotCheckFrames(150)).toContain(0);
     expect(spotCheckFrames(150).length).toBeGreaterThanOrEqual(7);
     expect(spotCheckFrames(150).every((f) => f >= 0 && f < 150)).toBe(true);
-    // A tiny export still verifies something.
-    expect(spotCheckFrames(3)).toEqual([0]);
+    // A short export must not collapse to a single checked frame: 5% of 24 rounds to 1.
+    expect(spotCheckFrames(24).length).toBeGreaterThanOrEqual(4);
+    expect(spotCheckFrames(3).length).toBe(3);
+
+    // A frame that lost its footage is nearly flat compared with a real one.
+    const real = new Uint8ClampedArray(64 * 64 * 4);
+    for (let i = 0; i < real.length; i += 1) real[i] = (i * 37) % 256;
+    const blank = new Uint8ClampedArray(64 * 64 * 4).fill(16);
+    expect(pixelSpread(blank)).toBeLessThan(pixelSpread(real) * 0.2);
   });
 
   it("round-trips the worker availability message", () => {
