@@ -52,6 +52,7 @@ export class RamPreviewController {
   private playbackHits = 0;
   private playbackAttempts = 0;
   private blobUrlCache = new Map<string, string>();
+  private localCaptureChain: Promise<void> = Promise.resolve();
   private readonly frameQueue = new FrameCacheQueue();
   /** §28.4 — 再生中は bake 休止（読み取りのみ）。 */
   private playbackActive = false;
@@ -68,8 +69,10 @@ export class RamPreviewController {
     this.settings = settings;
   }
 
-  setRemoteRenderer(renderer: RemotePreviewRenderer | null): void {
+  setRemoteRenderer(renderer: RemotePreviewRenderer | null, remoteCapacity = 0): void {
     this.remoteRenderer = renderer;
+    // Local capture stays serial (one CPU); remote frames may overlap, one per connected worker.
+    this.frameQueue.setConcurrency(renderer ? 1 + Math.max(0, remoteCapacity) : 1);
   }
 
   updateSettings(settings: PreviewCacheSettings): void {
@@ -395,6 +398,21 @@ export class RamPreviewController {
     // contention §28.4 avoids; remote-only baking is the point of continuing here.
     if (this.playbackActive) return;
 
+    // With remote pumping the queue runs several frames at once; local captures share one
+    // capture context and must not overlap.
+    const previous = this.localCaptureChain;
+    let release = (): void => {};
+    this.localCaptureChain = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    try {
+      await this.captureFrameLocally(frame, gen, key);
+    } finally {
+      release();
+    }
+  }
+
+  private async captureFrameLocally(frame: number, gen: number, key: string): Promise<void> {
+    if (!this.settings.enabled || !this.config || gen !== this.frameQueue.getGeneration()) return;
     let ctx: CompFrameCaptureContext | null;
     try {
       ctx = await this.ensureCaptureCtx();

@@ -35,6 +35,7 @@ class PreviewCacheService {
   private precompListeners = new Set<CachedPrecompFramesListener>();
   private pollId: number | null = null;
   private remoteRenderer: RemotePreviewRenderer | null = null;
+  private remoteCapacity = 0;
 
   init(fs: FileSystem, settings: PreviewCacheSettings = loadPreviewCacheSettings()): void {
     if (this.store) return;
@@ -45,7 +46,7 @@ class PreviewCacheService {
       disk,
     });
     this.controller = new RamPreviewController(this.store, fs, settings);
-    this.controller.setRemoteRenderer(this.remoteRenderer);
+    this.controller.setRemoteRenderer(this.remoteRenderer, this.remoteCapacity);
     this.controller.onFrameCached = () => void this.notifyCachedFrames();
     this.frameRenderCache = new TieredFrameRenderCache(this.store);
     this.startPolling();
@@ -63,9 +64,10 @@ class PreviewCacheService {
     return this.frameRenderCache;
   }
 
-  setRemoteRenderer(renderer: RemotePreviewRenderer | null): void {
+  setRemoteRenderer(renderer: RemotePreviewRenderer | null, remoteCapacity = 0): void {
     this.remoteRenderer = renderer;
-    this.controller?.setRemoteRenderer(renderer);
+    this.remoteCapacity = remoteCapacity;
+    this.controller?.setRemoteRenderer(renderer, remoteCapacity);
   }
 
   updateSettings(settings: PreviewCacheSettings): void {

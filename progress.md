@@ -2949,3 +2949,19 @@ WP 分割（この順で実装する）:
 - worker が 0 のときは**従来挙動と完全に同じ**。`setRemoteRenderer` は接続 worker がいる間だけ設定する（常設だと realtime コンプをローカルで焼き始めてしまうため）。
 
 未実施: この変更後の実機再計測（デプロイ待ち）。WP-4 / WP-6 は未着手。
+
+### 2026-08-11 (Claude Opus 5) - WP-5 続き: 分散が「1 件ずつしか飛ばない」ボトルネック
+
+実機再計測（ホスト 1 + worker 1、本番デプロイ、Solid+Text 16 レイヤー、preview cache ON）:
+
+- 前回修正の効果を確認。`Frames from workers` が **0 → 実際に増加**（realtime コンプでも worker が bake するようになった）。
+- ただし **ベースライン 2.80 fps**（20 秒で 94 → 150）。48 レイヤーの重いコンプでは約 1 fps だった。
+- 真因: `FrameCacheQueue.runPump()` が `await processor(frame)` で **1 フレームずつ直列**に回す。リモート往復（送信 → worker 描画 → PNG 返送）がこの直列ループに丸ごと入るため、**常に同時 1 ジョブ**。worker を増やしても 2 台目以降は待機で、`Available compute: 3.3×` の表示と実効が乖離する。ローカル描画前提（CPU 1 つなので直列が正しい）の設計がリモートにもそのまま適用されていた。
+
+修正:
+- `FrameCacheQueue.setConcurrency(n)` を追加し、`pump()` が同時 n 本のループを回すようにした。既定は 1 = **従来と完全に同じ直列**。
+- `setRemoteRenderer(renderer, remoteCapacity)` で接続 worker 数を渡し、並列度を `1 + worker 数` に設定。worker 0 なら 1 に戻る。
+- ローカル capture は capture context を共有するため、`localCaptureChain` の promise チェーンで**直列を強制**（並列 pump 中に 2 本走らせない）。リモートは並列、ローカルは直列という非対称を明示した。
+- テスト: `test/frameCacheQueue.test.ts` に並列度の回帰を追加（既定 1 で peak in-flight = 1、容量 3 で 1 < peak <= 3）。
+
+検証: typecheck PASS、frameCacheQueue 4/4 PASS、swarm 12/12 PASS。`npm test` は 1449/1450 PASS で、唯一の失敗は既知フレーキーの `projectBins`（単独実行では 7/7 PASS）。

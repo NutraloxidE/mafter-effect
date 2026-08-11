@@ -41,4 +41,31 @@ describe("FrameCacheQueue", () => {
     await new Promise((r) => setTimeout(r, 30));
     expect(order.length).toBeLessThanOrEqual(1);
   });
+
+  it("runs one frame at a time by default and overlaps up to the remote capacity", async () => {
+    const peakInFlight = async (concurrency: number): Promise<number> => {
+      const q = new FrameCacheQueue();
+      q.setConcurrency(concurrency);
+      q.enqueueRange(0, 6, "background");
+      let inFlight = 0;
+      let peak = 0;
+      let finished = 0;
+      q.pump(async () => {
+        inFlight += 1;
+        peak = Math.max(peak, inFlight);
+        await new Promise((r) => setTimeout(r, 5));
+        inFlight -= 1;
+        finished += 1;
+      });
+      while (finished < 6) await new Promise((r) => setTimeout(r, 5));
+      return peak;
+    };
+
+    // Local capture must stay serial: one CPU, one capture context.
+    expect(await peakInFlight(1)).toBe(1);
+    // With workers connected several frames may be rendering remotely at once.
+    const parallel = await peakInFlight(3);
+    expect(parallel).toBeGreaterThan(1);
+    expect(parallel).toBeLessThanOrEqual(3);
+  });
 });
