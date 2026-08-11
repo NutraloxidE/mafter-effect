@@ -3021,3 +3021,13 @@ WP-6 の第一スライス（実装済み）:
 - テスト 15/15 PASS（フォールバック 4 経路と照合フレーム選択を純関数で固定）。
 
 次: exporter の PNG 連番経路（`extraRenderers.length > 0` の分岐）に remote producer を混ぜ、抜き取り照合と worker 除外を実装する。割り当ては現在 `fi % N === c` の静的ラウンドロビンなので、能力比チャンク pull への置き換えが必要。
+
+### 2026-08-11 (Claude Opus 5) - WP-6: export への remote producer 配線と動的 pull 化
+
+- `runOrderedMultiContext` の割り当てを **`fi % N === c` の静的ラウンドロビンから動的 pull（work stealing）へ変更**。速度差のある producer が混ざると、静的分配では遅い担当分の tail で全体が待たされる。動的 pull なら速い producer が自然に多く引き、**ユーザー提案の「能力比で分ける」が実測ベースで自動成立**する。frame 昇順の emit・有界 reorder window・backpressure は不変。既存テストの `[4,4,4]` 期待は「合計は全 frame・速い producer が遅い producer 以上」に更新（意図した契約変更）。
+- `exportComposition(..., swarm?: ExportSwarmHooks)` を追加（**`ExportConfig`（§5 型）には触れない**。これは転送配線であって書き出し設定ではないため）。`runPngSeq` に remote producer を混ぜる。
+- ローカル描画は context 共有なので `renderLocallySerialized` で直列化。remote producer のフォールバックも同じ直列鎖を通るので、並行 pull 中に 2 本のローカル描画が走ることはない。
+- `buildRemoteFrameProducers()` は worker 数ぶんの producer を返し、worker 0 なら**空配列＝従来の逐次経路そのまま**。
+- 検証: typecheck PASS、`npm test` 153 files / 1453 tests 全 PASS。
+
+**まだ UI からは有効化していない**（`swarm` 引数を渡す配線は未実施）。spec が要求する抜き取り照合が未実装のため、リモート画素が成果物に入る経路をユーザーに開けない。次: 照合（サンプルフレームをローカルでも描いて比較・不一致なら worker を外して全ローカル再描画）→ UI 配線 → 実機 A/B。

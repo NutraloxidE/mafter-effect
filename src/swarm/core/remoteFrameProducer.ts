@@ -56,6 +56,46 @@ export function createRemoteFrameProducer(
   };
 }
 
+export interface RemoteProducerSetup {
+  swarm?: { workerCount: number; submit: RemoteFrameProducerOptions["submit"]; timeoutMs?: number };
+  project: Project;
+  comp: TimelineComposition;
+  renderRevision: string;
+  profile: RenderProfile;
+  renderLocally: (frame: number) => Promise<HTMLCanvasElement>;
+}
+
+async function decodePngToCanvas(bytesBase64: string, width: number, height: number): Promise<HTMLCanvasElement> {
+  const text = atob(bytesBase64);
+  const bytes = new Uint8Array(text.length);
+  for (let i = 0; i < text.length; i += 1) bytes[i] = text.charCodeAt(i);
+  const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("2d context unavailable for a remote frame");
+  ctx.drawImage(bitmap, 0, 0, width, height);
+  bitmap.close?.();
+  return canvas;
+}
+
+/** One producer per connected worker, or none at all when the swarm is not in play. */
+export function buildRemoteFrameProducers(setup: RemoteProducerSetup): ((frame: number) => Promise<HTMLCanvasElement>)[] {
+  const count = setup.swarm?.workerCount ?? 0;
+  if (count <= 0 || !setup.swarm) return [];
+  return Array.from({ length: count }, () => createRemoteFrameProducer({
+    project: setup.project,
+    comp: setup.comp,
+    renderRevision: setup.renderRevision,
+    profile: setup.profile,
+    submit: setup.swarm!.submit,
+    renderLocally: setup.renderLocally,
+    decodePng: decodePngToCanvas,
+    timeoutMs: setup.swarm!.timeoutMs ?? 60_000,
+  }));
+}
+
 /**
  * Frames to re-render locally and compare, so a worker that produces subtly different pixels is
  * caught before its output reaches the file. Always includes the first frame: a mismatch there
