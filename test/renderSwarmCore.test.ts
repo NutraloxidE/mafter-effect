@@ -126,6 +126,38 @@ describe("Render Swarm core", () => {
     expect([job.frameStart, job.frameEnd, job.compositionId]).toEqual([4, 5, "comp-1"]);
   });
 
+  it("reads a range job's zip by offset from the block start, not by absolute frame", async () => {
+    const comp = { id: "comp-1", name: "Main", kind: "timeline" as const, width: 320, height: 180, fps: 30, duration: 10, objects: [] } as never;
+    const project = { schemaVersion: 1, meta: { name: "t", createdAt: "", updatedAt: "" }, assets: [], compositions: [comp], rootComposition: "comp-1", pluginRefs: [] } as never;
+    const localCanvas = {} as HTMLCanvasElement;
+    // The worker renders the block through exportComposition, whose zip names frames from the
+    // start of the range it was given: a block at frame 142 arrives as 0..2, not 142..144.
+    const blockCanvases = [{}, {}, {}] as HTMLCanvasElement[];
+    let submitted = 0;
+    const produce = createRemoteFrameProducer({
+      project, comp, renderRevision: "rev-1",
+      profile: { quality: "draft" as const, proxy: "full", width: 320, height: 180 },
+      renderLocally: async () => localCanvas,
+      decodePng: async () => localCanvas,
+      decodeZip: async () => new Map(blockCanvases.map((canvas, index) => [index, canvas])),
+      timeoutMs: 30_000,
+      totalFrameEnd: 145,
+      submit: async () => {
+        submitted += 1;
+        return {
+          jobId: "j", renderRevision: "rev-1", compositionId: "comp-1", frameStart: 142, frameEnd: 145,
+          width: 320, height: 180, format: "png-zip" as const, bytesBase64: "AQ==", byteLength: 1, runtimeVersion: "runtime-1",
+        };
+      },
+    });
+
+    expect(await produce(142)).toBe(blockCanvases[0]);
+    // The rest of the block is served from the prefetch instead of costing another round trip.
+    expect(await produce(143)).toBe(blockCanvases[1]);
+    expect(await produce(144)).toBe(blockCanvases[2]);
+    expect(submitted).toBe(1);
+  });
+
   it("accepts rasterizer-level noise but rejects a frame with missing content", () => {
     const size = 64 * 64 * 4;
     const base = new Uint8ClampedArray(size).fill(128);
@@ -285,6 +317,38 @@ describe("Render Swarm core", () => {
     const other = await new DurableSwarmSession(kv)
       .createSession({ ...host, hostDeviceId: "device-B" }, "CODE12", "RANDOM000003");
     expect(other.sessionId).not.toBe(first.sessionId);
+  });
+
+  it("re-announces workers that rejoined while the host was down", async () => {
+    const storage = new Map<string, unknown>();
+    const kv = {
+      get: async <T,>(key: string) => storage.get(key) as T | undefined,
+      put: async (key: string, value: unknown) => { storage.set(key, value); },
+      delete: async (key: string) => { storage.delete(key); },
+    };
+    const host = { hostPeerId: "host-1", hostDeviceId: "device-A", hostLabel: "Host" };
+    const session = await new DurableSwarmSession(kv).createSession(host, "CODE12", "RANDOM000001");
+    const worker = (peerId: string, requestedAt: number) => ({
+      peerId, deviceId: "worker-device", label: "Worker", publicKeyJwk: {}, requestedAt,
+    });
+    await new DurableSwarmSession(kv).joinSession({ joinCode: "CODE12", peer: worker("peer-1", 1) });
+    // The host goes away; the worker notices the drop and rejoins under a new peer id, which
+    // queues an approval request against a host peer that is no longer polling.
+    await new DurableSwarmSession(kv).joinSession({ joinCode: "CODE12", peer: worker("peer-2", 2) });
+
+    const restarted = await new DurableSwarmSession(kv)
+      .createSession({ ...host, hostPeerId: "host-2" }, "CODE12", "RANDOM000002");
+    expect(restarted.sessionId).toBe(session.sessionId);
+
+    // The new host learns about the waiting worker instead of leaving it stranded, and hears
+    // about it once — dead peer ids from earlier rejoins are dropped.
+    const events = await new DurableSwarmSession(kv).takeEvents(session.sessionId, "host-2");
+    expect(events).toEqual([{ type: "peer-join-request", peer: worker("peer-2", 2) }]);
+
+    // Approval reaches the worker under the peer id it is actually polling with.
+    await new DurableSwarmSession(kv).approveJoin(session.sessionId, "host-2", "peer-2", true);
+    expect(await new DurableSwarmSession(kv).takeEvents(session.sessionId, "peer-2"))
+      .toEqual([{ type: "peer-approved", peer: worker("peer-2", 2), hostPeerId: "host-2" }]);
   });
 
   it("keeps rendezvous state durable across separate handler instances", async () => {

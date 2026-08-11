@@ -1,5 +1,39 @@
 # Progress
 
+### 2026-08-12（Claude Opus 5）— swarm: 接続時にアセットを先送り＋差分更新
+
+- **依頼**: 「繋いだ時点で、ホストからワーカーに P2P でデータを送る、追加アセットがあったら逐一更新」。
+- **これまでの挙動**: アセット転送は **export 開始時の `preload`** と **job-offer の直前**だけ。ワーカーが接続してから最初の書き出しまでの待ち時間（＝一番暇な時間）に何も送っておらず、最初のジョブが転送を丸ごと被ってデッドラインを落としていた。
+- **やったこと**（配線のみ・プロトコル/スキーマ不変）:
+  - [src/swarm/ui/swarmStore.ts](src/swarm/ui/swarmStore.ts): `syncWorkerAssets()` を追加し、**(a) ワーカーが connected になった時**（`refresh` で connected peerId 集合の変化を検出）と **(b) プロジェクト編集で参照ファイル一覧が変わった時**（`useEditorStore.subscribe` → 1.5s デバウンス）に現在コンプの footage/script を push。
+  - 再送判定は **peerId** で行う（slotId は trust 再利用で同じ値のまま戻るため、リロードしたワーカーに再送されない）。
+  - 編集ごとの再読込を避けるため、`collectJobFilePaths` の**パス一覧が変わった時だけ**再送（全 footage の再 read+hash を通常編集の裏で走らせない）。
+  - [src/swarm/core/coordinator.ts](src/swarm/core/coordinator.ts): `sentAssetHashes` を**送信前に**登録（従来は送信後）。preload と job-offer が同時に走ると同じファイルを二重送信していた。data channel は順序保証があるので、転送中のアセットを skip した job-offer もチャンクの後ろに届く。
+- **効果**: 転送はワーカーが暇な間に済み、以後は差分のみ。`preloadAssets` は contentHash 単位で dedupe するので何度呼んでも余分な送信は起きない。
+- **テスト**: `npx tsc --noEmit` クリーン、`npx vitest run` 153 files / 1460 tests PASS。`src/runtime` 不変のため `build:player` 不要。
+
+### 2026-08-12（Claude Opus 5）— swarm: ワーカーの成果物が 1 枚も使われていなかった（フレーム索引のズレ）
+
+- **実測環境**: ホスト＝ローカル本番ビルド（`vite preview` https://localhost:5175）、ワーカー＝pages.dev の別マシン（join code ZCZZ8F）。シグナリングは共有 CF Worker、描画データは Direct P2P（TURN 経由なし）。
+- **症状**: `Frames from workers: 10` と出ているのに、書き出しは **102 秒**（ローカル単独 80.4 秒より遅い）。
+- **真因**: `exportComposition` の png-seq zip は **範囲先頭からの 0 始まり**でフレームを命名する（[exporter.ts](src/runtime/exporter.ts) の `frame_${fi}`、`fi` は絶対フレームでなく索引）。ワーカーが `[142,150)` を書き出すと zip は `frame_000000..000007`。ホストの `decodeZipToFrames` はこれを**絶対フレーム番号として解釈**していたため:
+  - `frames.get(142)` が undefined → 自分のフレームすら取り出せず `renderLocally(142)` に素通り
+  - prefetch には 0..7 というキーが入り一度もヒットしない（さらに後半でフレーム 0..7 を要求されたら 142..149 の絵を返す**誤出力**の危険もあった）
+  - つまり **ホストが 150 枚すべてを描き直した上に、リモートの往復待ちを上乗せしていた**
+  - パネルの「Frames from workers」は結果の受信数を数えるので、1 枚も使われていなくても 10 と表示される
+- **修正**: [remoteFrameProducer.ts](src/swarm/core/remoteFrameProducer.ts) で zip のキーを**ブロック先頭からのオフセット**として読む（`frames.get(0)` が自分、`frame + index` を prefetch に登録）。回帰テストを `test/renderSwarmCore.test.ts` に追加（1 回の submit で 142/143/144 が全部返ること）。
+- **副産物: ジョブごとの export セットアップは重くない**。バグのおかげで 7,6,5,4,3,2 枚のジョブが揃ったので所要を回帰すると **1 フレーム約 1.57 秒・切片（準備コスト）約 50ms**。前セッションで「次の最適化候補＝worker の export セッション再利用」と書いたが、**この仮説は棄却**。ワーカーが遅いのは準備コストではなく素の描画が遅い（ホスト 0.53 秒/フレームに対し約 3 倍）。
+- **理論上限**: ホスト 1.87 fps ＋ ワーカー 0.61 fps ＝ 2.48 fps → 150 枚で **約 60 秒**（ローカル単独比 25% 短縮）。1 台構成ではワーカーの取り分は全体の約 25% が上限。
+- **ローカル単独の基準（同一ビルド・同一マシン）**: 80.5 秒 / zip 51392011 バイト。pages.dev ビルドの 80.3 秒・**同一バイト数**なので比較可能。
+
+### 2026-08-12（Claude Opus 5）— swarm: ホスト再起動でワーカーが永久に取り残される（シグナリング）
+
+- **症状**: 2 回目の計測でワーカーが 4 分待っても再参加せず（`panel: undefined`）、単独書き出しになった。
+- **真因**（[durableSessionCore.ts](src/swarm/signaling/durableSessionCore.ts)）: ホストが落ちるとワーカーは自力で `join()` し直すが、**セッションはホストより長生きなので join 自体は成功**し `waiting-approval` に落ち着く。この状態では `scheduleReconnect` が回らない（失敗していないので）。一方 `joinSession` は `peer-join-request` を**その時点の `hostPeerId` のキュー**に積むため、再起動して新しい `hostPeerId` で polling し始めたホストはその要求を一生読まない。→ **ホスト再起動のたびに、その間に再参加したワーカーが恒久的に取り残される。**
+- **修正**: `createSession` の再アタッチ経路で、既知ピアを**新しい hostPeerId へ announce し直す**（旧ホストのキューは破棄）。あわせて `newestPeerPerDevice` でデバイスごとに最新の peerId だけを残す（ワーカーは再参加のたびに peerId が変わるので、長寿命セッションが死んだ id を溜め込み、再アタッチしたホストに大量の死んだピアを渡してしまう）。
+- **テスト**: `re-announces workers that rejoined while the host was down` を追加。`npx vitest run` 1462 tests PASS、`tsc` クリーン。
+- **デプロイ**: DO は Cloudflare 側で動くので `npx wrangler deploy` 実行済み（version c8f6e9d7）。
+
 ### 2026-07-20（Claude Opus 4.8）— browser export 最大高速化 Phase 6（実験的 multi-render-context）実装・計測・既定 OFF で採用
 
 - **依頼**: `claude/phase-6-implementation-test-n5u5zo` ブランチの続きとして `browser-export-max-speed-plan.md` の **Phase 6（Experimental multi-render-context）** を実装・テストし、いい感じならコミット。

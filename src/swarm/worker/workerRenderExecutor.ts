@@ -1,4 +1,4 @@
-import { exportComposition } from "../../runtime/exporter";
+import { exportComposition, type ExportSession } from "../../runtime/exporter";
 import { MemoryFs } from "../../fs/MemoryFs";
 import { captureCompFramePng, createCompFrameCaptureContext } from "../../runtime/compFrameCapture";
 import { sha256Hex } from "../core/assetManifest";
@@ -32,6 +32,7 @@ function exportBackground(job: SwarmRenderJob, comp: TimelineComposition): strin
 export class WorkerRenderExecutor {
   private readonly assetCache = new BoundedWorkerAssetCache();
   private cached: CachedContext | null = null;
+  private session: { key: string; holder: { current: ExportSession | null } } = { key: "", holder: { current: null } };
 
   /** Stores a fully reassembled file; the cache verifies its content hash before accepting it. */
   async cacheAsset(transfer: SwarmAssetTransfer): Promise<boolean> {
@@ -46,6 +47,14 @@ export class WorkerRenderExecutor {
   async renderRange(job: SwarmRenderJob, fs: MemoryFs, composition: TimelineComposition): Promise<SwarmRenderResult> {
     const startedAt = performance.now();
     const scale = job.profile.width / Math.max(1, composition.width);
+    // Building the export's offscreen world costs about as much as rendering eight frames — a
+    // whole job — and reloads the footage every time, which on a slow machine is exactly when the
+    // decode wait times out and the block comes back without its video. One world per revision.
+    const sessionKey = [job.renderRevision, job.compositionId, job.profile.quality, job.profile.width].join("|");
+    if (this.session.key !== sessionKey) {
+      this.session.holder.current?.dispose();
+      this.session = { key: sessionKey, holder: { current: null } };
+    }
     const result = await exportComposition(job.project, job.compositionId, fs, {
       range: [job.frameStart, job.frameEnd],
       fps: composition.fps,
@@ -53,7 +62,7 @@ export class WorkerRenderExecutor {
       format: "png-seq",
       alpha: job.profile.alpha ?? false,
       textRenderMode: job.profile.quality === "draft" ? "draft" : "precise",
-    }, () => {});
+    }, () => {}, undefined, undefined, { strictFootage: true, session: this.session.holder });
     const bytes = new Uint8Array(await result.blob.arrayBuffer());
     return {
       jobId: job.id,
@@ -140,7 +149,8 @@ export class WorkerRenderExecutor {
       job.profile.height,
     ].join("|");
     if (this.cached?.key === key) return this.cached.context;
-    this.dispose();
+    this.cached?.context.dispose();
+    this.cached = null;
     const context = await createCompFrameCaptureContext(job.project, job.compositionId, fs, {
       textQuality: job.profile.quality,
       proxyScale: job.profile.width / Math.max(1, composition.width),
@@ -153,6 +163,8 @@ export class WorkerRenderExecutor {
   dispose(): void {
     this.cached?.context.dispose();
     this.cached = null;
+    this.session.holder.current?.dispose();
+    this.session = { key: "", holder: { current: null } };
   }
 
   async benchmark(job: SwarmRenderJob): Promise<{ score: number; framesPerSecond: number; renderMs: number }> {
