@@ -69,6 +69,9 @@ export class WorkerRuntime {
     } catch (error) {
       this.lastError = error instanceof Error ? error.message : "Unable to join swarm";
       this.setState("error");
+      // The host may simply be restarting; with a fixed join code it will come back on the same
+      // one, so keep trying instead of stranding a worker someone has to reopen by hand.
+      this.scheduleReconnect();
       throw error;
     }
   }
@@ -103,6 +106,7 @@ export class WorkerRuntime {
     if (event.type === "session-expired") {
       this.lastError = "This worker session expired";
       this.setState("error");
+      this.scheduleReconnect();
     }
   }
 

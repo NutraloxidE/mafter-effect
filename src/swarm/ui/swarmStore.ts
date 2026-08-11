@@ -48,10 +48,14 @@ class SwarmUiStore {
     try {
       const identity = await loadOrCreateDeviceIdentity(localStorage);
       const hostPeerId = globalThis.crypto?.randomUUID?.() ?? `host-${Date.now()}`;
+      // A fixed code lets a host restart without stranding its workers: they keep retrying the
+      // same code and reattach on their own. Same device only — see the durable session core.
+      const joinCode = globalThis.localStorage?.getItem("mafter.swarm.hostCode")?.trim().toUpperCase();
       const session = await this.backend.createSession({
         hostPeerId,
         hostDeviceId: identity.deviceId,
         hostLabel: typeof navigator !== "undefined" ? navigator.platform || "Mafter Host" : "Mafter Host",
+        ...(joinCode ? { joinCode } : {}),
       });
       const coordinator = new SwarmCoordinator({
         backend: this.backend,

@@ -27,6 +27,12 @@ export interface CreateSwarmSessionInput {
   hostDeviceId: SwarmDeviceId;
   hostLabel: string;
   expiresInMs?: number;
+  /**
+   * Reattach to this join code instead of minting a new one. A host that restarts otherwise
+   * strands every connected worker on a code that no longer exists, which makes an unattended
+   * measurement loop impossible.
+   */
+  joinCode?: string;
 }
 
 export interface JoinSwarmSessionInput {

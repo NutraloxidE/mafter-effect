@@ -265,6 +265,27 @@ describe("Render Swarm core", () => {
     expect(normalizedBenchmarkScore(30, 0)).toBe(0);
   });
 
+  it("lets the same host reattach to its join code and refuses another device", async () => {
+    const storage = new Map<string, unknown>();
+    const kv = {
+      get: async <T,>(key: string) => storage.get(key) as T | undefined,
+      put: async (key: string, value: unknown) => { storage.set(key, value); },
+      delete: async (key: string) => { storage.delete(key); },
+    };
+    const host = { hostPeerId: "host-1", hostDeviceId: "device-A", hostLabel: "Host" };
+    const first = await new DurableSwarmSession(kv).createSession(host, "CODE12", "RANDOM000001");
+
+    // Same device, new peer id (a restarted host): same session, so approved workers stay valid.
+    const again = await new DurableSwarmSession(kv)
+      .createSession({ ...host, hostPeerId: "host-2" }, "CODE12", "RANDOM000002");
+    expect(again.sessionId).toBe(first.sessionId);
+
+    // A different device asking for the same code does not inherit the session.
+    const other = await new DurableSwarmSession(kv)
+      .createSession({ ...host, hostDeviceId: "device-B" }, "CODE12", "RANDOM000003");
+    expect(other.sessionId).not.toBe(first.sessionId);
+  });
+
   it("keeps rendezvous state durable across separate handler instances", async () => {
     // Durable storage is shared; each request builds a fresh session object, exactly like a
     // Durable Object serving successive requests (and unlike the per-instance Vercel Map).

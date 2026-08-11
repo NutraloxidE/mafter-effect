@@ -18,6 +18,8 @@ export interface DurableKv {
 interface SessionRecord {
   descriptor: SwarmSessionDescriptor;
   hostPeerId: string;
+  /** Only this device may reattach to the session; possession of the code alone is not enough. */
+  hostDeviceId?: string;
   peers: Record<string, SwarmPeerDescriptor>;
 }
 
@@ -50,12 +52,26 @@ export class DurableSwarmSession {
   constructor(private readonly kv: DurableKv) {}
 
   async createSession(input: CreateSwarmSessionInput, joinCode: string, random: string): Promise<SwarmSessionDescriptor> {
+    const expiresAt = Date.now() + Math.max(60_000, input.expiresInMs ?? SWARM_SESSION_TTL_MS);
+    const existing = await this.kv.get<SessionRecord>(SESSION_KEY);
+    // Reattaching keeps the session id, so approved workers stay approved and reconnect on their
+    // own; a different device asking for the same code gets a fresh session instead.
+    if (existing && existing.descriptor.joinCode === joinCode && existing.hostDeviceId === input.hostDeviceId) {
+      const descriptor = { ...existing.descriptor, expiresAt };
+      await this.kv.put(SESSION_KEY, { ...existing, descriptor, hostPeerId: input.hostPeerId });
+      return descriptor;
+    }
     const descriptor: SwarmSessionDescriptor = {
       sessionId: makeSessionId(joinCode, random),
       joinCode,
-      expiresAt: Date.now() + Math.max(60_000, input.expiresInMs ?? SWARM_SESSION_TTL_MS),
+      expiresAt,
     };
-    await this.kv.put(SESSION_KEY, { descriptor, hostPeerId: input.hostPeerId, peers: {} } satisfies SessionRecord);
+    await this.kv.put(SESSION_KEY, {
+      descriptor,
+      hostPeerId: input.hostPeerId,
+      hostDeviceId: input.hostDeviceId,
+      peers: {},
+    } satisfies SessionRecord);
     return descriptor;
   }
 
