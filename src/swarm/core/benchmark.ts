@@ -1,3 +1,44 @@
+import type { SwarmRenderJob } from "./types";
+
+/**
+ * Self-contained benchmark job: an empty 320x180 timeline frame, so a worker can be scored the
+ * moment it connects instead of waiting for the first distributable preview job (which may never
+ * arrive for projects the swarm cannot take). Being project-independent also makes scores
+ * comparable across sessions.
+ */
+export function createBenchmarkJob(runtimeVersion: string): SwarmRenderJob {
+  const compositionId = "swarm-benchmark-comp";
+  return {
+    id: `swarm-benchmark-${Date.now()}`,
+    kind: "preview-frame",
+    renderRevision: "swarm-benchmark",
+    compositionId,
+    frameStart: 0,
+    frameEnd: 1,
+    priority: "background",
+    profile: { quality: "draft", proxy: "half", width: 320, height: 180 },
+    runtimeVersion,
+    project: {
+      schemaVersion: 1,
+      meta: { name: "swarm-benchmark", createdAt: "", updatedAt: "" },
+      assets: [],
+      compositions: [{
+        id: compositionId,
+        name: "Benchmark",
+        kind: "timeline",
+        width: 320,
+        height: 180,
+        fps: 30,
+        duration: 1,
+        objects: [],
+      }],
+      rootComposition: compositionId,
+      pluginRefs: [],
+    },
+    createdAt: 0,
+  };
+}
+
 export interface BenchmarkResult {
   score: number;
   framesPerSecond: number;

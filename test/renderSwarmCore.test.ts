@@ -8,6 +8,7 @@ import {
   parseSwarmMessage,
   serializeSwarmMessage,
 } from "../src/swarm/core/protocol";
+import { createBenchmarkJob, normalizedBenchmarkScore } from "../src/swarm/core/benchmark";
 import { buildSwarmRenderCacheKey, validateSwarmRenderResult } from "../src/swarm/core/cacheKey";
 import { SwarmScheduler } from "../src/swarm/core/scheduler";
 import { InMemorySwarmSignalingBackend } from "../src/swarm/signaling/inMemory";
@@ -89,6 +90,18 @@ describe("Render Swarm core", () => {
     expect(hostEvents).toEqual(["peer-join-request"]);
     await backend.approveJoin(host.sessionId, "host", "peer", true);
     expect(hostEvents).toEqual(["peer-join-request"]);
+  });
+
+  it("scores workers relative to the host on a self-contained benchmark job", () => {
+    const job = createBenchmarkJob("runtime-1");
+    // Must not depend on the user project: an empty comp is renderable on any worker.
+    expect(job.project.assets).toEqual([]);
+    expect(job.project.compositions[0]?.kind).toBe("timeline");
+    expect(job.runtimeVersion).toBe("runtime-1");
+    // A worker twice as fast as the host adds 2.0x, not its raw frames/second.
+    expect(normalizedBenchmarkScore(60, 30)).toBe(2);
+    expect(normalizedBenchmarkScore(30, 30)).toBe(1);
+    expect(normalizedBenchmarkScore(30, 0)).toBe(0);
   });
 
   it("keeps rendezvous state durable across separate handler instances", async () => {
