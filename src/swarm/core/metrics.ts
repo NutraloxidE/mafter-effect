@@ -10,6 +10,8 @@ export class SwarmMetrics {
   private leasedJobs = 0;
   private localFallbackJobs = 0;
   private staleResultsDiscarded = 0;
+  private remoteFrames = 0;
+  private ineligibleJobs = 0;
   readonly throughput = new Ewma();
 
   noteSignalingRequest(): void { this.signalingRequests += 1; }
@@ -21,6 +23,8 @@ export class SwarmMetrics {
   setJobs(queued: number, leased: number): void { this.queuedJobs = queued; this.leasedJobs = leased; }
   noteLocalFallback(): void { this.localFallbackJobs += 1; }
   noteStaleResult(): void { this.staleResultsDiscarded += 1; }
+  noteRemoteFrame(): void { this.remoteFrames += 1; }
+  noteIneligibleJob(): void { this.ineligibleJobs += 1; }
   snapshot(): SwarmMetricsSnapshot {
     return {
       signalingRequests: this.signalingRequests,
@@ -31,6 +35,8 @@ export class SwarmMetrics {
       leasedJobs: this.leasedJobs,
       localFallbackJobs: this.localFallbackJobs,
       staleResultsDiscarded: this.staleResultsDiscarded,
+      remoteFrames: this.remoteFrames,
+      ineligibleJobs: this.ineligibleJobs,
     };
   }
 }

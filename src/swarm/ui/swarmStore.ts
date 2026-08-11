@@ -1,7 +1,7 @@
 import { loadOrCreateDeviceIdentity } from "../core/identity";
 import { SwarmCoordinator } from "../core/coordinator";
 import { createSignalingBackend } from "../signaling/SignalingService";
-import type { SwarmRenderJob, SwarmRenderResult, SwarmSessionDescriptor, SwarmPeerDescriptor, WorkerSnapshot } from "../core/types";
+import type { SwarmMetricsSnapshot, SwarmRenderJob, SwarmRenderResult, SwarmSessionDescriptor, SwarmPeerDescriptor, WorkerSnapshot } from "../core/types";
 
 export interface SwarmUiSnapshot {
   status: "idle" | "starting" | "active" | "error";
@@ -10,6 +10,7 @@ export interface SwarmUiSnapshot {
   pendingWorkers: SwarmPeerDescriptor[];
   workers: WorkerSnapshot[];
   availableCompute: number;
+  metrics: SwarmMetricsSnapshot | null;
   error: string | null;
 }
 
@@ -21,6 +22,7 @@ class SwarmUiStore {
     pendingWorkers: [],
     workers: [],
     availableCompute: 1,
+    metrics: null,
     error: null,
   };
   private listeners = new Set<() => void>();
@@ -96,6 +98,7 @@ class SwarmUiStore {
       pendingWorkers: coordinator.getPendingWorkers(),
       workers: coordinator.getWorkers(),
       availableCompute: coordinator.getAvailableCompute(),
+      metrics: coordinator.getMetrics(),
       error: null,
     });
   }
