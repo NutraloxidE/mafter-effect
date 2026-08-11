@@ -14,6 +14,9 @@ export interface WorkerRuntimeOptions {
   executor?: WorkerRenderExecutor;
 }
 
+/** How long a worker waits for approval before asking again with a fresh peer id. */
+const WORKER_APPROVAL_TIMEOUT_MS = 20_000;
+
 export type WorkerRuntimeState = "idle" | "joining" | "waiting-approval" | "connecting" | "connected" | "rendering" | "stopped" | "error";
 
 export class WorkerRuntime {
@@ -32,6 +35,7 @@ export class WorkerRuntime {
   private stopped = false;
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private approvalTimer: ReturnType<typeof setTimeout> | null = null;
   private connectionKind: "unknown" | "direct" | "relay" = "unknown";
   private lastError: string | null = null;
   private snapshot = { state: this.state, currentJobId: this.currentJobId, connection: this.connectionKind, error: this.lastError, session: this.session };
@@ -53,6 +57,10 @@ export class WorkerRuntime {
     this.stopped = false;
     this.lastJoinCode = joinCode.trim().toUpperCase();
     this.setState("joining");
+    // Re-joining replaces the peer id, so the previous long poll is for an identity nobody will
+    // send to; leaving it running keeps hitting the signaling server for nothing.
+    this.unsubscribeSignaling?.();
+    this.unsubscribeSignaling = null;
     try {
       this.identity ??= await loadOrCreateDeviceIdentity(localStorage);
       const peer: SwarmPeerDescriptor = {
@@ -66,6 +74,7 @@ export class WorkerRuntime {
       this.session = result.session;
       this.unsubscribeSignaling = await this.backend.subscribe(result.session.sessionId, peer.peerId, (event) => this.handleSignalingEvent(event));
       this.setState("waiting-approval");
+      this.armApprovalTimeout();
     } catch (error) {
       this.lastError = error instanceof Error ? error.message : "Unable to join swarm";
       this.setState("error");
@@ -80,6 +89,7 @@ export class WorkerRuntime {
     this.stopped = true;
     if (this.reconnectTimer !== null) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
+    this.clearApprovalTimeout();
     this.unbindVisibility?.();
     this.unbindVisibility = null;
     this.unsubscribeSignaling?.();
@@ -91,6 +101,7 @@ export class WorkerRuntime {
 
   private handleSignalingEvent(event: SwarmSignalingEvent): void {
     if (event.type === "peer-approved") {
+      this.clearApprovalTimeout();
       this.startPeer(event.hostPeerId, event.peer.peerId);
       return;
     }
@@ -138,6 +149,26 @@ export class WorkerRuntime {
         this.scheduleReconnect();
       }
     };
+  }
+
+  /**
+   * A join request is queued against whichever host peer id was current at the time, so a host
+   * that restarts never sees it — and joining succeeded, so nothing else retries. Rather than have
+   * the server replay peers (which resurrects ids the worker has already abandoned), ask again
+   * from here: a fresh request always carries a peer id someone is actually listening on.
+   */
+  private armApprovalTimeout(): void {
+    if (this.approvalTimer !== null) clearTimeout(this.approvalTimer);
+    this.approvalTimer = setTimeout(() => {
+      this.approvalTimer = null;
+      if (this.stopped || this.state !== "waiting-approval" || !this.lastJoinCode) return;
+      void this.join(this.lastJoinCode).catch(() => this.scheduleReconnect());
+    }, WORKER_APPROVAL_TIMEOUT_MS);
+  }
+
+  private clearApprovalTimeout(): void {
+    if (this.approvalTimer !== null) clearTimeout(this.approvalTimer);
+    this.approvalTimer = null;
   }
 
   /**
