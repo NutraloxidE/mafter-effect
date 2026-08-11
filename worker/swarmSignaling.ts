@@ -10,7 +10,14 @@ const CORS = {
   "access-control-allow-origin": "*",
   "access-control-allow-headers": "content-type",
   "access-control-allow-methods": "POST, OPTIONS",
+  "access-control-max-age": "86400",
 };
+
+/** Echo whatever headers the caller asks for: refusing one turns every call into "Failed to fetch". */
+function corsFor(request: Request): Record<string, string> {
+  const requested = request.headers.get("access-control-request-headers");
+  return requested ? { ...CORS, "access-control-allow-headers": requested } : CORS;
+}
 
 const json = (status: number, value: unknown): Response =>
   new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json", ...CORS } });
@@ -29,7 +36,7 @@ function sessionName(action: string, body: Record<string, unknown>): string {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
+    if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: corsFor(request) });
     if (request.method !== "POST") return json(405, { ok: false, error: "POST required" });
     try {
       const action = new URL(request.url).pathname.split("/").filter(Boolean).pop() ?? "";

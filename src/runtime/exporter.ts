@@ -397,6 +397,7 @@ async function runPngSeq(
       });
     } catch (error) {
       if (!(error instanceof SwarmFrameMismatchError)) throw error;
+      console.warn("[swarm] worker output rejected", { frame: error.frame, difference: error.difference });
       // A worker produced pixels this device disagrees with. Discard everything it contributed
       // and render the whole sequence locally rather than shipping a file we cannot vouch for.
       onProgress({
