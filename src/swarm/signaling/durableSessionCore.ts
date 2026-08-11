@@ -34,6 +34,20 @@ export const SWARM_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 
 const queueKey = (peerId: string): string => `q:${peerId}`;
 
+/**
+ * A worker gets a fresh peer id on every rejoin, so a long-lived session accumulates dead entries
+ * for the same device. Keeping only the newest stops a reattaching host from being handed a list
+ * of peers that are mostly gone.
+ */
+function newestPeerPerDevice(peers: Record<string, SwarmPeerDescriptor>): Record<string, SwarmPeerDescriptor> {
+  const newest = new Map<string, SwarmPeerDescriptor>();
+  for (const peer of Object.values(peers)) {
+    const previous = newest.get(peer.deviceId);
+    if (!previous || peer.requestedAt >= previous.requestedAt) newest.set(peer.deviceId, peer);
+  }
+  return Object.fromEntries([...newest.values()].map((peer) => [peer.peerId, peer]));
+}
+
 /** Session ids embed the join code so every action routes to the same Durable Object. */
 export function joinCodeFromSessionId(sessionId: string): string {
   return sessionId.split("-")[1] ?? "";
@@ -58,7 +72,17 @@ export class DurableSwarmSession {
     // own; a different device asking for the same code gets a fresh session instead.
     if (existing && existing.descriptor.joinCode === joinCode && existing.hostDeviceId === input.hostDeviceId) {
       const descriptor = { ...existing.descriptor, expiresAt };
-      await this.kv.put(SESSION_KEY, { ...existing, descriptor, hostPeerId: input.hostPeerId });
+      // A worker that rejoined while the host was down queued its request against the old host
+      // peer id and is now waiting for an approval nobody will ever read — it does not retry,
+      // because joining itself succeeded. Re-announce it to the host that just took over.
+      const peers = newestPeerPerDevice(existing.peers);
+      await this.kv.put(SESSION_KEY, { ...existing, descriptor, hostPeerId: input.hostPeerId, peers });
+      if (existing.hostPeerId !== input.hostPeerId) {
+        await this.kv.delete(queueKey(existing.hostPeerId));
+        for (const peer of Object.values(peers)) {
+          await this.emit(input.hostPeerId, { type: "peer-join-request", peer });
+        }
+      }
       return descriptor;
     }
     const descriptor: SwarmSessionDescriptor = {

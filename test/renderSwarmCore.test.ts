@@ -319,6 +319,38 @@ describe("Render Swarm core", () => {
     expect(other.sessionId).not.toBe(first.sessionId);
   });
 
+  it("re-announces workers that rejoined while the host was down", async () => {
+    const storage = new Map<string, unknown>();
+    const kv = {
+      get: async <T,>(key: string) => storage.get(key) as T | undefined,
+      put: async (key: string, value: unknown) => { storage.set(key, value); },
+      delete: async (key: string) => { storage.delete(key); },
+    };
+    const host = { hostPeerId: "host-1", hostDeviceId: "device-A", hostLabel: "Host" };
+    const session = await new DurableSwarmSession(kv).createSession(host, "CODE12", "RANDOM000001");
+    const worker = (peerId: string, requestedAt: number) => ({
+      peerId, deviceId: "worker-device", label: "Worker", publicKeyJwk: {}, requestedAt,
+    });
+    await new DurableSwarmSession(kv).joinSession({ joinCode: "CODE12", peer: worker("peer-1", 1) });
+    // The host goes away; the worker notices the drop and rejoins under a new peer id, which
+    // queues an approval request against a host peer that is no longer polling.
+    await new DurableSwarmSession(kv).joinSession({ joinCode: "CODE12", peer: worker("peer-2", 2) });
+
+    const restarted = await new DurableSwarmSession(kv)
+      .createSession({ ...host, hostPeerId: "host-2" }, "CODE12", "RANDOM000002");
+    expect(restarted.sessionId).toBe(session.sessionId);
+
+    // The new host learns about the waiting worker instead of leaving it stranded, and hears
+    // about it once — dead peer ids from earlier rejoins are dropped.
+    const events = await new DurableSwarmSession(kv).takeEvents(session.sessionId, "host-2");
+    expect(events).toEqual([{ type: "peer-join-request", peer: worker("peer-2", 2) }]);
+
+    // Approval reaches the worker under the peer id it is actually polling with.
+    await new DurableSwarmSession(kv).approveJoin(session.sessionId, "host-2", "peer-2", true);
+    expect(await new DurableSwarmSession(kv).takeEvents(session.sessionId, "peer-2"))
+      .toEqual([{ type: "peer-approved", peer: worker("peer-2", 2), hostPeerId: "host-2" }]);
+  });
+
   it("keeps rendezvous state durable across separate handler instances", async () => {
     // Durable storage is shared; each request builds a fresh session object, exactly like a
     // Durable Object serving successive requests (and unlike the per-instance Vercel Map).
