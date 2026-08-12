@@ -17,7 +17,10 @@ export class MemoryFs implements FileSystem {
     if (data === undefined) {
       throw new Error(`MemoryFs: file not found: ${key}`);
     }
-    return data;
+    // IndexedDbFs は毎回ストアから新しいコピーを返す。ここで内部の Uint8Array をそのまま返すと
+    // 読み手がバッファを detach（Worker への transfer 等）した時点でファイルが 0 バイトになり、
+    // 同じ動画を 2 レイヤーで使うコンプの 2 本目が読めなくなる。実装差を持ち込まない。
+    return data.slice();
   }
 
   async readText(path: string): Promise<string> {

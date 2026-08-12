@@ -1,5 +1,20 @@
 # Progress
 
+### 2026-08-12（Claude Opus 5）— swarm 真因: transfer が **FileSystem のファイルそのものを破壊**していた
+
+- **これまでの前提が誤りだった**: 「ワーカー機がホストの約 3 倍遅く、動画のデコードが間に合わない」と考えていたが、**速度とは無関係**だった。
+- **証拠の取り方**: ワーカーは `job-failed` に理由を載せて送っていたのに、ホストがそれを捨てていた（→ ログ出力を追加）。さらに `Footage did not reach frame N` だけでは足りないので、**video の実測値をエラーに載せた**（`DomRenderer.describeExportVideos()`）。得られた実測:
+  ```
+  #0 target=4.7333 at=4.750 ready=0 net=2 size=0x0 seeking=false err=-
+  ```
+  シークは発行済み（`at` は目標に乗っている）、しかし **`ready=0` / `size=0x0`＝1 バイトも復号できていない**、`err` は無し。「遅い」では説明がつかない状態。
+- **真因（2 つの欠陥の合成）**:
+  1. [videoBlobDecode.ts](src/runtime/videoBlobDecode.ts) の `decodeVideoBlobUrl` が `buf.buffer` を Web Worker へ **transfer** する。transfer は元の `ArrayBuffer` を **detach** する。
+  2. [MemoryFs.ts](src/fs/MemoryFs.ts) の `read()` が**内部ストレージの `Uint8Array` を参照のまま返していた**（`IndexedDbFs` は毎回ストアから新しいコピーを返す）。
+  → 検証コンプは**同じ mp4 を 2 レイヤーで使っている**ため、1 本目の読み込みでバッファが detach され、**2 本目は 0 バイト**を受け取る。0 バイトの Blob を渡された `<video>` は `error` を出さずに `readyState 0` のまま止まる。ホストで再現しないのは `IndexedDbFs` が毎回コピーを返すため＝**ワーカー固有の配線問題**。
+- **修正**: transfer 前に必ず自分のコピーを作る（呼び出し側のバッファを所有している保証は無い）＋ `MemoryFs.read()` はコピーを返す（INV-4 の実装差を持ち込まない）。
+- **テスト**: [test/memoryFsReadCopy.test.ts](test/memoryFsReadCopy.test.ts)。修正前に落ち修正後に通ることを確認済み（負のコントロール）。全体 2929 tests PASS。
+
 ### 2026-08-12（Claude Opus 5）— swarm: 失敗するワーカーが**書き出しの末尾を人質に取る**問題
 
 - **実測**（ワーカー接続 `Direct` / `1.5× local`）: 書き出しが **149/150 で停滞**し、残り 1〜2 フレームに対して**1 フレームあたり 60 秒のデッドラインを丸ごと支払い続けた**。総時間 **210.9 秒**（ローカル単独 80.5 秒）。
