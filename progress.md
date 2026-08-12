@@ -3462,3 +3462,47 @@ worker が 30% を引き受け、しかも速いマシンなのに **1.85 倍遅
 - 同一マシンに worker を同居させている条件では worker がホストより遅く CPU も食い合うため、**この環境での性能最適化は意味を持たない**。別マシンでの再計測が前提。
 
 次の最適化候補: worker 側で **export セッションを再利用**（revision/profile が同じ間は準備を使い回す）。`exportComposition` は毎回 DOM・renderer・キャッシュを作り直すので、再利用可能な「フレームレンダラ工場」に切り出せば、ホスト側の逐次経路とも共有できる。
+
+### 2026-08-12 (Claude Opus 5) - 「レンダーに必要なファイル」の定義がリポジトリに 2 つあった
+
+GPT 5.6 指摘（ユーザー経由）を採用。`ImageAssetCache` の症状（packed alpha webm の `getUrlForQuality()` が null）を追う前に、**job が自己完結しているという定義そのものが弱かった**。
+
+- bundle 側は `footageQuality` → proxy tier、内蔵音声の原本 path、split alpha の `alphaPath`、packed alpha の effective quality まで解決して「player が実際に fetch する path」を集めていた。
+- swarm 側は generic walk で **asset id → `asset.path`** を送るだけだった。
+- したがって `isSwarmJobSelfContained()` が true でも、**worker の renderer が要求する proxy が転送されていない**状態を作れた。URL が引けないという症状は decode 遅延と見分けがつかず、1 セッション溶かした原因がこれ。
+
+対応:
+
+- `src/runtime/renderDependencies.ts` に `footagePathsForComponent(project, component, { exportStep })` を新設し、**bundle と swarm の唯一の正**にした。live 再生（bundle）は `exportStep: false`、worker（`exportComposition` 経由）は `true`。packed alpha はここだけが分岐点。
+- **dispatch 時点で `required render paths ⊆ worker-provided paths` を判定する**（DOM を立ち上げてから missing URL に気づくのでは遅い）。選択された proxy が届いていないジョブはローカルで描く。
+- ついでに、旧 companion walk は renderer より緩かった（`hasAlpha` 未確認で `alphaPath` を採用・使わない proxy tier も全部送っていた）ので消えた。
+
+同コミットで直した他の欠落（いずれも composition を歩いても見つからない classes）:
+
+| 欠落 | 参照経路 | worker が描いていた絵 |
+|---|---|---|
+| フォント | text は CSS family 名、`FontOutlineCache` が `meta.family` で解決 | 全 text フレームが代替フォント |
+| ネスト comp | precomp の objects は `project.compositions` 側 | 中身の footage/script/font が全部無いのに self-contained 判定は true |
+| plugin | `plugins/` からホストにのみ登録 | レイヤーが描かれない / 未知 effect が skip |
+
+**採用カウンタ**: パネルは「到着数」を数えていた（本プロジェクトが一度騙された数字そのもの）。この端末が描いていない canvas ＝ worker の絵、として**出力に採用された枚数**を数えるようにし、received と併記する。
+
+#### 計測の状態（重要・数字を信用しないこと）
+
+同一マシン（dev server + worker 同居）で 16 frames:
+
+| 時刻順 | 所要 | リモート |
+|---|---|---|
+| 前半 4 本 | 20.2〜20.3s | 1 block 採用 |
+| 後半 5 本 | 130.1〜130.3s | 0（60s deadline × 2 を丸ごと支払い） |
+
+**コード差分では説明できない**。producer の変更だけを戻した対照も 130.3s で、時系列で割れている（＝環境ドリフト。dev server 常駐時間・Chrome の蓄積状態などが疑わしい）。**この環境での所要時間を根拠に性能結論を出してはいけない。** 一度は「producer の変更が原因」と誤って結論しかけた。
+
+一方 **絵の一致は証明できた**（ガードレールの後半）: 同一 run の local-only zip と with-worker zip を PNG デコードして全画素比較 → 全 16 フレームで meanAbsDiff 0.000 / max 1〜4。しかも host が描いた frame 0–5 と worker が描いた frame 6–11 で差の大きさが同じ＝ネガティブコントロール付き。**worker はホストと同じ絵を描いている。**
+
+#### Next steps
+
+1. 130s ドリフトの正体（dev server 再起動・素の Chrome プロファイル・時間帯で切り分ける）。**これが片付くまで所要時間の比較はしない。**
+2. 60s の固定 deadline（`remoteFrameProducer` の `timeoutMs`）を、ホスト自身の実測フレーム時間から導く。失敗ブロックが 2 分を食うのは設計として誤り。
+3. benchmark を空コンプ 320×180 でなく実コンプの短ブロックにする（`Available compute` が実態と無関係な値を出している）。
+4. 結果転送: worker が PNG → zip → base64 → JSON chunk、host が展開 → canvas → PNG 再エンコード。実測 transportMs は renderMs とほぼ同等（6.5s vs 7.7s）。バイナリのフレーム単位ストリームにして zip へ直挿しする案（codex 提案）。
