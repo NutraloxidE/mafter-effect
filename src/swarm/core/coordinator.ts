@@ -519,6 +519,14 @@ export class SwarmCoordinator {
 
   private handleSignalingEvent(event: SwarmSignalingEvent): void {
     if (event.type === "peer-join-request") {
+      // A worker that re-asks gets a new peer id and abandons the old one. Keeping the old entry
+      // leaves the panel listing Offline workers and, worse, lets the scheduler lease frames to a
+      // peer nobody is listening on. Only a connection that has proved its identity is kept.
+      for (const [peerId, worker] of this.workers) {
+        if (worker.descriptor.deviceId !== event.peer.deviceId || worker.slotId !== undefined) continue;
+        worker.peer.close();
+        this.workers.delete(peerId);
+      }
       this.pending.set(event.peer.peerId, event.peer);
       this.emitChange();
       // Re-approving a device that was already approved in this session adds no safety and makes

@@ -1,5 +1,15 @@
 # Progress
 
+### 2026-08-12（Claude Opus 5）— swarm: 再 join の副作用（Offline ワーカーの山）を潰す
+
+- **症状**: ワーカー側の承認タイムアウト再 join を入れた後、ホストのパネルに **Offline のワーカーが複数並び `Available compute: 1.0× local`**（＝使えるワーカー 0）。
+- **原因**: 再 join のたびに peerId が変わり、ホストは 1 要求 = 1 接続を作る。ワーカーは最後の peerId しか保持しないので、**古い接続はホスト側に死んだまま残る**。`dropStaleConnections` は challenge 成功後にしか掃除しないため、challenge に到達しない接続は永久に残った。
+- **修正**:
+  - [coordinator.ts](src/swarm/core/coordinator.ts): `peer-join-request` を受けた時点で、**同じ deviceId でまだ身元証明が済んでいない接続を閉じて捨てる**。パネルは 1 デバイス 1 エントリに収束し、死んだピアにフレームがリースされない。
+  - [WorkerRuntime.ts](src/swarm/worker/WorkerRuntime.ts): 承認待ちの再 join を**指数バックオフ**（20s → 40s → 80s → 上限 120s）に。詰めて再 join すると自分の承認を追い越して半開き接続を量産する。
+- **テスト**: `keeps a rejoining worker to one peer id` を追加。全体 2926 tests PASS。
+- **注意（テスト環境）**: `.claude/worktrees/` 配下の worktree があると vitest がそれも拾い、ファイル数・件数が倍に見える（306 files / 2926 tests）。`test/projectBins.test.ts` は全体実行時のみ落ちる既存フレークで、再実行で緑（別タスクに切り出し済み）。
+
 ### 2026-08-12（Claude Opus 5）— swarm: 動画抜けフレームが**書き出し済み zip に混入していた**（検出の穴を塞ぐ）
 
 - **決定的な実測**: ワーカー付き書き出し（80.9 秒 / `Frames from workers: 3`）の zip をローカル単独 zip とフレーム単位で突き合わせたところ、**150 枚中 18 枚が 24KB 台**（正常は 340KB 台）＝動画レイヤーが抜けたフレームが**そのまま成果物に入っていた**。該当は frame 126-127, 134-143 など、リモートブロックの範囲と一致。
