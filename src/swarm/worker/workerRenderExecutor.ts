@@ -1,4 +1,5 @@
 import { exportComposition, type ExportSession } from "../../runtime/exporter";
+import { compTreeHasVideo } from "../../runtime/multiRenderContext";
 import { MemoryFs } from "../../fs/MemoryFs";
 import { captureCompFramePng, createCompFrameCaptureContext } from "../../runtime/compFrameCapture";
 import { sha256Hex } from "../core/assetManifest";
@@ -63,6 +64,15 @@ export class WorkerRenderExecutor {
       alpha: job.profile.alpha ?? false,
       textRenderMode: job.profile.quality === "draft" ? "draft" : "precise",
     }, () => {}, undefined, undefined, { strictFootage: true, session: this.session.holder });
+    // `strictFootage` compares each video against its target time, which says nothing when there
+    // are no video elements at all — exactly the shape of the blocks that came back at a thirteenth
+    // of the expected size, with the footage layers simply absent.
+    const renderer = this.session.holder.current?.renderer;
+    if (renderer && compTreeHasVideo(job.project, composition) && renderer.videoElementCount() === 0) {
+      this.session.holder.current?.dispose();
+      this.session = { key: "", holder: { current: null } };
+      throw new Error("Worker rendered no footage for a composition that has video");
+    }
     const bytes = new Uint8Array(await result.blob.arrayBuffer());
     return {
       jobId: job.id,

@@ -11,6 +11,13 @@ import { SWARM_RUNTIME_VERSION } from "./types";
  */
 export const SWARM_EXPORT_BLOCK_FRAMES = 8;
 
+/**
+ * How many of a worker's first frames are re-rendered here and compared before any of its output
+ * is taken on trust. Enough to cover its first block, so a worker that is wrong about every frame
+ * is caught on its first one rather than by whether the sample happened to land on it.
+ */
+export const SWARM_VERIFY_FIRST_REMOTE_FRAMES = 2;
+
 export interface RemoteFrameProducerOptions {
   project: Project;
   comp: TimelineComposition;
@@ -113,6 +120,9 @@ export interface RemoteProducerSetup {
   renderLocally: (frame: number) => Promise<HTMLCanvasElement>;
   /** Exclusive end of the export range, so a prefetch block never runs past it. */
   totalFrameEnd?: number;
+  /** Overridable so verification can be exercised without a browser's image decoders. */
+  decodePng?: RemoteFrameProducerOptions["decodePng"];
+  decodeZip?: RemoteFrameProducerOptions["decodeZip"];
 }
 
 async function decodePngToCanvas(bytesBase64: string, width: number, height: number): Promise<HTMLCanvasElement> {
@@ -158,10 +168,17 @@ export function buildRemoteFrameProducers(setup: RemoteProducerSetup): ((frame: 
   const verify = setup.verifyFrames;
   // Reference "how much is in a frame", learned from the frames we render here anyway.
   let referenceSpread = 0;
-  const wrap = (produce: (frame: number) => Promise<HTMLCanvasElement>) =>
-    async (frame: number): Promise<HTMLCanvasElement> => {
+  const wrap = (produce: (frame: number) => Promise<HTMLCanvasElement>) => {
+    // A spread-over-the-range sample can miss a worker whose every frame is wrong: an export
+    // shipped 18 footage-less frames because the sampled ones all happened to be rendered here.
+    // Checking the first frames a worker delivers catches a systematically broken one before its
+    // output is trusted, and gives the flatness guard below a reference to work against.
+    let unverifiedFromThisWorker = SWARM_VERIFY_FIRST_REMOTE_FRAMES;
+    return async (frame: number): Promise<HTMLCanvasElement> => {
       const remote = await produce(frame);
-      if (!verify?.has(frame)) {
+      const mustVerify = verify?.has(frame) || unverifiedFromThisWorker > 0;
+      if (unverifiedFromThisWorker > 0) unverifiedFromThisWorker -= 1;
+      if (!mustVerify) {
         // Cheap guard on every remote frame: a worker that rendered before its footage decoded
         // returns a near-flat frame, and sampling alone would only catch it by luck.
         if (looksEmptyAgainst(remote, referenceSpread)) return setup.renderLocally(frame);
@@ -175,6 +192,7 @@ export function buildRemoteFrameProducers(setup: RemoteProducerSetup): ((frame: 
       if (difference > SWARM_FRAME_TOLERANCE) throw new SwarmFrameMismatchError(frame, difference);
       return local;
     };
+  };
   return Array.from({ length: count }, () => wrap(createRemoteFrameProducer({
     project: setup.project,
     comp: setup.comp,
@@ -182,8 +200,8 @@ export function buildRemoteFrameProducers(setup: RemoteProducerSetup): ((frame: 
     profile: setup.profile,
     submit: setup.swarm!.submit,
     renderLocally: setup.renderLocally,
-    decodePng: decodePngToCanvas,
-    decodeZip: decodeZipToFrames,
+    decodePng: setup.decodePng ?? decodePngToCanvas,
+    decodeZip: setup.decodeZip ?? decodeZipToFrames,
     ...(setup.totalFrameEnd === undefined ? {} : { totalFrameEnd: setup.totalFrameEnd }),
     timeoutMs: setup.swarm!.timeoutMs ?? 60_000,
   })));

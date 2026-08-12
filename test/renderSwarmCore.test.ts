@@ -10,7 +10,7 @@ import {
 } from "../src/swarm/core/protocol";
 import { createBenchmarkJob, normalizedBenchmarkScore } from "../src/swarm/core/benchmark";
 import { collectJobFilePaths, isSwarmJobSelfContained } from "../src/swarm/core/jobFiles";
-import { buildExportSwarmJob, createRemoteFrameProducer, spotCheckFrames } from "../src/swarm/core/remoteFrameProducer";
+import { buildExportSwarmJob, buildRemoteFrameProducers, createRemoteFrameProducer, spotCheckFrames } from "../src/swarm/core/remoteFrameProducer";
 import { meanAbsoluteDifference, pixelSpread, SWARM_FRAME_TOLERANCE } from "../src/swarm/core/frameVerification";
 import { AssetChunkAssembler, ResultChunkAssembler, splitAssetIntoChunks, splitResultBytes } from "../src/swarm/transport/assetChunks";
 import { buildSwarmRenderCacheKey, validateSwarmRenderResult } from "../src/swarm/core/cacheKey";
@@ -124,6 +124,46 @@ describe("Render Swarm core", () => {
 
     const job = buildExportSwarmJob(base, 4);
     expect([job.frameStart, job.frameEnd, job.compositionId]).toEqual([4, 5, "comp-1"]);
+  });
+
+  it("checks a worker's first frames before trusting any of its output", async () => {
+    const comp = { id: "comp-1", name: "Main", kind: "timeline" as const, width: 320, height: 180, fps: 30, duration: 10, objects: [] } as never;
+    const project = { schemaVersion: 1, meta: { name: "t", createdAt: "", updatedAt: "" }, assets: [], compositions: [comp], rootComposition: "comp-1", pluginRefs: [] } as never;
+    const localRenders: number[] = [];
+    // Verification reads pixels; a flat 1x1 canvas is enough to make both sides compare equal.
+    // Two differing pixels, so the frames compare equal and neither reads as empty.
+    const canvas = (): HTMLCanvasElement => ({
+      width: 2,
+      height: 1,
+      getContext: () => ({
+        getImageData: () => ({ data: new Uint8ClampedArray([0, 0, 0, 255, 255, 255, 255, 255]) }),
+      }),
+    } as unknown as HTMLCanvasElement);
+    const producers = buildRemoteFrameProducers({
+      // A sample that never lands on a remote frame: the shipped export that lost 18 frames to a
+      // footage-less worker looked exactly like this.
+      verifyFrames: new Set([0]),
+      swarm: {
+        workerCount: 1,
+        submit: async (job) => ({
+          jobId: "j", renderRevision: "rev-1", compositionId: "comp-1",
+          frameStart: job.frameStart, frameEnd: job.frameStart + 1,
+          width: 320, height: 180, format: "png" as const, bytesBase64: "AQ==", byteLength: 1, runtimeVersion: "runtime-1",
+        }),
+      },
+      project, comp, renderRevision: "rev-1",
+      profile: { quality: "draft" as const, proxy: "full", width: 320, height: 180 },
+      renderLocally: async (frame: number) => { localRenders.push(frame); return canvas(); },
+      decodePng: async () => canvas(),
+      decodeZip: async () => new Map([[0, canvas()]]),
+    });
+
+    // The first frames are re-rendered here and compared even though the sample never asked for
+    // them; once the worker has proven itself its later frames are taken as they arrive.
+    await producers[0]!(100);
+    await producers[0]!(101);
+    await producers[0]!(102);
+    expect(localRenders).toEqual([100, 101]);
   });
 
   it("reads a range job's zip by offset from the block start, not by absolute frame", async () => {
