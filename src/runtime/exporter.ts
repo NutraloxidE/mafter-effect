@@ -95,8 +95,12 @@ export interface ExportSwarmHooks {
   timeoutMs?: number;
 }
 
-/** Decode budget a strict caller gives a lagging video before calling the frame unusable. */
-const STRICT_FOOTAGE_WAIT_MS = 8_000;
+/**
+ * Decode budget a strict caller gives a lagging video before calling the frame unusable. Kept well
+ * under the job lease: spent on every frame of a block, a generous budget turns one slow decode
+ * into a block that outlives its lease, and the host falls back locally having gained nothing.
+ */
+const STRICT_FOOTAGE_WAIT_MS = 2_500;
 
 /**
  * Non-schema export wiring. `strictFootage` turns a frame whose video never reached its target

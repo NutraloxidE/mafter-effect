@@ -1,5 +1,15 @@
 # Progress
 
+### 2026-08-12（Claude Opus 5）— swarm: 失敗するワーカーが**書き出しの末尾を人質に取る**問題
+
+- **実測**（ワーカー接続 `Direct` / `1.5× local`）: 書き出しが **149/150 で停滞**し、残り 1〜2 フレームに対して**1 フレームあたり 60 秒のデッドラインを丸ごと支払い続けた**。総時間 **210.9 秒**（ローカル単独 80.5 秒）。
+- **なぜ末尾なのか**: リモート producer は `pullFromTail` で末尾から取る。ワーカーが失敗すると、その末尾フレームは「他の全部が終わっても書き出しを完了できない唯一のフレーム」になる。しかも producer は毎フレーム再挑戦するので、**失敗 1 回につき 60 秒**が積み上がる。
+- **修正**: [remoteFrameProducer.ts](src/swarm/core/remoteFrameProducer.ts) に `SWARM_GIVE_UP_AFTER_FAILURES = 2`。連続 2 回失敗したワーカーには**以降そのエクスポート中は依頼しない**（成功で復帰）。損害が「デッドライン × 残りフレーム数」から「デッドライン × 2」に有界化される。
+- **合わせて戻した判断**: ジョブのデッドラインを 150 秒へ延ばす案は**取り下げ**（60 秒のまま）。待ちが無料なのはホストに自分の仕事が残っている間だけで、末尾ブロックでは待つほど純損になる。
+- **正しさは守られた**: この回の出力 zip をローカル単独と全フレーム比較して **suspectFrames 0**（前回は 18 枚が動画抜けだった）。`strictFootage` + `readyState` 判定 + 先頭 2 フレーム照合が効いている。
+- **計測ハーネスにガードレールを埋め込み**: `swarm-export-ab.mjs` が書き出し後に必ず `ADOPTION {...suspectFrames}` を出力するようにした。速度だけを見て結論を出せないようにする。
+- **テスト**: `stops asking a worker that keeps failing instead of paying its deadline per frame` を追加。全体 2927 tests PASS。
+
 ### 2026-08-12（Claude Opus 5）— swarm: 再 join の副作用（Offline ワーカーの山）を潰す
 
 - **症状**: ワーカー側の承認タイムアウト再 join を入れた後、ホストのパネルに **Offline のワーカーが複数並び `Available compute: 1.0× local`**（＝使えるワーカー 0）。
