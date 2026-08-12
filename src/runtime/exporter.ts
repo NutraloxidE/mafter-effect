@@ -409,7 +409,9 @@ async function runPngSeq(
         if (remote?.strictFootage) await renderer.flushVideoFrames(STRICT_FOOTAGE_WAIT_MS);
         canvas = await renderContextFrameCanvas(renderer, comp, evaluator, frame, nw, nh, w, h, bg, {});
         if (remote?.strictFootage && !renderer.videosAtExportTarget(config.fps)) {
-          throw new Error(`Footage did not reach frame ${frame}`);
+          // Carry the measurements back: the machine that failed is usually someone else's, and
+          // "did not reach" alone cannot distinguish a slow decode from a video that never loaded.
+          throw new Error(`Footage did not reach frame ${frame} — ${renderer.describeExportVideos()}`);
         }
       }
       return canvas;
