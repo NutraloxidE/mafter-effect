@@ -1001,10 +1001,16 @@ export class DomRenderer implements Renderer {
     if (videos.length === 0) return "no video elements";
     return videos.map((video, index) => {
       const raw = video.getAttribute(EXPORT_VIDEO_TARGET_ATTR);
+      // src の種類（blob: / http: / 空）と buffered の有無まで出す。"読み込めていない" の原因は
+      // 遅さではなく「何を読ませているか」であることがあり、別マシンでは後から確認できない。
+      const src = video.currentSrc || video.getAttribute("src") || "";
       return `#${index} target=${raw ?? "-"} at=${video.currentTime.toFixed(3)}`
         + ` ready=${video.readyState} net=${video.networkState}`
         + ` size=${video.videoWidth}x${video.videoHeight} seeking=${video.seeking}`
-        + ` err=${video.error?.code ?? "-"}`;
+        + ` err=${video.error?.code ?? "-"}`
+        + ` src=${src ? src.slice(0, 12) : "(none)"} len=${src.length}`
+        + ` buffered=${video.buffered.length} preload=${video.preload}`
+        + ` asset=${video.dataset.mafterVideoAsset ?? "-"}`;
     }).join(" | ");
   }
 
