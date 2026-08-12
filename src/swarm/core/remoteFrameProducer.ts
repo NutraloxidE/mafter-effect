@@ -18,6 +18,9 @@ export const SWARM_EXPORT_BLOCK_FRAMES = 8;
  */
 export const SWARM_VERIFY_FIRST_REMOTE_FRAMES = 2;
 
+/** Consecutive failed blocks after which a worker is left out of the rest of the export. */
+export const SWARM_GIVE_UP_AFTER_FAILURES = 2;
+
 export interface RemoteFrameProducerOptions {
   project: Project;
   comp: TimelineComposition;
@@ -66,6 +69,10 @@ export function createRemoteFrameProducer(
 ): (frame: number) => Promise<HTMLCanvasElement> {
   // Frames already fetched as part of a range job, waiting to be asked for.
   const prefetched = new Map<number, Promise<HTMLCanvasElement>>();
+  // A worker that cannot deliver costs a full deadline per frame, and the frames it is asked for
+  // are the ones the export is waiting on — an export sat at 149/150 paying 60s a frame for a
+  // worker that had already failed twice. After that, stop asking and render here.
+  let consecutiveFailures = 0;
 
   return async (frame: number): Promise<HTMLCanvasElement> => {
     const ready = prefetched.get(frame);
@@ -73,6 +80,7 @@ export function createRemoteFrameProducer(
       prefetched.delete(frame);
       return ready;
     }
+    if (consecutiveFailures >= SWARM_GIVE_UP_AFTER_FAILURES) return options.renderLocally(frame);
     try {
       const startedAt = performance.now();
       const blockEnd = Math.min(options.totalFrameEnd ?? frame + SWARM_EXPORT_BLOCK_FRAMES, frame + SWARM_EXPORT_BLOCK_FRAMES);
@@ -87,6 +95,7 @@ export function createRemoteFrameProducer(
           transportMs: Math.round(roundTripMs - (result.renderMs ?? 0)),
           bytes: result.byteLength,
         });
+        consecutiveFailures = 0;
         if (result.format === "png-zip") {
           const frames = await options.decodeZip(result.bytesBase64, result.width, result.height);
           // A worker renders the block through `exportComposition`, which names frames from the
@@ -105,6 +114,7 @@ export function createRemoteFrameProducer(
     } catch {
       /* the local render below is the fallback for every swarm failure */
     }
+    consecutiveFailures += 1;
     return options.renderLocally(frame);
   };
 }
@@ -203,6 +213,9 @@ export function buildRemoteFrameProducers(setup: RemoteProducerSetup): ((frame: 
     decodePng: setup.decodePng ?? decodePngToCanvas,
     decodeZip: setup.decodeZip ?? decodeZipToFrames,
     ...(setup.totalFrameEnd === undefined ? {} : { totalFrameEnd: setup.totalFrameEnd }),
+    // Waiting is only free while the host still has frames of its own. Because remote producers
+    // pull from the tail, the last block is the one nobody can finish without — so a long deadline
+    // here buys nothing and stalls the end of every export.
     timeoutMs: setup.swarm!.timeoutMs ?? 60_000,
   })));
 }

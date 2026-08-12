@@ -10,7 +10,7 @@ import {
 } from "../src/swarm/core/protocol";
 import { createBenchmarkJob, normalizedBenchmarkScore } from "../src/swarm/core/benchmark";
 import { collectJobFilePaths, isSwarmJobSelfContained } from "../src/swarm/core/jobFiles";
-import { buildExportSwarmJob, buildRemoteFrameProducers, createRemoteFrameProducer, spotCheckFrames } from "../src/swarm/core/remoteFrameProducer";
+import { buildExportSwarmJob, buildRemoteFrameProducers, createRemoteFrameProducer, spotCheckFrames, SWARM_GIVE_UP_AFTER_FAILURES } from "../src/swarm/core/remoteFrameProducer";
 import { meanAbsoluteDifference, pixelSpread, SWARM_FRAME_TOLERANCE } from "../src/swarm/core/frameVerification";
 import { AssetChunkAssembler, ResultChunkAssembler, splitAssetIntoChunks, splitResultBytes } from "../src/swarm/transport/assetChunks";
 import { buildSwarmRenderCacheKey, validateSwarmRenderResult } from "../src/swarm/core/cacheKey";
@@ -124,6 +124,27 @@ describe("Render Swarm core", () => {
 
     const job = buildExportSwarmJob(base, 4);
     expect([job.frameStart, job.frameEnd, job.compositionId]).toEqual([4, 5, "comp-1"]);
+  });
+
+  it("stops asking a worker that keeps failing instead of paying its deadline per frame", async () => {
+    const comp = { id: "comp-1", name: "Main", kind: "timeline" as const, width: 320, height: 180, fps: 30, duration: 10, objects: [] } as never;
+    const project = { schemaVersion: 1, meta: { name: "t", createdAt: "", updatedAt: "" }, assets: [], compositions: [comp], rootComposition: "comp-1", pluginRefs: [] } as never;
+    const localCanvas = {} as HTMLCanvasElement;
+    let submits = 0;
+    const produce = createRemoteFrameProducer({
+      project, comp, renderRevision: "rev-1",
+      profile: { quality: "draft" as const, proxy: "full", width: 320, height: 180 },
+      renderLocally: async () => localCanvas,
+      decodePng: async () => localCanvas,
+      decodeZip: async () => new Map<number, HTMLCanvasElement>(),
+      timeoutMs: 30_000,
+      submit: async () => { submits += 1; return null; },
+    });
+
+    // An export sat at 149/150 paying a full deadline per frame for a worker that had already
+    // failed: the frames it is asked for are exactly the ones nothing else can finish without.
+    for (let frame = 0; frame < 6; frame += 1) expect(await produce(frame)).toBe(localCanvas);
+    expect(submits).toBe(SWARM_GIVE_UP_AFTER_FAILURES);
   });
 
   it("checks a worker's first frames before trusting any of its output", async () => {
