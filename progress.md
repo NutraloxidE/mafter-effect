@@ -3691,3 +3691,32 @@ WP `LOOP 2.5-3_ Kill the Bootstrap Lie + Liveness-Aware Deadline` を実施。
 1. version管理対象にしたABBA harnessで実機LOOP 3 matrixを実行し、固定60秒待ちが消えたこと、`hostRenderedFrames == totalFrames`、`localFramesAvoided`、pixel parityを確認する。
 2. healthy workerで `measurement=measured` / `Render capacity` が表示されることを確認する。
 3. transport最適化（binary stream / ZIP / reorder window）はLOOP 3の実機結果が固まるまで着手しない。
+
+### 2026-08-13 (Codex) - LOOP 3 follow-up: transfer境界・busy quarantine・本物のREADY
+
+ユーザー指摘の2点を反映し、asset同期後に初めて実機ABBAを実行した。
+
+#### 修正
+
+- `completedFrames === totalFrames` は render progress のまま保持し、`job-result-chunk` の最初の受信だけで `TRANSFERRING` を開始するよう修正。
+- watchdog reclaim 後も `worker.snapshot.currentJobId` を late result / 明示的な `job-failed` まで保持し、WorkerRuntime がまだ描画中の worker を busy quarantine。cancel protocol は追加していない。
+- asset transfer を content hash 単位の in-flight Promise にし、同じ hash の同時要求を共有。WorkerRuntime は再構成後に hash 検証・cache 完了して `asset-ready` ACK を返す。全 ACK 後にだけ host が `asset-sync-complete` を送り、worker/host を READY に進める。
+- asset wire送信を data channel 上で逐次化し、同期呼び出しを coalesce。古い WebRTC peer の callback が新しい peer を reconnect しないよう guard を追加。
+- harness は `connected` ではなく `ready` を待ち、READY 未達なら matrix を開始せず失敗するよう変更。
+
+#### 検証
+
+- `npm run typecheck`: PASS。
+- Swarm対象テスト（liveness / WorkerRuntime asset / render core）: 58 tests PASS。
+- `npm run build`: PASS（player freshness も PASS）。
+- `npm test`: 310 files / 2945 tests は PASS。既知の `indexedDB` / `alert` unhandled 4件により exit code 1（今回の変更とは無関係）。
+- 実機 `ABBA`, 24 frames, local Vite + Chrome, footage asset 2本: READY後に開始。
+  - 1回目: probe swarm は remote 8受信・採用0・host 24/24（invalid gate）。次の swarm は remote 8受信・採用3・host 21/24、pixel parity PASS（valid）。
+  - 再ABBA: probe swarm は remote 8受信・採用0・host 24/24（invalid gate）。次の swarm は remote 8受信・採用5・host 19/24、pixel parity PASS（valid）。
+  - valid run では `measurement=measured`、`localFramesAvoided == adoptedRemoteFrames`、stale result 0。固定60秒待ちは発生していない。
+
+#### Next steps
+
+1. LOOP 3の dead / accepted-hang / transfer-stall / slow-late の専用 fault-injection matrix を追加する。
+2. valid healthy worker の採用率と export tail の待ち時間を LOOP 4 で分解する。
+3. transport最適化（binary stream / ZIP / reorder window）は引き続き保留。

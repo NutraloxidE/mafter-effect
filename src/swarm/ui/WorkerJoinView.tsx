@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createSignalingBackend } from "../signaling/SignalingService";
 import { WorkerRuntime } from "../worker/WorkerRuntime";
 import { isWorkerOutdated } from "../worker/workerUpdateCheck";
@@ -16,6 +16,7 @@ export function WorkerJoinView() {
   }), []);
   const [code, setCode] = useState(initialCode);
   const [snapshot, setSnapshot] = useState(runtime.getSnapshot());
+  const autoJoinedCode = useRef<string | null>(null);
 
   useEffect(() => {
     const unsubscribe = runtime.subscribe(() => setSnapshot(runtime.getSnapshot()));
@@ -29,7 +30,10 @@ export function WorkerJoinView() {
 
   // The /w/<code> link already carries consent to help; joining by hand adds nothing.
   useEffect(() => {
-    if (initialCode.trim().length >= 4) void runtime.join(initialCode);
+    if (initialCode.trim().length >= 4 && autoJoinedCode.current !== initialCode) {
+      autoJoinedCode.current = initialCode;
+      void runtime.join(initialCode);
+    }
   }, [runtime, initialCode]);
 
   // Pick up a new deployment between jobs. Reloading rejoins automatically from the URL, so this
@@ -49,6 +53,7 @@ export function WorkerJoinView() {
   const statusLabel = snapshot.state === "rendering" ? "Rendering"
     : snapshot.state === "waiting-approval" ? "Waiting for host approval"
       : snapshot.state === "authenticating" ? "Authenticating"
+        : snapshot.state === "syncing" ? "Syncing assets"
         : snapshot.state === "ready" || snapshot.state === "connected" ? "Ready"
           : snapshot.state;
   return (

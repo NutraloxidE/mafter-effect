@@ -8,6 +8,8 @@ export type SwarmMessageType =
   | "benchmark-request"
   | "benchmark-result"
   | "asset-chunk"
+  | "asset-ready"
+  | "asset-sync-complete"
   | "job-offer"
   | "job-accepted"
   | "job-progress"
@@ -67,6 +69,12 @@ export interface SwarmAssetChunkPayload {
   bytesBase64: string;
 }
 
+export interface SwarmAssetReadyPayload {
+  contentHash: string;
+  ok: boolean;
+  message?: string;
+}
+
 /** One slice of a rendered frame; frames exceed the data channel's single-message limit. */
 export interface SwarmResultChunkPayload {
   jobId: string;
@@ -83,6 +91,8 @@ export interface SwarmMessagePayloads {
   "benchmark-request": { job?: SwarmRenderJob };
   "benchmark-result": SwarmBenchmarkResultPayload;
   "asset-chunk": SwarmAssetChunkPayload;
+  "asset-ready": SwarmAssetReadyPayload;
+  "asset-sync-complete": Record<string, never>;
   "job-offer": { job: SwarmRenderJob };
   "job-accepted": { jobId: string };
   "job-progress": SwarmJobProgressPayload;
@@ -129,7 +139,7 @@ function isMessageType(value: unknown): value is SwarmMessageType {
   return typeof value === "string" && [
     "hello", "capabilities", "challenge", "challenge-response", "benchmark-request",
     "benchmark-result", "asset-chunk", "job-offer", "job-accepted", "job-progress", "job-result",
-    "job-result-chunk", "job-cancel", "job-failed", "heartbeat", "ping", "pong", "worker-availability", "worker-draining",
+    "asset-ready", "asset-sync-complete", "job-result-chunk", "job-cancel", "job-failed", "heartbeat", "ping", "pong", "worker-availability", "worker-draining",
     "worker-goodbye",
   ].includes(value);
 }
@@ -166,6 +176,11 @@ function isPayloadShape(type: SwarmMessageType, payload: Record<string, unknown>
       return hasString(payload, "path") && hasString(payload, "contentHash") &&
         hasFiniteNumber(payload, "index") && hasFiniteNumber(payload, "count") &&
         typeof payload.bytesBase64 === "string";
+    case "asset-ready":
+      return hasString(payload, "contentHash") && typeof payload.ok === "boolean" &&
+        (payload.message === undefined || typeof payload.message === "string");
+    case "asset-sync-complete":
+      return true;
     case "job-offer":
       return isRecord(payload.job) && hasString(payload.job, "id");
     case "worker-availability":

@@ -26,6 +26,14 @@ describe("swarm liveness", () => {
     expect(classifyWatchdogFailure(base({ phase: "transferring", firstResultChunkAt: 2_000, lastResultChunkAt: 2_000 }), 3_001, { renderMs: 10_000, transferMs: 1_000 })).toBe("transfer-stall");
   });
 
+  it("does not start transfer timing from a completed render progress message", () => {
+    expect(classifyWatchdogFailure(base({ phase: "rendering", acceptedAt: 1_000, lastProgressAt: 2_000 }), 3_001, { renderMs: 1_000, transferMs: 1_000 })).toBe("render-stall");
+  });
+
+  it("does not watchdog asset preparation before the job offer is sent", () => {
+    expect(classifyWatchdogFailure(base({ offeredAt: 0, hardDeadlineAt: 0 }), 100_000, { renderMs: 1, transferMs: 1 })).toBeNull();
+  });
+
   it("always gives a hard deadline precedence over soft watchdogs", () => {
     expect(classifyWatchdogFailure(base({ phase: "transferring", lastResultChunkAt: 9_900, hardDeadlineAt: 10_000 }), 10_000, { renderMs: 1, transferMs: 1 })).toBe("hard-deadline");
   });

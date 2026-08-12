@@ -47,6 +47,9 @@ export function classifyWatchdogFailure(
   now: number,
   budgets: WatchdogBudgets,
 ): SwarmJobFailureReason | null {
+  // Asset preparation happens before the job offer is timestamped. Do not let that pre-offer
+  // work consume a render deadline or turn a queued job into an immediate hard timeout.
+  if (job.offeredAt <= 0) return null;
   if (job.hardDeadlineAt <= now) return "hard-deadline";
   if (job.phase === "offered" && job.ackDeadlineAt <= now) return "no-ack";
   if (job.phase === "accepted" || job.phase === "rendering") {

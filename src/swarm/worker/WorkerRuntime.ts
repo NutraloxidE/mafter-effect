@@ -15,7 +15,7 @@ export interface WorkerRuntimeOptions {
 }
 
 /** How long a worker waits for approval before asking again with a fresh peer id. */
-const WORKER_APPROVAL_TIMEOUT_MS = 20_000;
+const WORKER_APPROVAL_TIMEOUT_MS = 45_000;
 
 export type WorkerRuntimeState = "idle" | "joining" | "waiting-approval" | "connecting" | "authenticating" | "syncing" | "ready" | "connected" | "rendering" | "stopped" | "error";
 
@@ -30,6 +30,8 @@ export class WorkerRuntime {
   private listeners = new Set<() => void>();
   private currentJobId: string | null = null;
   private readonly assembler = new AssetChunkAssembler();
+  /** Hash verification/cache writes are async; duplicate callers share the same in-flight write. */
+  private readonly assetInflight = new Map<string, Promise<boolean>>();
   private unbindVisibility: (() => void) | null = null;
   private lastJoinCode = "";
   private stopped = false;
@@ -55,8 +57,15 @@ export class WorkerRuntime {
   getSnapshot = () => this.snapshot;
 
   async join(joinCode: string): Promise<void> {
+    const normalizedCode = joinCode.trim().toUpperCase();
+    const activeStates: WorkerRuntimeState[] = [
+      "joining", "waiting-approval", "connecting", "authenticating", "syncing", "ready", "rendering",
+    ];
+    // React development StrictMode and reconnect timers can both call join while the previous
+    // request is still alive. One worker identity must not create two approved peers.
+    if (normalizedCode === this.lastJoinCode && activeStates.includes(this.state)) return;
     this.stopped = false;
-    this.lastJoinCode = joinCode.trim().toUpperCase();
+    this.lastJoinCode = normalizedCode;
     this.setState("joining");
     // Re-joining replaces the peer id, so the previous long poll is for an identity nobody will
     // send to; leaving it running keeps hitting the signaling server for nothing.
@@ -97,6 +106,8 @@ export class WorkerRuntime {
     this.unsubscribeSignaling = null;
     this.peer?.close();
     this.peer = null;
+    this.assembler.reset();
+    this.assetInflight.clear();
     this.setState("stopped");
   }
 
@@ -126,14 +137,23 @@ export class WorkerRuntime {
     if (!this.session || !this.identity) return;
     this.setState("connecting");
     const peer = new WebRtcPeer({ initiator: false });
+    const previousPeer = this.peer;
     this.peer = peer;
-    peer.onSignal = (signal) => void this.backend.sendSignal(this.session!.sessionId, workerPeerId, hostPeerId, signal);
-    peer.onMessage = (message) => void this.handleMessage(message);
+    previousPeer?.close();
+    peer.onSignal = (signal) => {
+      if (this.peer !== peer) return;
+      void this.backend.sendSignal(this.session!.sessionId, workerPeerId, hostPeerId, signal);
+    };
+    peer.onMessage = (message) => {
+      if (this.peer === peer) void this.handleMessage(message);
+    };
     peer.onTransportKind = (kind) => {
+      if (this.peer !== peer) return;
       this.connectionKind = kind;
       this.setState(this.state);
     };
     peer.onStateChange = (state) => {
+      if (this.peer !== peer) return;
       if (state === "connected") {
         // P2P is up: stop long-polling the signaling server (server req/min must reach 0).
         this.unsubscribeSignaling?.();
@@ -147,7 +167,7 @@ export class WorkerRuntime {
       }
       if (state === "disconnected" || state === "failed" || state === "closed") {
         this.setState("error");
-        this.scheduleReconnect();
+        this.scheduleReconnect(peer);
       }
     };
   }
@@ -184,13 +204,15 @@ export class WorkerRuntime {
    * Rejoins after a drop. A worker that silently stays disconnected means someone has to notice
    * and re-approve by hand, which is the main cost of running a swarm during development.
    */
-  private scheduleReconnect(): void {
+  private scheduleReconnect(expectedPeer?: WebRtcPeer): void {
+    if (expectedPeer && this.peer !== expectedPeer) return;
     if (this.stopped || !this.lastJoinCode || this.reconnectTimer !== null) return;
     this.reconnectAttempts += 1;
     const delay = Math.min(30_000, 1_000 * 2 ** Math.min(5, this.reconnectAttempts - 1));
+    const peer = this.peer;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      if (this.stopped) return;
+      if (this.stopped || (peer && this.peer !== peer)) return;
       this.peer?.close();
       this.peer = null;
       void this.join(this.lastJoinCode).catch(() => this.scheduleReconnect());
@@ -239,12 +261,26 @@ export class WorkerRuntime {
       if (!this.identity || !this.peer?.protocol) return;
       const signatureBase64 = await signChallenge(this.identity, message.payload.nonce);
       await this.peer.protocol.send(createSwarmMessage("challenge-response", { nonce: message.payload.nonce, signatureBase64 }));
-      this.setState("ready");
+      // The host still has to synchronize the files this worker will render. READY is sent only
+      // after the host receives asset-ready for every required hash.
+      this.setState("syncing");
       return;
     }
     if (isSwarmMessageType(message, "asset-chunk")) {
       const transfer = this.assembler.accept(message.payload);
-      if (transfer) await this.executor.cacheAsset(transfer);
+      if (transfer) {
+        const cached = this.cacheAsset(transfer);
+        const ok = await cached.catch(() => false);
+        await this.peer?.protocol?.send(createSwarmMessage("asset-ready", {
+          contentHash: transfer.contentHash,
+          ok,
+          ...(ok ? {} : { message: `Worker rejected asset: ${transfer.path}` }),
+        }));
+      }
+      return;
+    }
+    if (isSwarmMessageType(message, "asset-sync-complete")) {
+      if (this.currentJobId === null) this.setState("ready");
       return;
     }
     if (isSwarmMessageType(message, "benchmark-request")) {
@@ -312,5 +348,16 @@ export class WorkerRuntime {
     this.state = state;
     this.snapshot = { state: this.state, currentJobId: this.currentJobId, connection: this.connectionKind, error: this.lastError, session: this.session };
     for (const listener of this.listeners) listener();
+  }
+
+  private cacheAsset(transfer: Parameters<WorkerRenderExecutor["cacheAsset"]>[0]): Promise<boolean> {
+    const existing = this.assetInflight.get(transfer.contentHash);
+    if (existing) return existing;
+    let promise: Promise<boolean>;
+    promise = this.executor.cacheAsset(transfer).finally(() => {
+      if (this.assetInflight.get(transfer.contentHash) === promise) this.assetInflight.delete(transfer.contentHash);
+    });
+    this.assetInflight.set(transfer.contentHash, promise);
+    return promise;
   }
 }

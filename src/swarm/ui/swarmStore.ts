@@ -34,6 +34,7 @@ class SwarmUiStore {
   private connectedSlots = "";
   private lastPreloadedPaths = "";
   private preloadTimer: ReturnType<typeof setTimeout> | null = null;
+  private assetSyncInFlight: Promise<void> | null = null;
   private unsubscribeProject: (() => void) | null = null;
   private backend = createSignalingBackend({
     useInMemory: import.meta.env.VITE_SWARM_USE_IN_MEMORY === "1",
@@ -100,13 +101,14 @@ class SwarmUiStore {
     this.unsubscribeProject = null;
     if (this.preloadTimer !== null) clearTimeout(this.preloadTimer);
     this.preloadTimer = null;
+    this.assetSyncInFlight = null;
     this.connectedSlots = "";
     this.lastPreloadedPaths = "";
     this.update({ status: "idle", session: null, joinUrl: null, pendingWorkers: [], workers: [], availableCompute: 1, error: null });
   }
 
-  async preloadAssets(assets: SwarmAssetTransfer[]): Promise<void> {
-    await this.coordinator?.preloadAssets(assets);
+  async preloadAssets(assets: SwarmAssetTransfer[]): Promise<boolean> {
+    return await this.coordinator?.preloadAssets(assets) ?? false;
   }
 
   /** One frame a worker drew reached the export. The panel reports this, not results received. */
@@ -124,17 +126,30 @@ class SwarmUiStore {
    * outlast the frame's own deadline. `preloadAssets` skips content hashes a worker already has, so
    * calling this repeatedly only ever sends what changed.
    */
-  private async syncWorkerAssets(): Promise<void> {
+  private syncWorkerAssets(): Promise<void> {
+    if (this.assetSyncInFlight) return this.assetSyncInFlight;
+    const sync = (async (): Promise<void> => {
     const coordinator = this.coordinator;
     if (!coordinator) return;
     const state = useEditorStore.getState();
     const project = state.project;
     const comp = project?.compositions.find((candidate) => candidate.id === state.currentCompId);
     if (!project || comp?.kind !== "timeline") return;
-    this.lastPreloadedPaths = collectJobFilePaths(project, comp).join("|");
+    const paths = collectJobFilePaths(project, comp);
     const job = { project, compositionId: comp.id } as unknown as Parameters<typeof attachJobFilesCached>[0];
     const withFiles = await attachJobFilesCached(job, comp, state.getFs(), String(state.projectRevision ?? 0));
-    await coordinator.preloadAssets(withFiles.assets ?? []);
+    // undefined means attaching a required file failed; do not turn a syncing worker into READY
+    // with an unverified/incomplete project. An empty array is the successful no-asset case.
+    if (!withFiles.assets) return;
+    if (await coordinator.preloadAssets(withFiles.assets)) {
+      this.lastPreloadedPaths = paths.join("|");
+    }
+    })();
+    this.assetSyncInFlight = sync;
+    void sync.finally(() => {
+      if (this.assetSyncInFlight === sync) this.assetSyncInFlight = null;
+    });
+    return sync;
   }
 
   /**
@@ -167,7 +182,11 @@ class SwarmUiStore {
     // point: by the time it is offered a frame the footage is already there.
     // Keyed by peerId, not slotId: a worker that reloads keeps its trusted slot but arrives as a
     // new connection with an empty cache, and would otherwise never be re-sent anything.
-    const slots = workers.filter((worker) => worker.state === "ready").map((worker) => worker.peerId).sort().join("|");
+    const slots = workers
+      .filter((worker) => worker.state === "syncing" || worker.state === "ready")
+      .map((worker) => worker.peerId)
+      .sort()
+      .join("|");
     if (slots !== this.connectedSlots) {
       this.connectedSlots = slots;
       if (slots) void this.syncWorkerAssets();
@@ -221,7 +240,7 @@ export function swarmExportHooks(): ExportSwarmHooks | undefined {
       const state = useEditorStore.getState();
       const job = { project, compositionId: comp.id } as unknown as Parameters<typeof attachJobFilesCached>[0];
       const withFiles = await attachJobFilesCached(job, comp, state.getFs(), String(state.projectRevision ?? 0));
-      await swarmUiStore.preloadAssets(withFiles.assets ?? []);
+      if (withFiles.assets) await swarmUiStore.preloadAssets(withFiles.assets);
     },
     onFrameAdopted: () => swarmUiStore.noteAdoptedFrame(),
     submit: async (job, timeoutMs) => {

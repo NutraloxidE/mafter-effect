@@ -3588,16 +3588,24 @@ affect dispatch, and a valid late result still updates the real-work
 measurement even though it is not adopted and saves no host raster work.
 
 Each offered job records its lifecycle evidence: offer, acceptance, render
-progress, first/last result chunk, phase, and absolute hard deadline. ACK,
+progress, first/last result chunk, phase, and absolute hard deadline. Reaching
+`completedFrames === totalFrames` is still render progress, not transfer
+progress; transfer begins only at the first `job-result-chunk`. ACK,
 render-progress, and result-transfer watchdogs are separate failure classes;
 an absolute hard deadline remains as a final bound. A worker that has not
 accepted a job is failed on the short ACK budget, rather than on the render
 budget. A worker that stops progressing is reclaimed locally, and a worker
-whose result transfer stops is reported as a transfer stall. The fixed 60
-second normal job wait is not part of the scheduling contract.
+whose result transfer stops is reported as a transfer stall. Reclaim does not
+clear the worker's active job slot: until a late result or explicit worker
+failure arrives, that worker is busy-quarantined and cannot receive another
+lease. The fixed 60 second normal job wait is not part of the scheduling
+contract.
 
-`READY` means authenticated and renderable; a peer that is merely connected,
-authenticating, or syncing is ineligible for a lease. `localFramesAvoided`
+`READY` means authenticated, renderable, and asset-synchronized. Asset
+transfers are content-addressed in-flight promises and become complete only
+after the worker verifies and caches the bytes, then acknowledges the sync.
+A peer that is merely connected, authenticating, or syncing is ineligible for
+a lease. `localFramesAvoided`
 means host raster work actually avoided, not results received or frames
 verified by the host. Failure metrics retain their class (`no-ack`,
 `render-stall`, `transfer-stall`, `worker-failed`, `disconnected`,

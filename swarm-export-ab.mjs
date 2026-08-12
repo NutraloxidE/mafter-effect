@@ -336,16 +336,21 @@ const approvalWatcher = (async () => {
   }
 })();
 
-/** A worker that is connected but still syncing assets would charge its first job for the transfer. */
+/** READY is emitted only after the worker has acknowledged every required asset hash. */
 async function waitForWorkerReady() {
   const deadline = Date.now() + Number(process.env.SWARM_JOIN_WAIT_MS ?? 120000);
+  let ready = false;
   while (Date.now() < deadline) {
     const { workers } = await swarmState(host);
-    if (workers.some((w) => w.state === "connected")) break;
+    if (workers.some((w) => w.state === "ready")) {
+      ready = true;
+      break;
+    }
     await host.waitForTimeout(3000);
   }
   await host.waitForTimeout(8000);
-  console.log("panel:", /Connected[\s\S]{0,140}/.exec(await text(host))?.[0]?.replace(/\n/g, " "));
+  if (!ready) throw new Error("worker READY not observed after asset synchronization deadline");
+  console.log("panel:", /Connected[\s\S]{0,140}/.exec(await text(host))?.[0]?.replace(/\n/g, " ") ?? "READY observed");
 }
 await waitForWorkerReady();
 

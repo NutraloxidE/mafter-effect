@@ -34,7 +34,9 @@ import type {
 export const SWARM_DEFAULT_JOB_TIMEOUT_MS = 4_000;
 export const SWARM_HARD_DEADLINE_CEILING_MS = 30_000;
 export const SWARM_BOOTSTRAP_SAFETY_FACTOR = 1.5;
-export const SWARM_HANDSHAKE_TIMEOUT_MS = 15_000;
+// Signaling can take several long-poll turns before ICE completes. This is a connection TTL,
+// not a render/job deadline; keep it bounded without making a healthy remote peer retry mid-ICE.
+export const SWARM_HANDSHAKE_TIMEOUT_MS = 45_000;
 export const SWARM_WATCHDOG_INTERVAL_MS = 250;
 
 interface PendingJob {
@@ -77,8 +79,12 @@ interface ConnectedWorker {
   failureCount: number;
   handshakeTimer: number | null;
   snapshot: WorkerSnapshot;
-  /** Content hashes already streamed to this worker, so footage is sent once and not per frame. */
-  sentAssetHashes: Set<string>;
+  /** Content hashes the worker has acknowledged after hash verification and cache insertion. */
+  cachedAssetHashes: Set<string>;
+  /** One in-flight transfer promise per content hash; concurrent callers share the same send. */
+  assetInflight: Map<string, Promise<boolean>>;
+  /** Resolves when the worker has finished verifying a content-addressed transfer. */
+  assetReadyWaiters: Map<string, (ok: boolean) => void>;
 }
 
 export interface SwarmCoordinatorOptions {
@@ -128,6 +134,7 @@ export class SwarmCoordinator {
     this.leaseTimer = null;
     for (const worker of this.workers.values()) {
       if (worker.handshakeTimer !== null) window.clearTimeout(worker.handshakeTimer);
+      this.cancelAssetInflight(worker);
       worker.peer.close();
     }
     this.workers.clear();
@@ -186,7 +193,6 @@ export class SwarmCoordinator {
         probeCompleted: false,
         failureCount: 0,
         handshakeTimer: null,
-        sentAssetHashes: new Set<string>(),
         snapshot: {
           slotId: `pending-${peer.peerId}`,
           peerId: peer.peerId,
@@ -196,6 +202,9 @@ export class SwarmCoordinator {
           health: "unknown",
           transport: "unknown",
         },
+        cachedAssetHashes: new Set<string>(),
+        assetInflight: new Map<string, Promise<boolean>>(),
+        assetReadyWaiters: new Map<string, (ok: boolean) => void>(),
       };
       this.workers.set(peer.peerId, worker);
       worker.handshakeTimer = window.setTimeout(() => {
@@ -204,7 +213,9 @@ export class SwarmCoordinator {
       }, SWARM_HANDSHAKE_TIMEOUT_MS);
       webRtc.onSignal = (signal) => void this.sendSignal(peer.peerId, signal);
       webRtc.onMessage = (message) => void this.handleWorkerMessage(worker, message);
-      webRtc.onStateChange = (state) => this.handlePeerState(worker, state);
+      webRtc.onStateChange = (state) => {
+        this.handlePeerState(worker, state);
+      };
       webRtc.onTransportKind = (kind) => {
         worker.snapshot.transport = kind;
         this.emitChange();
@@ -218,25 +229,33 @@ export class SwarmCoordinator {
    * Streams footage to every connected worker up front. Transferring inside a job makes the first
    * frame absorb the whole file and miss its deadline, which wastes the transfer and the render.
    */
-  async preloadAssets(assets: SwarmAssetTransfer[]): Promise<void> {
-    await Promise.all([...this.workers.values()].map(async (worker) => {
-      if (!this.isWorkerReady(worker)) return;
-      for (const asset of assets) {
-        if (!asset.bytesBase64 || worker.sentAssetHashes.has(asset.contentHash)) continue;
-        // Claimed before the transfer, not after: a preload and a job offer can run at once, and
-        // both would otherwise send the same file. The data channel is ordered, so a job offer that
-        // skips an in-flight asset still arrives behind its chunks.
-        worker.sentAssetHashes.add(asset.contentHash);
-        try {
-          for (const chunk of splitAssetIntoChunks(asset)) {
-            await worker.peer.protocol?.send(createSwarmMessage("asset-chunk", chunk));
-          }
-        } catch {
-          worker.sentAssetHashes.delete(asset.contentHash);
-          return;
-        }
+  async preloadAssets(assets: SwarmAssetTransfer[]): Promise<boolean> {
+    const eligible = [...this.workers.values()].filter((worker) => this.canSyncAssets(worker));
+    const results = await Promise.all(eligible.map(async (worker) => {
+      const needsTransfer = assets.some((asset) => !worker.cachedAssetHashes.has(asset.contentHash));
+      if (needsTransfer && worker.snapshot.state === "ready") worker.snapshot.state = "syncing";
+      const results: boolean[] = [];
+      // Keep one ordered file stream on the data channel. ensureAsset remains promise-shared, so
+      // concurrent callers still coalesce, but a preload cannot interleave two large files.
+      for (const asset of assets) results.push(await this.ensureAsset(worker, asset));
+      if (!results.every(Boolean)) {
+        worker.snapshot.health = "degraded";
+        return false;
+      }
+      try {
+        const protocol = worker.peer.protocol;
+        if (!protocol) return false;
+        await protocol.send(createSwarmMessage("asset-sync-complete", {}));
+        worker.snapshot.state = "ready";
+        return true;
+      } catch {
+        worker.snapshot.health = "degraded";
+        return false;
       }
     }));
+    this.pumpJobs();
+    this.emitChange();
+    return results.length > 0 && results.every(Boolean);
   }
 
   hasAvailableWorker(): boolean {
@@ -276,8 +295,9 @@ export class SwarmCoordinator {
    * deadline even though the frame is already known to be lost.
    */
   private releaseJob(worker: ConnectedWorker, jobId: SwarmJobId, reason: SwarmJobFailureReason = "worker-failed"): void {
-    worker.snapshot.currentJobId = undefined;
+    if (worker.snapshot.currentJobId === jobId) worker.snapshot.currentJobId = undefined;
     const waiter = this.jobs.get(jobId);
+    const newlySettled = Boolean(waiter && !waiter.settled);
     if (waiter && !waiter.settled) {
       waiter.settled = true;
       waiter.settledAt = Date.now();
@@ -286,7 +306,9 @@ export class SwarmCoordinator {
       this.metrics.noteLocalFallback();
       waiter.resolve(null);
     }
-    this.noteWorkerFailure(worker, reason);
+    // A watchdog may have already reclaimed this job; its later job-failed is a completion signal,
+    // not a second worker failure. Avoid charging the same incident twice.
+    if (newlySettled || !waiter) this.noteWorkerFailure(worker, reason);
     this.pumpJobs();
     this.emitChange();
   }
@@ -296,6 +318,58 @@ export class SwarmCoordinator {
       && worker.snapshot.state === "ready"
       && worker.snapshot.health !== "unusable"
       && worker.snapshot.available !== false;
+  }
+
+  private canSyncAssets(worker: ConnectedWorker): boolean {
+    return worker.slotId !== undefined
+      && (worker.snapshot.state === "syncing" || worker.snapshot.state === "ready")
+      && worker.snapshot.health !== "unusable"
+      && worker.snapshot.available !== false;
+  }
+
+  /** Sends an asset once and resolves only after the worker has verified and cached it. */
+  private ensureAsset(worker: ConnectedWorker, asset: SwarmAssetTransfer): Promise<boolean> {
+    if (worker.cachedAssetHashes.has(asset.contentHash)) return Promise.resolve(true);
+    if (!asset.bytesBase64) return Promise.resolve(false);
+    const existing = worker.assetInflight.get(asset.contentHash);
+    if (existing) return existing;
+
+    let resolveReady!: (ok: boolean) => void;
+    const ready = new Promise<boolean>((resolve) => { resolveReady = resolve; });
+    const transfer = (async () => {
+      worker.assetReadyWaiters.set(asset.contentHash, resolveReady);
+      try {
+        const protocol = worker.peer.protocol;
+        if (!protocol) return false;
+        for (const chunk of splitAssetIntoChunks(asset)) {
+          await protocol.send(createSwarmMessage("asset-chunk", chunk));
+        }
+        const ok = await ready;
+        if (ok) worker.cachedAssetHashes.add(asset.contentHash);
+        return ok;
+      } catch (error) {
+        worker.assetReadyWaiters.delete(asset.contentHash);
+        resolveReady(false);
+        console.warn("[swarm] asset transfer failed", {
+          worker: worker.snapshot.label,
+          path: asset.path,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return false;
+      } finally {
+        if (worker.assetReadyWaiters.get(asset.contentHash) === resolveReady) worker.assetReadyWaiters.delete(asset.contentHash);
+      }
+    })();
+    worker.assetInflight.set(asset.contentHash, transfer);
+    void transfer.then(() => {
+      if (worker.assetInflight.get(asset.contentHash) === transfer) worker.assetInflight.delete(asset.contentHash);
+    });
+    return transfer;
+  }
+
+  private cancelAssetInflight(worker: ConnectedWorker): void {
+    for (const resolve of worker.assetReadyWaiters.values()) resolve(false);
+    worker.assetReadyWaiters.clear();
   }
 
   private isEligibleJob(job: SwarmRenderJob): boolean {
@@ -315,11 +389,7 @@ export class SwarmCoordinator {
     const assets = job.assets ?? [];
     try {
       for (const asset of assets) {
-        if (!asset.bytesBase64 || worker.sentAssetHashes.has(asset.contentHash)) continue;
-        worker.sentAssetHashes.add(asset.contentHash);
-        for (const chunk of splitAssetIntoChunks(asset)) {
-          await worker.peer.protocol?.send(createSwarmMessage("asset-chunk", chunk));
-        }
+        if (!await this.ensureAsset(worker, asset)) throw new Error(`Worker did not cache asset: ${asset.path}`);
       }
       const references = assets.map((asset) => ({ ...asset, bytesBase64: "" }));
       const pending = this.jobs.get(job.id);
@@ -330,8 +400,6 @@ export class SwarmCoordinator {
       }
       await worker.peer.protocol?.send(createSwarmMessage("job-offer", { job: { ...job, assets: references } }));
     } catch {
-      // A half-sent file must not be remembered as delivered.
-      for (const asset of assets) worker.sentAssetHashes.delete(asset.contentHash);
       if (worker.slotId) this.scheduler.fail(job.id, worker.slotId);
       this.releaseJob(worker, job.id, "worker-failed");
     }
@@ -494,6 +562,15 @@ export class SwarmCoordinator {
       if (message.payload.available) this.pumpJobs();
       return;
     }
+    if (isSwarmMessageType(message, "asset-ready")) {
+      const resolve = worker.assetReadyWaiters.get(message.payload.contentHash);
+      if (resolve) {
+        worker.assetReadyWaiters.delete(message.payload.contentHash);
+        resolve(message.payload.ok);
+      }
+      this.emitChange();
+      return;
+    }
     if (isSwarmMessageType(message, "challenge-response")) {
       await this.handleChallengeResponse(worker, message.payload.nonce, message.payload.signatureBase64);
       return;
@@ -516,7 +593,9 @@ export class SwarmCoordinator {
       const pending = this.jobs.get(message.payload.jobId);
       if (pending && !pending.settled) {
         pending.lastProgressAt = Date.now();
-        pending.phase = message.payload.completedFrames >= message.payload.totalFrames ? "transferring" : "rendering";
+        // A completed render is still not a transfer. Transfer starts only when the first result
+        // chunk arrives; otherwise a worker that rendered but never uploaded is misclassified.
+        pending.phase = "rendering";
       }
       if (worker.slotId) this.scheduler.markRendering(message.payload.jobId, worker.slotId);
       this.emitChange();
@@ -525,11 +604,13 @@ export class SwarmCoordinator {
     if (isSwarmMessageType(message, "job-result-chunk")) {
       const pending = this.jobs.get(message.payload.jobId);
       const now = Date.now();
-      if (pending && !pending.settled) {
+      if (pending) {
         pending.firstResultChunkAt ??= now;
         pending.lastResultChunkAt = now;
-        pending.lastProgressAt = now;
-        pending.phase = "transferring";
+        if (!pending.settled) {
+          pending.lastProgressAt = now;
+          pending.phase = "transferring";
+        }
       }
       this.resultChunks.accept(message.payload);
       this.emitChange();
@@ -577,6 +658,7 @@ export class SwarmCoordinator {
     for (const [peerId, worker] of this.workers) {
       if (worker === keep || worker.descriptor.deviceId !== keep.descriptor.deviceId) continue;
       if (worker.slotId) this.scheduler.removeWorker(worker.slotId);
+      this.cancelAssetInflight(worker);
       worker.peer.close();
       this.workers.delete(peerId);
     }
@@ -606,7 +688,7 @@ export class SwarmCoordinator {
     worker.snapshot.slotId = slotId;
     if (worker.handshakeTimer !== null) window.clearTimeout(worker.handshakeTimer);
     worker.handshakeTimer = null;
-    worker.snapshot.state = "ready";
+    worker.snapshot.state = "syncing";
     worker.snapshot.health = "unknown";
     this.scheduler.registerWorker({ slotId, score: 0, reliability: 1, connected: true });
     this.emitChange();
@@ -639,6 +721,11 @@ export class SwarmCoordinator {
     if (waiter?.settled && !valid) {
       this.metrics.noteStaleResult();
       this.noteWorkerFailure(worker, "invalid-result");
+      if (worker.snapshot.currentJobId === result.jobId) {
+        worker.snapshot.currentJobId = undefined;
+        this.pumpJobs();
+      }
+      this.emitChange();
       return;
     }
     if (!waiter || waiter.settled || !job || !worker.slotId || !validateSwarmRenderResult(result, {
@@ -655,9 +742,21 @@ export class SwarmCoordinator {
         return;
       }
       this.metrics.noteStaleResult();
+      if (worker.snapshot.currentJobId === result.jobId) {
+        worker.snapshot.currentJobId = undefined;
+        this.pumpJobs();
+      }
+      this.emitChange();
       return;
     }
-    if (!this.scheduler.commit(result.jobId, worker.slotId)) return;
+    if (!this.scheduler.commit(result.jobId, worker.slotId)) {
+      if (worker.snapshot.currentJobId === result.jobId) {
+        worker.snapshot.currentJobId = undefined;
+        this.pumpJobs();
+      }
+      this.emitChange();
+      return;
+    }
     this.metrics.noteRemoteFrame(Math.max(1, result.frameEnd - result.frameStart));
     this.learnTransportCost(worker, waiter, result);
     this.scoreFromRealWork(worker, result);
@@ -676,6 +775,7 @@ export class SwarmCoordinator {
     } else if (state === "disconnected" || state === "failed" || state === "closed") {
       worker.snapshot.state = "reconnecting";
       worker.snapshot.health = "degraded";
+      this.cancelAssetInflight(worker);
       if (worker.slotId) {
         const jobId = worker.snapshot.currentJobId;
         if (jobId) {
@@ -721,7 +821,9 @@ export class SwarmCoordinator {
     pending.settledAt = Date.now();
     pending.phase = "completed";
     this.scheduler.abandon(jobId);
-    if (worker.snapshot.currentJobId === jobId) worker.snapshot.currentJobId = undefined;
+    // The WorkerRuntime has no cancellation guarantee yet. Keep its current job id so the
+    // scheduler quarantines this worker until the late result or failure proves the render ended.
+    if (worker.snapshot.currentJobId === undefined) worker.snapshot.currentJobId = jobId;
     this.metrics.noteLocalFallback();
     pending.resolve(null);
   }
@@ -761,6 +863,7 @@ export class SwarmCoordinator {
   private removeWorkerConnection(worker: ConnectedWorker, reason: SwarmJobFailureReason): void {
     if (worker.handshakeTimer !== null) window.clearTimeout(worker.handshakeTimer);
     worker.handshakeTimer = null;
+    this.cancelAssetInflight(worker);
     worker.snapshot.state = "offline";
     worker.snapshot.health = "unusable";
     if (worker.snapshot.currentJobId) this.failJob(worker, worker.snapshot.currentJobId);
