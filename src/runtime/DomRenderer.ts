@@ -990,6 +990,24 @@ export class DomRenderer implements Renderer {
     return this.root ? this.root.querySelectorAll("video").length : 0;
   }
 
+  /**
+   * 各 video の実測状態。"届かなかった" が「遅い」なのか「そもそも読み込めていない」なのかは
+   * currentTime / readyState / videoWidth を並べないと区別できず、失敗したのが別マシンの
+   * ワーカーだと後から調べる手段が無い。エラーに載せて持ち帰るための一行表現。
+   */
+  describeExportVideos(): string {
+    if (!this.root) return "no root";
+    const videos = [...this.root.querySelectorAll("video")];
+    if (videos.length === 0) return "no video elements";
+    return videos.map((video, index) => {
+      const raw = video.getAttribute(EXPORT_VIDEO_TARGET_ATTR);
+      return `#${index} target=${raw ?? "-"} at=${video.currentTime.toFixed(3)}`
+        + ` ready=${video.readyState} net=${video.networkState}`
+        + ` size=${video.videoWidth}x${video.videoHeight} seeking=${video.seeking}`
+        + ` err=${video.error?.code ?? "-"}`;
+    }).join(" | ");
+  }
+
   /** export 前に video seek / decode 完了を待つ（foreignObject は video を描けない）。 */
   async flushVideoFrames(timeoutMs?: number): Promise<void> {
     if (!this.root) return;
