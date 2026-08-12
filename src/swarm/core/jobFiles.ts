@@ -1,6 +1,7 @@
 import type { Project, TimelineComposition } from "../../core/schema";
 import type { FileSystem } from "../../fs/FileSystem";
 import { BUILTIN_COMPONENT_TYPES } from "../../runtime/builtinComponents";
+import { footagePathsForComponent } from "../../runtime/renderDependencies";
 import { toAssetTransfer } from "./assetManifest";
 import type { SwarmAssetTransfer, SwarmRenderJob } from "./types";
 
@@ -44,27 +45,35 @@ export function requiredJobFilePaths(project: Project, comp: TimelineComposition
         if (byId) paths.add(byId);
       }
     });
+    // Knowing a footage asset's id is not knowing its path: the renderer picks a proxy tier from
+    // the layer's `footageQuality`, reads embedded audio from the original whatever tier that was,
+    // and a split-alpha mask the composition never names. `footagePathsForComponent` is the same
+    // resolution the bundle uses, so a worker gets exactly the files its renderer will open — a
+    // worker renders through `exportComposition`, hence `exportStep: true`.
+    for (const object of node.objects ?? []) {
+      for (const component of object.components ?? []) {
+        for (const path of footagePathsForComponent(project, component, { exportStep: true })) {
+          paths.add(path);
+        }
+      }
+    }
   }
   return [...paths].sort();
 }
 
 /**
- * Everything worth sending: the required files plus the ones named only in the asset table, which
- * no walk of the composition can find — every font (a text layer names its font by CSS family,
- * which `FontOutlineCache` resolves against `meta.family`, so the asset's id and path appear
- * nowhere), a split-alpha mask, and the proxy tier a layer's `footageQuality` selects.
+ * Everything worth sending: the required files plus every font. A text layer names its font by CSS
+ * family, which `FontOutlineCache` resolves against `meta.family`, so a font asset's id and path
+ * appear nowhere in the composition and no walk can find them.
  *
- * These are not required: when one is missing from the host's own FS the host renders without it
- * too — a fallback font, the original instead of a proxy — so a worker that also lacks it still
- * draws the same picture. Requiring them would let a stale `meta.proxies` entry quietly send every
- * job local.
+ * Fonts are not required: a font missing from the host's own FS is one the host renders without
+ * too, so a worker that also lacks it draws the same picture. Requiring them would let one
+ * unreadable font quietly send every job local.
  */
 export function collectJobFilePaths(project: Project, comp: TimelineComposition): string[] {
   const paths = new Set(requiredJobFilePaths(project, comp));
   for (const asset of project.assets) {
     if (asset.kind === "font") paths.add(asset.path);
-    if (!paths.has(asset.path)) continue;
-    for (const companion of companionAssetPaths(asset.meta)) paths.add(companion);
   }
   return [...paths].sort();
 }
@@ -111,18 +120,6 @@ function compTreeUsesPluginComponent(project: Project, comp: TimelineComposition
   return false;
 }
 
-function companionAssetPaths(meta: Record<string, unknown> | undefined): string[] {
-  const paths: string[] = [];
-  if (typeof meta?.alphaPath === "string" && meta.alphaPath.length > 0) paths.push(meta.alphaPath);
-  const proxies = meta?.proxies;
-  if (proxies && typeof proxies === "object") {
-    for (const raw of Object.values(proxies as Record<string, unknown>)) {
-      const path = (raw as { path?: unknown } | null)?.path;
-      if (typeof path === "string" && path.length > 0) paths.push(path);
-    }
-  }
-  return paths;
-}
 
 /**
  * Attaches the referenced files to the job. Returns the job unchanged when anything is missing or
@@ -137,20 +134,8 @@ export async function attachJobFiles(
 ): Promise<SwarmRenderJob> {
   const paths = collectJobFilePaths(job.project, comp);
   if (paths.length === 0) return { ...job, assets: [] };
-  const assets: SwarmAssetTransfer[] = [];
-  let total = 0;
-  for (const path of paths) {
-    let transfer: SwarmAssetTransfer;
-    try {
-      transfer = await toAssetTransfer(fs, path);
-    } catch {
-      return job;
-    }
-    total += transfer.bytesBase64.length;
-    if (total > budgetBytes) return job;
-    assets.push(transfer);
-  }
-  return { ...job, assets };
+  const transfers = await readTransfers(paths, fs, budgetBytes);
+  return transfers ? { ...job, assets: transfers } : job;
 }
 
 const transferCache = new Map<string, { key: string; transfers: Promise<SwarmAssetTransfer[] | null> }>();
@@ -206,11 +191,19 @@ async function readTransfers(
 
 /** True when every file the composition cannot be drawn without travels with the job. */
 export function isSwarmJobSelfContained(job: SwarmRenderJob, comp: TimelineComposition): boolean {
-  // A plugin component is registered from `plugins/` on the host and nowhere on a worker, so the
-  // worker would draw the layer as nothing at all. Keep those renders here until it can load them.
+  // A plugin is registered from `plugins/` on the host and nowhere on a worker, which draws the
+  // layer as nothing at all and skips the unknown effect. The component check catches a plugin
+  // layer whatever `pluginRefs` says; the ref check covers plugin *effects*, whose types cannot be
+  // told from the builtin ones without a list that would quietly rot. Both go until a worker can
+  // load plugins itself.
+  if (job.project.pluginRefs?.some((ref) => ref.enabled)) return false;
   if (compTreeUsesPluginComponent(job.project, comp)) return false;
+  // `assets` is undefined only when attaching the files failed outright — over budget, or a
+  // required file the host could read and the worker will not get. An empty array means the
+  // attach succeeded and nothing was needed, which is a different thing entirely: without this a
+  // text-only comp whose fonts blew the budget looked self-contained and shipped without them.
+  if (!job.assets) return false;
   const required = requiredJobFilePaths(job.project, comp);
-  if (required.length === 0) return true;
-  const attached = new Set((job.assets ?? []).map((asset) => asset.path));
+  const attached = new Set(job.assets.map((asset) => asset.path));
   return required.every((path) => attached.has(path));
 }

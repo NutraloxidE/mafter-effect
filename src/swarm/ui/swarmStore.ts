@@ -109,6 +109,11 @@ class SwarmUiStore {
     await this.coordinator?.preloadAssets(assets);
   }
 
+  /** One frame a worker drew reached the export. The panel reports this, not results received. */
+  noteAdoptedFrame(): void {
+    this.coordinator?.metrics.noteAdoptedRemoteFrame();
+  }
+
   async renderPreviewFrame(job: SwarmRenderJob, timeoutMs?: number): Promise<SwarmRenderResult | null> {
     return this.coordinator?.renderPreviewFrame(job, timeoutMs) ?? null;
   }
@@ -209,6 +214,7 @@ export function swarmExportHooks(): ExportSwarmHooks | undefined {
       const withFiles = await attachJobFilesCached(job, comp, state.getFs(), String(state.projectRevision ?? 0));
       await swarmUiStore.preloadAssets(withFiles.assets ?? []);
     },
+    onFrameAdopted: () => swarmUiStore.noteAdoptedFrame(),
     submit: async (job, timeoutMs) => {
       const comp = job.project.compositions.find((candidate) => candidate.id === job.compositionId);
       if (!comp || comp.kind !== "timeline") return null;
