@@ -103,6 +103,12 @@ export interface ExportSwarmHooks {
 const STRICT_FOOTAGE_WAIT_MS = 2_500;
 
 /**
+ * One-off budget for landing the seek at the start of a block, before any frame is counted. Larger
+ * than the per-frame wait because it is paid once per job rather than per frame.
+ */
+const STRICT_FOOTAGE_SEEK_WAIT_MS = 12_000;
+
+/**
  * Non-schema export wiring. `strictFootage` turns a frame whose video never reached its target
  * time into an error instead of a silently footage-less frame. A swarm worker sets it: it renders
  * a block nobody watches, on a machine that may be slow enough for the decode wait to time out,
@@ -411,6 +417,15 @@ async function runPngSeq(
     localChain = run.catch(() => undefined);
     return run;
   };
+
+  // A worker renders one block per job and each block starts behind where the last one ended, so
+  // its first frame is always a backward seek — the slowest kind. Landing that seek once, before
+  // any frame counts, turns the rest of the block into short forward steps; without it a single
+  // slow seek fails the frame and throws away the whole block's work.
+  if (remote?.strictFootage) {
+    renderer.renderFrame(resolve(comp, startFrame, { expressions: evaluator }), startFrame);
+    await renderer.flushVideoFrames(STRICT_FOOTAGE_SEEK_WAIT_MS);
+  }
   const remoteProducers = remote?.swarm ? buildRemoteFrameProducers({
     swarm: remote.swarm,
     project: remote.project,
