@@ -36,6 +36,7 @@ export class WorkerRuntime {
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private approvalTimer: ReturnType<typeof setTimeout> | null = null;
+  private approvalAttempts = 0;
   private connectionKind: "unknown" | "direct" | "relay" = "unknown";
   private lastError: string | null = null;
   private snapshot = { state: this.state, currentJobId: this.currentJobId, connection: this.connectionKind, error: this.lastError, session: this.session };
@@ -159,16 +160,24 @@ export class WorkerRuntime {
    */
   private armApprovalTimeout(): void {
     if (this.approvalTimer !== null) clearTimeout(this.approvalTimer);
+    // Backs off: asking again abandons the peer id the host may be answering right now, so a tight
+    // retry can outrun its own approval and leave a trail of half-open connections behind.
+    const delay = Math.min(
+      WORKER_APPROVAL_TIMEOUT_MS * 6,
+      WORKER_APPROVAL_TIMEOUT_MS * 2 ** Math.min(3, this.approvalAttempts),
+    );
     this.approvalTimer = setTimeout(() => {
       this.approvalTimer = null;
       if (this.stopped || this.state !== "waiting-approval" || !this.lastJoinCode) return;
+      this.approvalAttempts += 1;
       void this.join(this.lastJoinCode).catch(() => this.scheduleReconnect());
-    }, WORKER_APPROVAL_TIMEOUT_MS);
+    }, delay);
   }
 
   private clearApprovalTimeout(): void {
     if (this.approvalTimer !== null) clearTimeout(this.approvalTimer);
     this.approvalTimer = null;
+    this.approvalAttempts = 0;
   }
 
   /**

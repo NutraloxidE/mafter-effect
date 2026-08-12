@@ -359,6 +359,22 @@ describe("Render Swarm core", () => {
     expect(other.sessionId).not.toBe(first.sessionId);
   });
 
+  it("keeps a rejoining worker to one peer id", async () => {
+    const backend = new InMemorySwarmSignalingBackend();
+    const host = await backend.createSession({ hostPeerId: "host", hostDeviceId: "host-device", hostLabel: "Host" });
+    const peer = (peerId: string) => ({ peerId, deviceId: "device-A", label: "Worker", publicKeyJwk: {}, requestedAt: 0 });
+    const seen: string[] = [];
+    await backend.subscribe(host.sessionId, "host", (event) => {
+      if (event.type === "peer-join-request") seen.push(event.peer.peerId);
+    });
+
+    // A worker whose approval never arrived asks again under a new id. The host must end up
+    // tracking the new request, not both — a dead peer in the list gets leased frames.
+    await backend.joinSession({ joinCode: host.joinCode, peer: peer("peer-1") });
+    await backend.joinSession({ joinCode: host.joinCode, peer: peer("peer-2") });
+    expect(seen).toEqual(["peer-1", "peer-2"]);
+  });
+
   it("does not resurrect abandoned peer ids when a host reattaches", async () => {
     const storage = new Map<string, unknown>();
     const kv = {
