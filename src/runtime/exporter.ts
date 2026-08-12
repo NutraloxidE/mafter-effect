@@ -92,6 +92,8 @@ export interface ExportSwarmHooks {
   submit: (job: SwarmRenderJob, timeoutMs: number) => Promise<SwarmRenderResult | null>;
   /** Ships footage before the first frame is leased, so no job pays for the transfer. */
   preload?: (project: Project, comp: TimelineComposition) => Promise<void>;
+  /** Called once per frame whose remote pixels reach the file — the only measure of work saved. */
+  onFrameAdopted?: () => void;
   timeoutMs?: number;
 }
 
@@ -443,6 +445,7 @@ async function runPngSeq(
     renderLocally: renderLocallySerialized,
     totalFrameEnd: startFrame + totalFrames,
     verifyFrames: new Set(spotCheckFrames(totalFrames).map((fi) => startFrame + fi)),
+    ...(remote.swarm.onFrameAdopted ? { onAdopted: remote.swarm.onFrameAdopted } : {}),
   }) : [];
 
   if (remote?.swarm?.preload && remoteProducers.length > 0) {

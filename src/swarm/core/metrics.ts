@@ -11,6 +11,7 @@ export class SwarmMetrics {
   private localFallbackJobs = 0;
   private staleResultsDiscarded = 0;
   private remoteFrames = 0;
+  private adoptedRemoteFrames = 0;
   private ineligibleJobs = 0;
   readonly throughput = new Ewma();
 
@@ -23,7 +24,13 @@ export class SwarmMetrics {
   setJobs(queued: number, leased: number): void { this.queuedJobs = queued; this.leasedJobs = leased; }
   noteLocalFallback(): void { this.localFallbackJobs += 1; }
   noteStaleResult(): void { this.staleResultsDiscarded += 1; }
+  /** A result arrived. Says nothing about whether its pixels reached the file — see below. */
   noteRemoteFrame(): void { this.remoteFrames += 1; }
+  /**
+   * A frame a worker drew was written to the output. Counting arrivals instead once made a session
+   * report ten frames of distributed work when the host had re-rendered every one of them.
+   */
+  noteAdoptedRemoteFrame(): void { this.adoptedRemoteFrames += 1; }
   noteIneligibleJob(): void { this.ineligibleJobs += 1; }
   snapshot(): SwarmMetricsSnapshot {
     return {
@@ -36,6 +43,7 @@ export class SwarmMetrics {
       localFallbackJobs: this.localFallbackJobs,
       staleResultsDiscarded: this.staleResultsDiscarded,
       remoteFrames: this.remoteFrames,
+      adoptedRemoteFrames: this.adoptedRemoteFrames,
       ineligibleJobs: this.ineligibleJobs,
     };
   }

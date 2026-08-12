@@ -170,8 +170,14 @@ export interface LeasedRenderJob extends SwarmRenderJob {
 }
 
 export interface SwarmMetricsSnapshot {
-  /** Frames actually rendered by a worker and accepted into the preview cache. */
+  /** Results a worker returned that passed validation. Not a measure of work saved. */
   remoteFrames: number;
+  /**
+   * Frames a worker drew that were written to the export. This is the number that says whether
+   * distributing the render did anything: an export can receive results for every block and still
+   * adopt none of them, having re-rendered each one here.
+   */
+  adoptedRemoteFrames: number;
   /** Preview frames the swarm declined, e.g. files that could not travel with the job. */
   ineligibleJobs: number;
   signalingRequests: number;

@@ -133,6 +133,8 @@ export interface RemoteProducerSetup {
   /** Overridable so verification can be exercised without a browser's image decoders. */
   decodePng?: RemoteFrameProducerOptions["decodePng"];
   decodeZip?: RemoteFrameProducerOptions["decodeZip"];
+  /** Called once per frame whose remote pixels reach the output — not once per result received. */
+  onAdopted?: () => void;
 }
 
 async function decodePngToCanvas(bytesBase64: string, width: number, height: number): Promise<HTMLCanvasElement> {
@@ -178,6 +180,16 @@ export function buildRemoteFrameProducers(setup: RemoteProducerSetup): ((frame: 
   const verify = setup.verifyFrames;
   // Reference "how much is in a frame", learned from the frames we render here anyway.
   let referenceSpread = 0;
+  // Which canvases this device drew. A producer falls back to a local render on every failure and
+  // the verified frames are local too, so the canvas that comes out is the only place the two are
+  // still distinguishable — and counting the fallbacks as remote work is how an export once
+  // reported ten distributed frames that the host had drawn itself.
+  const drawnHere = new WeakSet<HTMLCanvasElement>();
+  const renderLocally = async (frame: number): Promise<HTMLCanvasElement> => {
+    const canvas = await setup.renderLocally(frame);
+    drawnHere.add(canvas);
+    return canvas;
+  };
   const wrap = (produce: (frame: number) => Promise<HTMLCanvasElement>) => {
     // A spread-over-the-range sample can miss a worker whose every frame is wrong: an export
     // shipped 18 footage-less frames because the sampled ones all happened to be rendered here.
@@ -191,12 +203,13 @@ export function buildRemoteFrameProducers(setup: RemoteProducerSetup): ((frame: 
       if (!mustVerify) {
         // Cheap guard on every remote frame: a worker that rendered before its footage decoded
         // returns a near-flat frame, and sampling alone would only catch it by luck.
-        if (looksEmptyAgainst(remote, referenceSpread)) return setup.renderLocally(frame);
+        if (looksEmptyAgainst(remote, referenceSpread)) return renderLocally(frame);
+        if (!drawnHere.has(remote)) setup.onAdopted?.();
         return remote;
       }
       // Spot check: render it here too and keep the local frame, so a verified frame in the
       // output never depends on the worker's rasterizer.
-      const local = await setup.renderLocally(frame);
+      const local = await renderLocally(frame);
       referenceSpread = Math.max(referenceSpread, canvasSpread(local));
       const difference = compareFrames(remote, local);
       if (difference > SWARM_FRAME_TOLERANCE) throw new SwarmFrameMismatchError(frame, difference);
@@ -209,7 +222,7 @@ export function buildRemoteFrameProducers(setup: RemoteProducerSetup): ((frame: 
     renderRevision: setup.renderRevision,
     profile: setup.profile,
     submit: setup.swarm!.submit,
-    renderLocally: setup.renderLocally,
+    renderLocally,
     decodePng: setup.decodePng ?? decodePngToCanvas,
     decodeZip: setup.decodeZip ?? decodeZipToFrames,
     ...(setup.totalFrameEnd === undefined ? {} : { totalFrameEnd: setup.totalFrameEnd }),

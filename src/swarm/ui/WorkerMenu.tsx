@@ -82,7 +82,8 @@ export function WorkerMenu() {
                 <div>Available compute: {snapshot.availableCompute.toFixed(1)}× local</div>
                 {snapshot.metrics && (
                   <div style={{ color: "#8a8a8a", marginTop: 3 }}>
-                    Frames from workers: {snapshot.metrics.remoteFrames}
+                    {/* Adopted, not received: an export can take back every block it sent out. */}
+                    Frames used from workers: {snapshot.metrics.adoptedRemoteFrames} of {snapshot.metrics.remoteFrames} received
                     {snapshot.metrics.localFallbackJobs > 0 && ` · fell back locally: ${snapshot.metrics.localFallbackJobs}`}
                     {snapshot.metrics.ineligibleJobs > 0 && ` · kept local: ${snapshot.metrics.ineligibleJobs}`}
                   </div>

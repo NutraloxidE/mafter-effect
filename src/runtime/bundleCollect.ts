@@ -15,9 +15,7 @@ import type {
 import { globalPluginRegistry } from "./pluginRegistry";
 import { BUILTIN_COMPONENT_TYPES } from "./builtinComponents";
 import { collectExpressionPresetScriptPaths } from "./builtinExpressionPresetScripts";
-import { resolveFootageAudioPath, resolveFootageVideoPath } from "./footagePlayback";
-import { effectivePackedQuality, normalizeFootageQuality, normalizePackedPreviewSelection } from "./footageQuality";
-import { isPackedAlphaVideoMeta, isSplitAlphaVideoMeta } from "./imageAssetCache";
+import { footagePathsForComponent } from "./renderDependencies";
 
 export interface BundleCollectResult {
   timelineCompIds: Set<string>;
@@ -88,29 +86,13 @@ function collectObjectAssets(
     // 内蔵音声付き native は原本 path も同梱（proxy tier でも音声は原本から再生）。
     if (cmp.type === "video") {
       const assetId = cmp.props["asset"];
-      if (typeof assetId === "string") {
-        const asset = project.assets.find((a) => a.id === assetId);
-        if (asset) {
-          assetIds.add(asset.id);
-          // §16.2b packed alpha は live 再生で effectivePackedQuality（既定 proxy tier への
-          // 差し替え・Same as Export Quality 追従）を経由した quality を使う。生の footageQuality
-          // をそのまま渡すと、player が実際に要求する proxy tier のファイルが zip に同梱されず
-          // 404 になる（bundle player は meta.proxies を無条件に URL 登録するため気づきにくい）。
-          const quality = isPackedAlphaVideoMeta(asset.meta)
-            ? effectivePackedQuality(normalizePackedPreviewSelection(cmp.props["footageQuality"]), {
-                exportStep: false,
-                exportQuality: normalizeFootageQuality(cmp.props["packedExportQuality"]),
-              })
-            : normalizeFootageQuality(cmp.props["footageQuality"]);
-          binaries.add(resolveFootageVideoPath(asset, quality));
-          const audioPath = resolveFootageAudioPath(asset);
-          if (audioPath) binaries.add(audioPath);
-          // §16.2 split alpha: companion マスク WebM は quality tier に関わらず常に原本を使う
-          // （DomRenderer は imageCache.getAlphaVideoUrl を quality 非依存で参照する）。
-          // 同梱を忘れると bundle player 側で 404 → 合成失敗 → 透過が出ない/再生されない。
-          if (isSplitAlphaVideoMeta(asset.meta)) {
-            binaries.add(asset.meta!.alphaPath as string);
-          }
+      if (typeof assetId === "string" && project.assets.some((a) => a.id === assetId)) {
+        assetIds.add(assetId);
+        // §11.4b/§16.2/§16.2b — quality tier・内蔵音声・split alpha companion の解決は
+        // `footagePathsForComponent` が唯一の正（swarm の worker 転送と同じ定義を使う）。
+        // bundle player は live 再生なので exportStep: false。
+        for (const path of footagePathsForComponent(project, cmp, { exportStep: false })) {
+          binaries.add(path);
         }
       }
       continue;
