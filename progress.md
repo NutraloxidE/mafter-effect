@@ -1,4 +1,19 @@
+
 # Progress
+
+### 2026-08-12（Claude Opus 5）— swarm 調査の到達点（ワーカー機が使用不可になり中断）
+
+- **前回の「真因」は外れ**: transfer / `MemoryFs` の detach 修正（PR #71）を入れても症状は一切変わらなかった。あのバグ自体は実在するので修正は維持するが、**この症状の原因ではない**。
+- **測って分かったこと（推測ではない）**: 失敗しているのは `asset=01KWZMGQFM57DSRCKX74ZKCJDW` ＝ **packed alpha の webm**（`alphaMode:"packed"`, `footageQuality:"low"`, mp4 から `extractedFrom` で生成されたもの）。状態は一貫して `ready=0 / size=0x0 / net=2(LOADING) / err=- / buffered=0`。
+- **最悪の失敗モードを特定・修正**: [DomRenderer.ts](src/runtime/DomRenderer.ts) の video 経路は
+  ```ts
+  const src = assetId ? (imageCache?.getUrlForQuality(assetId, effQuality) ?? "") : "";
+  video.src = src;   // ← URL が引けないと空文字
+  ```
+  **`video.src = ""` はドキュメント URL に解決され、要素はページ自身をメディアとして読もうとして永久に止まる**（`net=2 / ready=0 / err なし / buffered=0`）。これは「デコードが遅い」と**区別がつかない**。今回それを追うのに 1 セッション丸ごと溶かした。
+  → src が空なら `removeAttribute("src")` にし、`videosAtExportTarget` は **src 無しの video を即座に失敗**として扱うようにした（デコード待ちを浪費しない）。
+- **次に確認すべきこと（ワーカー機が空いたら最優先）**: なぜワーカー側で `getUrlForQuality` が URL を返せないのか。`imageCache.loadFromProject` が packed webm を登録できていない可能性が高い。今回の修正で `src=(none) len=0` として**エラーに明示される**ので、1 回の計測で判別できる。
+- この間の総時間は 91〜100 秒で横ばい、`ADOPTION suspectFrames: 0` は毎回維持（**出力は常に正しい**）。
 
 ### 2026-08-12（Claude Opus 5）— swarm 真因: transfer が **FileSystem のファイルそのものを破壊**していた
 

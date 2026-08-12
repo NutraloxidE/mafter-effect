@@ -970,6 +970,9 @@ export class DomRenderer implements Renderer {
     for (const video of this.root.querySelectorAll("video")) {
       const raw = video.getAttribute(EXPORT_VIDEO_TARGET_ATTR);
       if (raw === null || raw === "") continue;
+      // A layer whose asset never resolved to a URL has no source at all. It can never reach any
+      // target, so treat it as a failure rather than waiting out the decode budget on it.
+      if (!video.getAttribute("src")) return false;
       const target = Number(raw);
       if (!Number.isFinite(target)) continue;
       if (Math.abs(video.currentTime - target) > tolerance) return false;
@@ -2884,7 +2887,12 @@ function updateComponentEl(
         : quality;
       const src = assetId ? (imageCache?.getUrlForQuality(assetId, effQuality) ?? "") : "";
       if (video.getAttribute("src") !== src) {
-        video.src = src;
+        // `video.src = ""` resolves against the document, so the element spends forever loading
+        // the page as media: networkState LOADING, readyState 0, no error, nothing buffered. That
+        // is indistinguishable from a slow decode and cost a whole session to track down. With no
+        // source, say so — the footage checks then fail immediately and legibly.
+        if (src) video.src = src;
+        else video.removeAttribute("src");
         // §11.4 mute は syncVideoElementTime がモード別に制御（再生中のみアンミュート）。
         // 初期状態は scrub 経路で muted=true になる。
         video.muted = true;
