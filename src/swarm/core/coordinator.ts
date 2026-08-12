@@ -387,6 +387,14 @@ export class SwarmCoordinator {
       return;
     }
     if (isSwarmMessageType(message, "job-failed")) {
+      // The worker already knows why it could not render this block, and the host is the only
+      // place anyone is watching. Dropping the reason here cost several sessions of guessing at
+      // failures that the worker had described precisely.
+      console.warn("[swarm] worker declined a job", {
+        worker: worker.snapshot.label,
+        jobId: message.payload.jobId,
+        reason: message.payload.message,
+      });
       if (worker.slotId) this.scheduler.fail(message.payload.jobId, worker.slotId);
       this.releaseJob(worker, message.payload.jobId);
     }
