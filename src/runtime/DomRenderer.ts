@@ -973,6 +973,10 @@ export class DomRenderer implements Renderer {
       const target = Number(raw);
       if (!Number.isFinite(target)) continue;
       if (Math.abs(video.currentTime - target) > tolerance) return false;
+      // currentTime だけでは足りない: seek は反映されているのに復号済みフレームがまだ無い状態
+      // （readyState < HAVE_CURRENT_DATA）では、その video は空として合成される。実際 swarm の
+      // ブロックは「時刻は正しいが中身が無い」フレームを返していた。
+      if (video.readyState < 2) return false;
     }
     return true;
   }

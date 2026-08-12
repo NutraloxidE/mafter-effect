@@ -13,6 +13,15 @@
 - **テスト**: `checks a worker's first frames before trusting any of its output` を追加。全体 2925 tests PASS、`tsc` クリーン。
 - **教訓（CLAUDE.md「分散描画の性能結論」節・memory に固定）**: 「返ってきた」「カウンタが増えた」は採用の証拠にならない。**壊れていても値が出る指標**を根拠にしない。
 
+#### 真因の特定（video 要素は在った・「時刻は合っているが復号フレームが無い」）
+
+- 当初「video 要素が 0 本」と推定したが、**これは誤り**。同じ回の `renderMs` が 9.8 秒 → 24.4 秒に増えていたのは、`strictFootage` が毎フレーム「目標時刻に乗っていない」と判定してリトライ描画していたため。つまり **video 要素は存在し、currentTime も評価されていた**。
+- `videosAtExportTarget` は `currentTime` の一致しか見ておらず、**`readyState < HAVE_CURRENT_DATA`（復号済みフレームがまだ無い）を通してしまう**。この状態の video は空として合成される＝「時刻は正しいが中身が無い」フレーム。これが 24KB フレームの正体。
+- 修正:
+  - [DomRenderer.ts](src/runtime/DomRenderer.ts) `videosAtExportTarget` に `readyState >= 2` を追加（呼び出しは worker 経路と strictFootage のみ。通常のホスト書き出しは未経由なので無影響）。
+  - [exporter.ts](src/runtime/exporter.ts): `strictFootage` のリトライ時に `flushVideoFrames(8s)` を挟む。既定の待ち（`DEFAULT_VIDEO_FRAME_WAIT_MS = 1500ms`）は「追いつくマシン」前提で、3 倍遅いワーカーではほぼ毎フレーム間に合わない。**リトライ時・strict 要求時のみ**なので他経路の速度は不変。
+- 検出は zip のフレーム単位比較で確定済み: 不良フレームは **frame 126-127 と 134-149 の連続 2 区間**＝リモートブロックの範囲と完全一致（採用された 18 枚すべてが不良、ホストがワークスチールで奪い返した 128-133 は正常）。
+
 ### 2026-08-12（Claude Opus 5）— swarm: 接続時にアセットを先送り＋差分更新
 
 - **依頼**: 「繋いだ時点で、ホストからワーカーに P2P でデータを送る、追加アセットがあったら逐一更新」。

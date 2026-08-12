@@ -95,6 +95,9 @@ export interface ExportSwarmHooks {
   timeoutMs?: number;
 }
 
+/** Decode budget a strict caller gives a lagging video before calling the frame unusable. */
+const STRICT_FOOTAGE_WAIT_MS = 8_000;
+
 /**
  * Non-schema export wiring. `strictFootage` turns a frame whose video never reached its target
  * time into an error instead of a silently footage-less frame. A swarm worker sets it: it renders
@@ -390,6 +393,10 @@ async function runPngSeq(
       // its previous position, which looks plausible and is simply wrong. Rendering again is what
       // gives the seek more time, so retry once before deciding the frame is unusable.
       if (!renderer.videosAtExportTarget(config.fps)) {
+        // The default wait is tuned for a machine that keeps up. A worker rendering a block is
+        // three times slower and misses it on nearly every frame, so give the decode real time
+        // before deciding — but only on the retry, and only where the caller asked for strictness.
+        if (remote?.strictFootage) await renderer.flushVideoFrames(STRICT_FOOTAGE_WAIT_MS);
         canvas = await renderContextFrameCanvas(renderer, comp, evaluator, frame, nw, nh, w, h, bg, {});
         if (remote?.strictFootage && !renderer.videosAtExportTarget(config.fps)) {
           throw new Error(`Footage did not reach frame ${frame}`);
