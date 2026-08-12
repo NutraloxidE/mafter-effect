@@ -44,12 +44,11 @@ export async function decodeVideoBlobUrl(buf: Uint8Array, mime: string): Promise
   const w = ensureWorker();
   if (!w) return decodeVideoBlobUrlMainThread(buf, mime);
 
-  // buf のビューが underlying buffer 全体を覆っていない場合（fs.read() の実装上は通常起きないが
-  // 念のため）、transfer で他の参照が巻き添えにならないよう独立 ArrayBuffer を切り出す。
-  const ab: ArrayBuffer =
-    buf.byteOffset === 0 && buf.byteLength === buf.buffer.byteLength
-      ? (buf.buffer as ArrayBuffer)
-      : (buf.slice().buffer as ArrayBuffer);
+  // transfer は元の ArrayBuffer を detach する。呼び出し側が渡してきたバッファを所有している
+  // 保証は無く、実際 MemoryFs は内部ストレージをそのまま返すため、transfer した時点でそのファイル
+  // は以後 0 バイトになる。同じ動画を 2 レイヤーで使うコンプでは 2 本目が読めなくなり、
+  // <video> が ready=0 / size=0x0 のまま止まった（swarm worker で発現）。常に自分のコピーを渡す。
+  const ab: ArrayBuffer = buf.slice().buffer as ArrayBuffer;
 
   const id = nextId++;
   const blob = await new Promise<Blob>((resolve, reject) => {
