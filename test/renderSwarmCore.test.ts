@@ -9,7 +9,7 @@ import {
   serializeSwarmMessage,
 } from "../src/swarm/core/protocol";
 import { createBenchmarkJob, normalizedBenchmarkScore } from "../src/swarm/core/benchmark";
-import { collectJobFilePaths, isSwarmJobSelfContained } from "../src/swarm/core/jobFiles";
+import { collectJobFilePaths, isSwarmJobSelfContained, requiredJobFilePaths } from "../src/swarm/core/jobFiles";
 import { buildExportSwarmJob, buildRemoteFrameProducers, createRemoteFrameProducer, spotCheckFrames, SWARM_GIVE_UP_AFTER_FAILURES } from "../src/swarm/core/remoteFrameProducer";
 import { meanAbsoluteDifference, pixelSpread, SWARM_FRAME_TOLERANCE } from "../src/swarm/core/frameVerification";
 import { AssetChunkAssembler, ResultChunkAssembler, splitAssetIntoChunks, splitResultBytes } from "../src/swarm/transport/assetChunks";
@@ -345,6 +345,87 @@ describe("Render Swarm core", () => {
       { path: "assets/logo.png", contentHash: "h", bytesBase64: "" },
       { path: "scripts/obj-1/position.js", contentHash: "h2", bytesBase64: "" },
     ] }, comp)).toBe(true);
+  });
+
+  it("sends the companion files no object prop names — the alpha mask and the proxy tiers", () => {
+    const comp = {
+      id: "comp-1", name: "Main", kind: "timeline" as const, width: 320, height: 180, fps: 30, duration: 10,
+      objects: [{
+        id: "obj-1",
+        components: [{ id: "c1", type: "video", props: { asset: "asset-1", footageQuality: "low" } }],
+      }],
+    } as never;
+    const project = {
+      schemaVersion: 1, meta: { name: "t", createdAt: "", updatedAt: "" },
+      assets: [
+        {
+          id: "asset-1", path: "assets/clip.webm", kind: "video" as const,
+          meta: {
+            alphaMode: "split", alphaPath: "assets/clip.alpha.webm",
+            proxies: { low: { path: "assets/clip.low.webm" }, medium: { path: "assets/clip.med.webm" } },
+          },
+        },
+        // Unreferenced: its proxy must not ride along.
+        { id: "asset-2", path: "assets/other.webm", kind: "video" as const, meta: { proxies: { low: { path: "assets/other.low.webm" } } } },
+        // Fonts are reached by CSS family, never by id or path, so they travel unconditionally.
+        { id: "asset-3", path: "assets/Inter.woff2", kind: "font" as const, meta: { family: "Inter" } },
+      ],
+      compositions: [comp], rootComposition: "comp-1", pluginRefs: [],
+    } as never;
+
+    expect(collectJobFilePaths(project, comp)).toEqual([
+      "assets/Inter.woff2", "assets/clip.alpha.webm", "assets/clip.low.webm", "assets/clip.med.webm", "assets/clip.webm",
+    ]);
+    // None of them is required: a proxy or font the host cannot read is one the host does not use
+    // either, so its absence must not send every job local.
+    expect(requiredJobFilePaths(project, comp)).toEqual(["assets/clip.webm"]);
+    expect(isSwarmJobSelfContained(
+      { ...job("j", 0), compositionId: "comp-1", project, assets: [{ path: "assets/clip.webm", contentHash: "h", bytesBase64: "" }] },
+      comp,
+    )).toBe(true);
+  });
+
+  it("keeps a composition with a plugin component local, since no worker can load the plugin", () => {
+    const comp = {
+      id: "comp-1", name: "Main", kind: "timeline" as const, width: 320, height: 180, fps: 30, duration: 10,
+      objects: [{ id: "obj-1", components: [{ id: "c1", type: "acme.particles", props: {} }] }],
+    } as never;
+    const project = {
+      schemaVersion: 1, meta: { name: "t", createdAt: "", updatedAt: "" },
+      assets: [], compositions: [comp], rootComposition: "comp-1", pluginRefs: [],
+    } as never;
+
+    // Nothing is missing — the job would otherwise look perfectly self-contained.
+    expect(requiredJobFilePaths(project, comp)).toEqual([]);
+    expect(isSwarmJobSelfContained({ ...job("j", 0), compositionId: "comp-1", project, assets: [] }, comp)).toBe(false);
+  });
+
+  it("follows nested compositions, whose files the parent's object list never names", () => {
+    const outer = {
+      id: "comp-1", name: "Main", kind: "timeline" as const, width: 320, height: 180, fps: 30, duration: 10,
+      objects: [
+        { id: "obj-1", components: [{ id: "c1", type: "comp", props: { compId: "comp-2" } }] },
+        { id: "obj-2", components: [{ id: "c2", type: "comp", props: { compId: "comp-3" } }] },
+      ],
+    } as never;
+    const inner = {
+      id: "comp-2", name: "Pre", kind: "timeline" as const, width: 320, height: 180, fps: 30, duration: 10,
+      objects: [
+        { id: "obj-3", components: [{ id: "c3", type: "video", props: { asset: "asset-1" } }] },
+        // A cycle must not hang the walk.
+        { id: "obj-4", components: [{ id: "c4", type: "comp", props: { compId: "comp-1" } }] },
+      ],
+    } as never;
+    const html = { id: "comp-3", name: "Html", kind: "html" as const, width: 320, height: 180, fps: 30, duration: 10 } as never;
+    const project = {
+      schemaVersion: 1, meta: { name: "t", createdAt: "", updatedAt: "" },
+      assets: [{ id: "asset-1", path: "assets/inner.mp4", kind: "video" as const }],
+      compositions: [outer, inner, html], rootComposition: "comp-1", pluginRefs: [],
+    } as never;
+
+    expect(collectJobFilePaths(project, outer)).toEqual([
+      "assets/inner.mp4", "compositions/comp-3/script.js",
+    ]);
   });
 
   it("scores workers relative to the host on a self-contained benchmark job", () => {

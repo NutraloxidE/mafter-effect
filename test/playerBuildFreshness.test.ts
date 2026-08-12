@@ -21,8 +21,12 @@ describe("player build freshness", () => {
       },
     });
 
-    const fresh = readFileSync(join(out, "player.js"), "utf8");
-    const committed = readFileSync(resolve("public/player.js"), "utf8");
+    // Windows checkouts normalize the committed file to CRLF while the build always writes LF, so
+    // a raw comparison here is red on Windows no matter how fresh the build is — which makes the
+    // one guard against shipping a stale player useless exactly where it is loudest.
+    const normalize = (text: string) => text.replace(/\r\n/g, "\n");
+    const fresh = normalize(readFileSync(join(out, "player.js"), "utf8"));
+    const committed = normalize(readFileSync(resolve("public/player.js"), "utf8"));
 
     expect(
       committed === fresh,
