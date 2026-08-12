@@ -3577,6 +3577,33 @@ always the correctness and completion fallback.
   conservative follow-up until host-side ordering, muxing, alpha, video, and
   nested-composition parity are proven end to end.
 
+#### Render Swarm liveness and capacity evidence (LOOP 3, runtime-only)
+
+The scheduler must not treat a connected peer or a synthetic benchmark as
+render capacity. A worker has `unknown`, `probing`, or `measured` performance
+state; synthetic benchmark output is diagnostic only. An unknown worker may
+receive at most one non-critical probe while the host has sufficient local
+work remaining. A successful real render is the first evidence allowed to
+affect dispatch, and a valid late result still updates the real-work
+measurement even though it is not adopted and saves no host raster work.
+
+Each offered job records its lifecycle evidence: offer, acceptance, render
+progress, first/last result chunk, phase, and absolute hard deadline. ACK,
+render-progress, and result-transfer watchdogs are separate failure classes;
+an absolute hard deadline remains as a final bound. A worker that has not
+accepted a job is failed on the short ACK budget, rather than on the render
+budget. A worker that stops progressing is reclaimed locally, and a worker
+whose result transfer stops is reported as a transfer stall. The fixed 60
+second normal job wait is not part of the scheduling contract.
+
+`READY` means authenticated and renderable; a peer that is merely connected,
+authenticating, or syncing is ineligible for a lease. `localFramesAvoided`
+means host raster work actually avoided, not results received or frames
+verified by the host. Failure metrics retain their class (`no-ack`,
+`render-stall`, `transfer-stall`, `worker-failed`, `disconnected`,
+`hard-deadline`, or `invalid-result`) so a circuit breaker and the measurement
+model do not collapse unrelated failures into one boolean.
+
 ### Render Swarm v2 (planned): assets, expressions, export distribution
 
 v2 widens what may be distributed. It still changes no serialized schema and no

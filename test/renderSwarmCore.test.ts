@@ -225,6 +225,24 @@ describe("Render Swarm core", () => {
     expect(adopted).toBe(1);
   });
 
+  it("does not verify a local fallback a second time", async () => {
+    const comp = { id: "comp-1", name: "Main", kind: "timeline" as const, width: 320, height: 180, fps: 30, duration: 10, objects: [] } as never;
+    const project = { schemaVersion: 1, meta: { name: "t", createdAt: "", updatedAt: "" }, assets: [], compositions: [comp], rootComposition: "comp-1", pluginRefs: [] } as never;
+    const localCanvas = {} as HTMLCanvasElement;
+    let localRenders = 0;
+    const [producer] = buildRemoteFrameProducers({
+      verifyFrames: new Set([0]),
+      swarm: { workerCount: 1, submit: async () => null },
+      project, comp, renderRevision: "rev-1",
+      profile: { quality: "draft", proxy: "full", width: 320, height: 180 },
+      renderLocally: async () => { localRenders += 1; return localCanvas; },
+      decodePng: async () => localCanvas,
+      decodeZip: async () => new Map(),
+    });
+    await producer!(0);
+    expect(localRenders).toBe(1);
+  });
+
   it("reads a range job's zip by offset from the block start, not by absolute frame", async () => {
     const comp = { id: "comp-1", name: "Main", kind: "timeline" as const, width: 320, height: 180, fps: 30, duration: 10, objects: [] } as never;
     const project = { schemaVersion: 1, meta: { name: "t", createdAt: "", updatedAt: "" }, assets: [], compositions: [comp], rootComposition: "comp-1", pluginRefs: [] } as never;

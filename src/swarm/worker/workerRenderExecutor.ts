@@ -20,6 +20,8 @@ interface CachedContext {
   context: Awaited<ReturnType<typeof createCompFrameCaptureContext>>;
 }
 
+export type WorkerRenderProgress = (completedFrames: number, totalFrames: number) => void;
+
 /** Mirrors the exporter: transparent for an alpha export, else the comp background or black. */
 function exportBackground(job: SwarmRenderJob, comp: TimelineComposition): string | undefined {
   if (job.profile.alpha === undefined) return undefined;
@@ -45,7 +47,12 @@ export class WorkerRenderExecutor {
    * worker-specific capture. Every divergence found so far (background, layout scale, a missing
    * text layer, footage timing) came from having a second path; sharing one removes the class.
    */
-  async renderRange(job: SwarmRenderJob, fs: MemoryFs, composition: TimelineComposition): Promise<SwarmRenderResult> {
+  async renderRange(
+    job: SwarmRenderJob,
+    fs: MemoryFs,
+    composition: TimelineComposition,
+    onProgress?: WorkerRenderProgress,
+  ): Promise<SwarmRenderResult> {
     const startedAt = performance.now();
     const scale = job.profile.width / Math.max(1, composition.width);
     // Building the export's offscreen world costs about as much as rendering eight frames — a
@@ -63,7 +70,10 @@ export class WorkerRenderExecutor {
       format: "png-seq",
       alpha: job.profile.alpha ?? false,
       textRenderMode: job.profile.quality === "draft" ? "draft" : "precise",
-    }, () => {}, undefined, undefined, { strictFootage: true, session: this.session.holder });
+    }, (progress) => {
+      if (progress.phase !== "render") return;
+      onProgress?.(Math.min(job.frameEnd - job.frameStart, Math.max(0, progress.frame + 1)), job.frameEnd - job.frameStart);
+    }, undefined, undefined, { strictFootage: true, session: this.session.holder });
     // `strictFootage` compares each video against its target time, which says nothing when there
     // are no video elements at all — exactly the shape of the blocks that came back at a thirteenth
     // of the expected size, with the footage layers simply absent.
@@ -91,7 +101,7 @@ export class WorkerRenderExecutor {
     };
   }
 
-  async render(job: SwarmRenderJob): Promise<SwarmRenderResult> {
+  async render(job: SwarmRenderJob, onProgress?: WorkerRenderProgress): Promise<SwarmRenderResult> {
     const fs = new MemoryFs();
     for (const asset of job.assets ?? []) {
       // Files usually arrive ahead of the job as chunks; inline bytes remain valid for small ones.
@@ -107,7 +117,7 @@ export class WorkerRenderExecutor {
     }
     const composition = job.project.compositions.find((comp) => comp.id === job.compositionId);
     if (!composition || composition.kind !== "timeline") throw new Error("Worker job composition is not a timeline");
-    if (job.frameEnd - job.frameStart > 1) return this.renderRange(job, fs, composition);
+    if (job.frameEnd - job.frameStart > 1) return this.renderRange(job, fs, composition, onProgress);
     const context = await this.contextFor(job, composition, fs);
     {
       const startedAt = performance.now();
@@ -123,6 +133,7 @@ export class WorkerRenderExecutor {
         }
       }
       const renderMs = performance.now() - startedAt;
+      onProgress?.(1, 1);
       return {
         renderMs,
         jobId: job.id,

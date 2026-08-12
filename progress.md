@@ -3662,3 +3662,32 @@ warmup は 40.2s / 40.5s で「収束」と判定したが、その後の A は 
 3. 保留: transport 二重構造、スケジューラ、リモートフレームの約 4 割破棄。
 
 検証: typecheck PASS、`npm test` 308 files / 2935 tests PASS。`src/runtime/exporter.ts` と新規 `hostRenderCost.ts` は expression ランタイム／player 経路ではないので `build:player` 不要。
+
+### 2026-08-13 (Codex) - LOOP 3: Bootstrap Lie を除去し、liveness-aware deadline を実装
+
+WP `LOOP 2.5-3_ Kill the Bootstrap Lie + Liveness-Aware Deadline` を実施。
+
+#### 実装
+
+- `PendingJob` に `offeredAt` / `acceptedAt` / `lastProgressAt` / `firstResultChunkAt` / `lastResultChunkAt` / `phase` / `hardDeadlineAt` を追加。
+- 固定60秒タイマーを廃止し、ACK・render progress・result transfer・absolute hard deadlineを別々に監視するwatchdogへ変更。failure reason (`no-ack` / `render-stall` / `transfer-stall` / `hard-deadline` 等) とメトリクスを分離。
+- synthetic benchmarkのscheduler反映を削除。workerは `unknown` → 非criticalな1回のprobe → real job完了で `measured` になり、実測render costのみがdispatchを制御する。validなlate resultも採用されなくても実測学習へ反映する。
+- worker状態を `authenticating` / `syncing` / `ready` と分離し、`READY` のみscheduler対象にした。認証待ちCONNECTING peerにはhandshake TTLを設け、期限切れで除去する。
+- WorkerRuntimeからrange renderのprogressをthrottle送信し、hostはresult chunk受信もtransfer progressとして扱う。
+- local fallback canvasをremote verificationへ二重投入しないよう修正。dead worker時のhost描画増加（48→50）を防止。
+- `swarm-export-ab.mjs` のgitignore除外を解除し、ABBA・warmup・validity・counter delta・parity測定ハーネスをversion管理対象にした。
+- Render Swarmのliveness/capacity evidenceをspecへ追記。§5 schema / project.json / INVは変更していない。
+
+#### 検証
+
+- `npm run typecheck` PASS。
+- Swarm関連 `npx vitest run test/swarmLiveness.test.ts test/swarmMetrics.test.ts test/renderSwarmCore.test.ts`: **4 files / 57 tests PASS**。
+- local Vite + Playwright smoke: app起動、Workers panel/session表示、page error 0でPASS。
+- `npm test`: **309 files / 2940 tests PASS**。既知の4 unhandled errors（node環境での`indexedDB`/`alert` autosave、今回と無関係）が残り、exit codeは1。
+- 実機ABBA exportは未実行。次はdead / accepted-hang / transfer-stall / slow-late / healthy workerのLOOP 3 matrixを実Chromeで確認する。
+
+#### Next steps
+
+1. version管理対象にしたABBA harnessで実機LOOP 3 matrixを実行し、固定60秒待ちが消えたこと、`hostRenderedFrames == totalFrames`、`localFramesAvoided`、pixel parityを確認する。
+2. healthy workerで `measurement=measured` / `Render capacity` が表示されることを確認する。
+3. transport最適化（binary stream / ZIP / reorder window）はLOOP 3の実機結果が固まるまで着手しない。

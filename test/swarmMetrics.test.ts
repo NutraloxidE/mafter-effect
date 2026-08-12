@@ -13,6 +13,26 @@ describe("swarm metrics", () => {
     expect(snapshot.remoteFrames).toBe(15);
     expect(snapshot.adoptedRemoteFrames).toBeLessThanOrEqual(snapshot.remoteFrames);
   });
+
+  it("keeps liveness failure classes and late-work evidence separate", () => {
+    const metrics = new SwarmMetrics();
+    metrics.noteProbeStarted();
+    metrics.noteProbeSuccess();
+    metrics.noteJobFailure("no-ack");
+    metrics.noteJobFailure("render-stall");
+    metrics.noteJobFailure("transfer-stall");
+    metrics.noteJobFailure("hard-deadline");
+    metrics.noteLateValidResult(8);
+    const snapshot = metrics.snapshot();
+    expect(snapshot.probeJobs).toBe(1);
+    expect(snapshot.probeSuccesses).toBe(1);
+    expect(snapshot.jobAckTimeouts).toBe(1);
+    expect(snapshot.jobRenderStalls).toBe(1);
+    expect(snapshot.jobTransferStalls).toBe(1);
+    expect(snapshot.jobHardTimeouts).toBe(1);
+    expect(snapshot.lateValidResults).toBe(1);
+    expect(snapshot.lateMeasuredFrames).toBe(8);
+  });
 });
 
 describe("host render cost", () => {

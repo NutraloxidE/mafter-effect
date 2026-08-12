@@ -1,4 +1,4 @@
-import { SWARM_PROTOCOL_VERSION, type SwarmRenderJob, type SwarmRenderResult, type WorkerCapabilities } from "./types";
+import { SWARM_PROTOCOL_VERSION, type SwarmJobFailureReason, type SwarmRenderJob, type SwarmRenderResult, type WorkerCapabilities } from "./types";
 
 export type SwarmMessageType =
   | "hello"
@@ -48,6 +48,7 @@ export interface SwarmChallengeResponsePayload {
 export interface SwarmJobFailedPayload {
   jobId: string;
   message: string;
+  reason?: SwarmJobFailureReason;
 }
 
 export interface SwarmJobProgressPayload {
@@ -187,7 +188,10 @@ function isPayloadShape(type: SwarmMessageType, payload: Record<string, unknown>
         hasFiniteNumber(payload, "width") && hasFiniteNumber(payload, "height") &&
         hasFiniteNumber(payload, "byteLength") && hasString(payload, "runtimeVersion");
     case "job-failed":
-      return hasString(payload, "jobId") && hasString(payload, "message");
+      return hasString(payload, "jobId") && hasString(payload, "message") &&
+        (payload.reason === undefined || [
+          "no-ack", "render-stall", "transfer-stall", "worker-failed", "disconnected", "hard-deadline", "invalid-result",
+        ].includes(payload.reason as string));
     case "heartbeat":
     case "ping":
     case "pong":

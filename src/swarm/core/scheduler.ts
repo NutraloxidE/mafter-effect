@@ -23,6 +23,8 @@ export interface SchedulerSnapshot {
   requeued: number;
 }
 
+export type LeaseDuration = number | ((job: LeasedRenderJob) => number);
+
 export class SwarmScheduler {
   private jobs = new Map<SwarmJobId, LeasedRenderJob>();
   private workers = new Map<WorkerSlotId, SchedulerWorker>();
@@ -57,16 +59,23 @@ export class SwarmScheduler {
     return pending;
   }
 
-  requestJob(slotId: WorkerSlotId, now: number, leaseMs: number = 8_000): LeasedRenderJob | null {
+  requestJob(slotId: WorkerSlotId, now: number, leaseMs: LeaseDuration = 8_000): LeasedRenderJob | null {
     const worker = this.workers.get(slotId);
     if (!worker?.connected) return null;
     const next = [...this.jobs.values()]
       .filter((job) => job.state === "pending")
       .sort((a, b) => PRIORITY[a.priority] - PRIORITY[b.priority] || a.createdAt - b.createdAt)[0];
     if (!next) return null;
-    const leased = leaseJob(next, slotId, now, leaseMs);
+    const duration = typeof leaseMs === "function" ? leaseMs(next) : leaseMs;
+    const leased = leaseJob(next, slotId, now, Math.max(1, duration));
     this.jobs.set(leased.id, leased);
     return leased;
+  }
+
+  peekNextPending(): LeasedRenderJob | null {
+    return [...this.jobs.values()]
+      .filter((job) => job.state === "pending")
+      .sort((a, b) => PRIORITY[a.priority] - PRIORITY[b.priority] || a.createdAt - b.createdAt)[0] ?? null;
   }
 
   markRendering(jobId: SwarmJobId, slotId: WorkerSlotId): boolean {
@@ -89,6 +98,15 @@ export class SwarmScheduler {
     if (!job || job.lease?.workerId !== slotId || job.state === "committed") return false;
     this.jobs.set(jobId, commitJob(job));
     this.committed.add(jobId);
+    return true;
+  }
+
+  /** Stop re-offering work after the caller has reclaimed it locally, while keeping its metadata
+   * available long enough to validate and learn from a late result. */
+  abandon(jobId: SwarmJobId): boolean {
+    const job = this.jobs.get(jobId);
+    if (!job || job.state === "committed") return false;
+    this.jobs.set(jobId, { ...job, state: "committed", lease: undefined });
     return true;
   }
 

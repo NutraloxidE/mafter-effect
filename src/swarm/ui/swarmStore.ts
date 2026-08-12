@@ -167,7 +167,7 @@ class SwarmUiStore {
     // point: by the time it is offered a frame the footage is already there.
     // Keyed by peerId, not slotId: a worker that reloads keeps its trusted slot but arrives as a
     // new connection with an empty cache, and would otherwise never be re-sent anything.
-    const slots = workers.filter((worker) => worker.state === "connected").map((worker) => worker.peerId).sort().join("|");
+    const slots = workers.filter((worker) => worker.state === "ready").map((worker) => worker.peerId).sort().join("|");
     if (slots !== this.connectedSlots) {
       this.connectedSlots = slots;
       if (slots) void this.syncWorkerAssets();
@@ -213,7 +213,7 @@ export function swarmExportHooks(): ExportSwarmHooks | undefined {
   // Set "mafter.swarm.export" to "0" to keep an export fully local.
   if (globalThis.localStorage?.getItem("mafter.swarm.export") === "0") return undefined;
   const snapshot = swarmUiStore.getSnapshot();
-  const workerCount = snapshot.workers.filter((worker) => worker.state === "connected" && worker.available !== false).length;
+  const workerCount = snapshot.workers.filter((worker) => worker.state === "ready" && worker.available !== false).length;
   if (workerCount === 0) return undefined;
   return {
     workerCount,

@@ -74,23 +74,32 @@ export interface WorkerCapabilities {
 export type WorkerConnectionState =
   | "pending"
   | "connecting"
+  | "authenticating"
+  | "syncing"
+  | "ready"
   | "connected"
   | "reconnecting"
   | "offline"
   | "incompatible";
 
 export interface WorkerPerformance {
+  measurement: WorkerMeasurementState;
   benchmarkScore: number;
   /**
-   * True once the score comes from a real job on the actual composition. Until then it is a guess
-   * from an empty 320x180 comp, which has been wrong by more than 4x in both directions.
+   * Compatibility flag for existing UI/harness consumers. It is true only after a real job on the
+   * distributed composition has completed; synthetic benchmarks never set it.
    */
   measured?: boolean;
+  /** Synthetic benchmark output is diagnostic only and never drives dispatch. */
+  estimatedScore?: number;
   recentFramesPerSecond: number;
   recentRenderMs: number;
   reliability: number;
   lastUpdatedAt: number;
 }
+
+export type WorkerMeasurementState = "unknown" | "probing" | "measured";
+export type WorkerHealthState = "unknown" | "probing" | "healthy" | "degraded" | "unusable";
 
 export interface WorkerSnapshot {
   slotId: WorkerSlotId;
@@ -98,6 +107,8 @@ export interface WorkerSnapshot {
   deviceId: SwarmDeviceId;
   label: string;
   state: WorkerConnectionState;
+  health?: WorkerHealthState;
+  lastFailure?: SwarmJobFailureReason;
   capabilities?: WorkerCapabilities;
   performance?: WorkerPerformance;
   currentJobId?: SwarmJobId;
@@ -109,6 +120,15 @@ export interface WorkerSnapshot {
 
 export type RenderJobPriority = "playhead" | "upcoming" | "previous" | "visible" | "background";
 export type RenderJobState = "pending" | "leased" | "rendering" | "uploading" | "committed";
+export type SwarmJobPhase = "queued" | "offered" | "accepted" | "rendering" | "transferring" | "completed";
+export type SwarmJobFailureReason =
+  | "no-ack"
+  | "render-stall"
+  | "transfer-stall"
+  | "worker-failed"
+  | "disconnected"
+  | "hard-deadline"
+  | "invalid-result";
 
 export interface RenderProfile {
   /**
@@ -193,4 +213,17 @@ export interface SwarmMetricsSnapshot {
   leasedJobs: number;
   localFallbackJobs: number;
   staleResultsDiscarded: number;
+  probeJobs: number;
+  probeSuccesses: number;
+  jobAckTimeouts: number;
+  jobRenderStalls: number;
+  jobTransferStalls: number;
+  jobHardTimeouts: number;
+  lateValidResults: number;
+  lateMeasuredFrames: number;
+  workerJobFailures: number;
+  hostRenderedFrames: number;
+  localFramesAvoided: number;
+  remoteReceived: number;
+  remoteAdopted: number;
 }

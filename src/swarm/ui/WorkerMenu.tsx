@@ -17,7 +17,7 @@ export function WorkerMenu() {
   const snapshot = useSyncExternalStore(subscribeSwarmUi, getSwarmUiSnapshot, getSwarmUiSnapshot);
   const rootRef = useRef<HTMLSpanElement>(null);
 
-  const connectedWorkers = snapshot.workers.filter((worker) => worker.state === "connected").length;
+  const connectedWorkers = snapshot.workers.filter((worker) => worker.state === "ready").length;
 
   useEffect(() => {
     // Installing the renderer is what tells the preview cache remote capacity exists, so only do
@@ -79,8 +79,7 @@ export function WorkerMenu() {
             {snapshot.workers.length > 0 && <div style={{ marginTop: 10 }}><label style={labelStyle}>Connected</label>{snapshot.workers.map((worker) => <WorkerStatusRow key={worker.slotId} worker={worker} />)}</div>}
             {snapshot.session && (
               <div style={computeStyle}>
-                {/* An estimate from an empty comp until a real job comes back; say which it is
-                    rather than let a synthetic number be read as this composition's throughput. */}
+                {/* Capacity stays estimated until a real job on this composition has completed. */}
                 <div>
                   {snapshot.workers.some((worker) => worker.performance?.measured) ? "Render capacity" : "Estimated capacity"}
                   : {snapshot.availableCompute.toFixed(1)}× local
@@ -91,6 +90,9 @@ export function WorkerMenu() {
                     Frames used from workers: {snapshot.metrics.adoptedRemoteFrames} of {snapshot.metrics.remoteFrames} received
                     {snapshot.metrics.localFallbackJobs > 0 && ` · fell back locally: ${snapshot.metrics.localFallbackJobs}`}
                     {snapshot.metrics.ineligibleJobs > 0 && ` · kept local: ${snapshot.metrics.ineligibleJobs}`}
+                    {(snapshot.metrics.jobAckTimeouts + snapshot.metrics.jobRenderStalls + snapshot.metrics.jobTransferStalls + snapshot.metrics.jobHardTimeouts) > 0 && (
+                      <div>watchdogs: ACK {snapshot.metrics.jobAckTimeouts} · render {snapshot.metrics.jobRenderStalls} · transfer {snapshot.metrics.jobTransferStalls} · hard {snapshot.metrics.jobHardTimeouts}</div>
+                    )}
                   </div>
                 )}
               </div>

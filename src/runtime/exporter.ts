@@ -90,7 +90,7 @@ interface VideoEncodeStats {
  */
 export interface ExportSwarmHooks {
   workerCount: number;
-  submit: (job: SwarmRenderJob, timeoutMs: number) => Promise<SwarmRenderResult | null>;
+  submit: (job: SwarmRenderJob, timeoutMs?: number) => Promise<SwarmRenderResult | null>;
   /** Ships footage before the first frame is leased, so no job pays for the transfer. */
   preload?: (project: Project, comp: TimelineComposition) => Promise<void>;
   /** Called once per frame whose remote pixels reach the file — the only measure of work saved. */

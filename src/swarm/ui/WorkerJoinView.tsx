@@ -46,6 +46,11 @@ export function WorkerJoinView() {
     }, 60_000);
     return () => clearInterval(timer);
   }, [runtime]);
+  const statusLabel = snapshot.state === "rendering" ? "Rendering"
+    : snapshot.state === "waiting-approval" ? "Waiting for host approval"
+      : snapshot.state === "authenticating" ? "Authenticating"
+        : snapshot.state === "ready" || snapshot.state === "connected" ? "Ready"
+          : snapshot.state;
   return (
     <main style={pageStyle}>
       <section style={cardStyle}>
@@ -55,7 +60,7 @@ export function WorkerJoinView() {
         <label style={{ display: "block", color: "#999", fontSize: 12, marginBottom: 5 }}>Join code</label>
         <input value={code} onChange={(event) => setCode(event.target.value.toUpperCase())} placeholder="8KD3F2" style={inputStyle} disabled={snapshot.state !== "idle" && snapshot.state !== "error"} />
         {snapshot.error && <div style={{ color: "#e9a3a3", fontSize: 12, marginTop: 8 }}>{snapshot.error}</div>}
-        {snapshot.state === "idle" || snapshot.state === "error" ? <button onClick={join} disabled={code.trim().length < 4} style={primaryButtonStyle}>Join as Worker</button> : <div style={{ marginTop: 16, borderTop: "1px solid #333", paddingTop: 14 }}><div style={{ color: "#9fd7aa", fontSize: 16, marginBottom: 6 }}>Connected to Mafter</div><div style={statusStyle}>Status: {snapshot.state === "rendering" ? "Rendering" : snapshot.state === "waiting-approval" ? "Waiting for host approval" : "Ready"}</div><div style={statusStyle}>Connection: {snapshot.connection}</div>{snapshot.currentJobId && <div style={statusStyle}>Current job: {snapshot.currentJobId}</div>}<button onClick={() => runtime.stop()} style={secondaryButtonStyle}>Stop Worker</button></div>}
+      {snapshot.state === "idle" || snapshot.state === "error" ? <button onClick={join} disabled={code.trim().length < 4} style={primaryButtonStyle}>Join as Worker</button> : <div style={{ marginTop: 16, borderTop: "1px solid #333", paddingTop: 14 }}><div style={{ color: "#9fd7aa", fontSize: 16, marginBottom: 6 }}>Connected to Mafter</div><div style={statusStyle}>Status: {statusLabel}</div><div style={statusStyle}>Connection: {snapshot.connection}</div>{snapshot.currentJobId && <div style={statusStyle}>Current job: {snapshot.currentJobId}</div>}<button onClick={() => runtime.stop()} style={secondaryButtonStyle}>Stop Worker</button></div>}
       </section>
     </main>
   );

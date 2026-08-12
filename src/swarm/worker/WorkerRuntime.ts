@@ -17,7 +17,7 @@ export interface WorkerRuntimeOptions {
 /** How long a worker waits for approval before asking again with a fresh peer id. */
 const WORKER_APPROVAL_TIMEOUT_MS = 20_000;
 
-export type WorkerRuntimeState = "idle" | "joining" | "waiting-approval" | "connecting" | "connected" | "rendering" | "stopped" | "error";
+export type WorkerRuntimeState = "idle" | "joining" | "waiting-approval" | "connecting" | "authenticating" | "syncing" | "ready" | "connected" | "rendering" | "stopped" | "error";
 
 export class WorkerRuntime {
   private readonly backend: SwarmSignalingBackend;
@@ -139,7 +139,7 @@ export class WorkerRuntime {
         this.unsubscribeSignaling?.();
         this.unsubscribeSignaling = null;
         this.reconnectAttempts = 0;
-        this.setState("connected");
+        this.setState("authenticating");
         void this.sendHello();
         // Background tabs are throttled hard enough that leased frames always miss their
         // deadline; tell the host to stop sending work instead of wasting it.
@@ -239,6 +239,7 @@ export class WorkerRuntime {
       if (!this.identity || !this.peer?.protocol) return;
       const signatureBase64 = await signChallenge(this.identity, message.payload.nonce);
       await this.peer.protocol.send(createSwarmMessage("challenge-response", { nonce: message.payload.nonce, signatureBase64 }));
+      this.setState("ready");
       return;
     }
     if (isSwarmMessageType(message, "asset-chunk")) {
@@ -267,16 +268,38 @@ export class WorkerRuntime {
       this.setState("rendering");
       await this.peer.protocol.send(createSwarmMessage("job-accepted", { jobId: this.currentJobId }));
       try {
-        const result = await this.executor.render(message.payload.job);
+        let lastProgressAt = 0;
+        let lastCompleted = 0;
+        let progressChain: Promise<void> = Promise.resolve();
+        const reportProgress = (completedFrames: number, totalFrames: number): void => {
+          const boundedCompleted = Math.max(lastCompleted, Math.min(totalFrames, completedFrames));
+          if (boundedCompleted <= lastCompleted) return;
+          const now = Date.now();
+          if (boundedCompleted < totalFrames && now - lastProgressAt < 250) return;
+          lastProgressAt = now;
+          lastCompleted = boundedCompleted;
+          progressChain = progressChain.then(async () => {
+            if (!this.peer?.protocol) return;
+            await this.peer.protocol.send(createSwarmMessage("job-progress", {
+              jobId: message.payload.job.id,
+              completedFrames: boundedCompleted,
+              totalFrames,
+            }));
+          });
+        };
+        const result = await this.executor.render(message.payload.job, reportProgress);
+        reportProgress(message.payload.job.frameEnd - message.payload.job.frameStart, message.payload.job.frameEnd - message.payload.job.frameStart);
+        await progressChain;
         await this.sendResult(result);
       } catch (error) {
         await this.peer.protocol.send(createSwarmMessage("job-failed", {
           jobId: message.payload.job.id,
           message: error instanceof Error ? error.message : "Worker render failed",
+          reason: "worker-failed",
         }));
       } finally {
         this.currentJobId = null;
-        this.setState("connected");
+        this.setState("ready");
       }
       return;
     }

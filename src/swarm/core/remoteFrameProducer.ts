@@ -28,7 +28,7 @@ export interface RemoteFrameProducerOptions {
   renderRevision: string;
   profile: RenderProfile;
   /** Submits the job and resolves null when the swarm could not deliver the frame in time. */
-  submit: (job: SwarmRenderJob, timeoutMs: number) => Promise<SwarmRenderResult | null>;
+  submit: (job: SwarmRenderJob, timeoutMs?: number) => Promise<SwarmRenderResult | null>;
   /** Renders the frame on this device; used when the swarm declines or misses the deadline. */
   renderLocally: (frame: number) => Promise<HTMLCanvasElement>;
   decodePng: (bytesBase64: string, width: number, height: number) => Promise<HTMLCanvasElement>;
@@ -36,7 +36,7 @@ export interface RemoteFrameProducerOptions {
   decodeZip: (bytesBase64: string, width: number, height: number) => Promise<Map<number, HTMLCanvasElement>>;
   /** Exclusive end of the export range, so a block never asks for frames outside it. */
   totalFrameEnd?: number;
-  timeoutMs: number;
+  timeoutMs?: number;
 }
 
 export function buildExportSwarmJob(
@@ -198,6 +198,9 @@ export function buildRemoteFrameProducers(setup: RemoteProducerSetup): ((frame: 
     let unverifiedFromThisWorker = SWARM_VERIFY_FIRST_REMOTE_FRAMES;
     return async (frame: number): Promise<HTMLCanvasElement> => {
       const remote = await produce(frame);
+      // A failed remote attempt already returned a canvas rasterized by this host. It is not a
+      // remote candidate, so do not send it through verification and draw it again.
+      if (drawnHere.has(remote)) return remote;
       const mustVerify = verify?.has(frame) || unverifiedFromThisWorker > 0;
       if (unverifiedFromThisWorker > 0) unverifiedFromThisWorker -= 1;
       if (!mustVerify) {
@@ -229,7 +232,8 @@ export function buildRemoteFrameProducers(setup: RemoteProducerSetup): ((frame: 
     // Waiting is only free while the host still has frames of its own. Because remote producers
     // pull from the tail, the last block is the one nobody can finish without — so a long deadline
     // here buys nothing and stalls the end of every export.
-    timeoutMs: setup.swarm!.timeoutMs ?? 60_000,
+    // The coordinator derives an opportunity-cost deadline from liveness and measured work.
+    ...(setup.swarm!.timeoutMs === undefined ? {} : { timeoutMs: setup.swarm!.timeoutMs }),
   })));
 }
 
