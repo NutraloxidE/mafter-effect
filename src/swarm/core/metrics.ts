@@ -24,8 +24,12 @@ export class SwarmMetrics {
   setJobs(queued: number, leased: number): void { this.queuedJobs = queued; this.leasedJobs = leased; }
   noteLocalFallback(): void { this.localFallbackJobs += 1; }
   noteStaleResult(): void { this.staleResultsDiscarded += 1; }
-  /** A result arrived. Says nothing about whether its pixels reached the file — see below. */
-  noteRemoteFrame(): void { this.remoteFrames += 1; }
+  /**
+   * Frames arrived. Says nothing about whether their pixels reached the file — see below. Counted
+   * in frames, not results: a result carries a whole block, and counting results made the panel
+   * report "15 of 3 received", which cannot be read against the adopted count at all.
+   */
+  noteRemoteFrame(frames = 1): void { this.remoteFrames += frames; }
   /**
    * A frame a worker drew was written to the output. Counting arrivals instead once made a session
    * report ten frames of distributed work when the host had re-rendered every one of them.

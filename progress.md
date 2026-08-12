@@ -3506,3 +3506,159 @@ GPT 5.6 指摘（ユーザー経由）を採用。`ImageAssetCache` の症状（
 2. 60s の固定 deadline（`remoteFrameProducer` の `timeoutMs`）を、ホスト自身の実測フレーム時間から導く。失敗ブロックが 2 分を食うのは設計として誤り。
 3. benchmark を空コンプ 320×180 でなく実コンプの短ブロックにする（`Available compute` が実態と無関係な値を出している）。
 4. 結果転送: worker が PNG → zip → base64 → JSON chunk、host が展開 → canvas → PNG 再エンコード。実測 transportMs は renderMs とほぼ同等（6.5s vs 7.7s）。バイナリのフレーム単位ストリームにして zip へ直挿しする案（codex 提案）。
+
+### 2026-08-12 (Claude Opus 5) - LOOP 1: 計測系を先に固定した（WP Mafter Swarm Convergence Loop）
+
+WP の LOOP 1（コード最適化禁止・測定器を信用できる状態にするだけ）を実施。
+
+**1. 実行順序を ABBA にした。** `swarm-export-ab.mjs` は「local 1 回 → swarm 1 回」だったので、時間経過によるドリフトが全部 swarm 側に乗っていた。A/B/B/A を 1 ページ・1 worker セッション内で回す。A と B の切り替えは `localStorage["mafter.swarm.export"]` を export 直前に書き換えるだけ（worker は繋いだまま）なので、A と B で worker の接続状態・アセット転送・warm 度が完全に揃う。
+
+**2. run ごとに妥当性を判定し、無効な run の所要時間を捨てるようにした。** WP §1 の条件を実装:
+
+```
+completed / buildTag 一致 / adoptedRemoteFrames > 0 / localFallbackJobs 0
+/ ineligibleJobs 0 / staleResultsDiscarded 0 / pixel parity PASS / worker runtimeVersion 一致
+```
+
+1 つでも欠けた run は `VALID PERFORMANCE RUN: NO` になり、中央値の母集団から外れる。両側に有効 run が無ければ `PERFORMANCE RESULT INVALID` と出す。カウンタは `window.__mafterSwarmStore`（今回追加した読み取り口）から run 前後の差分で取る。パネルの文字列を正規表現で拾うのはやめた。
+
+**3. COLD / WARM を分離した。** `SWARM_MODE=COLD` は run ごとにホストページを再読込して project を入れ直す（＝export session・アセットキャッシュ・decoder を毎回捨てる）。既定は WARM。混ぜて平均しない。
+
+#### 8 フレームのスモークで、いきなり無効 run を捕まえた
+
+```
+2-swarm: 10s, remote received 1, adopted 0 → VALID PERFORMANCE RUN: NO
+```
+
+local-only も swarm も 10s で、素直に見れば「差なし」と結論していた run。実際にはリモートの絵は 1 枚も出力に入っていない（尺が短くホストが先に描き切った）。**この run の所要時間には分散の情報が 1 ビットも入っていない。** ゲートが無ければこれを「分散しても速くならない」の 1 標本として数えていた。
+
+#### 48 フレーム ABBA（同一マシン・dev server・worker 同居）
+
+| 順 | run | 所要 | remote adopted | 妥当 |
+|---|---|---|---|---|
+| 1 | local-only | **40.4s** | — | YES |
+| 2 | swarm | 31.2s | 15 | YES |
+| 3 | swarm | 31.0s | 14 | YES |
+| 4 | local-only | **30.9s** | — | YES |
+
+中央値は local 35.65s / swarm 31.1s ＝ **1.15×** と出るが、**この数字は採用しない。** A1 と A4 が 40.4s と 30.9s で、同一コード・同一設定なのに 9.5s 違う。差分は「最初の run かどうか」だけであり、**1.15× の中身はほぼ全部が初回 warmup**。B と A4 は 31.0 / 30.9 で同着。
+
+→ **この環境での結論: 分散の効果は測れていない（swarm ≈ local）。** ABBA にしていなければ「A=40.4 → B=31.2、1.3× 速くなった」と誤って報告していた。順序を入れ替えるだけでこの誤りが露出したのが LOOP 1 の成果。
+
+なお懸案だった **20s → 130s 級のドリフトは今回の 4 run では再現しなかった**（deployed pages.dev ではなく local dev server で回した点が前回と違う）。LOOP 1 の Exit（分散の大幅ジャンプが消える）は暫定的に満たしているが、130s 側の条件を再現していないので「解決した」とは書かない。
+
+#### 同時に見つけた計測バグ（correctness なので即修正）
+
+パネルが `Frames used from workers: 15 of 3 received` と表示していた。**採用が受信を上回っている**＝単位が違う。`noteRemoteFrame()` は結果 1 件（＝ブロック 8 枚）ごとに 1 を足していたのに、`noteAdoptedRemoteFrame()` はフレームごとに 1 を足していた。received をフレーム単位に直した（`frameEnd - frameStart`）。この 2 つは「リモートが役に立ったか」を判断するために互いに比較される数字なので、単位が揃っていないと読めない。`test/swarmMetrics.test.ts` で固定。
+
+検証: typecheck PASS、`npm test` 307 files / 2933 tests PASS（既知の unhandled rejection 4 件は store の autosave が node 環境で `indexedDB`/`alert` を触るもので、本変更と無関係）。`src/runtime` `src/player` は触っていないので `build:player` 不要。
+
+#### Next steps（WP の順序どおり）
+
+1. **LOOP 1 の残り**: COLD モードで ABBA を回して COLD/WARM の分散を出す。130s ドリフトを deployed 環境で再現するか確認する。
+2. **LOOP 2**: 空コンプ 320×180 のベンチマークを実コンプの短ブロックに置き換える（`Available compute: 1.3×` は今回も実態と無関係）。
+3. LOOP 3 以降（固定 60s deadline の撤廃、transport 分解）は 1・2 が終わるまで着手しない。
+
+### 2026-08-12 (Claude Opus 5) - LOOP 1 続き: warmup を明示収束させ、localFramesAvoided を計った
+
+ユーザー指摘「A1→A4 の 30% warmup drift が残る以上まだ stationary ではない。測定前 warmup を明示的に収束させ、adopted の次に localFramesAvoided を計れ」。両方実施。**性能最適化は一切していない**（LOOP 2 以外に触るなという指示どおり）。
+
+**1. 測定前 warmup の収束ゲート。** ABBA を始める前に local-only を回し、**連続 2 本が 5% 以内で一致するまで**繰り返す（`SWARM_WARMUP_TOLERANCE` / `SWARM_WARMUP_MAX`）。収束しなければ `PERFORMANCE RESULT INVALID — bench never reached a steady state` を出して、その環境では A/B 自体が成立しないと明示する。収束しないことも結果として扱う。
+
+**2. `localFramesAvoided` を実測にした。** `totalFrames - hostRenderedFrames`。`hostRenderedFrames` は**この端末が実際にラスタライズした回数**を数える（`src/runtime/exporter.ts` の `noteHostRenderedFrame()`）。producer 単位ではなく**ラスタが起きる場所**で数えるのが要点で、
+
+- remote producer のローカルフォールバック
+- 抜き取り照合のためにホストが描き直すフレーム
+
+も同じ場所を通るので両方ホスト仕事として計上される。「worker が 10 枚描いてホストも同じ 10 枚描いた」なら avoided は 0 になる（WP §14）。既存の `__mafterMultiRenderContextFrames` と同じ globalThis テレメトリ方式に乗せた（export 開始時にリセット）。mp4/webm 経路にも同じ計上を入れてある。
+
+**カウンタ自身のネガティブコントロール**: A run（worker 不使用）では `hostRenderedFrames` が **frame 数と厳密に一致**しなければ run を無効化する。カウンタが壊れれば avoided は黙って嘘をつくので、嘘をつけない条件を毎 run 課す。
+
+#### 48 フレーム ABBA（warmup 収束後・同一マシン）
+
+```
+warmup: 30.1s, 30.3s (converged)
+```
+
+| 順 | run | 所要 | host rendered | local avoided | remote adopted | remote received |
+|---|---|---|---|---|---|---|
+| 1 | local-only | 30.8s | **48 / 48** | 0 | — | — |
+| 2 | swarm | 30.2s | 38 | **10** | 10 | 16 |
+| 3 | swarm | 30.3s | 33 | **15** | 15 | 24 |
+| 4 | local-only | 32.0s | **48 / 48** | 0 | — | — |
+
+**warmup drift は消えた。** A1 と A4 の差は 30.8 → 32.0 で **3.9%**（前回は 40.4 → 30.9 の 30%）。ベンチは stationary になった＝ LOOP 1 の Exit を満たす。
+
+**証明できたこと（数字ではなく性質）:**
+
+- **`localFramesAvoided == adoptedRemoteFrames` が両 B run で厳密に一致**（10/10、15/15）。採用されたフレームをホストが裏で描き直してはいない。WP §33 の "No hidden local redraw of adopted frames" が計測で裏付いた。
+- A run のホスト描画は 48/48 ちょうど。カウンタは意図した対象を数えている。
+- **worker は 48 枚中 10〜15 枚（21〜31%）を実際に肩代わりしている。** これは「到着数」でも「採用数」でもなく、**ホストがやらずに済んだ仕事**。
+
+**なお速度は依然として測れていない。** 1.04× は A→A のばらつき（3.9%）の中に埋もれる。**31% の仕事を外に出したのに wall-clock がほぼ動かない**という事実の方が重要で、ホストは producer 以外の何かで律速している可能性が高い（前回の `consumerWaitMs ≈ elapsed` と整合）。これは LOOP 4（フェーズ分解）で扱う話であり、今は触らない。
+
+**新たに見えた無駄**: received 16 に対し adopted 10、received 24 に対し adopted 15。**受信したリモートフレームの約 4 割が捨てられている。** ブロック先読みが範囲やワークスチールと重複しているのが疑わしい。これも計測項目として記録するだけに留める（LOOP 6 のスケジューラの話）。
+
+検証: typecheck PASS、`npm test` 308 files / 2934 tests PASS。`src/runtime/exporter.ts` を触ったが expression ランタイムでも player 経路でもない（`build:player` は不要）。
+
+#### Next steps
+
+1. **LOOP 2**（ここだけ着手可）: 空コンプ 320×180 ベンチマークを実コンプの短ブロックに置換。`Available compute: 1.3×` は実測の肩代わり率 21〜31% とも噛み合っていない。
+2. LOOP 1 の残: COLD モードでの収束確認、deployed 環境で 130s ドリフトが再現するか。
+3. 保留（着手禁止）: 固定 60s deadline、transport 二重構造、スケジューラ、リモートフレームの 4 割破棄。
+
+### 2026-08-12 (Claude Opus 5) - LOOP 2: 能力値を実コンプ実測にした / 130s ドリフトの正体が判明（環境ドリフト説を棄却）
+
+#### やったこと（LOOP 2）
+
+`Available compute` は **空の 320×180 コンプ**で測っていた。ホストも worker も同じ空コンプで測るので比としては整合していたが、**分散する仕事とは何の関係もない値**だった（WP §7 / §23）。
+
+- `src/runtime/hostRenderCost.ts` を新設。**ホストが実際にラスタライズした回数と所要 ms** を export 中に貯める（前回の frame カウンタを ms 付きに拡張・置換）。数える場所はラスタが起きる箇所なので、remote producer のローカルフォールバックと抜き取り照合の描き直しも計上される。
+- `SwarmCoordinator.scoreFromRealWork()` — **ジョブが正常完了するたびに**、worker が返した `renderMs / frames` と `hostMsPerFrame()` の比で `benchmarkScore` を更新する（EWMA）。両者が同じコンプ・同じ profile・同じ解像度の実フレームで測られる。転送は含めない（リンクの性質であって worker の能力ではない。値付けは WP §25 のスケジューラの仕事）。
+- `WorkerPerformance.measured` を追加。実ジョブ由来になるまでパネルは **`Estimated capacity`**、なった後は **`Render capacity`** と表示する。合成ベンチの数字が「このコンプの実力」として読まれるのを防ぐ。
+- ハーネスが run ごとに `host ms/frame` / `worker ms/frame` / reported capacity を並べて出す。
+
+これで**空コンプ由来の値と実測値が同じ画面に並ぶ**ようになり、直後に効果が出た（下記）。
+
+#### 130s ドリフトは環境ドリフトではなかった（仮説の棄却）
+
+48 フレーム ABBA:
+
+| 順 | run | 所要 | host rendered | local avoided | adopted | fallback |
+|---|---|---|---|---|---|---|
+| 1 | local-only | 32.2s | 48 / 48 | 0 | — | 0 |
+| 2 | swarm | **130.5s** | **50 / 48** | **-2** | 0 | **2** |
+| 3 | swarm | **130.3s** | **50 / 48** | **-2** | 0 | **2** |
+| 4 | local-only | 32.5s | 48 / 48 | 0 | — | 0 |
+
+```
+Hypothesis rejected: 「20s → 130s の所要時間変化は dev server 常駐や Chrome の蓄積状態による環境ドリフトである」
+Reason: 130s は同一 run 内で local-only 32s と交互に再現する。環境要因なら A も遅くなるはずだが A は 32s のまま。
+Evidence: 130.3s の run は localFallbackJobs 2 / adoptedRemoteFrames 0。32.4s(local中央値) + 60s×2 ≈ 130s に一致する。
+```
+
+**正体: worker がブロックを返さず、ホストが固定 60 秒 deadline を 2 回まるごと支払っている**（WP §8 が名指しした構造そのもの）。以前「コード差分では説明できない」と書いたのは、当時のカウンタでは「何も返ってこなかった」と「返ってきたが遅い」を区別できなかったため。今回は `adopted 0 / received 0 / fallback 2` が同時に出るので一意に決まる。
+
+**`localFramesAvoided` が負の値（-2）になった意味は重い。** ホストは 48 フレームのコンプに対し 50 回描いている＝ **worker を繋いだせいでホストの仕事が増えた**。WP §26 の Product invariant「繋がっているが役に立たない worker はほぼ無コストであるべき」に対する、明確な違反の実測。到着数でも採用数でもこの事実は出てこない。
+
+**能力表示の虚偽も並べて可視化された:**
+
+```
+host ms/frame:   460
+worker ms/frame: 7            ← 空コンプの合成ベンチ
+reported:        1.66x local (ESTIMATED from empty comp)
+```
+
+ホストが実コンプに 460ms 使っている横で、worker の「能力」は 7ms として売られていた。65 倍の乖離。`measured` は最後まで false のまま（実ジョブが 1 つも完了していないので、正しく実測値に切り替わらなかった）。**この run では新しい実測経路は一度も発火していない**ので、LOOP 2 の Exit（予測 ≈ 実測）はまだ未達。worker がジョブを完了できる状態で再測定が必要。
+
+#### warmup ゲートの限界（記録）
+
+warmup は 40.2s / 40.5s で「収束」と判定したが、その後の A は 32.2 / 32.5 だった。連続 2 本が一致しても、**両方が同じ理由で汚染されていれば収束と誤判定する**（worker の join 直後の合成ベンチがホスト CPU を食っていた時間帯にちょうど 2 本入った）。A1/A4 同士は 1% 以内なので測定側の結論は変わらないが、収束判定は「安定」ではなく「連続 2 本の一致」しか保証しない。
+
+#### Next steps
+
+1. **LOOP 2 の Exit 未達**: worker がジョブを完了する条件で再測定し、`measured: true` の capacity が実ジョブ所要と一致することを確認する。まず worker が何も返さなかった理由の切り分け（この run では `connected` の worker と `connecting` のままの peer が 1 つずつ並んでいた）。
+2. LOOP 3（固定 60s deadline の撤廃）は**上の切り分けが終わるまで着手しない**。ただし 130s の原因が deadline であることは確定したので、LOOP 3 の優先度は最上位。
+3. 保留: transport 二重構造、スケジューラ、リモートフレームの約 4 割破棄。
+
+検証: typecheck PASS、`npm test` 308 files / 2935 tests PASS。`src/runtime/exporter.ts` と新規 `hostRenderCost.ts` は expression ランタイム／player 経路ではないので `build:player` 不要。

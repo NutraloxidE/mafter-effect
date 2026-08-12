@@ -1,4 +1,5 @@
-import { createBenchmarkJob, normalizedBenchmarkScore } from "./benchmark";
+import { createBenchmarkJob, Ewma, normalizedBenchmarkScore } from "./benchmark";
+import { hostMsPerFrame } from "../../runtime/hostRenderCost";
 import { isSwarmJobSelfContained } from "./jobFiles";
 import { ResultChunkAssembler, splitAssetIntoChunks } from "../transport/assetChunks";
 import { WorkerRenderExecutor } from "../worker/workerRenderExecutor";
@@ -52,6 +53,8 @@ interface ConnectedWorker {
   slotId?: string;
   challengeNonce?: string;
   benchmarkInFlight: boolean;
+  /** Measured cost of one real frame on this worker, smoothed across jobs. */
+  renderMsPerFrame: Ewma;
   snapshot: WorkerSnapshot;
   /** Content hashes already streamed to this worker, so footage is sent once and not per frame. */
   sentAssetHashes: Set<string>;
@@ -156,6 +159,7 @@ export class SwarmCoordinator {
         peer: webRtc,
         descriptor: peer,
         benchmarkInFlight: false,
+        renderMsPerFrame: new Ewma(),
         sentAssetHashes: new Set<string>(),
         snapshot: {
           slotId: `pending-${peer.peerId}`,
@@ -302,6 +306,41 @@ export class SwarmCoordinator {
       for (const asset of assets) worker.sentAssetHashes.delete(asset.contentHash);
       if (worker.slotId) this.scheduler.fail(job.id, worker.slotId);
       this.releaseJob(worker, job.id);
+    }
+  }
+
+  /**
+   * Re-scores a worker from the block it just rendered. The synthetic benchmark measures an empty
+   * 320x180 comp, which is not the workload being distributed — a worker once scored 2.7x local on
+   * it while being 1.4x slower than the host on the real composition. A completed job carries the
+   * worker's own render time for real frames, and `hostMsPerFrame()` is this machine's cost for the
+   * same frames, so the ratio is finally quoted in the same units.
+   *
+   * Render time only. Transport is a property of the link, not of the worker's capacity, and it is
+   * the scheduler's job (WP §25) to price it.
+   */
+  private scoreFromRealWork(worker: ConnectedWorker, result: SwarmRenderResult): void {
+    const frames = Math.max(1, result.frameEnd - result.frameStart);
+    const localMs = hostMsPerFrame();
+    if (result.renderMs === undefined || result.renderMs <= 0 || localMs === null) return;
+    const workerMs = worker.renderMsPerFrame.update(result.renderMs / frames);
+    if (workerMs <= 0) return;
+    const score = normalizedBenchmarkScore(1 / workerMs, 1 / localMs);
+    worker.snapshot.performance = {
+      benchmarkScore: score,
+      measured: true,
+      recentFramesPerSecond: 1000 / workerMs,
+      recentRenderMs: workerMs,
+      reliability: worker.snapshot.performance?.reliability ?? 1,
+      lastUpdatedAt: Date.now(),
+    };
+    if (worker.slotId) {
+      this.scheduler.updateWorker({
+        slotId: worker.slotId,
+        score,
+        reliability: worker.snapshot.performance.reliability,
+        connected: true,
+      });
     }
   }
 
@@ -472,7 +511,7 @@ export class SwarmCoordinator {
     // The frame missed its deadline and was rendered locally instead, but it is still a valid
     // frame for this revision: cache it rather than throwing the worker's effort away.
     if (!waiter && valid) {
-      this.metrics.noteRemoteFrame();
+      this.metrics.noteRemoteFrame(Math.max(1, result.frameEnd - result.frameStart));
       this.options.onLateResult?.(result);
       worker.snapshot.currentJobId = undefined;
       this.pumpJobs();
@@ -490,7 +529,8 @@ export class SwarmCoordinator {
       return;
     }
     if (!this.scheduler.commit(result.jobId, worker.slotId)) return;
-    this.metrics.noteRemoteFrame();
+    this.metrics.noteRemoteFrame(Math.max(1, result.frameEnd - result.frameStart));
+    this.scoreFromRealWork(worker, result);
     window.clearTimeout(waiter.timeoutId);
     this.jobs.delete(result.jobId);
     worker.snapshot.currentJobId = undefined;

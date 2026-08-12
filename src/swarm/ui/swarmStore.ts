@@ -192,6 +192,15 @@ class SwarmUiStore {
 
 export const swarmUiStore = new SwarmUiStore();
 
+declare global {
+  interface Window {
+    /** Measurement harness handle: a run's validity is decided from these counters, not from elapsed time. */
+    __mafterSwarmStore?: SwarmUiStore;
+  }
+}
+
+if (typeof window !== "undefined") window.__mafterSwarmStore = swarmUiStore;
+
 /**
  * Export-time swarm hooks, or undefined when no worker is connected — an export with no workers
  * must take exactly the path it always took.

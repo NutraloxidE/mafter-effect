@@ -18,6 +18,7 @@ import { ExpressionEngine } from "./expressionEngine";
 import { HtmlCompPlayer } from "./htmlComp";
 import { ModuleLoader } from "./moduleLoader";
 import { resolve, type ExpressionEvaluator } from "./resolve";
+import { noteHostRenderedFrame, resetHostRenderCost } from "./hostRenderCost";
 import { compositeExportFrame, type ExportCompositeOptions } from "./exportComposite";
 import { collectFootageAudioSources, scheduleGainAutomation } from "./footageAudio";
 import { collectFadeClips, computeFadeSuppression, fadeSec, isAutoFadeEnabled, scheduleDeclickRamps } from "./footageAutoFade";
@@ -223,6 +224,7 @@ export async function exportComposition(
     throw new Error("Timeline composition not found: " + compId);
   }
   const tlComp = comp as TimelineComposition;
+  resetHostRenderCost();
   const htmlComps = project.compositions.filter(
     (c): c is HtmlComposition => c.kind === "html",
   );
@@ -400,6 +402,7 @@ async function runPngSeq(
   let localChain: Promise<unknown> = Promise.resolve();
   const renderLocallySerialized = (frame: number): Promise<HTMLCanvasElement> => {
     const run = localChain.then(async () => {
+      const startedAt = performance.now();
       let canvas = await renderContextFrameCanvas(renderer, comp, evaluator, frame, nw, nh, w, h, bg, {});
       // The decode wait is best-effort: on timeout the frame composites with the footage still at
       // its previous position, which looks plausible and is simply wrong. Rendering again is what
@@ -416,6 +419,7 @@ async function runPngSeq(
           throw new Error(`Footage did not reach frame ${frame} — ${renderer.describeExportVideos()}`);
         }
       }
+      noteHostRenderedFrame(performance.now() - startedAt);
       return canvas;
     });
     localChain = run.catch(() => undefined);
@@ -468,10 +472,12 @@ async function runPngSeq(
     let rendered = 0;
     const multiOptions = {
       producers: [
-        ...contexts.map((r) => (frame: number) =>
-          r === renderer
-            ? renderLocallySerialized(frame)
-            : renderContextFrameCanvas(r, comp, evaluator, frame, nw, nh, w, h, bg, {})),
+        ...contexts.map((r) => (frame: number) => {
+          if (r === renderer) return renderLocallySerialized(frame);
+          const startedAt = performance.now();
+          return renderContextFrameCanvas(r, comp, evaluator, frame, nw, nh, w, h, bg, {})
+            .then((canvas) => { noteHostRenderedFrame(performance.now() - startedAt); return canvas; });
+        }),
         ...remoteProducers,
       ],
       totalFrames,
@@ -825,8 +831,11 @@ async function encodeVideoFrames(
     const contexts = [renderer, ...extraRenderers];
     let rendered = 0;
     const res = await runOrderedMultiContext({
-      producers: contexts.map((r) => (frame: number) =>
-        renderContextFrameCanvas(r, comp, evaluator, frame, nw, nh, w, h, bg, {})),
+      producers: contexts.map((r) => (frame: number) => {
+        const startedAt = performance.now();
+        return renderContextFrameCanvas(r, comp, evaluator, frame, nw, nh, w, h, bg, {})
+          .then((canvas) => { noteHostRenderedFrame(performance.now() - startedAt); return canvas; });
+      }),
       totalFrames,
       startFrame,
       onRendered: () => {
@@ -848,6 +857,7 @@ async function encodeVideoFrames(
     }
 
     const frame = startFrame + fi;
+    const frameStartedAt = performance.now();
     renderer.renderFrame(resolve(comp, frame, { expressions: evaluator }), frame);
     onProgress({ phase: "render", frame: fi, totalFrames, message: `Rendering frame ${fi + 1}/${totalFrames}` });
 
@@ -864,6 +874,8 @@ async function encodeVideoFrames(
       directSolidCaptures: enableGpuCompositor && isDirectSolidCaptureEnabled(),
       directImageCaptures: enableGpuCompositor && isDirectImageCaptureEnabled(),
     });
+    // Before the encode: capacity is quoted in render cost, and the encoder is not the worker's job.
+    noteHostRenderedFrame(performance.now() - frameStartedAt);
     const vf = new VideoFrame(canvas, {
       timestamp: fi * usDuration,
       duration: usDuration,

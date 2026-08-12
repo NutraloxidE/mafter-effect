@@ -81,6 +81,11 @@ export type WorkerConnectionState =
 
 export interface WorkerPerformance {
   benchmarkScore: number;
+  /**
+   * True once the score comes from a real job on the actual composition. Until then it is a guess
+   * from an empty 320x180 comp, which has been wrong by more than 4x in both directions.
+   */
+  measured?: boolean;
   recentFramesPerSecond: number;
   recentRenderMs: number;
   reliability: number;

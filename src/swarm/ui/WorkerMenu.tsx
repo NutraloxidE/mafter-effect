@@ -79,7 +79,12 @@ export function WorkerMenu() {
             {snapshot.workers.length > 0 && <div style={{ marginTop: 10 }}><label style={labelStyle}>Connected</label>{snapshot.workers.map((worker) => <WorkerStatusRow key={worker.slotId} worker={worker} />)}</div>}
             {snapshot.session && (
               <div style={computeStyle}>
-                <div>Available compute: {snapshot.availableCompute.toFixed(1)}× local</div>
+                {/* An estimate from an empty comp until a real job comes back; say which it is
+                    rather than let a synthetic number be read as this composition's throughput. */}
+                <div>
+                  {snapshot.workers.some((worker) => worker.performance?.measured) ? "Render capacity" : "Estimated capacity"}
+                  : {snapshot.availableCompute.toFixed(1)}× local
+                </div>
                 {snapshot.metrics && (
                   <div style={{ color: "#8a8a8a", marginTop: 3 }}>
                     {/* Adopted, not received: an export can take back every block it sent out. */}
