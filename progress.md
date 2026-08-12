@@ -1,5 +1,18 @@
 # Progress
 
+### 2026-08-12（Claude Opus 5）— swarm: 動画抜けフレームが**書き出し済み zip に混入していた**（検出の穴を塞ぐ）
+
+- **決定的な実測**: ワーカー付き書き出し（80.9 秒 / `Frames from workers: 3`）の zip をローカル単独 zip とフレーム単位で突き合わせたところ、**150 枚中 18 枚が 24KB 台**（正常は 340KB 台）＝動画レイヤーが抜けたフレームが**そのまま成果物に入っていた**。該当は frame 126-127, 134-143 など、リモートブロックの範囲と一致。
+- **なぜ検出できなかったか（2 つの穴）**:
+  1. `strictFootage`（各 video が目標時刻に乗っているか）は **video 要素が 1 本も無い場合に「全部そろっている」と同じ true を返す**。抜けているのが「位置」ではなく「要素そのもの」だったため素通りした。
+  2. ホストのスポットチェックは全体の 5% を等間隔サンプルするだけで、**今回サンプルされたフレームがたまたま全部ローカル描画分だった**。リモート成果物が 1 枚も照合されないまま採用された。
+- **修正**:
+  - [DomRenderer.ts](src/runtime/DomRenderer.ts) に `videoElementCount()` を追加。[workerRenderExecutor.ts](src/swarm/worker/workerRenderExecutor.ts) が「comp ツリーに video があるのに video 要素 0 本」ならジョブを失敗させ、セッションも破棄する（壊れた世界を持ち回らない）。
+  - [remoteFrameProducer.ts](src/swarm/core/remoteFrameProducer.ts) に `SWARM_VERIFY_FIRST_REMOTE_FRAMES = 2`。**各ワーカーの最初の 2 フレームは必ずローカル再描画して照合**してから、以降を信頼する。サンプルが当たるかどうかに依存しない。副次的に `looksEmptyAgainst` の基準値（referenceSpread）が早期に入る。
+  - `RemoteProducerSetup` に `decodePng` / `decodeZip` の差し替え口を追加（ブラウザの画像デコーダ無しで照合経路をテストするため）。
+- **テスト**: `checks a worker's first frames before trusting any of its output` を追加。全体 2925 tests PASS、`tsc` クリーン。
+- **教訓（CLAUDE.md「分散描画の性能結論」節・memory に固定）**: 「返ってきた」「カウンタが増えた」は採用の証拠にならない。**壊れていても値が出る指標**を根拠にしない。
+
 ### 2026-08-12（Claude Opus 5）— swarm: 接続時にアセットを先送り＋差分更新
 
 - **依頼**: 「繋いだ時点で、ホストからワーカーに P2P でデータを送る、追加アセットがあったら逐一更新」。
@@ -42,9 +55,10 @@
 
 - **症状**: 2 回目の計測でワーカーが 4 分待っても再参加せず（`panel: undefined`）、単独書き出しになった。
 - **真因**（[durableSessionCore.ts](src/swarm/signaling/durableSessionCore.ts)）: ホストが落ちるとワーカーは自力で `join()` し直すが、**セッションはホストより長生きなので join 自体は成功**し `waiting-approval` に落ち着く。この状態では `scheduleReconnect` が回らない（失敗していないので）。一方 `joinSession` は `peer-join-request` を**その時点の `hostPeerId` のキュー**に積むため、再起動して新しい `hostPeerId` で polling し始めたホストはその要求を一生読まない。→ **ホスト再起動のたびに、その間に再参加したワーカーが恒久的に取り残される。**
-- **修正**: `createSession` の再アタッチ経路で、既知ピアを**新しい hostPeerId へ announce し直す**（旧ホストのキューは破棄）。あわせて `newestPeerPerDevice` でデバイスごとに最新の peerId だけを残す（ワーカーは再参加のたびに peerId が変わるので、長寿命セッションが死んだ id を溜め込み、再アタッチしたホストに大量の死んだピアを渡してしまう）。
-- **テスト**: `re-announces workers that rejoined while the host was down` を追加。`npx vitest run` 1462 tests PASS、`tsc` クリーン。
-- **デプロイ**: DO は Cloudflare 側で動くので `npx wrangler deploy` 実行済み（version c8f6e9d7）。
+- **最初の修正（誤り・取り下げ済み）**: `createSession` の再アタッチ経路で既知ピアを新しい hostPeerId へ announce し直した。**これは退行だった。** セッションに残る peerId は「ワーカーが既に捨てた join」のものであり得るため、announce するとホストが**応答しないピアに接続を張る**。実測: パネルに Offline ワーカーが 3 つ並び `Available compute` が 1.0× に低下、書き出しは死んだピアへのジョブ待ちで **134.4 秒**（swarm 無し 80.5 秒に対して）。出力 zip はローカル単独とバイト数完全一致（51392011）＝**リモート成果物の採用は 0**。
+- **正しい修正**: 復旧は**ワーカー側の自己修復**にする。[WorkerRuntime.ts](src/swarm/worker/WorkerRuntime.ts) に `WORKER_APPROVAL_TIMEOUT_MS = 20s` を追加し、承認待ちのまま 20 秒経過したら join し直す（誰かが実際に polling している peerId が新規に発行される）。再 join 時は前回の long poll を停止する。DO 側の replay は削除し、旧ホストのキュー破棄だけ残した。
+- **テスト**: `does not resurrect abandoned peer ids when a host reattaches`（replay しないこと＋新しい要求は新ホストに届くこと）。`npx vitest run` 全パス、`tsc` クリーン。
+- **デプロイ**: `npx wrangler deploy`（version cd80ed12）＋ main マージで Pages デプロイ。
 
 ### 2026-07-20（Claude Opus 4.8）— browser export 最大高速化 Phase 6（実験的 multi-render-context）実装・計測・既定 OFF で採用
 

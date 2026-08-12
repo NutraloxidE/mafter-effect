@@ -977,6 +977,15 @@ export class DomRenderer implements Renderer {
     return true;
   }
 
+  /**
+   * 描画中の video 要素数。`videosAtExportTarget` は「1 本も無い」を「全部そろっている」と
+   * 区別できないため、フッテージを持つ comp のはずなのに 0 本という状態を呼び出し側が
+   * 検出できるようにする。
+   */
+  videoElementCount(): number {
+    return this.root ? this.root.querySelectorAll("video").length : 0;
+  }
+
   /** export 前に video seek / decode 完了を待つ（foreignObject は video を描けない）。 */
   async flushVideoFrames(timeoutMs?: number): Promise<void> {
     if (!this.root) return;
