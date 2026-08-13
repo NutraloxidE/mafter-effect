@@ -1,11 +1,11 @@
-import { exportComposition, type ExportSession } from "../../runtime/exporter";
+import { exportComposition, type ExportSession, type ExportTimingHooks } from "../../runtime/exporter";
 import { compTreeHasVideo } from "../../runtime/multiRenderContext";
 import { MemoryFs } from "../../fs/MemoryFs";
-import { captureCompFramePng, createCompFrameCaptureContext } from "../../runtime/compFrameCapture";
+import { captureCompFramePng, createCompFrameCaptureContext, type CompFrameCaptureTiming } from "../../runtime/compFrameCapture";
 import { sha256Hex } from "../core/assetManifest";
 import { runRenderBenchmark } from "../core/benchmark";
 import type { TimelineComposition } from "../../core/schema";
-import type { SwarmAssetTransfer, SwarmRenderJob, SwarmRenderResult } from "../core/types";
+import type { SwarmAssetTransfer, SwarmRenderJob, SwarmRenderResult, SwarmWorkerTiming } from "../core/types";
 import { BoundedWorkerAssetCache } from "./workerCache";
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -18,6 +18,18 @@ interface CachedContext {
   key: string;
   fs: MemoryFs;
   context: Awaited<ReturnType<typeof createCompFrameCaptureContext>>;
+}
+
+function emptyWorkerTiming(): SwarmWorkerTiming {
+  return {
+    sessionPrepareMs: 0,
+    footageWarmupMs: 0,
+    renderMs: 0,
+    pngEncodeMs: 0,
+    zipFinalizeMs: 0,
+    base64Ms: 0,
+    hashMs: 0,
+  };
 }
 
 export type WorkerRenderProgress = (completedFrames: number, totalFrames: number) => void;
@@ -56,6 +68,7 @@ export class WorkerRenderExecutor {
     fs: MemoryFs,
     composition: TimelineComposition,
     onProgress?: WorkerRenderProgress,
+    timing: SwarmWorkerTiming = emptyWorkerTiming(),
   ): Promise<SwarmRenderResult> {
     const startedAt = performance.now();
     const scale = job.profile.width / Math.max(1, composition.width);
@@ -67,6 +80,11 @@ export class WorkerRenderExecutor {
       this.session.holder.current?.dispose();
       this.session = { key: sessionKey, holder: { current: null } };
     }
+    const timingHooks: ExportTimingHooks = {
+      onTiming: (phase, durationMs) => {
+        timing[phase] += Math.max(0, durationMs);
+      },
+    };
     const result = await exportComposition(job.project, job.compositionId, fs, {
       range: [job.frameStart, job.frameEnd],
       fps: composition.fps,
@@ -77,7 +95,7 @@ export class WorkerRenderExecutor {
     }, (progress) => {
       if (progress.phase !== "render") return;
       onProgress?.(Math.min(job.frameEnd - job.frameStart, Math.max(0, progress.frame + 1)), job.frameEnd - job.frameStart);
-    }, undefined, undefined, { strictFootage: true, session: this.session.holder });
+    }, undefined, undefined, { strictFootage: true, session: this.session.holder, timing: timingHooks });
     // `strictFootage` compares each video against its target time, which says nothing when there
     // are no video elements at all — exactly the shape of the blocks that came back at a thirteenth
     // of the expected size, with the footage layers simply absent.
@@ -88,6 +106,12 @@ export class WorkerRenderExecutor {
       throw new Error("Worker rendered no footage for a composition that has video");
     }
     const bytes = new Uint8Array(await result.blob.arrayBuffer());
+    const base64StartedAt = performance.now();
+    const bytesBase64 = bytesToBase64(bytes);
+    timing.base64Ms += performance.now() - base64StartedAt;
+    const hashStartedAt = performance.now();
+    const contentHash = await sha256Hex(bytes);
+    timing.hashMs += performance.now() - hashStartedAt;
     return {
       jobId: job.id,
       renderRevision: job.renderRevision,
@@ -97,16 +121,19 @@ export class WorkerRenderExecutor {
       width: job.profile.width,
       height: job.profile.height,
       format: "png-zip",
-      bytesBase64: bytesToBase64(bytes),
+      bytesBase64,
       byteLength: bytes.byteLength,
-      contentHash: await sha256Hex(bytes),
+      contentHash,
       runtimeVersion: job.runtimeVersion,
+      workerTiming: { ...timing },
       renderMs: performance.now() - startedAt,
     };
   }
 
   async render(job: SwarmRenderJob, onProgress?: WorkerRenderProgress): Promise<SwarmRenderResult> {
     const fs = new MemoryFs();
+    const timing = emptyWorkerTiming();
+    const assetPrepareStartedAt = performance.now();
     for (const asset of job.assets ?? []) {
       // Files usually arrive ahead of the job as chunks; inline bytes remain valid for small ones.
       let bytes = this.assetCache.get(asset.contentHash);
@@ -119,25 +146,39 @@ export class WorkerRenderExecutor {
       if (!bytes) throw new Error(`Worker asset cache miss: ${asset.path}`);
       await fs.write(asset.path, bytes);
     }
+    timing.sessionPrepareMs += performance.now() - assetPrepareStartedAt;
     const composition = job.project.compositions.find((comp) => comp.id === job.compositionId);
     if (!composition || composition.kind !== "timeline") throw new Error("Worker job composition is not a timeline");
-    if (job.frameEnd - job.frameStart > 1) return this.renderRange(job, fs, composition, onProgress);
+    if (job.frameEnd - job.frameStart > 1) return this.renderRange(job, fs, composition, onProgress, timing);
+    const contextPrepareStartedAt = performance.now();
     const context = await this.contextFor(job, composition, fs);
+    timing.sessionPrepareMs += performance.now() - contextPrepareStartedAt;
     {
       const startedAt = performance.now();
       const background = exportBackground(job, composition);
-      let bytes = await captureCompFramePng(context, composition, job.frameStart, background);
+      const captureTiming: CompFrameCaptureTiming = {
+        onTiming: (phase, durationMs) => {
+          timing[phase] += Math.max(0, durationMs);
+        },
+      };
+      let bytes = await captureCompFramePng(context, composition, job.frameStart, background, captureTiming);
       // The decode wait is best-effort: on timeout the frame is composited with the footage still
       // at its previous position, which looks plausible and is simply wrong. Retry once, then let
       // the host render it rather than returning pixels we know are off.
       if (!context.renderer.videosAtExportTarget(composition.fps)) {
-        bytes = await captureCompFramePng(context, composition, job.frameStart, background);
+        bytes = await captureCompFramePng(context, composition, job.frameStart, background, captureTiming);
         if (!context.renderer.videosAtExportTarget(composition.fps)) {
           throw new Error(`Worker footage did not reach frame ${job.frameStart}`);
         }
       }
       const renderMs = performance.now() - startedAt;
       onProgress?.(1, 1);
+      const base64StartedAt = performance.now();
+      const bytesBase64 = bytesToBase64(bytes);
+      timing.base64Ms += performance.now() - base64StartedAt;
+      const hashStartedAt = performance.now();
+      const contentHash = await sha256Hex(bytes);
+      timing.hashMs += performance.now() - hashStartedAt;
       return {
         renderMs,
         jobId: job.id,
@@ -148,10 +189,11 @@ export class WorkerRenderExecutor {
         width: job.profile.width,
         height: job.profile.height,
         format: "png",
-        bytesBase64: bytesToBase64(bytes),
+        bytesBase64,
         byteLength: bytes.byteLength,
-        contentHash: await sha256Hex(bytes),
+        contentHash,
         runtimeVersion: job.runtimeVersion,
+        workerTiming: { ...timing },
       };
     }
   }

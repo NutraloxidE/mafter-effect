@@ -19,6 +19,7 @@ const FRAMES = Number(process.env.SWARM_FRAMES ?? 24);
 const EXPORT_TIMEOUT_MS = Number(process.env.SWARM_EXPORT_TIMEOUT_MS ?? 600000);
 const SEQUENCE = (process.env.SWARM_SEQUENCE ?? "ABBA").toUpperCase().split("").filter((c) => c === "A" || c === "B");
 const MODE = (process.env.SWARM_MODE ?? "WARM").toUpperCase() === "COLD" ? "COLD" : "WARM";
+const WORKLOAD = process.env.SWARM_WORKLOAD ?? "normal-footage";
 const WARMUP_TOLERANCE = Number(process.env.SWARM_WARMUP_TOLERANCE ?? 0.05);
 const WARMUP_MAX = Number(process.env.SWARM_WARMUP_MAX ?? 5);
 const FAULT = process.env.SWARM_FAULT ?? "";
@@ -45,6 +46,8 @@ const swarmState = (page) => page.evaluate(() => {
   const snapshot = window.__mafterSwarmStore?.getSnapshot?.();
   return {
     metrics: snapshot?.metrics ?? null,
+    jobTimelines: snapshot?.metrics?.jobTimelines ?? [],
+    exportTimelines: snapshot?.metrics?.exportTimelines ?? [],
     // Reset by exportComposition, so this is the frame count for the run that just finished.
     hostRenderedFrames: globalThis.__mafterHostRenderCost?.frames ?? null,
     hostMsPerFrame: globalThis.__mafterHostRenderCost?.frames
@@ -121,6 +124,8 @@ async function runExport(page, mode, label) {
 
   const after = await swarmState(page);
   const delta = (key) => (after.metrics?.[key] ?? 0) - (before.metrics?.[key] ?? 0);
+  const jobTimelines = after.jobTimelines.slice(before.jobTimelines.length);
+  const exportTimeline = after.exportTimelines.slice(before.exportTimelines.length).at(-1) ?? null;
 
   await page.evaluate(() => {
     const dialog = [...document.querySelectorAll("div")].find((d) => d.innerText.startsWith("Export — "));
@@ -142,9 +147,13 @@ async function runExport(page, mode, label) {
     hostMsPerFrame: after.hostMsPerFrame === null ? null : Math.round(after.hostMsPerFrame),
     availableCompute: after.availableCompute,
     // The number a worker exists to move. Adopted frames the host also drew are worth nothing.
-    localFramesAvoided: after.hostRenderedFrames === null ? null : FRAMES - after.hostRenderedFrames,
+    localFramesAvoided: delta("localFramesAvoided"),
     adoptedRemoteFrames: delta("adoptedRemoteFrames"),
     remoteFramesReceived: delta("remoteFrames"),
+    remoteRenderedFrames: delta("remoteRenderedFrames"),
+    remoteReceivedFrames: delta("remoteReceivedFrames"),
+    verifiedRemoteFrames: delta("verifiedRemoteFrames"),
+    lateRemoteFrames: delta("lateRemoteFrames"),
     localFallbackJobs: delta("localFallbackJobs"),
     ineligibleJobs: delta("ineligibleJobs"),
     staleResultsDiscarded: delta("staleResultsDiscarded"),
@@ -156,6 +165,8 @@ async function runExport(page, mode, label) {
     jobHardTimeouts: delta("jobHardTimeouts"),
     lateValidResults: delta("lateValidResults"),
     lateMeasuredFrames: delta("lateMeasuredFrames"),
+    jobTimelines,
+    exportTimeline,
     panel: FRAMES_RE.exec(await text(page))?.[0] ?? "-",
   };
 }
@@ -192,6 +203,93 @@ async function compareAgainstBaseline(baselinePath, runPath) {
  * A swarm run counts as a performance measurement only if it demonstrably distributed work and got
  * the right pixels back. Every other run is data about correctness, never about speed.
  */
+function phaseRows(timelines) {
+  const rows = new Map([
+    ["queue wait", (t) => t.host.queueWaitMs],
+    ["asset ready wait", (t) => t.host.assetReadyWaitMs],
+    ["offer to ACK", (t) => t.host.offerToAckMs],
+    ["session prepare", (t) => t.worker?.sessionPrepareMs ?? 0],
+    ["footage warmup", (t) => t.worker?.footageWarmupMs ?? 0],
+    ["render", (t) => t.worker?.renderMs ?? 0],
+    ["PNG encode", (t) => t.worker?.pngEncodeMs ?? 0],
+    ["ZIP finalize", (t) => t.worker?.zipFinalizeMs ?? 0],
+    ["base64", (t) => t.worker?.base64Ms ?? 0],
+    ["hash", (t) => t.worker?.hashMs ?? 0],
+    ["first chunk latency", (t) => t.host.firstChunkLatencyMs],
+    ["transfer", (t) => t.host.transferMs],
+    ["reassembly", (t) => t.host.reassemblyMs],
+    ["host base64 decode", (t) => t.host.base64DecodeMs],
+    ["ZIP decode", (t) => t.host.zipDecodeMs],
+    ["PNG decode", (t) => t.host.pngDecodeMs],
+    ["verification", (t) => t.host.verificationMs],
+    ["adoption delay", (t) => t.host.adoptionDelayMs],
+  ]);
+  const remoteWallMs = timelines.reduce((sum, t) => sum + (t.remoteWallMs ?? 0), 0);
+  return [...rows].map(([phase, read]) => {
+    const ms = timelines.reduce((sum, t) => sum + Math.max(0, read(t)), 0);
+    return { phase, ms, percentRemoteWall: remoteWallMs > 0 ? (ms / remoteWallMs) * 100 : 0 };
+  });
+}
+
+function printCostTable(run) {
+  if (!run.jobTimelines?.length) return;
+  const rows = phaseRows(run.jobTimelines);
+  const remoteWallMs = run.jobTimelines.reduce((sum, t) => sum + (t.remoteWallMs ?? 0), 0);
+  console.log(`
+Cost table — ${WORKLOAD} / ${run.label}
+  remote wall: ${Math.round(remoteWallMs)}ms (${run.jobTimelines.length} jobs)
+  phase                         ms       % remote wall`);
+  for (const row of rows) {
+    if (row.ms < 0.05) continue;
+    console.log(`  ${row.phase.padEnd(28)} ${String(Math.round(row.ms)).padStart(7)} ${row.percentRemoteWall.toFixed(1).padStart(15)}%`);
+  }
+  const accounted = rows.reduce((sum, row) => sum + row.ms, 0);
+  console.log(`  ${"accounted phase sum".padEnd(28)} ${String(Math.round(accounted)).padStart(7)} ${(remoteWallMs > 0 ? accounted / remoteWallMs * 100 : 0).toFixed(1).padStart(15)}%`);
+  const transferredBytes = run.jobTimelines.reduce((sum, timeline) => sum + (timeline.host?.transferredBytes ?? 0), 0);
+  console.log(`  transferred bytes: ${transferredBytes}`);
+  const sumPhase = (read) => run.jobTimelines.reduce((sum, timeline) => sum + Math.max(0, read(timeline)), 0);
+  const renderAndWarmupMs = sumPhase((t) => (t.worker?.renderMs ?? 0) + (t.worker?.footageWarmupMs ?? 0));
+  const transportMs = sumPhase((t) =>
+    (t.worker?.pngEncodeMs ?? 0)
+    + (t.worker?.zipFinalizeMs ?? 0)
+    + (t.worker?.base64Ms ?? 0)
+    + t.host.transferMs
+    + t.host.base64DecodeMs
+    + t.host.zipDecodeMs
+    + t.host.pngDecodeMs,
+  );
+  const exportElapsedMs = run.exportTimeline?.exportElapsedMs ?? 0;
+  const consumerWaitMs = run.exportTimeline?.consumerWaitMs ?? 0;
+  const tailWaitMs = run.exportTimeline?.exportTailWaitMs ?? 0;
+  const remoteCandidates = [
+    { name: "worker render + footage warmup", ms: renderAndWarmupMs, denominator: remoteWallMs },
+    { name: "encode + ZIP + base64 + transfer + host decode", ms: transportMs, denominator: remoteWallMs },
+  ];
+  const schedulingCandidates = [
+    { name: "consumer wait", ms: consumerWaitMs, denominator: exportElapsedMs },
+    { name: "export tail wait", ms: tailWaitMs, denominator: exportElapsedMs },
+  ];
+  const dominantRemote = remoteCandidates
+    .filter((candidate) => candidate.ms > 0)
+    .sort((a, b) => (b.ms / Math.max(1, b.denominator)) - (a.ms / Math.max(1, a.denominator)))[0];
+  if (dominantRemote) {
+    const percent = dominantRemote.ms / Math.max(1, dominantRemote.denominator) * 100;
+    console.log(`  remote critical-path bottleneck: ${dominantRemote.name} = ${Math.round(dominantRemote.ms)}ms (${percent.toFixed(1)}% of remote wall)`);
+    console.log(`  theoretical remote ceiling: ${(dominantRemote.ms / 1000).toFixed(3)}s if that bucket were removed`);
+  }
+  const dominantScheduling = schedulingCandidates
+    .filter((candidate) => candidate.ms > 0)
+    .sort((a, b) => (b.ms / Math.max(1, b.denominator)) - (a.ms / Math.max(1, a.denominator)))[0];
+  if (dominantScheduling) {
+    const percent = dominantScheduling.ms / Math.max(1, dominantScheduling.denominator) * 100;
+    console.log(`  scheduling signal: ${dominantScheduling.name} = ${Math.round(dominantScheduling.ms)}ms (${percent.toFixed(1)}% of export clock)`);
+  }
+  if (run.exportTimeline) {
+    console.log(`  export tail wait: ${Math.round(run.exportTimeline.exportTailWaitMs)}ms`);
+    console.log(`  consumer wait:    ${Math.round(run.exportTimeline.consumerWaitMs)}ms`);
+  }
+}
+
 function validate(run, correctness, expectedBuildTag) {
   const reasons = [];
   if (!run.completed) reasons.push("export did not finish");
@@ -240,6 +338,7 @@ Liveness
   transfer stalls:    ${run.jobTransferStalls}
   hard deadlines:     ${run.jobHardTimeouts}
   late valid:         ${run.lateValidResults} (${run.lateMeasuredFrames} frames)
+  rendered / received / verified / late: ${run.remoteRenderedFrames} / ${run.remoteReceivedFrames} / ${run.verifiedRemoteFrames} / ${run.lateRemoteFrames}
 
 Capacity
   host ms/frame:     ${run.hostMsPerFrame ?? "-"}
@@ -251,6 +350,7 @@ Total
   build:             ${run.buildTag}
 
 VALID PERFORMANCE RUN: ${run.invalidReasons.length === 0 ? "YES" : `NO — ${run.invalidReasons.join("; ")}`}`);
+    printCostTable(run);
   }
 
   const valid = (mode) => runs.filter((r) => r.mode === mode && r.invalidReasons.length === 0).map((r) => r.seconds);
@@ -258,7 +358,7 @@ VALID PERFORMANCE RUN: ${run.invalidReasons.length === 0 ? "YES" : `NO — ${run
   const swarmMedian = median(valid("B"));
   const avoided = runs.filter((r) => r.mode === "B" && r.invalidReasons.length === 0).map((r) => r.localFramesAvoided);
   console.log(`
-SEQUENCE ${SEQUENCE.join("")} / ${MODE}
+ SEQUENCE ${SEQUENCE.join("")} / ${MODE} / ${WORKLOAD}
   warmup:            ${warmup.trace.join("s, ")}s ${warmup.converged ? "(converged)" : "(NOT STATIONARY)"}
   local-only median: ${localMedian ?? "-"}s  (n=${valid("A").length})
   swarm median:      ${swarmMedian ?? "-"}s  (n=${valid("B").length})

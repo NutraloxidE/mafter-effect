@@ -8,7 +8,12 @@ import { Muxer as WebmMuxer, ArrayBufferTarget as WebmTarget } from "webm-muxer"
 import { compositionDir } from "../core/paths";
 import { SwarmFrameMismatchError } from "../swarm/core/frameVerification";
 import { buildRemoteFrameProducers, spotCheckFrames, SWARM_EXPORT_BLOCK_FRAMES } from "../swarm/core/remoteFrameProducer";
-import type { SwarmRenderJob, SwarmRenderResult } from "../swarm/core/types";
+import type {
+  SwarmExportTimeline,
+  SwarmJobTimeline,
+  SwarmRenderJob,
+  SwarmRenderResult,
+} from "../swarm/core/types";
 import type { ExportConfig, HtmlComposition, Project, TimelineComposition } from "../core/schema";
 import type { FileSystem } from "../fs/FileSystem";
 import { DomRenderer } from "./DomRenderer";
@@ -48,6 +53,12 @@ export interface ExportProgress {
 }
 
 export type ProgressCallback = (p: ExportProgress) => void;
+
+export type ExportTimingPhase = "sessionPrepareMs" | "footageWarmupMs" | "renderMs" | "pngEncodeMs" | "zipFinalizeMs";
+
+export interface ExportTimingHooks {
+  onTiming?: (phase: ExportTimingPhase, durationMs: number) => void;
+}
 
 /** 実際に生成された出力形式（動画 encode 失敗で PNG-seq に落ちた場合 format が変わる）。 */
 export interface ExportResult {
@@ -95,6 +106,8 @@ export interface ExportSwarmHooks {
   preload?: (project: Project, comp: TimelineComposition) => Promise<void>;
   /** Called once per frame whose remote pixels reach the file — the only measure of work saved. */
   onFrameAdopted?: () => void;
+  onJobTimeline?: (timeline: SwarmJobTimeline) => void;
+  onExportTimeline?: (timeline: SwarmExportTimeline) => void;
   timeoutMs?: number;
 }
 
@@ -119,6 +132,8 @@ const STRICT_FOOTAGE_SEEK_WAIT_MS = 12_000;
  */
 export interface ExportRuntimeOptions {
   strictFootage?: boolean;
+  /** Worker-local phase measurement; deliberately separate from host swarm hooks. */
+  timing?: ExportTimingHooks;
   /**
    * Holder for a reusable offscreen world. Pass the same holder across calls to build it once;
    * the caller owns its lifetime and calls `dispose` on the session it finds inside. Leave it out
@@ -245,8 +260,10 @@ export async function exportComposition(
   const extraRenderers: DomRenderer[] = [];
   const extraContainers: HTMLElement[] = [];
 
+  const sessionPrepareStartedAt = performance.now();
   const session = options?.session?.current
     ?? await buildExportSession({ project, comp: tlComp, htmlComps, timelineComps, fs, config, nw, nh, totalFrames, onProgress });
+  options?.timing?.onTiming?.("sessionPrepareMs", performance.now() - sessionPrepareStartedAt);
   if (options?.session) options.session.current = session;
   const { renderer, evaluator, compEvaluators, fontCache, imageCache } = session;
   // Cheap, and the only setting a reused session can disagree with the current export about.
@@ -290,7 +307,7 @@ export async function exportComposition(
       const blob = await runPngSeq(
         tlComp, renderer, evaluator, config,
         startFrame, totalFrames, nw, nh, w, h, extraRenderers, onProgress, signal,
-        { project, compId, endFrame, swarm, strictFootage: options?.strictFootage },
+        { project, compId, endFrame, swarm, strictFootage: options?.strictFootage, timing: options?.timing },
       );
       return { blob, format: "png-seq" };
     } else {
@@ -319,7 +336,7 @@ export async function exportComposition(
         const blob = await runPngSeq(
           tlComp, renderer, evaluator, { ...config, format: "png-seq" },
           startFrame, totalFrames, nw, nh, w, h, extraRenderers, onProgress, signal,
-          { project, compId, endFrame, swarm, strictFootage: options?.strictFootage },
+          { project, compId, endFrame, swarm, strictFootage: options?.strictFootage, timing: options?.timing },
         );
         return { blob, format: "png-seq", fallbackReason: reason };
       }
@@ -381,13 +398,39 @@ async function runPngSeq(
   extraRenderers: DomRenderer[],
   onProgress: ProgressCallback,
   signal?: AbortSignal,
-  remote?: { project: Project; compId: string; endFrame: number; swarm?: ExportSwarmHooks; strictFootage?: boolean },
+  remote?: {
+    project: Project;
+    compId: string;
+    endFrame: number;
+    swarm?: ExportSwarmHooks;
+    strictFootage?: boolean;
+    timing?: ExportTimingHooks;
+  },
 ): Promise<Blob> {
+  const exportStartedAt = performance.now();
   const zip = new JSZip();
+  let consumerWaitMs = 0;
+  let lastLocalReadyAtMs: number | null = null;
+  let lastRemoteReadyAtMs: number | null = null;
+  let remoteAdoptedFrames = 0;
+  let remoteRenderedFrames = 0;
+  let remoteReceivedFrames = 0;
+  let verifiedRemoteFrames = 0;
+  let lateRemoteFrames = 0;
+  const seenRemoteJobs = new Set<string>();
+  const frameSources = new Map<number, {
+    source: "remote" | "local";
+    remoteResult: boolean;
+    verified: boolean;
+    timeline?: SwarmJobTimeline;
+    readyAtMs?: number;
+  }>();
   const bg = config.alpha ? "transparent" : (comp.background ? rgbaToHex(comp.background) : "#000000");
   // PNG 連番は元々オプション無し（純 Canvas2D）で合成する。multi-context も同じ経路を使う。
   const addFrame = async (fi: number, canvas: HTMLCanvasElement): Promise<void> => {
+    const pngStartedAt = performance.now();
     const pngBlob = await canvasToBlob(canvas, "image/png");
+    remote?.timing?.onTiming?.("pngEncodeMs", performance.now() - pngStartedAt);
     zip.file(`frame_${String(fi).padStart(6, "0")}.png`, pngBlob);
   };
   // Encoding at production time lets the reorder buffer hold ~350KB PNGs instead of ~2MB
@@ -400,9 +443,12 @@ async function runPngSeq(
 
   // ローカル描画は context を共有するので直列化する。remote producer のフォールバックもここを通る。
   let localChain: Promise<unknown> = Promise.resolve();
+  let multiProducerTiming = false;
+  const localFrameWarmupMs = new Map<number, number>();
   const renderLocallySerialized = (frame: number): Promise<HTMLCanvasElement> => {
     const run = localChain.then(async () => {
       const startedAt = performance.now();
+      let footageWarmupMs = 0;
       let canvas = await renderContextFrameCanvas(renderer, comp, evaluator, frame, nw, nh, w, h, bg, {});
       // The decode wait is best-effort: on timeout the frame composites with the footage still at
       // its previous position, which looks plausible and is simply wrong. Rendering again is what
@@ -411,13 +457,22 @@ async function runPngSeq(
         // The default wait is tuned for a machine that keeps up. A worker rendering a block is
         // three times slower and misses it on nearly every frame, so give the decode real time
         // before deciding — but only on the retry, and only where the caller asked for strictness.
-        if (remote?.strictFootage) await renderer.flushVideoFrames(STRICT_FOOTAGE_WAIT_MS);
+        if (remote?.strictFootage) {
+          const warmupStartedAt = performance.now();
+          await renderer.flushVideoFrames(STRICT_FOOTAGE_WAIT_MS);
+          footageWarmupMs += performance.now() - warmupStartedAt;
+        }
         canvas = await renderContextFrameCanvas(renderer, comp, evaluator, frame, nw, nh, w, h, bg, {});
         if (remote?.strictFootage && !renderer.videosAtExportTarget(config.fps)) {
           // Carry the measurements back: the machine that failed is usually someone else's, and
           // "did not reach" alone cannot distinguish a slow decode from a video that never loaded.
           throw new Error(`Footage did not reach frame ${frame} — ${renderer.describeExportVideos()}`);
         }
+      }
+      localFrameWarmupMs.set(frame, footageWarmupMs);
+      if (!multiProducerTiming) {
+        if (footageWarmupMs > 0) remote?.timing?.onTiming?.("footageWarmupMs", footageWarmupMs);
+        remote?.timing?.onTiming?.("renderMs", Math.max(0, performance.now() - startedAt - footageWarmupMs));
       }
       noteHostRenderedFrame(performance.now() - startedAt);
       return canvas;
@@ -432,8 +487,20 @@ async function runPngSeq(
   // slow seek fails the frame and throws away the whole block's work.
   if (remote?.strictFootage) {
     renderer.renderFrame(resolve(comp, startFrame, { expressions: evaluator }), startFrame);
+    const warmupStartedAt = performance.now();
     await renderer.flushVideoFrames(STRICT_FOOTAGE_SEEK_WAIT_MS);
+    remote.timing?.onTiming?.("footageWarmupMs", performance.now() - warmupStartedAt);
   }
+  const onJobTimeline = (timeline: SwarmJobTimeline): void => {
+    if (!seenRemoteJobs.has(timeline.jobId)) {
+      seenRemoteJobs.add(timeline.jobId);
+      remoteRenderedFrames += timeline.remoteRenderedFrames;
+      remoteReceivedFrames += timeline.remoteReceivedFrames;
+      verifiedRemoteFrames += timeline.verifiedRemoteFrames;
+      lateRemoteFrames += timeline.lateRemoteFrames;
+    }
+    remote?.swarm?.onJobTimeline?.(timeline);
+  };
   const remoteProducers = remote?.swarm ? buildRemoteFrameProducers({
     swarm: remote.swarm,
     project: remote.project,
@@ -449,7 +516,12 @@ async function runPngSeq(
     renderLocally: renderLocallySerialized,
     totalFrameEnd: startFrame + totalFrames,
     verifyFrames: new Set(spotCheckFrames(totalFrames).map((fi) => startFrame + fi)),
-    ...(remote.swarm.onFrameAdopted ? { onAdopted: remote.swarm.onFrameAdopted } : {}),
+    onFrameSource: (frame, source, remoteResult, verified, timeline, readyAtMs) => {
+      frameSources.set(frame, { source, remoteResult, verified, timeline, readyAtMs });
+      if (source === "local" && !remoteResult) lastLocalReadyAtMs = performance.now();
+      if (remoteResult) lastRemoteReadyAtMs = performance.now();
+    },
+    onJobTimeline,
   }) : [];
 
   if (remote?.swarm?.preload && remoteProducers.length > 0) {
@@ -502,11 +574,37 @@ async function runPngSeq(
         rendered++;
         onProgress({ phase: "render", frame: rendered - 1, totalFrames, message: `Frame ${rendered}/${totalFrames}` });
       },
-      onFrame: storeFrame,
+      onFrame: async (fi: number, pngBlob: Blob) => {
+        const source = frameSources.get(startFrame + fi);
+        if (source?.source === "remote" && source.remoteResult) {
+          remoteAdoptedFrames += 1;
+          if (source.timeline) {
+            source.timeline.remoteAdoptedFrames += 1;
+            source.timeline.host.adoptionDelayMs = Math.max(
+              source.timeline.host.adoptionDelayMs,
+              source.readyAtMs === undefined ? 0 : performance.now() - source.readyAtMs,
+            );
+            remote?.swarm?.onJobTimeline?.(source.timeline);
+          }
+          remote?.swarm?.onFrameAdopted?.();
+        }
+        await storeFrame(fi, pngBlob);
+      },
+      onProducerTiming: (event: { producerIndex: number; frameIndex: number; renderMs: number; prepareMs: number }) => {
+        if (event.producerIndex < contexts.length) lastLocalReadyAtMs = performance.now();
+        const localWarmupMs = event.producerIndex === 0
+          ? (localFrameWarmupMs.get(startFrame + event.frameIndex) ?? 0)
+          : 0;
+        remote?.timing?.onTiming?.("footageWarmupMs", localWarmupMs);
+        remote?.timing?.onTiming?.("renderMs", Math.max(0, event.renderMs - localWarmupMs));
+        remote?.timing?.onTiming?.("pngEncodeMs", event.prepareMs);
+      },
       checkAbort: () => checkAbort(signal),
     };
     try {
+      multiProducerTiming = true;
       const res = await runOrderedMultiContext(multiOptions);
+      consumerWaitMs = res.consumerWaitMs;
       recordMultiContextFrames(totalFrames, res.contextFrameCounts);
       // Who waited, and on whom: frame counts alone cannot tell a stalled pipeline from a
       // correctly balanced one.
@@ -519,6 +617,7 @@ async function runPngSeq(
       });
     } catch (error) {
       if (!(error instanceof SwarmFrameMismatchError)) throw error;
+      multiProducerTiming = false;
       console.warn("[swarm] worker output rejected", { frame: error.frame, difference: error.difference });
       // A worker produced pixels this device disagrees with. Discard everything it contributed
       // and render the whole sequence locally rather than shipping a file we cannot vouch for.
@@ -537,7 +636,24 @@ async function runPngSeq(
   }
 
   onProgress({ phase: "encode", frame: totalFrames, totalFrames, message: "Packaging ZIP…" });
+  const zipStartedAt = performance.now();
   const result = await zip.generateAsync({ type: "blob" });
+  remote?.timing?.onTiming?.("zipFinalizeMs", performance.now() - zipStartedAt);
+  remote?.swarm?.onExportTimeline?.({
+    exportElapsedMs: performance.now() - exportStartedAt,
+    consumerWaitMs,
+    exportTailWaitMs: lastLocalReadyAtMs === null || lastRemoteReadyAtMs === null
+      ? 0
+      : Math.max(0, lastRemoteReadyAtMs - lastLocalReadyAtMs),
+    timeHostFinishedUsefulLocalWork: lastLocalReadyAtMs === null ? null : lastLocalReadyAtMs - exportStartedAt,
+    timeLastRequiredRemoteFrameReady: lastRemoteReadyAtMs === null ? null : lastRemoteReadyAtMs - exportStartedAt,
+    localFramesAvoided: remoteAdoptedFrames,
+    remoteFramesAdopted: remoteAdoptedFrames,
+    remoteRenderedFrames,
+    remoteReceivedFrames,
+    verifiedRemoteFrames,
+    lateRemoteFrames,
+  });
   onProgress({ phase: "done", frame: totalFrames, totalFrames, message: "Done" });
   return result;
 }

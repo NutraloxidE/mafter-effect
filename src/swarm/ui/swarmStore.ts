@@ -5,7 +5,17 @@ import type { ExportSwarmHooks } from "../../runtime/exporter";
 import { loadOrCreateDeviceIdentity } from "../core/identity";
 import { SwarmCoordinator } from "../core/coordinator";
 import { createSignalingBackend } from "../signaling/SignalingService";
-import type { SwarmAssetTransfer, SwarmMetricsSnapshot, SwarmRenderJob, SwarmRenderResult, SwarmSessionDescriptor, SwarmPeerDescriptor, WorkerSnapshot } from "../core/types";
+import type {
+  SwarmAssetTransfer,
+  SwarmExportTimeline,
+  SwarmJobTimeline,
+  SwarmMetricsSnapshot,
+  SwarmRenderJob,
+  SwarmRenderResult,
+  SwarmSessionDescriptor,
+  SwarmPeerDescriptor,
+  WorkerSnapshot,
+} from "../core/types";
 
 export interface SwarmUiSnapshot {
   status: "idle" | "starting" | "active" | "error";
@@ -118,6 +128,17 @@ class SwarmUiStore {
   /** One frame a worker drew reached the export. The panel reports this, not results received. */
   noteAdoptedFrame(): void {
     this.coordinator?.metrics.noteAdoptedRemoteFrame();
+    this.refresh(this.coordinator);
+  }
+
+  noteJobTimeline(timeline: SwarmJobTimeline): void {
+    this.coordinator?.metrics.noteJobTimeline(timeline);
+    this.refresh(this.coordinator);
+  }
+
+  noteExportTimeline(timeline: SwarmExportTimeline): void {
+    this.coordinator?.metrics.noteExportTimeline(timeline);
+    this.refresh(this.coordinator);
   }
 
   async renderPreviewFrame(job: SwarmRenderJob, timeoutMs?: number): Promise<SwarmRenderResult | null> {
@@ -263,6 +284,8 @@ export function swarmExportHooks(): ExportSwarmHooks | undefined {
       if (withFiles.assets) await swarmUiStore.preloadAssets(withFiles.assets);
     },
     onFrameAdopted: () => swarmUiStore.noteAdoptedFrame(),
+    onJobTimeline: (timeline) => swarmUiStore.noteJobTimeline(timeline),
+    onExportTimeline: (timeline) => swarmUiStore.noteExportTimeline(timeline),
     submit: async (job, timeoutMs) => {
       const comp = job.project.compositions.find((candidate) => candidate.id === job.compositionId);
       if (!comp || comp.kind !== "timeline") return null;

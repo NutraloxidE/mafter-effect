@@ -3748,3 +3748,40 @@ WP `LOOP 2.5-3_ Kill the Bootstrap Lie + Liveness-Aware Deadline` を実施。
 
 1. LOOP 4 で healthy worker の採用率と export tail を分析する。
 2. binary stream / ZIP / reorder window などの transport 性能変更は引き続き保留する。
+
+### 2026-08-13 (Codex) - LOOP 4: Price Every Millisecond
+
+WP `LOOP 4: Price Every Millisecond` を実装。性能挙動は変更せず、remote job/export の runtime-only 会計帳簿を追加した。
+
+#### 実装
+
+- Worker clock で `sessionPrepareMs` / `footageWarmupMs` / `renderMs` / `pngEncodeMs` / `zipFinalizeMs` / `base64Ms` / `hashMs` を計測し、result metadata に載せた。
+- Host clock だけで `queueWaitMs` / `assetReadyWaitMs` / `offerToAckMs` / `firstChunkLatencyMs` / `transferMs` / `reassemblyMs` / `base64DecodeMs` / `zipDecodeMs` / `pngDecodeMs` / `verificationMs` / `adoptionDelayMs` を計測。host timestamp と worker timestamp の差し引きは廃止した。
+- `remoteRenderedFrames` / `remoteReceivedFrames` / `remoteAdoptedFrames` / `localFramesAvoided` / `verifiedRemoteFrames` / `lateRemoteFrames` を分離。valid result は progress 欠落時も rendered count を失わず、partial failure は実際の progress 分だけを数える。
+- `consumerWaitMs`、`timeHostFinishedUsefulLocalWork`、`timeLastRequiredRemoteFrameReady`、`exportTailWaitMs` を export timeline に保存。mutable job record は decode/adoption 後も同じ ID で upsert する。
+- `swarm-export-ab.mjs` に phase cost table、remote critical-path bottleneck、scheduler signal、theoretical ceiling を追加。`swarm-workload-matrix.mjs` と `npm run swarm:workloads` で pure graphics / normal footage / heavy media を WARM/COLD 別に反復できるようにした。heavy media の既定 fixture は Chrome decode 可能な Comp 32（高解像度 + split-alpha）とし、`SWARM_HEAVY_ZIP` で差し替え可能。
+- LOOP 4 の runtime-only measurement contract を spec に追記。§5 schema / `project.json` / INV / scheduler / transport の最適化は変更していない。
+
+#### 実機 evidence（WARM、ABBA、4 frames、同一 workload を2回）
+
+- Pure graphics: remote result は各 swarm run 4 frames received/rendered/verified、adopted 0。pixel parity は PASS。PNG encode + transport/decode が remote wall の最大 bucket。
+- Normal footage / nested comp: B2 remote wall 2132ms、worker footage warmup 447ms + render 1117ms = 1564ms（73.3%）。transport stack は約20.7%。B3 も warmup 320ms + render 1386ms = 1706ms（78.1%）。received/verified は各2、adopted/localFramesAvoided は0、pixel parity PASS。
+- Heavy media（Comp 32）: B2 remote wall 2819ms、worker render 1675ms + footage warmup 456ms = 2131ms（75.6%）。B3 は remote wall 2840ms、render 1821ms + warmup 322ms = 2143ms（75.5%）。transport stack は19.1% / 24.7%で30% threshold未満。各 run は received/rendered/verified 2、adopted/localFramesAvoided 0、pixel parity PASS。consumer wait は4381/4421ms（99.1%）、4832/4908ms（98.5%）、tail wait は2375ms / 2523msだが、worker（約1.28s/frame）は host（約0.62–0.85s/frame）より遅い。
+- `mini-purini-remix.zip` は MKV を含み Chrome worker が stable result を返せないため、性能値に混ぜず workload fixture を差し替えた。失敗時間を「遅さ」として計上していない。
+
+#### LOOP 4 exit / decision
+
+現時点の最大 remote critical-path bottleneck は **worker render + footage warmup**。heavy media では **約2.13秒、remote critical path の75.5–75.6%**。理論上の上限は、この bucket をゼロにできた場合の **約2.13秒/job**（実際の改善量ではない）。scheduler signal として consumer wait/tail は大きいが、worker 自体が host より遅いため、scheduler 改善へ進む条件ではない。transport も30%未満なので、LOOP 5 ではまずこの evidence に対する **単一仮説**だけを選ぶ。
+
+#### 検証
+
+- `npm run typecheck`: PASS。
+- Swarm対象: **4 files / 43 tests PASS**。
+- `npm run build`: PASS（`build:player` / player freshness を含む）。
+- 全体: **157 files / 1486 tests PASS**。既知の Node 環境由来 unhandled 4件（`indexedDB` / `alert` autosave）が残るため終了コードは1。今回の差分由来の assertion failure はなし。
+- 最終 Chrome sanity: Comp 32 WARM ABBA 完走、READY後開始、pixel parity PASS、stale/fault/timeout 0。remote payload は計測できたが useful output には届かず、`localFramesAvoided=0`。したがって性能 speedup は主張していない。
+
+#### Next steps
+
+1. LOOP 5 では上記の worker render + footage warmup に対する仮説を1つだけ選び、before/after・pixel parity・`localFramesAvoided` を記録する。
+2. binary transport、ZIP除去、block size、scheduler は同じ commit で混ぜない。

@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "swarm:workloads": "node swarm-workload-matrix.mjs",
     "deploy:ssh": "node scripts/deploy-ssh.mjs",
     "harvest:feedback": "node scripts/harvest-feedback.mjs",
     "summarize:feedback": "node scripts/summarize-feedback.mjs",

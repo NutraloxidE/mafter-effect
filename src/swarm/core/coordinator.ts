@@ -28,6 +28,8 @@ import type {
   SwarmMetricsSnapshot,
   SwarmJobFailureReason,
   SwarmJobPhase,
+  SwarmHostTiming,
+  SwarmJobTimeline,
   WorkerSnapshot,
 } from "./types";
 
@@ -52,14 +54,46 @@ function base64ByteLength(value: string): number {
   return Math.max(0, Math.floor(value.length * 3 / 4) - padding);
 }
 
+function hostNow(): number {
+  return performance.now();
+}
+
+function emptyHostTiming(): SwarmHostTiming {
+  return {
+    queueWaitMs: 0,
+    assetReadyWaitMs: 0,
+    offerToAckMs: 0,
+    firstChunkLatencyMs: 0,
+    transferMs: 0,
+    transferredBytes: 0,
+    reassemblyMs: 0,
+    base64DecodeMs: 0,
+    zipDecodeMs: 0,
+    pngDecodeMs: 0,
+    verificationMs: 0,
+    adoptionDelayMs: 0,
+  };
+}
+
 interface PendingJob {
   job: SwarmRenderJob;
   resolve: (result: SwarmRenderResult | null) => void;
   offeredAt: number;
+  queuedAtMs: number;
+  offerPreparationStartedAtMs?: number;
+  offerSentAtMs?: number;
   acceptedAt?: number;
+  acceptedAtMs?: number;
   lastProgressAt?: number;
   firstResultChunkAt?: number;
   lastResultChunkAt?: number;
+  firstResultChunkAtMs?: number;
+  lastResultChunkAtMs?: number;
+  resultCompletedAtMs?: number;
+  assetReadyWaitMs: number;
+  reassemblyMs: number;
+  verificationMs: number;
+  renderedFrames: number;
   phase: SwarmJobPhase;
   hardDeadlineAt: number;
   callerBudgetMs?: number;
@@ -338,11 +372,16 @@ export class SwarmCoordinator {
         job,
         resolve,
         offeredAt: 0,
+        queuedAtMs: hostNow(),
         phase: "queued",
         hardDeadlineAt: 0,
         ackDeadlineAt: 0,
         renderBudgetMs: 0,
         transferBudgetMs: 0,
+        assetReadyWaitMs: 0,
+        reassemblyMs: 0,
+        verificationMs: 0,
+        renderedFrames: 0,
         probe: false,
         settled: false,
         ...(timeoutMs !== undefined && timeoutMs > 0 ? { callerBudgetMs: timeoutMs } : {}),
@@ -362,6 +401,7 @@ export class SwarmCoordinator {
     const waiter = this.jobs.get(jobId);
     const newlySettled = Boolean(waiter && !waiter.settled);
     if (waiter && !waiter.settled) {
+      this.noteFailedJobTimeline(worker, waiter, reason);
       waiter.settled = true;
       waiter.settledAt = Date.now();
       waiter.phase = "completed";
@@ -456,21 +496,33 @@ export class SwarmCoordinator {
    */
   private async offerJob(worker: ConnectedWorker, job: SwarmRenderJob): Promise<void> {
     const assets = job.assets ?? [];
+    const pending = this.jobs.get(job.id);
+    if (pending) pending.offerPreparationStartedAtMs = hostNow();
+    const assetStartedAtMs = hostNow();
+    let assetWaitRecorded = false;
+    const recordAssetWait = (): void => {
+      if (assetWaitRecorded) return;
+      assetWaitRecorded = true;
+      if (pending) pending.assetReadyWaitMs += Math.max(0, hostNow() - assetStartedAtMs);
+    };
     try {
       for (const asset of assets) {
         if (!await this.ensureAsset(worker, asset)) throw new Error(`Worker did not cache asset: ${asset.path}`);
       }
       const references = assets.map((asset) => ({ ...asset, bytesBase64: "" }));
-      const pending = this.jobs.get(job.id);
       if (pending && !pending.settled) {
+        pending.offerSentAtMs = hostNow();
         pending.offeredAt = Date.now();
         pending.phase = "offered";
         pending.ackDeadlineAt = pending.offeredAt + ackBudgetMs(worker.ackRttMs.get() ?? undefined);
       }
       await worker.peer.protocol?.send(createSwarmMessage("job-offer", { job: { ...job, assets: references } }));
     } catch {
+      recordAssetWait();
       if (worker.slotId) this.scheduler.fail(job.id, worker.slotId);
       this.releaseJob(worker, job.id, "worker-failed");
+    } finally {
+      recordAssetWait();
     }
   }
 
@@ -585,10 +637,11 @@ export class SwarmCoordinator {
     return true;
   }
 
-  private learnTransportCost(worker: ConnectedWorker, pending: PendingJob, result: SwarmRenderResult): void {
-    if (result.renderMs === undefined || result.renderMs < 0 || pending.offeredAt <= 0) return;
-    const elapsedMs = Math.max(0, Date.now() - pending.offeredAt);
-    const transportMs = Math.max(0, elapsedMs - result.renderMs);
+  private learnTransportCost(worker: ConnectedWorker, pending: PendingJob): void {
+    // Only the host-side transfer/reassembly interval is scheduler transport evidence. Worker
+    // render duration uses a different clock and must never be subtracted from a host timestamp.
+    if (pending.firstResultChunkAtMs === undefined || pending.lastResultChunkAtMs === undefined) return;
+    const transportMs = Math.max(0, pending.lastResultChunkAtMs - pending.firstResultChunkAtMs) + pending.reassemblyMs;
     worker.transportMsPerFrame.update(transportMs / this.frameCount(pending.job));
   }
 
@@ -666,7 +719,9 @@ export class SwarmCoordinator {
       const pending = this.jobs.get(message.payload.jobId);
       const now = Date.now();
       if (pending && !pending.settled) {
+        const acceptedAtMs = hostNow();
         pending.acceptedAt = now;
+        pending.acceptedAtMs = acceptedAtMs;
         pending.lastProgressAt = now;
         pending.phase = "accepted";
         worker.ackRttMs.update(Math.max(0, now - pending.offeredAt));
@@ -678,6 +733,12 @@ export class SwarmCoordinator {
     }
     if (isSwarmMessageType(message, "job-progress")) {
       const pending = this.jobs.get(message.payload.jobId);
+      if (pending) {
+        pending.renderedFrames = Math.max(
+          pending.renderedFrames,
+          Math.min(this.frameCount(pending.job), Math.max(0, Math.floor(message.payload.completedFrames))),
+        );
+      }
       if (pending && !pending.settled) {
         pending.lastProgressAt = Date.now();
         // A completed render is still not a transfer. Transfer starts only when the first result
@@ -694,6 +755,8 @@ export class SwarmCoordinator {
       if (pending) {
         pending.firstResultChunkAt ??= now;
         pending.lastResultChunkAt = now;
+        pending.firstResultChunkAtMs ??= hostNow();
+        pending.lastResultChunkAtMs = hostNow();
         if (!pending.settled) {
           pending.lastProgressAt = now;
           pending.phase = "transferring";
@@ -705,7 +768,18 @@ export class SwarmCoordinator {
       return;
     }
     if (isSwarmMessageType(message, "job-result")) {
-      const bytesBase64 = message.payload.bytesBase64 || this.resultChunks.take(message.payload.jobId) || "";
+      const pending = this.jobs.get(message.payload.jobId);
+      const inlineBytes = message.payload.bytesBase64;
+      const reassemblyStartedAtMs = hostNow();
+      const assembledBytes = inlineBytes || this.resultChunks.take(message.payload.jobId) || "";
+      const assembledAtMs = hostNow();
+      if (pending) {
+        pending.resultCompletedAtMs = assembledAtMs;
+        pending.reassemblyMs = inlineBytes
+          ? 0
+          : Math.max(0, assembledAtMs - reassemblyStartedAtMs);
+      }
+      const bytesBase64 = assembledBytes;
       await this.handleResult(worker, { ...message.payload, bytesBase64 });
       return;
     }
@@ -783,12 +857,92 @@ export class SwarmCoordinator {
     this.pumpJobs();
   }
 
+  private makeJobTimeline(
+    worker: ConnectedWorker,
+    pending: PendingJob,
+    result: SwarmRenderResult,
+    late: boolean,
+  ): SwarmJobTimeline {
+    const frames = Math.max(1, result.frameEnd - result.frameStart);
+    const offerSentAtMs = pending.offerSentAtMs ?? pending.queuedAtMs;
+    const completedAtMs = pending.resultCompletedAtMs ?? hostNow();
+    const firstChunkAtMs = pending.firstResultChunkAtMs;
+    const lastChunkAtMs = pending.lastResultChunkAtMs;
+    const host: SwarmHostTiming = {
+      ...emptyHostTiming(),
+      queueWaitMs: Math.max(0, (pending.offerPreparationStartedAtMs ?? offerSentAtMs) - pending.queuedAtMs),
+      assetReadyWaitMs: Math.max(0, pending.assetReadyWaitMs),
+      offerToAckMs: pending.acceptedAtMs === undefined ? 0 : Math.max(0, pending.acceptedAtMs - offerSentAtMs),
+      firstChunkLatencyMs: firstChunkAtMs === undefined ? 0 : Math.max(0, firstChunkAtMs - offerSentAtMs),
+      transferMs: firstChunkAtMs === undefined || lastChunkAtMs === undefined
+        ? 0
+        : Math.max(0, lastChunkAtMs - firstChunkAtMs),
+      transferredBytes: result.byteLength,
+      reassemblyMs: Math.max(0, pending.reassemblyMs),
+      verificationMs: Math.max(0, pending.verificationMs),
+    };
+    const timeline: SwarmJobTimeline = {
+      jobId: result.jobId,
+      frameStart: result.frameStart,
+      frameEnd: result.frameEnd,
+      ...(worker.slotId ? { workerSlotId: worker.slotId } : {}),
+      ...(result.workerTiming ? { worker: { ...result.workerTiming } } : {}),
+      host,
+      remoteWallMs: Math.max(0, completedAtMs - offerSentAtMs),
+      // A complete valid result proves that every frame in the job was rendered even if the
+      // throttled progress channel did not get a chance to report its final count.
+      remoteRenderedFrames: frames,
+      remoteReceivedFrames: frames,
+      remoteAdoptedFrames: 0,
+      verifiedRemoteFrames: frames,
+      lateRemoteFrames: late ? frames : 0,
+      complete: true,
+    };
+    result.hostTiming = host;
+    result.timeline = timeline;
+    return timeline;
+  }
+
+  private noteFailedJobTimeline(worker: ConnectedWorker | undefined, pending: PendingJob, reason: SwarmJobFailureReason): void {
+    const now = hostNow();
+    const offerSentAtMs = pending.offerSentAtMs ?? pending.queuedAtMs;
+    const host: SwarmHostTiming = {
+      ...emptyHostTiming(),
+      queueWaitMs: Math.max(0, (pending.offerPreparationStartedAtMs ?? offerSentAtMs) - pending.queuedAtMs),
+      assetReadyWaitMs: Math.max(0, pending.assetReadyWaitMs),
+      offerToAckMs: pending.acceptedAtMs === undefined ? 0 : Math.max(0, pending.acceptedAtMs - offerSentAtMs),
+      firstChunkLatencyMs: pending.firstResultChunkAtMs === undefined ? 0 : Math.max(0, pending.firstResultChunkAtMs - offerSentAtMs),
+      transferMs: pending.firstResultChunkAtMs === undefined || pending.lastResultChunkAtMs === undefined
+        ? 0
+        : Math.max(0, pending.lastResultChunkAtMs - pending.firstResultChunkAtMs),
+      transferredBytes: 0,
+      reassemblyMs: pending.reassemblyMs,
+      verificationMs: Math.max(0, pending.verificationMs),
+    };
+    this.metrics.noteJobTimeline({
+      jobId: pending.job.id,
+      frameStart: pending.job.frameStart,
+      frameEnd: pending.job.frameEnd,
+      ...(worker?.slotId ? { workerSlotId: worker.slotId } : {}),
+      host,
+      remoteWallMs: Math.max(0, now - offerSentAtMs),
+      remoteRenderedFrames: Math.min(this.frameCount(pending.job), pending.renderedFrames),
+      remoteReceivedFrames: 0,
+      remoteAdoptedFrames: 0,
+      verifiedRemoteFrames: 0,
+      lateRemoteFrames: 0,
+      complete: false,
+      failureReason: reason,
+    });
+  }
+
   private async handleResult(worker: ConnectedWorker, result: SwarmRenderResult): Promise<void> {
     // The final metadata message closes the chunk stream. If it arrived with inline bytes or an
     // invalid/stale payload, no partial assembler entry may survive this job's lifecycle.
     this.resultChunks.drop(result.jobId);
     const waiter = this.jobs.get(result.jobId);
     const job = this.scheduler.get(result.jobId);
+    const verificationStartedAtMs = hostNow();
     const valid = job !== undefined && validateSwarmRenderResult(result, {
       jobId: result.jobId,
       renderRevision: job.renderRevision,
@@ -797,12 +951,15 @@ export class SwarmCoordinator {
       profile: job.profile,
       runtimeVersion: job.runtimeVersion,
     });
+    if (waiter) waiter.verificationMs += Math.max(0, hostNow() - verificationStartedAtMs);
     // The frame missed its deadline and was rendered locally instead, but it is still a valid
     // frame for this revision: cache it rather than throwing the worker's effort away.
     if (waiter && waiter.settled && valid) {
-      this.metrics.noteRemoteFrame(Math.max(1, result.frameEnd - result.frameStart));
-      this.metrics.noteLateValidResult(Math.max(1, result.frameEnd - result.frameStart));
-      this.learnTransportCost(worker, waiter, result);
+      const frames = Math.max(1, result.frameEnd - result.frameStart);
+      const timeline = this.makeJobTimeline(worker, waiter, result, true);
+      this.metrics.noteLateValidResult(frames);
+      this.metrics.noteJobTimeline(timeline);
+      this.learnTransportCost(worker, waiter);
       if (this.scoreFromRealWork(worker, result) && waiter.probe) {
         waiter.probe = false;
         this.metrics.noteProbeSuccess();
@@ -822,14 +979,7 @@ export class SwarmCoordinator {
       this.emitChange();
       return;
     }
-    if (!waiter || waiter.settled || !job || !worker.slotId || !validateSwarmRenderResult(result, {
-      jobId: result.jobId,
-      renderRevision: job.renderRevision,
-      compositionId: job.compositionId,
-      frame: job.frameStart,
-      profile: job.profile,
-      runtimeVersion: job.runtimeVersion,
-    })) {
+    if (!waiter || waiter.settled || !job || !worker.slotId || !valid) {
       if (waiter && !waiter.settled && worker.slotId) {
         this.scheduler.fail(result.jobId, worker.slotId);
         this.releaseJob(worker, result.jobId, "invalid-result");
@@ -851,8 +1001,9 @@ export class SwarmCoordinator {
       this.emitChange();
       return;
     }
-    this.metrics.noteRemoteFrame(Math.max(1, result.frameEnd - result.frameStart));
-    this.learnTransportCost(worker, waiter, result);
+    const timeline = this.makeJobTimeline(worker, waiter, result, false);
+    this.metrics.noteJobTimeline(timeline);
+    this.learnTransportCost(worker, waiter);
     if (this.scoreFromRealWork(worker, result) && waiter.probe) {
       waiter.probe = false;
       this.metrics.noteProbeSuccess();
@@ -876,7 +1027,7 @@ export class SwarmCoordinator {
       if (worker.slotId) {
         const jobId = worker.snapshot.currentJobId;
         if (jobId) {
-          this.failJob(worker, jobId);
+          this.failJob(worker, jobId, "disconnected");
           this.noteWorkerFailure(worker, "disconnected");
         }
         this.scheduler.removeWorker(worker.slotId);
@@ -911,12 +1062,13 @@ export class SwarmCoordinator {
     if (worker.snapshot.health === "unusable" && worker.slotId) this.scheduler.removeWorker(worker.slotId);
   }
 
-  private failJob(worker: ConnectedWorker, jobId: SwarmJobId): void {
+  private failJob(worker: ConnectedWorker, jobId: SwarmJobId, reason: SwarmJobFailureReason = "worker-failed"): void {
     const pending = this.jobs.get(jobId);
     if (!pending || pending.settled) return;
     pending.settled = true;
     pending.settledAt = Date.now();
     pending.phase = "completed";
+    this.noteFailedJobTimeline(worker, pending, reason);
     this.scheduler.abandon(jobId);
     this.resultChunks.dropPartial(jobId);
     // The WorkerRuntime has no cancellation guarantee yet. Keep its current job id so the
@@ -946,9 +1098,10 @@ export class SwarmCoordinator {
       });
       if (!failure) continue;
       if (worker) {
-        this.failJob(worker, pending.job.id);
+        this.failJob(worker, pending.job.id, failure);
         this.noteWorkerFailure(worker, failure);
       } else {
+        this.noteFailedJobTimeline(undefined, pending, failure);
         pending.settled = true;
         pending.settledAt = now;
         pending.phase = "completed";
@@ -967,7 +1120,7 @@ export class SwarmCoordinator {
     this.cancelAssetInflight(worker);
     worker.snapshot.state = "offline";
     worker.snapshot.health = "unusable";
-    if (worker.snapshot.currentJobId) this.failJob(worker, worker.snapshot.currentJobId);
+    if (worker.snapshot.currentJobId) this.failJob(worker, worker.snapshot.currentJobId, reason);
     if (worker.slotId) this.scheduler.removeWorker(worker.slotId);
     worker.peer.close();
     for (const [peerId, candidate] of this.workers) if (candidate === worker) this.workers.delete(peerId);

@@ -22,6 +22,11 @@ export interface CompFrameCaptureContext {
   dispose: () => void;
 }
 
+/** Runtime-only phase hooks used by a worker to separate capture, footage warmup, and PNG work. */
+export interface CompFrameCaptureTiming {
+  onTiming?: (phase: "footageWarmupMs" | "renderMs" | "pngEncodeMs", durationMs: number) => void;
+}
+
 /**
  * §28.11 — ラスター化対象のネスト comp を comp 単位で画像化する rasterizer。
  * DomRenderer がネスト comp 描画時に参照する。`isRasterized` が真の comp は Phase-1
@@ -144,15 +149,26 @@ export async function captureCompFramePng(
   frame: number,
   /** Overrides the composition background, so a caller can match an export's alpha setting. */
   background?: string,
+  timing?: CompFrameCaptureTiming,
 ): Promise<Uint8Array> {
+  const renderStartedAt = performance.now();
   ctx.renderer.renderFrame(resolve(comp, frame, { expressions: ctx.evaluator }), frame);
   // レイヤ直付け raster の完了のみ待つ。調整合成は compositeExportFrame が行う。
   await ctx.renderer.flushRasterEffects();
+  const beforeFootageWarmupAt = performance.now();
+  timing?.onTiming?.("renderMs", beforeFootageWarmupAt - renderStartedAt);
+  const footageWarmupStartedAt = beforeFootageWarmupAt;
   // オフスクリーン初回 decode は preview より遅いことがあるため余裕を持って待つ。
   await ctx.renderer.primeMountedVideos(comp.fps, 4000);
   await ctx.renderer.flushVideoFrames(4000);
   await nextTick();
+  timing?.onTiming?.("footageWarmupMs", performance.now() - footageWarmupStartedAt);
   const bg = background ?? compBackground(comp);
+  const compositeStartedAt = performance.now();
   const canvas = await compositeExportFrame(ctx.renderer, ctx.nw, ctx.nh, ctx.nw, ctx.nh, bg);
-  return canvasToPngBytes(canvas);
+  timing?.onTiming?.("renderMs", performance.now() - compositeStartedAt);
+  const pngStartedAt = performance.now();
+  const bytes = await canvasToPngBytes(canvas);
+  timing?.onTiming?.("pngEncodeMs", performance.now() - pngStartedAt);
+  return bytes;
 }

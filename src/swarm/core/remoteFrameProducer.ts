@@ -1,7 +1,12 @@
 import JSZip from "jszip";
 import type { Project, TimelineComposition } from "../../core/schema";
 import { canvasSpread, compareFrames, looksEmptyAgainst, SwarmFrameMismatchError, SWARM_FRAME_TOLERANCE } from "./frameVerification";
-import type { RenderProfile, SwarmRenderJob, SwarmRenderResult } from "./types";
+import type {
+  RenderProfile,
+  SwarmJobTimeline,
+  SwarmRenderJob,
+  SwarmRenderResult,
+} from "./types";
 import { SWARM_RUNTIME_VERSION } from "./types";
 
 /**
@@ -21,6 +26,9 @@ export const SWARM_VERIFY_FIRST_REMOTE_FRAMES = 2;
 /** Consecutive failed blocks after which a worker is left out of the rest of the export. */
 export const SWARM_GIVE_UP_AFTER_FAILURES = 2;
 
+type DecodeTimingField = "base64DecodeMs" | "zipDecodeMs" | "pngDecodeMs";
+type DecodeTimingCallback = (field: DecodeTimingField, durationMs: number) => void;
+
 export interface RemoteFrameProducerOptions {
   project: Project;
   comp: TimelineComposition;
@@ -31,12 +39,14 @@ export interface RemoteFrameProducerOptions {
   submit: (job: SwarmRenderJob, timeoutMs?: number) => Promise<SwarmRenderResult | null>;
   /** Renders the frame on this device; used when the swarm declines or misses the deadline. */
   renderLocally: (frame: number) => Promise<HTMLCanvasElement>;
-  decodePng: (bytesBase64: string, width: number, height: number) => Promise<HTMLCanvasElement>;
+  decodePng: (bytesBase64: string, width: number, height: number, onTiming?: DecodeTimingCallback) => Promise<HTMLCanvasElement>;
   /** Unpacks a range job's zip into its frames, keyed by offset from the block's first frame. */
-  decodeZip: (bytesBase64: string, width: number, height: number) => Promise<Map<number, HTMLCanvasElement>>;
+  decodeZip: (bytesBase64: string, width: number, height: number, onTiming?: DecodeTimingCallback) => Promise<Map<number, HTMLCanvasElement>>;
   /** Exclusive end of the export range, so a block never asks for frames outside it. */
   totalFrameEnd?: number;
   timeoutMs?: number;
+  /** Called after a decoded canvas is ready, before pixel verification/adoption. */
+  onRemoteFrameReady?: (frame: number, canvas: HTMLCanvasElement, result: SwarmRenderResult, readyAtMs: number) => void;
 }
 
 export function buildExportSwarmJob(
@@ -91,24 +101,33 @@ export function createRemoteFrameProducer(
         // than one that is simply slow, and guessing between them has cost us a session already.
         console.info("[swarm] remote frame", frame, {
           roundTripMs: Math.round(roundTripMs),
-          renderMs: Math.round(result.renderMs ?? -1),
-          transportMs: Math.round(roundTripMs - (result.renderMs ?? 0)),
+          workerRenderMs: Math.round(result.workerTiming?.renderMs ?? result.renderMs ?? -1),
+          hostFirstChunkMs: Math.round(result.hostTiming?.firstChunkLatencyMs ?? -1),
+          hostTransferMs: Math.round(result.hostTiming?.transferMs ?? -1),
           bytes: result.byteLength,
         });
         consecutiveFailures = 0;
+        const noteDecode = (field: DecodeTimingField, durationMs: number): void => {
+          const host = result.hostTiming;
+          if (host) host[field] += Math.max(0, durationMs);
+        };
         if (result.format === "png-zip") {
-          const frames = await options.decodeZip(result.bytesBase64, result.width, result.height);
+          const frames = await options.decodeZip(result.bytesBase64, result.width, result.height, noteDecode);
+          const readyAtMs = performance.now();
           // A worker renders the block through `exportComposition`, which names frames from the
           // start of the range it was given, not by absolute frame. Reading those names as
           // absolute made every block miss both its own frame and the prefetch, so the host
           // silently re-rendered everything the worker produced.
           for (const [index, canvas] of frames) {
+            options.onRemoteFrameReady?.(frame + index, canvas, result, readyAtMs);
             if (index !== 0) prefetched.set(frame + index, Promise.resolve(canvas));
           }
           const own = frames.get(0);
           if (own) return own;
         } else {
-          return await options.decodePng(result.bytesBase64, result.width, result.height);
+          const canvas = await options.decodePng(result.bytesBase64, result.width, result.height, noteDecode);
+          options.onRemoteFrameReady?.(frame, canvas, result, performance.now());
+          return canvas;
         }
       }
     } catch {
@@ -135,12 +154,31 @@ export interface RemoteProducerSetup {
   decodeZip?: RemoteFrameProducerOptions["decodeZip"];
   /** Called once per frame whose remote pixels reach the output — not once per result received. */
   onAdopted?: () => void;
+  /** Called when a producer returns, including a local fallback or verified-local replacement. */
+  onFrameSource?: (
+    frame: number,
+    source: "remote" | "local",
+    remoteResult: boolean,
+    verified: boolean,
+    timeline?: SwarmJobTimeline,
+    readyAtMs?: number,
+  ) => void;
+  /** Re-publishes the mutable canonical job record after decode, verification, or adoption. */
+  onJobTimeline?: (timeline: SwarmJobTimeline) => void;
 }
 
-async function decodePngToCanvas(bytesBase64: string, width: number, height: number): Promise<HTMLCanvasElement> {
+async function decodePngToCanvas(
+  bytesBase64: string,
+  width: number,
+  height: number,
+  onTiming?: DecodeTimingCallback,
+): Promise<HTMLCanvasElement> {
+  const base64StartedAt = performance.now();
   const text = atob(bytesBase64);
   const bytes = new Uint8Array(text.length);
   for (let i = 0; i < text.length; i += 1) bytes[i] = text.charCodeAt(i);
+  onTiming?.("base64DecodeMs", performance.now() - base64StartedAt);
+  const pngStartedAt = performance.now();
   const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
   const canvas = document.createElement("canvas");
   canvas.width = width;
@@ -149,25 +187,39 @@ async function decodePngToCanvas(bytesBase64: string, width: number, height: num
   if (!ctx) throw new Error("2d context unavailable for a remote frame");
   ctx.drawImage(bitmap, 0, 0, width, height);
   bitmap.close?.();
+  onTiming?.("pngDecodeMs", performance.now() - pngStartedAt);
   return canvas;
 }
 
-async function decodeZipToFrames(bytesBase64: string, width: number, height: number): Promise<Map<number, HTMLCanvasElement>> {
+async function decodeZipToFrames(
+  bytesBase64: string,
+  width: number,
+  height: number,
+  onTiming?: DecodeTimingCallback,
+): Promise<Map<number, HTMLCanvasElement>> {
+  const base64StartedAt = performance.now();
   const text = atob(bytesBase64);
   const bytes = new Uint8Array(text.length);
   for (let i = 0; i < text.length; i += 1) bytes[i] = text.charCodeAt(i);
+  onTiming?.("base64DecodeMs", performance.now() - base64StartedAt);
+  const zipStartedAt = performance.now();
   const zip = await JSZip.loadAsync(bytes);
+  onTiming?.("zipDecodeMs", performance.now() - zipStartedAt);
   const frames = new Map<number, HTMLCanvasElement>();
   await Promise.all(Object.values(zip.files).map(async (entry) => {
     const match = /frame_(\d+)\.png$/.exec(entry.name);
     if (!match || entry.dir) return;
+    const entryDecodeStartedAt = performance.now();
     const blob = await entry.async("blob");
+    onTiming?.("zipDecodeMs", performance.now() - entryDecodeStartedAt);
+    const pngStartedAt = performance.now();
     const bitmap = await createImageBitmap(blob);
     const canvas = document.createElement("canvas");
     canvas.width = width;
     canvas.height = height;
     canvas.getContext("2d")?.drawImage(bitmap, 0, 0, width, height);
     bitmap.close?.();
+    onTiming?.("pngDecodeMs", performance.now() - pngStartedAt);
     frames.set(Number(match[1]), canvas);
   }));
   return frames;
@@ -190,7 +242,22 @@ export function buildRemoteFrameProducers(setup: RemoteProducerSetup): ((frame: 
     drawnHere.add(canvas);
     return canvas;
   };
+  const remoteMeta = new WeakMap<HTMLCanvasElement, { result: SwarmRenderResult; readyAtMs: number }>();
   const wrap = (produce: (frame: number) => Promise<HTMLCanvasElement>) => {
+    const recordSource = (
+      frame: number,
+      canvas: HTMLCanvasElement,
+      source: "remote" | "local",
+      remoteResult: boolean,
+      verified: boolean,
+    ): void => {
+      const meta = remoteMeta.get(canvas);
+      if (meta?.result.timeline) {
+        const timeline = meta.result.timeline;
+        setup.onJobTimeline?.(timeline);
+      }
+      setup.onFrameSource?.(frame, source, remoteResult, verified, meta?.result.timeline, meta?.readyAtMs);
+    };
     // A spread-over-the-range sample can miss a worker whose every frame is wrong: an export
     // shipped 18 footage-less frames because the sampled ones all happened to be rendered here.
     // Checking the first frames a worker delivers catches a systematically broken one before its
@@ -200,13 +267,22 @@ export function buildRemoteFrameProducers(setup: RemoteProducerSetup): ((frame: 
       const remote = await produce(frame);
       // A failed remote attempt already returned a canvas rasterized by this host. It is not a
       // remote candidate, so do not send it through verification and draw it again.
-      if (drawnHere.has(remote)) return remote;
+      if (drawnHere.has(remote)) {
+        recordSource(frame, remote, "local", false, false);
+        return remote;
+      }
       const mustVerify = verify?.has(frame) || unverifiedFromThisWorker > 0;
       if (unverifiedFromThisWorker > 0) unverifiedFromThisWorker -= 1;
       if (!mustVerify) {
         // Cheap guard on every remote frame: a worker that rendered before its footage decoded
         // returns a near-flat frame, and sampling alone would only catch it by luck.
-        if (looksEmptyAgainst(remote, referenceSpread)) return renderLocally(frame);
+        if (looksEmptyAgainst(remote, referenceSpread)) {
+          recordSource(frame, remote, "local", true, false);
+          const local = await renderLocally(frame);
+          recordSource(frame, local, "local", true, false);
+          return local;
+        }
+        recordSource(frame, remote, "remote", true, true);
         if (!drawnHere.has(remote)) setup.onAdopted?.();
         return remote;
       }
@@ -214,8 +290,15 @@ export function buildRemoteFrameProducers(setup: RemoteProducerSetup): ((frame: 
       // output never depends on the worker's rasterizer.
       const local = await renderLocally(frame);
       referenceSpread = Math.max(referenceSpread, canvasSpread(local));
+      const verificationStartedAt = performance.now();
       const difference = compareFrames(remote, local);
+      const timeline = remoteMeta.get(remote)?.result.timeline;
+      if (timeline) {
+        timeline.host.verificationMs += performance.now() - verificationStartedAt;
+        setup.onJobTimeline?.(timeline);
+      }
       if (difference > SWARM_FRAME_TOLERANCE) throw new SwarmFrameMismatchError(frame, difference);
+      recordSource(frame, remote, "local", true, true);
       return local;
     };
   };
@@ -228,6 +311,9 @@ export function buildRemoteFrameProducers(setup: RemoteProducerSetup): ((frame: 
     renderLocally,
     decodePng: setup.decodePng ?? decodePngToCanvas,
     decodeZip: setup.decodeZip ?? decodeZipToFrames,
+    onRemoteFrameReady: (_frame, canvas, result, readyAtMs) => {
+      remoteMeta.set(canvas, { result, readyAtMs });
+    },
     ...(setup.totalFrameEnd === undefined ? {} : { totalFrameEnd: setup.totalFrameEnd }),
     // Waiting is only free while the host still has frames of its own. Because remote producers
     // pull from the tail, the last block is the one nobody can finish without — so a long deadline

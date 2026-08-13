@@ -130,6 +130,71 @@ export type SwarmJobFailureReason =
   | "hard-deadline"
   | "invalid-result";
 
+/**
+ * Worker-local durations. These values are measured on the worker and travel with the result;
+ * they are never subtracted from a host clock. Keeping the phase names explicit makes the
+ * accounting useful even when a phase overlaps a transport or host phase.
+ */
+export interface SwarmWorkerTiming {
+  sessionPrepareMs: number;
+  footageWarmupMs: number;
+  renderMs: number;
+  pngEncodeMs: number;
+  zipFinalizeMs: number;
+  base64Ms: number;
+  hashMs: number;
+}
+
+/** Host-side round-trip and return-path timings for one remote job. */
+export interface SwarmHostTiming {
+  queueWaitMs: number;
+  assetReadyWaitMs: number;
+  offerToAckMs: number;
+  firstChunkLatencyMs: number;
+  transferMs: number;
+  transferredBytes: number;
+  reassemblyMs: number;
+  base64DecodeMs: number;
+  zipDecodeMs: number;
+  pngDecodeMs: number;
+  verificationMs: number;
+  adoptionDelayMs: number;
+}
+
+/** One canonical, runtime-only accounting record for a remote job. */
+export interface SwarmJobTimeline {
+  jobId: SwarmJobId;
+  frameStart: number;
+  frameEnd: number;
+  workerSlotId?: WorkerSlotId;
+  worker?: SwarmWorkerTiming;
+  host: SwarmHostTiming;
+  /** Host offer-to-result-complete wall time, measured only with the host clock. */
+  remoteWallMs: number;
+  remoteRenderedFrames: number;
+  remoteReceivedFrames: number;
+  remoteAdoptedFrames: number;
+  verifiedRemoteFrames: number;
+  lateRemoteFrames: number;
+  complete: boolean;
+  failureReason?: SwarmJobFailureReason;
+}
+
+/** Runtime-only export-level tail and useful-work accounting. */
+export interface SwarmExportTimeline {
+  exportElapsedMs: number;
+  consumerWaitMs: number;
+  exportTailWaitMs: number;
+  timeHostFinishedUsefulLocalWork: number | null;
+  timeLastRequiredRemoteFrameReady: number | null;
+  localFramesAvoided: number;
+  remoteFramesAdopted: number;
+  remoteRenderedFrames: number;
+  remoteReceivedFrames: number;
+  verifiedRemoteFrames: number;
+  lateRemoteFrames: number;
+}
+
 export interface RenderProfile {
   /**
    * Export alpha setting. Without it a worker falls back to "unset background = transparent",
@@ -168,6 +233,12 @@ export interface SwarmRenderJob {
 export interface SwarmRenderResult {
   /** Worker-side render time. Separates render cost from transport cost in the host's timing. */
   renderMs?: number;
+  /** Worker-local phase accounting. Runtime-only; ignored by result validation. */
+  workerTiming?: SwarmWorkerTiming;
+  /** Host fills this after result validation so the export return path can complete the record. */
+  hostTiming?: SwarmHostTiming;
+  /** Host-only reference used to finish the same record after export-side verification/adoption. */
+  timeline?: SwarmJobTimeline;
   jobId: SwarmJobId;
   renderRevision: string;
   compositionId: string;
@@ -226,4 +297,12 @@ export interface SwarmMetricsSnapshot {
   localFramesAvoided: number;
   remoteReceived: number;
   remoteAdopted: number;
+  /** Explicit names used by LOOP 4 accounting; the legacy aliases above remain for the HUD. */
+  remoteRenderedFrames: number;
+  remoteReceivedFrames: number;
+  remoteAdoptedFrames: number;
+  verifiedRemoteFrames: number;
+  lateRemoteFrames: number;
+  jobTimelines: SwarmJobTimeline[];
+  exportTimelines: SwarmExportTimeline[];
 }

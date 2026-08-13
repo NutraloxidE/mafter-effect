@@ -1,5 +1,10 @@
 import { Ewma } from "./benchmark";
-import type { SwarmJobFailureReason, SwarmMetricsSnapshot } from "./types";
+import type {
+  SwarmExportTimeline,
+  SwarmJobFailureReason,
+  SwarmJobTimeline,
+  SwarmMetricsSnapshot,
+} from "./types";
 
 export class SwarmMetrics {
   private signalingRequests = 0;
@@ -24,6 +29,11 @@ export class SwarmMetrics {
   private workerJobFailures = 0;
   private hostRenderedFrames = 0;
   private localFramesAvoided = 0;
+  private remoteRenderedFrames = 0;
+  private verifiedRemoteFrames = 0;
+  private lateRemoteFrames = 0;
+  private readonly jobTimelines: SwarmJobTimeline[] = [];
+  private readonly exportTimelines: SwarmExportTimeline[] = [];
   readonly throughput = new Ewma();
 
   noteSignalingRequest(): void { this.signalingRequests += 1; }
@@ -41,6 +51,9 @@ export class SwarmMetrics {
    * report "15 of 3 received", which cannot be read against the adopted count at all.
    */
   noteRemoteFrame(frames = 1): void { this.remoteFrames += frames; }
+  noteRemoteRenderedFrames(frames: number): void { this.remoteRenderedFrames += Math.max(0, frames); }
+  noteVerifiedRemoteFrames(frames: number): void { this.verifiedRemoteFrames += Math.max(0, frames); }
+  noteLateRemoteFrames(frames: number): void { this.lateRemoteFrames += Math.max(0, frames); }
   /**
    * A frame a worker drew was written to the output. Counting arrivals instead once made a session
    * report ten frames of distributed work when the host had re-rendered every one of them.
@@ -65,6 +78,30 @@ export class SwarmMetrics {
   }
   noteHostRenderedFrame(): void { this.hostRenderedFrames += 1; }
   setHostRenderStats(frames: number): void { this.hostRenderedFrames = Math.max(0, frames); }
+  /** Adds or replaces a job record so decode/adoption measurements can finish after receipt. */
+  noteJobTimeline(timeline: SwarmJobTimeline): void {
+    const index = this.jobTimelines.findIndex((candidate) => candidate.jobId === timeline.jobId);
+    const previous = index >= 0 ? this.jobTimelines[index] : undefined;
+    // Keep an internal copy: the exporter enriches the same timeline object after decode and
+    // adoption. Without a copy, an upsert would compare an object with itself and lose the
+    // aggregate deltas for late/partial work.
+    this.remoteRenderedFrames += timeline.remoteRenderedFrames - (previous?.remoteRenderedFrames ?? 0);
+    this.remoteFrames += timeline.remoteReceivedFrames - (previous?.remoteReceivedFrames ?? 0);
+    this.verifiedRemoteFrames += timeline.verifiedRemoteFrames - (previous?.verifiedRemoteFrames ?? 0);
+    this.lateRemoteFrames += timeline.lateRemoteFrames - (previous?.lateRemoteFrames ?? 0);
+    const copy: SwarmJobTimeline = {
+      ...timeline,
+      host: { ...timeline.host },
+      ...(timeline.worker ? { worker: { ...timeline.worker } } : {}),
+    };
+    if (index >= 0) this.jobTimelines[index] = copy;
+    else this.jobTimelines.push(copy);
+    if (this.jobTimelines.length > 2_000) this.jobTimelines.splice(0, this.jobTimelines.length - 2_000);
+  }
+  noteExportTimeline(timeline: SwarmExportTimeline): void {
+    this.exportTimelines.push(timeline);
+    if (this.exportTimelines.length > 200) this.exportTimelines.splice(0, this.exportTimelines.length - 200);
+  }
   snapshot(): SwarmMetricsSnapshot {
     return {
       signalingRequests: this.signalingRequests,
@@ -91,6 +128,17 @@ export class SwarmMetrics {
       localFramesAvoided: this.localFramesAvoided,
       remoteReceived: this.remoteFrames,
       remoteAdopted: this.adoptedRemoteFrames,
+      remoteRenderedFrames: this.remoteRenderedFrames,
+      remoteReceivedFrames: this.remoteFrames,
+      remoteAdoptedFrames: this.adoptedRemoteFrames,
+      verifiedRemoteFrames: this.verifiedRemoteFrames,
+      lateRemoteFrames: this.lateRemoteFrames,
+      jobTimelines: this.jobTimelines.map((timeline) => ({
+        ...timeline,
+        host: { ...timeline.host },
+        ...(timeline.worker ? { worker: { ...timeline.worker } } : {}),
+      })),
+      exportTimelines: this.exportTimelines.map((timeline) => ({ ...timeline })),
     };
   }
 }

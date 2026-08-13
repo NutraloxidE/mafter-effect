@@ -88,6 +88,13 @@ export interface OrderedMultiContextOptions<TFrame = HTMLCanvasElement> {
   pullFromTail?: boolean[];
   /** render 進捗通知（描画完了ごと。順不同）。 */
   onRendered?: (frameIndex: number) => void;
+  /** Runtime-only phase accounting; it never changes scheduling or frame ownership. */
+  onProducerTiming?: (event: {
+    producerIndex: number;
+    frameIndex: number;
+    renderMs: number;
+    prepareMs: number;
+  }) => void;
   /** 有界 reorder window（既定 2*N）。next-to-emit からこの距離以上先の frame は描画を待たせる。 */
   maxReorderAhead?: number;
   /**
@@ -210,8 +217,17 @@ export async function runOrderedMultiContext<TFrame = HTMLCanvasElement>(
       if (fatal !== null) return;
       const producedAt = performance.now();
       const canvas = await producers[c]!(startFrame + fi);
-      results.set(fi, await prepare(canvas, fi));
-      contextBusyMs[c] = (contextBusyMs[c] ?? 0) + (performance.now() - producedAt);
+      const renderedAt = performance.now();
+      const frame = await prepare(canvas, fi);
+      const preparedAt = performance.now();
+      results.set(fi, frame);
+      contextBusyMs[c] = (contextBusyMs[c] ?? 0) + (preparedAt - producedAt);
+      opts.onProducerTiming?.({
+        producerIndex: c,
+        frameIndex: fi,
+        renderMs: Math.max(0, renderedAt - producedAt),
+        prepareMs: Math.max(0, preparedAt - renderedAt),
+      });
       contextFrameCounts[c] = (contextFrameCounts[c] ?? 0) + 1;
       onRendered?.(fi);
       ready[fi]!.resolve();

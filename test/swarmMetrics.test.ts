@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SwarmMetrics } from "../src/swarm/core/metrics";
+import type { SwarmJobTimeline } from "../src/swarm/core/types";
 
 describe("swarm metrics", () => {
   // Received and adopted are compared against each other to decide whether remote work was useful,
@@ -32,6 +33,61 @@ describe("swarm metrics", () => {
     expect(snapshot.jobHardTimeouts).toBe(1);
     expect(snapshot.lateValidResults).toBe(1);
     expect(snapshot.lateMeasuredFrames).toBe(8);
+  });
+
+  it("retains one canonical job timeline while return-path measurements finish", () => {
+    const metrics = new SwarmMetrics();
+    const timeline: SwarmJobTimeline = {
+      jobId: "job-1",
+      frameStart: 10,
+      frameEnd: 18,
+      host: {
+        queueWaitMs: 2,
+        assetReadyWaitMs: 3,
+        offerToAckMs: 4,
+        firstChunkLatencyMs: 5,
+        transferMs: 6,
+        transferredBytes: 7,
+        reassemblyMs: 8,
+        base64DecodeMs: 0,
+        zipDecodeMs: 0,
+        pngDecodeMs: 0,
+        verificationMs: 0,
+        adoptionDelayMs: 0,
+      },
+      remoteWallMs: 30,
+      remoteRenderedFrames: 8,
+      remoteReceivedFrames: 8,
+      remoteAdoptedFrames: 0,
+      verifiedRemoteFrames: 8,
+      lateRemoteFrames: 0,
+      complete: true,
+    };
+    metrics.noteJobTimeline(timeline);
+    timeline.host.pngDecodeMs = 9;
+    timeline.remoteAdoptedFrames = 2;
+    metrics.noteJobTimeline(timeline);
+    metrics.noteExportTimeline({
+      exportElapsedMs: 100,
+      consumerWaitMs: 11,
+      exportTailWaitMs: 12,
+      timeHostFinishedUsefulLocalWork: 70,
+      timeLastRequiredRemoteFrameReady: 82,
+      localFramesAvoided: 2,
+      remoteFramesAdopted: 2,
+      remoteRenderedFrames: 8,
+      remoteReceivedFrames: 8,
+      verifiedRemoteFrames: 8,
+      lateRemoteFrames: 0,
+    });
+    const snapshot = metrics.snapshot();
+    expect(snapshot.jobTimelines).toHaveLength(1);
+    expect(snapshot.jobTimelines[0]?.host.pngDecodeMs).toBe(9);
+    expect(snapshot.jobTimelines[0]?.remoteAdoptedFrames).toBe(2);
+    expect(snapshot.remoteRenderedFrames).toBe(8);
+    expect(snapshot.remoteReceivedFrames).toBe(8);
+    expect(snapshot.verifiedRemoteFrames).toBe(8);
+    expect(snapshot.exportTimelines[0]?.exportTailWaitMs).toBe(12);
   });
 });
 

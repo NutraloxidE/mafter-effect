@@ -3625,6 +3625,44 @@ success is counted only for a job explicitly marked as the worker's probe and
 only after that result supplies a valid render-time measurement; ordinary
 measured jobs do not inflate the probe counter.
 
+#### Render Swarm measurement contract (LOOP 4, runtime-only)
+
+LOOP 4 prices time before changing performance behavior. Each remote job carries
+one canonical runtime-only timeline. Worker durations are measured by the worker
+and returned as result metadata: `sessionPrepareMs`, `footageWarmupMs`,
+`renderMs`, `pngEncodeMs`, `zipFinalizeMs`, `base64Ms`, and `hashMs`. Host
+durations are measured only with the host clock: `queueWaitMs`,
+`assetReadyWaitMs`, `offerToAckMs`, `firstChunkLatencyMs`, `transferMs`,
+`reassemblyMs`, `base64DecodeMs`, `zipDecodeMs`, `pngDecodeMs`,
+`verificationMs`, and `adoptionDelayMs`. `transferredBytes` is recorded beside
+the transport phases. No host timestamp is subtracted from a worker timestamp.
+
+The timeline keeps remote work separate from useful work:
+`remoteRenderedFrames`, `remoteReceivedFrames`, `remoteAdoptedFrames`,
+`localFramesAvoided`, `verifiedRemoteFrames`, and `lateRemoteFrames` are not
+interchangeable counters. The value used to judge benefit is
+`localFramesAvoided`, meaning host raster work that was actually avoided.
+
+An export records `consumerWaitMs`,
+`timeHostFinishedUsefulLocalWork`, `timeLastRequiredRemoteFrameReady`, and
+`exportTailWaitMs`. The latter is measured separately from average job latency:
+
+```
+exportTailWaitMs = timeLastRequiredRemoteFrameReady
+                 - timeHostFinishedUsefulLocalWork
+```
+
+The measurement harness keeps pure graphics, normal footage/nested composition,
+and heavy media workloads separate, and does not mix cold and warm runs. It
+prints a phase cost table in milliseconds and as a percentage of measured
+remote wall time before any optimization is considered. A transport change is
+allowed only when encode + ZIP + base64 + transfer + host decode is at least
+30% of the remote critical path; a render change is allowed only when worker
+render or footage warmup dominates; a scheduler change is allowed only when
+`exportTailWaitMs` or `consumerWaitMs` dominates. LOOP 4 exits only when one
+maximum wall-clock bottleneck is named with its measured percentage and the
+theoretical seconds available from removing it.
+
 ### Render Swarm v2 (planned): assets, expressions, export distribution
 
 v2 widens what may be distributed. It still changes no serialized schema and no
