@@ -62,6 +62,16 @@ export class ResultChunkAssembler {
   drop(jobId: string): void {
     this.pending.delete(jobId);
   }
+
+  /** Drops only incomplete results; a complete late result may still be useful for measurement. */
+  dropPartial(jobId: string): void {
+    const entry = this.pending.get(jobId);
+    if (entry && entry.received < entry.parts.length) this.pending.delete(jobId);
+  }
+
+  clear(): void {
+    this.pending.clear();
+  }
 }
 
 /**

@@ -34,6 +34,7 @@ export class BoundedWorkerAssetCache {
     return bytes;
   }
 
+  hashes(): string[] { return [...this.entries.keys()]; }
   sizeBytes(): number { return this.bytes; }
   clear(): void { this.entries.clear(); this.bytes = 0; }
 }

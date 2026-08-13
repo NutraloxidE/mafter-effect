@@ -14,6 +14,23 @@ export interface WorkerRuntimeOptions {
   executor?: WorkerRenderExecutor;
 }
 
+type SwarmFaultMode = "no-ack" | "accepted-hang" | "transfer-stall" | "slow-late";
+
+interface SwarmFaultInjection {
+  mode: SwarmFaultMode;
+  delayMs?: number;
+}
+
+function devFaultInjection(): SwarmFaultInjection | null {
+  if (!import.meta.env.DEV) return null;
+  const value = (globalThis as { __mafterSwarmFault?: unknown }).__mafterSwarmFault;
+  if (!value || typeof value !== "object") return null;
+  const mode = (value as { mode?: unknown }).mode;
+  if (mode !== "no-ack" && mode !== "accepted-hang" && mode !== "transfer-stall" && mode !== "slow-late") return null;
+  const delayMs = (value as { delayMs?: unknown }).delayMs;
+  return { mode, ...(typeof delayMs === "number" && Number.isFinite(delayMs) ? { delayMs } : {}) };
+}
+
 /** How long a worker waits for approval before asking again with a fresh peer id. */
 const WORKER_APPROVAL_TIMEOUT_MS = 45_000;
 
@@ -32,6 +49,9 @@ export class WorkerRuntime {
   private readonly assembler = new AssetChunkAssembler();
   /** Hash verification/cache writes are async; duplicate callers share the same in-flight write. */
   private readonly assetInflight = new Map<string, Promise<boolean>>();
+  private assetManifestGeneration: string | null = null;
+  private assetManifestHashes = new Set<string>();
+  private assetManifestPending = false;
   private unbindVisibility: (() => void) | null = null;
   private lastJoinCode = "";
   private stopped = false;
@@ -227,6 +247,11 @@ export class WorkerRuntime {
     const protocol = this.peer?.protocol;
     if (!protocol) return;
     const chunks = splitResultBytes(result.jobId, result.bytesBase64);
+    if (devFaultInjection()?.mode === "transfer-stall") {
+      const first = chunks[0];
+      if (first) await protocol.send(createSwarmMessage("job-result-chunk", first));
+      return;
+    }
     for (const chunk of chunks) await protocol.send(createSwarmMessage("job-result-chunk", chunk));
     await protocol.send(createSwarmMessage("job-result", { ...result, bytesBase64: "" }));
   }
@@ -262,8 +287,24 @@ export class WorkerRuntime {
       const signatureBase64 = await signChallenge(this.identity, message.payload.nonce);
       await this.peer.protocol.send(createSwarmMessage("challenge-response", { nonce: message.payload.nonce, signatureBase64 }));
       // The host still has to synchronize the files this worker will render. READY is sent only
-      // after the host receives asset-ready for every required hash.
+      // after the host receives a manifest-level READY for the exact cache state.
+      this.assetManifestGeneration = null;
+      this.assetManifestHashes.clear();
+      this.assetManifestPending = false;
       this.setState("syncing");
+      return;
+    }
+    if (isSwarmMessageType(message, "asset-manifest")) {
+      if (!this.peer?.protocol) return;
+      this.assetManifestGeneration = message.payload.generation;
+      this.assetManifestHashes = new Set(message.payload.assets.map((asset) => asset.contentHash));
+      this.assetManifestPending = true;
+      const cachedContentHashes = this.cachedAssetHashes();
+      await this.peer.protocol.send(createSwarmMessage("asset-manifest-state", {
+        generation: message.payload.generation,
+        cachedContentHashes,
+      }));
+      if (this.currentJobId === null) this.setState("syncing");
       return;
     }
     if (isSwarmMessageType(message, "asset-chunk")) {
@@ -280,7 +321,23 @@ export class WorkerRuntime {
       return;
     }
     if (isSwarmMessageType(message, "asset-sync-complete")) {
-      if (this.currentJobId === null) this.setState("ready");
+      if (message.payload.generation !== this.assetManifestGeneration || !this.peer?.protocol) return;
+      const cachedContentHashes = this.cachedAssetHashes();
+      const cached = new Set(cachedContentHashes);
+      const missing = [...this.assetManifestHashes].filter((hash) => !cached.has(hash));
+      const ok = missing.length === 0;
+      await this.peer.protocol.send(createSwarmMessage("asset-manifest-ready", {
+        generation: message.payload.generation,
+        ok,
+        cachedContentHashes,
+        ...(ok ? {} : { message: `Worker cache is missing ${missing.length} manifest asset(s)` }),
+      }));
+      if (ok) {
+        this.assetManifestPending = false;
+        if (this.currentJobId === null) this.setState("ready");
+      } else if (this.currentJobId === null) {
+        this.setState("syncing");
+      }
       return;
     }
     if (isSwarmMessageType(message, "benchmark-request")) {
@@ -291,6 +348,8 @@ export class WorkerRuntime {
     }
     if (isSwarmMessageType(message, "job-offer")) {
       if (!this.peer?.protocol) return;
+      const fault = devFaultInjection();
+      if (fault?.mode === "no-ack") return;
       // Two renders sharing one capture context corrupt each other and both get slower, so a
       // re-offer that arrives mid-render is refused rather than started.
       if (this.currentJobId !== null) {
@@ -303,6 +362,7 @@ export class WorkerRuntime {
       this.currentJobId = message.payload.job.id;
       this.setState("rendering");
       await this.peer.protocol.send(createSwarmMessage("job-accepted", { jobId: this.currentJobId }));
+      if (fault?.mode === "accepted-hang") return;
       try {
         let lastProgressAt = 0;
         let lastCompleted = 0;
@@ -326,6 +386,9 @@ export class WorkerRuntime {
         const result = await this.executor.render(message.payload.job, reportProgress);
         reportProgress(message.payload.job.frameEnd - message.payload.job.frameStart, message.payload.job.frameEnd - message.payload.job.frameStart);
         await progressChain;
+        if (fault?.mode === "slow-late") {
+          await new Promise<void>((resolve) => setTimeout(resolve, Math.max(1, fault.delayMs ?? 5_000)));
+        }
         await this.sendResult(result);
       } catch (error) {
         await this.peer.protocol.send(createSwarmMessage("job-failed", {
@@ -335,7 +398,7 @@ export class WorkerRuntime {
         }));
       } finally {
         this.currentJobId = null;
-        this.setState("ready");
+        this.setState(this.assetManifestPending ? "syncing" : "ready");
       }
       return;
     }
@@ -359,5 +422,11 @@ export class WorkerRuntime {
     });
     this.assetInflight.set(transfer.contentHash, promise);
     return promise;
+  }
+
+  private cachedAssetHashes(): string[] {
+    return typeof this.executor.cachedAssetHashes === "function"
+      ? this.executor.cachedAssetHashes()
+      : [];
   }
 }

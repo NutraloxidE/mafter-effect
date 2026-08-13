@@ -41,6 +41,7 @@ export function validateSwarmRenderResult(
     && result.height === expected.profile.height
     && (result.format === "png" || result.format === "png-zip")
     && result.runtimeVersion === expected.runtimeVersion
+    && result.bytesBase64.length > 0
     && result.byteLength > 0
     && result.byteLength <= 256 * 1024 * 1024;
 }

@@ -3604,6 +3604,14 @@ contract.
 `READY` means authenticated, renderable, and asset-synchronized. Asset
 transfers are content-addressed in-flight promises and become complete only
 after the worker verifies and caches the bytes, then acknowledges the sync.
+The sync closes with a generation-tagged manifest handshake: the worker reports
+its current cache hashes, receives only the missing files, and emits
+manifest-level `READY` only when every required hash is present in its bounded
+LRU. The host replaces `cachedAssetHashes` with that acknowledged cache set;
+an eviction during transfer therefore cannot leave the host believing a worker
+is ready for an asset it no longer has. A host asset sync is a dirty/generation
+queue: a worker joining while a sync is active schedules a follow-up generation
+instead of being lost behind the in-flight promise.
 A peer that is merely connected, authenticating, or syncing is ineligible for
 a lease. `localFramesAvoided`
 means host raster work actually avoided, not results received or frames
@@ -3611,6 +3619,11 @@ verified by the host. Failure metrics retain their class (`no-ack`,
 `render-stall`, `transfer-stall`, `worker-failed`, `disconnected`,
 `hard-deadline`, or `invalid-result`) so a circuit breaker and the measurement
 model do not collapse unrelated failures into one boolean.
+Partial result chunks are discarded when a job is reclaimed or expires, while
+a complete late result remains available for real-work measurement. Probe
+success is counted only for a job explicitly marked as the worker's probe and
+only after that result supplies a valid render-time measurement; ordinary
+measured jobs do not inflate the probe counter.
 
 ### Render Swarm v2 (planned): assets, expressions, export distribution
 

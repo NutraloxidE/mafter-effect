@@ -3720,3 +3720,31 @@ WP `LOOP 2.5-3_ Kill the Bootstrap Lie + Liveness-Aware Deadline` を実施。
 1. LOOP 3の dead / accepted-hang / transfer-stall / slow-late の専用 fault-injection matrix を追加する。
 2. valid healthy worker の採用率と export tail の待ち時間を LOOP 4 で分解する。
 3. transport最適化（binary stream / ZIP / reorder window）は引き続き保留。
+
+### 2026-08-13 (Codex) - LOOP 3 follow-up: dirty sync queue / manifest READY / fault matrix
+
+#### 実装
+
+- `SwarmUiStore` の `assetSyncInFlight` を dirty + generation queue に変更。同期中に 2 台目の Worker が READY 候補へ入っても、進行中 Promise の後ろに取り残されず、最新 generation の再同期を 1 回だけ走らせる。
+- Host→Worker の generation-tagged `asset-manifest` / `asset-manifest-state` / `asset-manifest-ready` を追加。Worker は 128MB LRU の実 hash 一覧を返し、Host は state/READY のたびに `cachedAssetHashes` を ACK 済み集合へ置換。LRU eviction 後に required hash が 1 個でも欠ける場合は READY にしない。
+- partial result cleanup を追加。reclaim 時は incomplete chunk のみ破棄し、complete late result は real-work measurement 用に保持。final result / explicit failure / retention expiry / coordinator stop では残骸を破棄。
+- probe metric を `currentJobId` 依存から `PendingJob.probe` + valid renderMs 依存へ修正。通常の measured job や late result が probe 成功数を水増ししない。
+- 開発時限定 fault injection（`SWARM_FAULT=no-ack|accepted-hang|transfer-stall|slow-late`）と `swarm-fault-matrix.mjs` を追加。production build では fault hook は無効。
+
+#### 検証
+
+- `npm run typecheck`: PASS。
+- Swarm 対象テスト: **63 tests PASS**（protocol manifest、Worker READY、128MB LRU eviction、partial result cleanup、liveness/metrics/render core）。
+- `npm run build`: PASS（`build:player` / player freshness を含む）。
+- 実 Chrome fault matrix（fault cases）: **4/4 PASS**。healthy は既に成立済みの control であり、実機性能に依存するため `SWARM_FAULT_MATRIX_CASE=healthy` で明示実行する。
+  - dead/no-ACK: `noAck=1`, host `4/4`, adopted `0`。
+  - accepted-hang: `hardDeadline=1`, host `4/4`, adopted `0`。
+  - transfer-stall: `transferStalls=1`, host `4/4`, adopted `0`。
+  - slow-late: probe `1/1`、次 run で `lateValid=1`, `lateMeasuredFrames=2`。
+- healthy control の再実行では、現環境の worker が host より遅く、24-frame probe が hard deadline に到達。空の late payload を成功扱いしない partial cleanup 後の結果として `adopted=0` になったため、これは性能を偽らず **不成立** と記録する。
+- 全体 `npm test -- --run --exclude '.claude/**'` は 156 files / 1484 tests が PASS。今回と無関係な既存 `test/projectBins.test.ts` 1件が fail し、Node 環境の `indexedDB` / `alert` unhandled 4件も残る。
+
+#### Next steps
+
+1. LOOP 4 で healthy worker の採用率と export tail を分析する。
+2. binary stream / ZIP / reorder window などの transport 性能変更は引き続き保留する。

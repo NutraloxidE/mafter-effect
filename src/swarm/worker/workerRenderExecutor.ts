@@ -42,6 +42,10 @@ export class WorkerRenderExecutor {
     return this.assetCache.put(transfer);
   }
 
+  cachedAssetHashes(): string[] {
+    return this.assetCache.hashes();
+  }
+
   /**
    * Renders a frame range through `exportComposition` — the host's own export path — instead of a
    * worker-specific capture. Every divergence found so far (background, layout scale, a missing

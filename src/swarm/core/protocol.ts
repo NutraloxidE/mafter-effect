@@ -7,6 +7,9 @@ export type SwarmMessageType =
   | "challenge-response"
   | "benchmark-request"
   | "benchmark-result"
+  | "asset-manifest"
+  | "asset-manifest-state"
+  | "asset-manifest-ready"
   | "asset-chunk"
   | "asset-ready"
   | "asset-sync-complete"
@@ -75,6 +78,23 @@ export interface SwarmAssetReadyPayload {
   message?: string;
 }
 
+export interface SwarmAssetManifestPayload {
+  generation: string;
+  assets: Array<{ contentHash: string; byteLength: number }>;
+}
+
+export interface SwarmAssetManifestStatePayload {
+  generation: string;
+  cachedContentHashes: string[];
+}
+
+export interface SwarmAssetManifestReadyPayload {
+  generation: string;
+  ok: boolean;
+  cachedContentHashes: string[];
+  message?: string;
+}
+
 /** One slice of a rendered frame; frames exceed the data channel's single-message limit. */
 export interface SwarmResultChunkPayload {
   jobId: string;
@@ -90,9 +110,12 @@ export interface SwarmMessagePayloads {
   "challenge-response": SwarmChallengeResponsePayload;
   "benchmark-request": { job?: SwarmRenderJob };
   "benchmark-result": SwarmBenchmarkResultPayload;
+  "asset-manifest": SwarmAssetManifestPayload;
+  "asset-manifest-state": SwarmAssetManifestStatePayload;
+  "asset-manifest-ready": SwarmAssetManifestReadyPayload;
   "asset-chunk": SwarmAssetChunkPayload;
   "asset-ready": SwarmAssetReadyPayload;
-  "asset-sync-complete": Record<string, never>;
+  "asset-sync-complete": { generation: string };
   "job-offer": { job: SwarmRenderJob };
   "job-accepted": { jobId: string };
   "job-progress": SwarmJobProgressPayload;
@@ -138,7 +161,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function isMessageType(value: unknown): value is SwarmMessageType {
   return typeof value === "string" && [
     "hello", "capabilities", "challenge", "challenge-response", "benchmark-request",
-    "benchmark-result", "asset-chunk", "job-offer", "job-accepted", "job-progress", "job-result",
+    "benchmark-result", "asset-manifest", "asset-manifest-state", "asset-manifest-ready",
+    "asset-chunk", "job-offer", "job-accepted", "job-progress", "job-result",
     "asset-ready", "asset-sync-complete", "job-result-chunk", "job-cancel", "job-failed", "heartbeat", "ping", "pong", "worker-availability", "worker-draining",
     "worker-goodbye",
   ].includes(value);
@@ -172,6 +196,16 @@ function isPayloadShape(type: SwarmMessageType, payload: Record<string, unknown>
     case "benchmark-result":
       return hasFiniteNumber(payload, "score") && hasFiniteNumber(payload, "framesPerSecond") &&
         hasFiniteNumber(payload, "renderMs");
+    case "asset-manifest":
+      return hasString(payload, "generation") && Array.isArray(payload.assets) &&
+        payload.assets.every((asset) => isRecord(asset) && hasString(asset, "contentHash") &&
+          hasFiniteNumber(asset, "byteLength") && (asset.byteLength as number) >= 0);
+    case "asset-manifest-state":
+      return hasString(payload, "generation") && isStringArray(payload.cachedContentHashes);
+    case "asset-manifest-ready":
+      return hasString(payload, "generation") && typeof payload.ok === "boolean" &&
+        isStringArray(payload.cachedContentHashes) &&
+        (payload.message === undefined || typeof payload.message === "string");
     case "asset-chunk":
       return hasString(payload, "path") && hasString(payload, "contentHash") &&
         hasFiniteNumber(payload, "index") && hasFiniteNumber(payload, "count") &&
@@ -180,7 +214,7 @@ function isPayloadShape(type: SwarmMessageType, payload: Record<string, unknown>
       return hasString(payload, "contentHash") && typeof payload.ok === "boolean" &&
         (payload.message === undefined || typeof payload.message === "string");
     case "asset-sync-complete":
-      return true;
+      return hasString(payload, "generation");
     case "job-offer":
       return isRecord(payload.job) && hasString(payload.job, "id");
     case "worker-availability":
@@ -215,6 +249,10 @@ function isPayloadShape(type: SwarmMessageType, payload: Record<string, unknown>
     case "worker-goodbye":
       return true;
   }
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string" && item !== "");
 }
 
 export function parseSwarmMessage(value: unknown): SwarmMessageEnvelope | null {

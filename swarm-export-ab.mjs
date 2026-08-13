@@ -21,6 +21,8 @@ const SEQUENCE = (process.env.SWARM_SEQUENCE ?? "ABBA").toUpperCase().split("").
 const MODE = (process.env.SWARM_MODE ?? "WARM").toUpperCase() === "COLD" ? "COLD" : "WARM";
 const WARMUP_TOLERANCE = Number(process.env.SWARM_WARMUP_TOLERANCE ?? 0.05);
 const WARMUP_MAX = Number(process.env.SWARM_WARMUP_MAX ?? 5);
+const FAULT = process.env.SWARM_FAULT ?? "";
+const FAULT_DELAY_MS = Number(process.env.SWARM_FAULT_DELAY_MS ?? 5000);
 
 const FRAMES_RE = /Frames (?:used )?from workers: [^\n]*/;
 const PHASE_RE = /(Frame \d+\/\d+|Rendering frame \d+\/\d+|Packaging[^\n]*|Worker output rejected[^\n]*|Sending footage[^\n]*)/;
@@ -146,6 +148,14 @@ async function runExport(page, mode, label) {
     localFallbackJobs: delta("localFallbackJobs"),
     ineligibleJobs: delta("ineligibleJobs"),
     staleResultsDiscarded: delta("staleResultsDiscarded"),
+    probeJobs: delta("probeJobs"),
+    probeSuccesses: delta("probeSuccesses"),
+    jobAckTimeouts: delta("jobAckTimeouts"),
+    jobRenderStalls: delta("jobRenderStalls"),
+    jobTransferStalls: delta("jobTransferStalls"),
+    jobHardTimeouts: delta("jobHardTimeouts"),
+    lateValidResults: delta("lateValidResults"),
+    lateMeasuredFrames: delta("lateMeasuredFrames"),
     panel: FRAMES_RE.exec(await text(page))?.[0] ?? "-",
   };
 }
@@ -223,6 +233,14 @@ Work
   local fallback:    ${run.localFallbackJobs}
   missing deps:      ${run.ineligibleJobs}
 
+Liveness
+  probes:             ${run.probeSuccesses} / ${run.probeJobs}
+  no-ack:             ${run.jobAckTimeouts}
+  render stalls:      ${run.jobRenderStalls}
+  transfer stalls:    ${run.jobTransferStalls}
+  hard deadlines:     ${run.jobHardTimeouts}
+  late valid:         ${run.lateValidResults} (${run.lateMeasuredFrames} frames)
+
 Capacity
   host ms/frame:     ${run.hostMsPerFrame ?? "-"}
   worker ms/frame:   ${run.workers.map((w) => w.renderMsPerFrame === null ? "-" : Math.round(w.renderMsPerFrame)).join(", ")}
@@ -288,6 +306,7 @@ async function loadProject() {
 await loadProject();
 const EXPECTED_BUILD = await buildTag(host);
 console.log("build:", EXPECTED_BUILD);
+if (FAULT) console.log("fault:", FAULT, `delay=${FAULT_DELAY_MS}ms`);
 
 // Opening the panel and minting a session can take a moment; retry rather than crash on undefined.
 async function joinUrlFromPanel() {
@@ -310,6 +329,11 @@ const joinUrl = await joinUrlFromPanel();
 console.log("join:", joinUrl);
 if (!process.env.SWARM_EXTERNAL_WORKER) {
   const worker = await (await browser.newContext({ viewport: { width: 640, height: 560 }, ignoreHTTPSErrors: true })).newPage();
+  if (FAULT) {
+    await worker.addInitScript(({ mode, delayMs }) => {
+      globalThis.__mafterSwarmFault = { mode, delayMs };
+    }, { mode: FAULT, delayMs: FAULT_DELAY_MS });
+  }
   worker.on("console", (m) => console.log("worker console:", m.type(), m.text().slice(0, 300)));
   await worker.goto(joinUrl, { waitUntil: "domcontentloaded" });
   await worker.waitForTimeout(6000);

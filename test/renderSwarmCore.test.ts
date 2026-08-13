@@ -47,6 +47,12 @@ describe("Render Swarm core", () => {
     expect(parseSwarmMessage(JSON.stringify({ ...message, protocolVersion: 2 }))).toBeNull();
     expect(parseSwarmMessage(JSON.stringify({ ...message, payload: null }))).toBeNull();
     expect(parseSwarmMessage(JSON.stringify({ ...createSwarmMessage("job-offer", { job: job("job", 0) }), payload: {} }))).toBeNull();
+    const manifest = createSwarmMessage("asset-manifest", {
+      generation: "generation-1",
+      assets: [{ contentHash: "hash-1", byteLength: 4 }],
+    });
+    expect(parseSwarmMessage(serializeSwarmMessage(manifest))?.type).toBe("asset-manifest");
+    expect(parseSwarmMessage(JSON.stringify({ ...createSwarmMessage("asset-sync-complete", { generation: "g" }), payload: {} }))).toBeNull();
   });
 
   it("creates a stable cryptographic identity and verifies only the matching challenge", async () => {
@@ -82,6 +88,10 @@ describe("Render Swarm core", () => {
     expect(validateSwarmRenderResult({
       jobId: "job-1", renderRevision: "old", compositionId: "comp-1", frameStart: 4, frameEnd: 5,
       width: 320, height: 180, format: "png", bytesBase64: "AQ==", byteLength: 1, runtimeVersion: "runtime-1",
+    }, { jobId: "job-1", renderRevision: "rev-1", compositionId: "comp-1", frame: 4, profile: job("x", 4).profile, runtimeVersion: "runtime-1" })).toBe(false);
+    expect(validateSwarmRenderResult({
+      jobId: "job-1", renderRevision: "rev-1", compositionId: "comp-1", frameStart: 4, frameEnd: 5,
+      width: 320, height: 180, format: "png", bytesBase64: "", byteLength: 1, runtimeVersion: "runtime-1",
     }, { jobId: "job-1", renderRevision: "rev-1", compositionId: "comp-1", frame: 4, profile: job("x", 4).profile, runtimeVersion: "runtime-1" })).toBe(false);
   });
 
@@ -352,6 +362,13 @@ describe("Render Swarm core", () => {
     for (const chunk of [chunks[2]!, chunks[0]!, chunks[1]!]) assembler.accept(chunk);
     expect(assembler.take("job-1")).toBe("ABCDEFGHIJ");
     expect(assembler.take("job-1")).toBeNull();
+
+    assembler.accept(chunks[0]!);
+    assembler.dropPartial("job-1");
+    expect(assembler.take("job-1")).toBeNull();
+    for (const chunk of chunks) assembler.accept(chunk);
+    assembler.dropPartial("job-1");
+    expect(assembler.take("job-1")).toBe("ABCDEFGHIJ");
 
     // A frame this size cannot ride in one message, so the result message carries no pixels and
     // must still parse — requiring a non-empty string here silently dropped every result.

@@ -35,6 +35,8 @@ class SwarmUiStore {
   private lastPreloadedPaths = "";
   private preloadTimer: ReturnType<typeof setTimeout> | null = null;
   private assetSyncInFlight: Promise<void> | null = null;
+  private assetSyncGeneration = 0;
+  private assetSyncDirty = false;
   private unsubscribeProject: (() => void) | null = null;
   private backend = createSignalingBackend({
     useInMemory: import.meta.env.VITE_SWARM_USE_IN_MEMORY === "1",
@@ -102,6 +104,8 @@ class SwarmUiStore {
     if (this.preloadTimer !== null) clearTimeout(this.preloadTimer);
     this.preloadTimer = null;
     this.assetSyncInFlight = null;
+    this.assetSyncGeneration += 1;
+    this.assetSyncDirty = false;
     this.connectedSlots = "";
     this.lastPreloadedPaths = "";
     this.update({ status: "idle", session: null, joinUrl: null, pendingWorkers: [], workers: [], availableCompute: 1, error: null });
@@ -126,30 +130,46 @@ class SwarmUiStore {
    * outlast the frame's own deadline. `preloadAssets` skips content hashes a worker already has, so
    * calling this repeatedly only ever sends what changed.
    */
-  private syncWorkerAssets(): Promise<void> {
-    if (this.assetSyncInFlight) return this.assetSyncInFlight;
+  private requestAssetSync(): void {
+    this.assetSyncGeneration += 1;
+    this.assetSyncDirty = true;
+    if (!this.assetSyncInFlight) void this.runAssetSync();
+  }
+
+  private runAssetSync(): Promise<void> {
+    const runGeneration = this.assetSyncGeneration;
+    this.assetSyncDirty = false;
     const sync = (async (): Promise<void> => {
-    const coordinator = this.coordinator;
-    if (!coordinator) return;
-    const state = useEditorStore.getState();
-    const project = state.project;
-    const comp = project?.compositions.find((candidate) => candidate.id === state.currentCompId);
-    if (!project || comp?.kind !== "timeline") return;
-    const paths = collectJobFilePaths(project, comp);
-    const job = { project, compositionId: comp.id } as unknown as Parameters<typeof attachJobFilesCached>[0];
-    const withFiles = await attachJobFilesCached(job, comp, state.getFs(), String(state.projectRevision ?? 0));
-    // undefined means attaching a required file failed; do not turn a syncing worker into READY
-    // with an unverified/incomplete project. An empty array is the successful no-asset case.
-    if (!withFiles.assets) return;
-    if (await coordinator.preloadAssets(withFiles.assets)) {
-      this.lastPreloadedPaths = paths.join("|");
-    }
+      const coordinator = this.coordinator;
+      if (!coordinator) return;
+      const state = useEditorStore.getState();
+      const project = state.project;
+      const comp = project?.compositions.find((candidate) => candidate.id === state.currentCompId);
+      if (!project || comp?.kind !== "timeline") return;
+      const paths = collectJobFilePaths(project, comp);
+      const job = { project, compositionId: comp.id } as unknown as Parameters<typeof attachJobFilesCached>[0];
+      const withFiles = await attachJobFilesCached(job, comp, state.getFs(), String(state.projectRevision ?? 0));
+      // undefined means attaching a required file failed; do not turn a syncing worker into READY
+      // with an unverified/incomplete project. An empty array is the successful no-asset case.
+      if (!withFiles.assets) return;
+      if (await coordinator.preloadAssets(withFiles.assets)) {
+        this.lastPreloadedPaths = paths.join("|");
+      }
     })();
     this.assetSyncInFlight = sync;
-    void sync.finally(() => {
-      if (this.assetSyncInFlight === sync) this.assetSyncInFlight = null;
+    void sync.then(() => {
+      this.finishAssetSync(sync, runGeneration);
+    }, () => {
+      this.finishAssetSync(sync, runGeneration);
     });
     return sync;
+  }
+
+  private finishAssetSync(sync: Promise<void>, runGeneration: number): void {
+    if (this.assetSyncInFlight === sync) this.assetSyncInFlight = null;
+    if ((this.assetSyncDirty || this.assetSyncGeneration !== runGeneration) && this.coordinator) {
+      void this.runAssetSync();
+    }
   }
 
   /**
@@ -164,7 +184,7 @@ class SwarmUiStore {
       const comp = state.project?.compositions.find((candidate) => candidate.id === state.currentCompId);
       if (!state.project || comp?.kind !== "timeline") return;
       if (collectJobFilePaths(state.project, comp).join("|") === this.lastPreloadedPaths) return;
-      void this.syncWorkerAssets();
+      this.requestAssetSync();
     }, 1_500);
   }
 
@@ -189,7 +209,7 @@ class SwarmUiStore {
       .join("|");
     if (slots !== this.connectedSlots) {
       this.connectedSlots = slots;
-      if (slots) void this.syncWorkerAssets();
+      if (slots) this.requestAssetSync();
     }
     this.update({
       status: "active",

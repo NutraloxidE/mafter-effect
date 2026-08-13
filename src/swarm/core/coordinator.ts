@@ -14,6 +14,7 @@ import type { SwarmSignalingBackend } from "../signaling/SignalingBackend";
 import type {
   SwarmMessageEnvelope,
   SwarmHelloPayload,
+  SwarmAssetManifestReadyPayload,
 } from "./protocol";
 import type {
   SwarmPeerDescriptor,
@@ -38,6 +39,18 @@ export const SWARM_BOOTSTRAP_SAFETY_FACTOR = 1.5;
 // not a render/job deadline; keep it bounded without making a healthy remote peer retry mid-ICE.
 export const SWARM_HANDSHAKE_TIMEOUT_MS = 45_000;
 export const SWARM_WATCHDOG_INTERVAL_MS = 250;
+
+let assetManifestCounter = 0;
+
+function newAssetManifestGeneration(): string {
+  assetManifestCounter += 1;
+  return `asset-manifest-${Date.now()}-${assetManifestCounter}`;
+}
+
+function base64ByteLength(value: string): number {
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+  return Math.max(0, Math.floor(value.length * 3 / 4) - padding);
+}
 
 interface PendingJob {
   job: SwarmRenderJob;
@@ -85,6 +98,12 @@ interface ConnectedWorker {
   assetInflight: Map<string, Promise<boolean>>;
   /** Resolves when the worker has finished verifying a content-addressed transfer. */
   assetReadyWaiters: Map<string, (ok: boolean) => void>;
+  /** Resolves after the worker reports the cache state for a manifest generation. */
+  assetManifestStateWaiters: Map<string, (cachedContentHashes: string[]) => void>;
+  /** Resolves only after the worker has validated the complete manifest against its LRU. */
+  assetManifestReadyWaiters: Map<string, (payload: SwarmAssetManifestReadyPayload) => void>;
+  /** Serializes manifest handshakes so a concurrent preload cannot overwrite its generation. */
+  assetSyncInFlight: Promise<boolean> | null;
 }
 
 export interface SwarmCoordinatorOptions {
@@ -141,6 +160,7 @@ export class SwarmCoordinator {
     this.pending.clear();
     for (const job of this.jobs.values()) if (!job.settled) job.resolve(null);
     this.jobs.clear();
+    this.resultChunks.clear();
     this.emitChange();
   }
 
@@ -205,6 +225,9 @@ export class SwarmCoordinator {
         cachedAssetHashes: new Set<string>(),
         assetInflight: new Map<string, Promise<boolean>>(),
         assetReadyWaiters: new Map<string, (ok: boolean) => void>(),
+        assetManifestStateWaiters: new Map<string, (cachedContentHashes: string[]) => void>(),
+        assetManifestReadyWaiters: new Map<string, (payload: SwarmAssetManifestReadyPayload) => void>(),
+        assetSyncInFlight: null,
       };
       this.workers.set(peer.peerId, worker);
       worker.handshakeTimer = window.setTimeout(() => {
@@ -231,10 +254,47 @@ export class SwarmCoordinator {
    */
   async preloadAssets(assets: SwarmAssetTransfer[]): Promise<boolean> {
     const eligible = [...this.workers.values()].filter((worker) => this.canSyncAssets(worker));
-    const results = await Promise.all(eligible.map(async (worker) => {
-      const needsTransfer = assets.some((asset) => !worker.cachedAssetHashes.has(asset.contentHash));
-      if (needsTransfer && worker.snapshot.state === "ready") worker.snapshot.state = "syncing";
-      const results: boolean[] = [];
+    const results = await Promise.all(eligible.map((worker) => {
+      const previous = worker.assetSyncInFlight ?? Promise.resolve(true);
+      const sync = (async (): Promise<boolean> => {
+        // A failed generation must not poison the dirty queue; the next snapshot is the recovery attempt.
+        await previous.catch(() => false);
+        return await this.syncWorkerAssets(worker, assets);
+      })();
+      worker.assetSyncInFlight = sync;
+      void sync.then(() => {
+        if (worker.assetSyncInFlight === sync) worker.assetSyncInFlight = null;
+      }, () => {
+        if (worker.assetSyncInFlight === sync) worker.assetSyncInFlight = null;
+      });
+      return sync;
+    }));
+    this.pumpJobs();
+    this.emitChange();
+    return results.length > 0 && results.every(Boolean);
+  }
+
+  private async syncWorkerAssets(worker: ConnectedWorker, assets: SwarmAssetTransfer[]): Promise<boolean> {
+    const generation = newAssetManifestGeneration();
+    const protocol = worker.peer.protocol;
+    if (!protocol) return false;
+    const manifestState = new Promise<string[]>((resolve) => {
+      worker.assetManifestStateWaiters.set(generation, resolve);
+    });
+    const manifestReady = new Promise<SwarmAssetManifestReadyPayload>((resolve) => {
+      worker.assetManifestReadyWaiters.set(generation, resolve);
+    });
+    worker.snapshot.state = "syncing";
+    const results: boolean[] = [];
+    try {
+      await protocol.send(createSwarmMessage("asset-manifest", {
+        generation,
+        assets: assets.map((asset) => ({
+          contentHash: asset.contentHash,
+          byteLength: base64ByteLength(asset.bytesBase64),
+        })),
+      }));
+      worker.cachedAssetHashes = new Set(await manifestState);
       // Keep one ordered file stream on the data channel. ensureAsset remains promise-shared, so
       // concurrent callers still coalesce, but a preload cannot interleave two large files.
       for (const asset of assets) results.push(await this.ensureAsset(worker, asset));
@@ -242,20 +302,22 @@ export class SwarmCoordinator {
         worker.snapshot.health = "degraded";
         return false;
       }
-      try {
-        const protocol = worker.peer.protocol;
-        if (!protocol) return false;
-        await protocol.send(createSwarmMessage("asset-sync-complete", {}));
-        worker.snapshot.state = "ready";
-        return true;
-      } catch {
+      await protocol.send(createSwarmMessage("asset-sync-complete", { generation }));
+      const ready = await manifestReady;
+      worker.cachedAssetHashes = new Set(ready.cachedContentHashes);
+      if (!ready.ok || !assets.every((asset) => worker.cachedAssetHashes.has(asset.contentHash))) {
         worker.snapshot.health = "degraded";
         return false;
       }
-    }));
-    this.pumpJobs();
-    this.emitChange();
-    return results.length > 0 && results.every(Boolean);
+      worker.snapshot.state = "ready";
+      return true;
+    } catch {
+      worker.snapshot.health = "degraded";
+      return false;
+    } finally {
+      worker.assetManifestStateWaiters.delete(generation);
+      worker.assetManifestReadyWaiters.delete(generation);
+    }
   }
 
   hasAvailableWorker(): boolean {
@@ -295,6 +357,7 @@ export class SwarmCoordinator {
    * deadline even though the frame is already known to be lost.
    */
   private releaseJob(worker: ConnectedWorker, jobId: SwarmJobId, reason: SwarmJobFailureReason = "worker-failed"): void {
+    this.resultChunks.drop(jobId);
     if (worker.snapshot.currentJobId === jobId) worker.snapshot.currentJobId = undefined;
     const waiter = this.jobs.get(jobId);
     const newlySettled = Boolean(waiter && !waiter.settled);
@@ -370,6 +433,12 @@ export class SwarmCoordinator {
   private cancelAssetInflight(worker: ConnectedWorker): void {
     for (const resolve of worker.assetReadyWaiters.values()) resolve(false);
     worker.assetReadyWaiters.clear();
+    for (const resolve of worker.assetManifestStateWaiters.values()) resolve([]);
+    worker.assetManifestStateWaiters.clear();
+    for (const [generation, resolve] of worker.assetManifestReadyWaiters) {
+      resolve({ generation, ok: false, cachedContentHashes: [], message: "Worker connection closed" });
+    }
+    worker.assetManifestReadyWaiters.clear();
   }
 
   private isEligibleJob(job: SwarmRenderJob): boolean {
@@ -480,12 +549,12 @@ export class SwarmCoordinator {
    * Render time only. Transport is a property of the link, not of the worker's capacity, and it is
    * the scheduler's job (WP §25) to price it.
    */
-  private scoreFromRealWork(worker: ConnectedWorker, result: SwarmRenderResult): void {
+  private scoreFromRealWork(worker: ConnectedWorker, result: SwarmRenderResult): boolean {
     const frames = Math.max(1, result.frameEnd - result.frameStart);
     const localMs = hostMsPerFrame();
-    if (result.renderMs === undefined || result.renderMs <= 0) return;
+    if (result.renderMs === undefined || result.renderMs <= 0) return false;
     const workerMs = worker.renderMsPerFrame.update(result.renderMs / frames);
-    if (workerMs <= 0) return;
+    if (workerMs <= 0) return false;
     const score = localMs === null
       ? (worker.snapshot.performance?.benchmarkScore ?? 1)
       : normalizedBenchmarkScore(1 / workerMs, 1 / localMs);
@@ -505,7 +574,6 @@ export class SwarmCoordinator {
       worker.snapshot.health = "healthy";
       worker.failureCount = 0;
     }
-    if (worker.snapshot.currentJobId === result.jobId) this.metrics.noteProbeSuccess();
     if (worker.slotId) {
       this.scheduler.updateWorker({
         slotId: worker.slotId,
@@ -514,6 +582,7 @@ export class SwarmCoordinator {
         connected: true,
       });
     }
+    return true;
   }
 
   private learnTransportCost(worker: ConnectedWorker, pending: PendingJob, result: SwarmRenderResult): void {
@@ -560,6 +629,24 @@ export class SwarmCoordinator {
       worker.snapshot.available = message.payload.available;
       this.emitChange();
       if (message.payload.available) this.pumpJobs();
+      return;
+    }
+    if (isSwarmMessageType(message, "asset-manifest-state")) {
+      const resolve = worker.assetManifestStateWaiters.get(message.payload.generation);
+      if (resolve) {
+        worker.assetManifestStateWaiters.delete(message.payload.generation);
+        resolve(message.payload.cachedContentHashes);
+      }
+      this.emitChange();
+      return;
+    }
+    if (isSwarmMessageType(message, "asset-manifest-ready")) {
+      const resolve = worker.assetManifestReadyWaiters.get(message.payload.generation);
+      if (resolve) {
+        worker.assetManifestReadyWaiters.delete(message.payload.generation);
+        resolve(message.payload);
+      }
+      this.emitChange();
       return;
     }
     if (isSwarmMessageType(message, "asset-ready")) {
@@ -612,7 +699,8 @@ export class SwarmCoordinator {
           pending.phase = "transferring";
         }
       }
-      this.resultChunks.accept(message.payload);
+      if (pending) this.resultChunks.accept(message.payload);
+      else this.resultChunks.drop(message.payload.jobId);
       this.emitChange();
       return;
     }
@@ -696,6 +784,9 @@ export class SwarmCoordinator {
   }
 
   private async handleResult(worker: ConnectedWorker, result: SwarmRenderResult): Promise<void> {
+    // The final metadata message closes the chunk stream. If it arrived with inline bytes or an
+    // invalid/stale payload, no partial assembler entry may survive this job's lifecycle.
+    this.resultChunks.drop(result.jobId);
     const waiter = this.jobs.get(result.jobId);
     const job = this.scheduler.get(result.jobId);
     const valid = job !== undefined && validateSwarmRenderResult(result, {
@@ -712,7 +803,10 @@ export class SwarmCoordinator {
       this.metrics.noteRemoteFrame(Math.max(1, result.frameEnd - result.frameStart));
       this.metrics.noteLateValidResult(Math.max(1, result.frameEnd - result.frameStart));
       this.learnTransportCost(worker, waiter, result);
-      this.scoreFromRealWork(worker, result);
+      if (this.scoreFromRealWork(worker, result) && waiter.probe) {
+        waiter.probe = false;
+        this.metrics.noteProbeSuccess();
+      }
       this.options.onLateResult?.(result);
       if (worker.snapshot.currentJobId === result.jobId) worker.snapshot.currentJobId = undefined;
       this.pumpJobs();
@@ -759,7 +853,10 @@ export class SwarmCoordinator {
     }
     this.metrics.noteRemoteFrame(Math.max(1, result.frameEnd - result.frameStart));
     this.learnTransportCost(worker, waiter, result);
-    this.scoreFromRealWork(worker, result);
+    if (this.scoreFromRealWork(worker, result) && waiter.probe) {
+      waiter.probe = false;
+      this.metrics.noteProbeSuccess();
+    }
     waiter.settled = true;
     waiter.settledAt = Date.now();
     waiter.phase = "completed";
@@ -821,6 +918,7 @@ export class SwarmCoordinator {
     pending.settledAt = Date.now();
     pending.phase = "completed";
     this.scheduler.abandon(jobId);
+    this.resultChunks.dropPartial(jobId);
     // The WorkerRuntime has no cancellation guarantee yet. Keep its current job id so the
     // scheduler quarantines this worker until the late result or failure proves the render ended.
     if (worker.snapshot.currentJobId === undefined) worker.snapshot.currentJobId = jobId;
@@ -833,7 +931,10 @@ export class SwarmCoordinator {
   private watchJobs(now: number): void {
     for (const pending of this.jobs.values()) {
       if (pending.settled) {
-        if (pending.settledAt !== undefined && now - pending.settledAt > 60_000) this.jobs.delete(pending.job.id);
+        if (pending.settledAt !== undefined && now - pending.settledAt > 60_000) {
+          this.resultChunks.drop(pending.job.id);
+          this.jobs.delete(pending.job.id);
+        }
         continue;
       }
       const worker = pending.workerSlotId
