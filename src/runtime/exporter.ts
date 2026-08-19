@@ -54,7 +54,19 @@ export interface ExportProgress {
 
 export type ProgressCallback = (p: ExportProgress) => void;
 
-export type ExportTimingPhase = "sessionPrepareMs" | "footageWarmupMs" | "renderMs" | "pngEncodeMs" | "zipFinalizeMs";
+/**
+ * `footageWarmupMs` stays the LOOP 4 total so its numbers remain comparable; the two warmup
+ * phases below split that same time by cause — landing a block's opening seek versus retrying a
+ * single frame whose decode was late — because only the first one is a job-order cost.
+ */
+export type ExportTimingPhase =
+  | "sessionPrepareMs"
+  | "footageWarmupMs"
+  | "blockOpeningWarmupMs"
+  | "frameRetryWarmupMs"
+  | "renderMs"
+  | "pngEncodeMs"
+  | "zipFinalizeMs";
 
 export interface ExportTimingHooks {
   onTiming?: (phase: ExportTimingPhase, durationMs: number) => void;
@@ -471,7 +483,10 @@ async function runPngSeq(
       }
       localFrameWarmupMs.set(frame, footageWarmupMs);
       if (!multiProducerTiming) {
-        if (footageWarmupMs > 0) remote?.timing?.onTiming?.("footageWarmupMs", footageWarmupMs);
+        if (footageWarmupMs > 0) {
+          remote?.timing?.onTiming?.("footageWarmupMs", footageWarmupMs);
+          remote?.timing?.onTiming?.("frameRetryWarmupMs", footageWarmupMs);
+        }
         remote?.timing?.onTiming?.("renderMs", Math.max(0, performance.now() - startedAt - footageWarmupMs));
       }
       noteHostRenderedFrame(performance.now() - startedAt);
@@ -489,7 +504,9 @@ async function runPngSeq(
     renderer.renderFrame(resolve(comp, startFrame, { expressions: evaluator }), startFrame);
     const warmupStartedAt = performance.now();
     await renderer.flushVideoFrames(STRICT_FOOTAGE_SEEK_WAIT_MS);
-    remote.timing?.onTiming?.("footageWarmupMs", performance.now() - warmupStartedAt);
+    const openingWarmupMs = performance.now() - warmupStartedAt;
+    remote.timing?.onTiming?.("footageWarmupMs", openingWarmupMs);
+    remote.timing?.onTiming?.("blockOpeningWarmupMs", openingWarmupMs);
   }
   const onJobTimeline = (timeline: SwarmJobTimeline): void => {
     if (!seenRemoteJobs.has(timeline.jobId)) {

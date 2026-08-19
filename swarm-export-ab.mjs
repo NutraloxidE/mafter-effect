@@ -210,6 +210,8 @@ function phaseRows(timelines) {
     ["offer to ACK", (t) => t.host.offerToAckMs],
     ["session prepare", (t) => t.worker?.sessionPrepareMs ?? 0],
     ["footage warmup", (t) => t.worker?.footageWarmupMs ?? 0],
+    ["  block opening warmup", (t) => t.worker?.blockOpeningWarmupMs ?? 0],
+    ["  frame retry warmup", (t) => t.worker?.frameRetryWarmupMs ?? 0],
     ["render", (t) => t.worker?.renderMs ?? 0],
     ["PNG encode", (t) => t.worker?.pngEncodeMs ?? 0],
     ["ZIP finalize", (t) => t.worker?.zipFinalizeMs ?? 0],
@@ -231,6 +233,29 @@ function phaseRows(timelines) {
   });
 }
 
+/**
+ * H5.1 evidence: a remote lane that keeps starting behind where it stopped pays a backward footage
+ * seek per block. Counting the directions is what decides the hypothesis, not reading the pull code.
+ */
+function printSeekSummary(timelines) {
+  const seeks = timelines.map((t) => t.workerSeek).filter(Boolean);
+  if (!seeks.length) return;
+  const count = (direction) => seeks.filter((s) => s.seekDirection === direction).length;
+  const openingMs = timelines.reduce((sum, t) => sum + (t.worker?.blockOpeningWarmupMs ?? 0), 0);
+  const retryMs = timelines.reduce((sum, t) => sum + (t.worker?.frameRetryWarmupMs ?? 0), 0);
+  const renderMs = timelines.reduce((sum, t) => sum + (t.worker?.renderMs ?? 0), 0);
+  const perJob = (ms) => (ms / Math.max(1, seeks.length)).toFixed(0);
+  console.log(`  job order: first=${count("first")} forward=${count("forward")} backward=${count("backward")} same=${count("same")}`);
+  for (const t of timelines) {
+    const s = t.workerSeek;
+    if (!s) continue;
+    console.log(`    ${String(s.seekDirection).padEnd(8)} prevEnd=${s.previousRangeEndFrame ?? "-"} start=${s.currentRangeStartFrame} delta=${s.seekDeltaFrames ?? "-"} openingWarmup=${Math.round(t.worker?.blockOpeningWarmupMs ?? 0)}ms retryWarmup=${Math.round(t.worker?.frameRetryWarmupMs ?? 0)}ms render=${Math.round(t.worker?.renderMs ?? 0)}ms`);
+  }
+  console.log(`  blockOpeningWarmupMs/job: ${perJob(openingMs)}  frameRetryWarmupMs/job: ${perJob(retryMs)}  renderMs/job: ${perJob(renderMs)}`);
+  const last = seeks[seeks.length - 1];
+  console.log(`  session: created=${last.sessionCreatedCount} reused=${last.sessionReusedCount}`);
+}
+
 function printCostTable(run) {
   if (!run.jobTimelines?.length) return;
   const rows = phaseRows(run.jobTimelines);
@@ -243,7 +268,8 @@ Cost table — ${WORKLOAD} / ${run.label}
     if (row.ms < 0.05) continue;
     console.log(`  ${row.phase.padEnd(28)} ${String(Math.round(row.ms)).padStart(7)} ${row.percentRemoteWall.toFixed(1).padStart(15)}%`);
   }
-  const accounted = rows.reduce((sum, row) => sum + row.ms, 0);
+  // The two warmup splits are subsets of "footage warmup"; counting them again would double-bill.
+  const accounted = rows.reduce((sum, row) => sum + (row.phase.startsWith("  ") ? 0 : row.ms), 0);
   console.log(`  ${"accounted phase sum".padEnd(28)} ${String(Math.round(accounted)).padStart(7)} ${(remoteWallMs > 0 ? accounted / remoteWallMs * 100 : 0).toFixed(1).padStart(15)}%`);
   const transferredBytes = run.jobTimelines.reduce((sum, timeline) => sum + (timeline.host?.transferredBytes ?? 0), 0);
   console.log(`  transferred bytes: ${transferredBytes}`);
@@ -284,6 +310,7 @@ Cost table — ${WORKLOAD} / ${run.label}
     const percent = dominantScheduling.ms / Math.max(1, dominantScheduling.denominator) * 100;
     console.log(`  scheduling signal: ${dominantScheduling.name} = ${Math.round(dominantScheduling.ms)}ms (${percent.toFixed(1)}% of export clock)`);
   }
+  printSeekSummary(run.jobTimelines);
   if (run.exportTimeline) {
     console.log(`  export tail wait: ${Math.round(run.exportTimeline.exportTailWaitMs)}ms`);
     console.log(`  consumer wait:    ${Math.round(run.exportTimeline.consumerWaitMs)}ms`);

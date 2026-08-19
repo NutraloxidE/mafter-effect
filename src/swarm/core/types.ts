@@ -138,11 +138,31 @@ export type SwarmJobFailureReason =
 export interface SwarmWorkerTiming {
   sessionPrepareMs: number;
   footageWarmupMs: number;
+  /** Part of `footageWarmupMs` spent landing the block's opening seek before any frame counts. */
+  blockOpeningWarmupMs: number;
+  /** Part of `footageWarmupMs` spent re-waiting for a single frame whose decode was late. */
+  frameRetryWarmupMs: number;
   renderMs: number;
   pngEncodeMs: number;
   zipFinalizeMs: number;
   base64Ms: number;
   hashMs: number;
+}
+
+/**
+ * Where a worker's session had to move on the timeline to start this job. A block that starts
+ * behind the last one ends pays a backward footage seek, which is the expensive kind; measuring it
+ * is what separates "the worker is slow" from "we keep asking it to rewind".
+ */
+export interface SwarmWorkerSeek {
+  previousRangeEndFrame: number | null;
+  currentRangeStartFrame: number;
+  /** `currentRangeStartFrame - previousRangeEndFrame`; null on the session's first job. */
+  seekDeltaFrames: number | null;
+  seekDirection: "first" | "forward" | "backward" | "same";
+  /** Proves session reuse is real: job order must not silently rebuild the export world. */
+  sessionCreatedCount: number;
+  sessionReusedCount: number;
 }
 
 /** Host-side round-trip and return-path timings for one remote job. */
@@ -168,6 +188,7 @@ export interface SwarmJobTimeline {
   frameEnd: number;
   workerSlotId?: WorkerSlotId;
   worker?: SwarmWorkerTiming;
+  workerSeek?: SwarmWorkerSeek;
   host: SwarmHostTiming;
   /** Host offer-to-result-complete wall time, measured only with the host clock. */
   remoteWallMs: number;
@@ -235,6 +256,8 @@ export interface SwarmRenderResult {
   renderMs?: number;
   /** Worker-local phase accounting. Runtime-only; ignored by result validation. */
   workerTiming?: SwarmWorkerTiming;
+  /** Worker-local job-order evidence. Runtime-only; ignored by result validation. */
+  workerSeek?: SwarmWorkerSeek;
   /** Host fills this after result validation so the export return path can complete the record. */
   hostTiming?: SwarmHostTiming;
   /** Host-only reference used to finish the same record after export-side verification/adoption. */

@@ -3785,3 +3785,58 @@ WP `LOOP 4: Price Every Millisecond` を実装。性能挙動は変更せず、r
 
 1. LOOP 5 では上記の worker render + footage warmup に対する仮説を1つだけ選び、before/after・pixel parity・`localFramesAvoided` を記録する。
 2. binary transport、ZIP除去、block size、scheduler は同じ commit で混ぜない。
+
+### 2026-08-19 (Claude Opus 5) - LOOP 5 Phase A: repeated backward seek hypothesis — REJECTED
+
+WP `LOOP 5: Kill Repeated Backward Seek Warmup` の Phase A（計測のみ）を実施。**H5.1 は棄却**したので Phase B（monotonic-forward 化）は実装していない。
+
+#### Hypothesis
+
+> H5.1 — remote producer が tail から block を取るため、同じ Worker の次 job が前 job より過去側へ戻り、block 開始ごとに高価な backward footage seek / warmup を払っている。これが worker render + footage warmup の主要因である。
+
+#### 実装（計測のみ・性能挙動は不変）
+
+- `exporter.ts`: `ExportTimingPhase` に `blockOpeningWarmupMs` / `frameRetryWarmupMs` を追加。LOOP 4 の `footageWarmupMs` は合計として据え置き、同じ時間を「block 先頭 seek の着地」と「フレーム単位のリトライ待ち」に原因別で分解する。
+- `types.ts`: `SwarmWorkerSeek`（`previousRangeEndFrame` / `currentRangeStartFrame` / `seekDeltaFrames` / `seekDirection` / `sessionCreatedCount` / `sessionReusedCount`）を追加。すべて Worker クロック内で完結し、host clock と混ぜない。
+- `workerRenderExecutor.ts`: range job ごとに前回 `frameEnd` からのデルタを記録。session 再構築時（key 変更・footage 欠落エラー・dispose）にリセット。
+- `swarm-export-ab.mjs`: job order 一覧・方向別カウント・opening/retry warmup per job・session created/reused を出力。warmup 分解行は `footage warmup` の内訳なので accounted sum には二重計上しない。
+
+#### 計測の前提修正（重要）
+
+`swarm-export-ab.mjs` の既定 `SWARM_APP_URL` は **デプロイ済み `https://mafter-effect.pages.dev/`**。最初の run はそのままローカル計装の乗っていないビルドを測っていた（かつ `worker READY not observed` で失敗）。host/worker とも `window.location.origin` から join URL を作るため、**ローカル計装を測るときは `SWARM_APP_URL` をローカル origin に向ける**必要がある。今回は `vite preview`（https://localhost:5178）で再実行した。
+
+#### Evidence（heavy-media / Comp 32 / WARM / ABBA / 24 frames / block 8 / repeats 2）
+
+| repeat | run | seekDirection | delta | blockOpeningWarmupMs | frameRetryWarmupMs | renderMs/job | render+warmup | opening の占有 |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| 1 | 2-swarm | first | – | 483 | 0 | 7033 | 7516 | 6.4% |
+| 1 | 3-swarm | backward | -8 | 94 | 0 | 6749 | 6843 | 1.4% |
+| 2 | 2-swarm | first | – | 446 | 0 | 9783 | 10230 | 4.4% |
+| 2 | 3-swarm | backward | -8 | 397 | 0 | 11597 | 11994 | 3.3% |
+
+- **backward job は 1 export につき 0〜1 回しか起きない。** 各 export の `jobTimelines` は 1 本（frames 16–24）のみで、WP が想定した「1 export 内で -8 を繰り返す block 列」はこの環境では発生していない。観測された backward は *export をまたいで* session を再利用したときの 24→16 の 1 回だけ。
+- `blockOpeningWarmupMs` は **94–483ms**、render+warmup バケット全体の **1.4–6.4%**。
+- `frameRetryWarmupMs` は全 job で **0**。
+- backward job の opening warmup（94 / 397ms）は fresh session の first job（483 / 446ms）より**大きくない**。方向による差の証拠なし。
+- session 再利用は実在（`created=1`, `reused=1`）。job order 由来の session 再構築は起きていない。
+- 75% バケットの本体は per-frame の worker render。worker は約 840–1450 ms/frame に対し host は 596–995 ms/frame で、**worker 自体が host より遅い**。
+
+#### Decision — REJECTED
+
+measurement gate の棄却条件を 3 つ同時に満たす: opening warmup が小さい / backward と forward（first）で差がない / バケットの本体は per-frame render。したがって **behavioral change（monotonic-forward lane）は実装しない**。仮説を守るための再解釈も行わない。
+
+#### Correctness / 検証
+
+- `npm run typecheck`: PASS。
+- Swarm 対象テスト: 7 files / **90 tests PASS**。
+- `npm run build`: PASS（`build:player` / player freshness を含む）。
+- 実 Chrome heavy-media ABBA ×2: pixel parity **PASS**（suspect frames 0/24、4 swarm run すべて）。stale 採用 0、`hostRenderedFrames` は常に ≤ 24。
+- LOOP 3 fault matrix は再実行していない。Phase A は計測追加のみで scheduler / transport / watchdog / verification の挙動を変えていないため。
+- 性能 speedup は主張しない。`localFramesAvoided` は 5 / 3（24 frames 中）で、この環境の worker は host より遅い。
+
+#### Next steps
+
+1. LOOP 6 の候補は「worker の per-frame render が host より遅いこと」そのもの。ただし**次の loop で仮説を 1 つだけ選ぶ**こと。今回の run で `firstChunkLatencyMs`（8.3–13.9s）と `adoptionDelayMs`（6.3–6.6s）も大きいが、これらは worker render と時間的に重なっている可能性があり、重なりを解いてから bottleneck として扱う。
+2. binary transport / ZIP 除去 / block size / scheduler は引き続き保留。
+3. `swarm-export-ab.mjs` をローカル計装で回すときは `SWARM_APP_URL` を必ずローカル origin にする。
+

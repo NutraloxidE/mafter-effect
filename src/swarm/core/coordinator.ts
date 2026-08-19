@@ -887,6 +887,7 @@ export class SwarmCoordinator {
       frameEnd: result.frameEnd,
       ...(worker.slotId ? { workerSlotId: worker.slotId } : {}),
       ...(result.workerTiming ? { worker: { ...result.workerTiming } } : {}),
+      ...(result.workerSeek ? { workerSeek: { ...result.workerSeek } } : {}),
       host,
       remoteWallMs: Math.max(0, completedAtMs - offerSentAtMs),
       // A complete valid result proves that every frame in the job was rendered even if the

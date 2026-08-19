@@ -5,7 +5,7 @@ import { captureCompFramePng, createCompFrameCaptureContext, type CompFrameCaptu
 import { sha256Hex } from "../core/assetManifest";
 import { runRenderBenchmark } from "../core/benchmark";
 import type { TimelineComposition } from "../../core/schema";
-import type { SwarmAssetTransfer, SwarmRenderJob, SwarmRenderResult, SwarmWorkerTiming } from "../core/types";
+import type { SwarmAssetTransfer, SwarmRenderJob, SwarmRenderResult, SwarmWorkerSeek, SwarmWorkerTiming } from "../core/types";
 import { BoundedWorkerAssetCache } from "./workerCache";
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -24,6 +24,8 @@ function emptyWorkerTiming(): SwarmWorkerTiming {
   return {
     sessionPrepareMs: 0,
     footageWarmupMs: 0,
+    blockOpeningWarmupMs: 0,
+    frameRetryWarmupMs: 0,
     renderMs: 0,
     pngEncodeMs: 0,
     zipFinalizeMs: 0,
@@ -48,6 +50,10 @@ export class WorkerRenderExecutor {
   private readonly assetCache = new BoundedWorkerAssetCache();
   private cached: CachedContext | null = null;
   private session: { key: string; holder: { current: ExportSession | null } } = { key: "", holder: { current: null } };
+  /** Job-order evidence, reset whenever the session is rebuilt: it belongs to one decoder's life. */
+  private previousRangeEndFrame: number | null = null;
+  private sessionCreatedCount = 0;
+  private sessionReusedCount = 0;
 
   /** Stores a fully reassembled file; the cache verifies its content hash before accepting it. */
   async cacheAsset(transfer: SwarmAssetTransfer): Promise<boolean> {
@@ -79,7 +85,22 @@ export class WorkerRenderExecutor {
     if (this.session.key !== sessionKey) {
       this.session.holder.current?.dispose();
       this.session = { key: sessionKey, holder: { current: null } };
+      this.previousRangeEndFrame = null;
+      this.sessionCreatedCount += 1;
+    } else {
+      this.sessionReusedCount += 1;
     }
+    const previousRangeEndFrame = this.previousRangeEndFrame;
+    const seekDeltaFrames = previousRangeEndFrame === null ? null : job.frameStart - previousRangeEndFrame;
+    const workerSeek: SwarmWorkerSeek = {
+      previousRangeEndFrame,
+      currentRangeStartFrame: job.frameStart,
+      seekDeltaFrames,
+      seekDirection: seekDeltaFrames === null ? "first" : seekDeltaFrames < 0 ? "backward" : seekDeltaFrames > 0 ? "forward" : "same",
+      sessionCreatedCount: this.sessionCreatedCount,
+      sessionReusedCount: this.sessionReusedCount,
+    };
+    this.previousRangeEndFrame = job.frameEnd;
     const timingHooks: ExportTimingHooks = {
       onTiming: (phase, durationMs) => {
         timing[phase] += Math.max(0, durationMs);
@@ -103,6 +124,7 @@ export class WorkerRenderExecutor {
     if (renderer && compTreeHasVideo(job.project, composition) && renderer.videoElementCount() === 0) {
       this.session.holder.current?.dispose();
       this.session = { key: "", holder: { current: null } };
+      this.previousRangeEndFrame = null;
       throw new Error("Worker rendered no footage for a composition that has video");
     }
     const bytes = new Uint8Array(await result.blob.arrayBuffer());
@@ -126,6 +148,7 @@ export class WorkerRenderExecutor {
       contentHash,
       runtimeVersion: job.runtimeVersion,
       workerTiming: { ...timing },
+      workerSeek,
       renderMs: performance.now() - startedAt,
     };
   }
@@ -232,6 +255,7 @@ export class WorkerRenderExecutor {
     this.cached = null;
     this.session.holder.current?.dispose();
     this.session = { key: "", holder: { current: null } };
+    this.previousRangeEndFrame = null;
   }
 
   async benchmark(job: SwarmRenderJob): Promise<{ score: number; framesPerSecond: number; renderMs: number }> {
