@@ -125,7 +125,10 @@ export class GifEncoder {
     this.writer.pushU16(height);
     // Global color table present, color resolution=8 bits, 256 table entries.
     this.writer.pushByte(0xf7);
-    this.writer.pushByte(0); // background color index
+    // Keep the logical-screen background on the transparent palette entry. Transparent frames
+    // use disposal=2 so pixels that disappear are actually cleared instead of ghosting from the
+    // previous frame. Opaque full-canvas frames never expose this background.
+    this.writer.pushByte(GIF_TRANSPARENT_INDEX);
     this.writer.pushByte(0); // pixel aspect ratio
     this.writer.pushBytes(buildGlobalPalette());
 
@@ -144,8 +147,11 @@ export class GifEncoder {
     }
     const delay = Math.max(1, Math.min(65_535, Math.round(delayCs)));
 
-    // Graphic Control Extension. Disposal method 1 = keep previous canvas.
-    this.writer.pushBytes([0x21, 0xf9, 0x04, hasTransparency ? 0x05 : 0x04]);
+    // Full-frame opaque images can keep the previous canvas (disposal 1). Transparent images must
+    // restore to the transparent logical-screen background (disposal 2) before the next frame;
+    // otherwise a moving opaque object leaves trails under later transparent pixels.
+    const packed = hasTransparency ? 0x09 : 0x04;
+    this.writer.pushBytes([0x21, 0xf9, 0x04, packed]);
     this.writer.pushU16(delay);
     this.writer.pushByte(hasTransparency ? GIF_TRANSPARENT_INDEX : 0);
     this.writer.pushByte(0x00);
