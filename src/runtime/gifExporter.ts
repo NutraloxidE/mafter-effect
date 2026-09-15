@@ -112,7 +112,11 @@ export async function exportGif(
     message: "Packaging GIF…",
   });
   const bytes = encoder.finish();
-  const blob = new Blob([bytes], { type: "image/gif" });
+  // Materialize an ArrayBuffer-backed copy. Typed-array buffers are ArrayBufferLike in current TS
+  // DOM typings and may include SharedArrayBuffer, which BlobPart intentionally rejects.
+  const arrayBuffer = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(arrayBuffer).set(bytes);
+  const blob = new Blob([arrayBuffer], { type: "image/gif" });
   onProgress({
     phase: "done",
     frame: frameNames.length,
