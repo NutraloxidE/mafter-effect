@@ -43,8 +43,8 @@ describe("GifEncoder", () => {
     const second = make();
     expect(first).toEqual(second);
     expect(String.fromCharCode(...first.slice(0, 6))).toBe("GIF89a");
-    expect(first[6] | (first[7] << 8)).toBe(2);
-    expect(first[8] | (first[9] << 8)).toBe(2);
+    expect(first[6]! | (first[7]! << 8)).toBe(2);
+    expect(first[8]! | (first[9]! << 8)).toBe(2);
     expect(first[first.length - 1]).toBe(0x3b);
   });
 
