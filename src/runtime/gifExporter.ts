@@ -49,7 +49,10 @@ export async function exportGif(
 
   const zip = await JSZip.loadAsync(pngResult.blob);
   const frameNames = Object.keys(zip.files)
-    .filter((name) => /^frame_\d+\.png$/i.test(name) && !zip.files[name].dir)
+    .filter((name) => {
+      const entry = zip.files[name];
+      return /^frame_\d+\.png$/i.test(name) && entry !== undefined && !entry.dir;
+    })
     .sort();
   if (frameNames.length === 0) throw new Error("GIF export received no PNG frames");
 
@@ -63,8 +66,9 @@ export async function exportGif(
 
   for (let i = 0; i < frameNames.length; i++) {
     checkAbort(signal);
-    const entry = zip.file(frameNames[i]);
-    if (!entry) throw new Error(`GIF frame missing from ZIP: ${frameNames[i]}`);
+    const frameName = frameNames[i]!;
+    const entry = zip.file(frameName);
+    if (!entry) throw new Error(`GIF frame missing from ZIP: ${frameName}`);
     const pngBlob = await entry.async("blob");
     checkAbort(signal);
 
