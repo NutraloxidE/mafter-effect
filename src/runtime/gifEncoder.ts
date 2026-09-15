@@ -32,7 +32,7 @@ class ByteWriter {
         this.chunk.set(values.subarray(sourceOffset, sourceOffset + count), this.offset);
       } else {
         for (let i = 0; i < count; i++) {
-          this.chunk[this.offset + i] = values[sourceOffset + i] & 0xff;
+          this.chunk[this.offset + i] = values[sourceOffset + i]! & 0xff;
         }
       }
       this.offset += count;
@@ -92,13 +92,13 @@ export function quantizeRgbaToGif(
   if (rgba.length % 4 !== 0) throw new Error("RGBA byte length must be divisible by four");
   const indexed = new Uint8Array(rgba.length / 4);
   for (let i = 0, pixel = 0; i < rgba.length; i += 4, pixel++) {
-    if (allowTransparency && rgba[i + 3] < 128) {
+    if (allowTransparency && rgba[i + 3]! < 128) {
       indexed[pixel] = GIF_TRANSPARENT_INDEX;
       continue;
     }
-    const r = Math.min(5, Math.floor((rgba[i] * 6) / 256));
-    const g = Math.min(6, Math.floor((rgba[i + 1] * 7) / 256));
-    const b = Math.min(5, Math.floor((rgba[i + 2] * 6) / 256));
+    const r = Math.min(5, Math.floor((rgba[i]! * 6) / 256));
+    const g = Math.min(6, Math.floor((rgba[i + 1]! * 7) / 256));
+    const b = Math.min(5, Math.floor((rgba[i + 2]! * 6) / 256));
     indexed[pixel] = r * 42 + g * 6 + b;
   }
   return indexed;
@@ -251,9 +251,9 @@ function encodeLzw(indices: Uint8Array): Uint8Array {
     return writer.finish();
   }
 
-  let prefix = indices[0];
+  let prefix = indices[0]!;
   for (let i = 1; i < indices.length; i++) {
-    const suffix = indices[i];
+    const suffix = indices[i]!;
     const key = (prefix << 8) | suffix;
     const hit = dictionary.get(key);
     if (hit !== undefined) {
