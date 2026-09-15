@@ -48,6 +48,26 @@ describe("GifEncoder", () => {
     expect(first[first.length - 1]).toBe(0x3b);
   });
 
+  it("restores transparent frames to a transparent background to prevent trails", () => {
+    const encoder = new GifEncoder(2, 1);
+    encoder.addFrame(new Uint8Array([0, 255]), 3, true);
+    const bytes = encoder.finish();
+
+    // Logical Screen Descriptor background index is the reserved transparent palette entry.
+    expect(bytes[11]).toBe(255);
+
+    let gce = -1;
+    for (let i = 0; i < bytes.length - 4; i++) {
+      if (bytes[i] === 0x21 && bytes[i + 1] === 0xf9 && bytes[i + 2] === 0x04) {
+        gce = i;
+        break;
+      }
+    }
+    expect(gce).toBeGreaterThanOrEqual(0);
+    // Disposal method 2 + transparency flag = 0b00001001.
+    expect(bytes[gce + 3]).toBe(0x09);
+  });
+
   it("rejects frames with the wrong number of pixels", () => {
     const encoder = new GifEncoder(2, 2);
     expect(() => encoder.addFrame(new Uint8Array([0, 1, 2]), 3, false)).toThrow(/expected 4/);
