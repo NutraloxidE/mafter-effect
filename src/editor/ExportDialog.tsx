@@ -6,6 +6,7 @@ import { newBinId, newObjectId } from "../core/ids";
 import { DIR_ASSETS } from "../core/paths";
 import { exportBundle } from "../runtime/bundleExporter";
 import { diagnoseVideoSupport, exportComposition, type ExportProgress } from "../runtime/exporter";
+import { exportGif } from "../runtime/gifExporter";
 import { findBakeTargets } from "../runtime/bundleBake";
 import { collectBundleDependencies } from "../runtime/bundleCollect";
 import { collectExportProxyJobs } from "../runtime/footagePlayback";
@@ -22,6 +23,7 @@ import { useEditorStore } from "./store";
 import { feedbackCollector } from "./feedbackCollector";
 
 export type ExportDialogMode = "download" | "prerender";
+type ExportDownloadFormat = ExportConfig["format"] | "gif";
 
 interface Props {
   project: Project;
@@ -36,7 +38,7 @@ export function ExportDialog({ project, compId, mode = "download", onClose }: Pr
   const tl = comp?.kind === "timeline" ? comp : null;
   const has3DLayers = (tl?.objects ?? []).some((o) => o.threeD === true);
 
-  const [format, setFormat] = useState<ExportConfig["format"]>("mp4");
+  const [format, setFormat] = useState<ExportDownloadFormat>("mp4");
   const [startFrame, setStartFrame] = useState(0);
   const [endFrame, setEndFrame] = useState(tl?.duration ?? 150);
   const [fps, setFps] = useState(tl?.fps ?? 30);
@@ -104,7 +106,9 @@ export function ExportDialog({ project, compId, mode = "download", onClose }: Pr
       range: [startFrame, endFrame],
       fps,
       scale,
-      format: isPrerender && format !== "mp4" && format !== "webm" ? "mp4" : format,
+      format: isPrerender && format !== "mp4" && format !== "webm"
+        ? "mp4"
+        : format === "gif" ? "png-seq" : format,
       alpha: isPrerender ? false : alpha,
       textRenderMode,
       bundleLoop: format === "html-bundle" && !isPrerender ? bundleLoop : undefined,
@@ -225,6 +229,21 @@ export function ExportDialog({ project, compId, mode = "download", onClose }: Pr
         succeeded = true;
         return;
       }
+      if (format === "gif") {
+        const blob = await exportGif(
+          exportProject,
+          compId,
+          useEditorStore.getState().getFs(),
+          cfg,
+          setProgress,
+          ctrl.signal,
+          swarmExportHooks(),
+        );
+        const name = `${tl.name.replace(/\s+/g, "_")}.gif`;
+        triggerDownload(blob, name);
+        succeeded = true;
+        return;
+      }
       const result = await exportComposition(exportProject, compId, useEditorStore.getState().getFs(), cfg, setProgress, ctrl.signal, swarmExportHooks());
       const ext = result.format === "png-seq" ? "zip" : result.format;
       const name = `${tl.name.replace(/\s+/g, "_")}.${ext}`;
@@ -294,12 +313,13 @@ export function ExportDialog({ project, compId, mode = "download", onClose }: Pr
           <Row label="Format">
             <select
               value={format}
-              onChange={(e) => setFormat(e.target.value as ExportConfig["format"])}
+              onChange={(e) => setFormat(e.target.value as ExportDownloadFormat)}
               style={selectStyle}
               disabled={isExporting}
             >
               <option value="mp4">MP4 (H.264, WebCodecs)</option>
               <option value="webm">WebM (VP9, WebCodecs)</option>
+              {!isPrerender && <option value="gif">GIF (animated, no audio)</option>}
               {!isPrerender && <option value="png-seq">PNG Sequence (ZIP)</option>}
               {!isPrerender && <option value="html-bundle">Static HTML (ZIP)</option>}
             </select>
@@ -326,7 +346,7 @@ export function ExportDialog({ project, compId, mode = "download", onClose }: Pr
               <option value={2}>2× ({tl.width * 2}×{tl.height * 2})</option>
             </select>
           </Row>
-          {(format === "webm" || format === "png-seq") && !isHtmlBundle && !isPrerender && (
+          {(format === "webm" || format === "png-seq" || format === "gif") && !isHtmlBundle && !isPrerender && (
             <Row label="Alpha">
               <input type="checkbox" checked={alpha} onChange={(e) => setAlpha(e.target.checked)} disabled={isExporting} />
               <span style={{ color: "#888", fontSize: 10, marginLeft: 4 }}>transparent bg</span>
@@ -434,6 +454,12 @@ export function ExportDialog({ project, compId, mode = "download", onClose }: Pr
           <div style={{ fontSize: 11, color: "#fc8", marginBottom: 10, background: "#2a2415", padding: "6px 8px", borderRadius: 3, lineHeight: 1.5 }}>
             ⚠ {format.toUpperCase()} はこの環境で書き出せません{isPrerender ? "（Pre-render 不可）" : "（PNG 連番 ZIP になります）"}。<br />
             {videoUnsupported}
+          </div>
+        )}
+
+        {format === "gif" && !isPrerender && (
+          <div style={{ fontSize: 11, color: "#9ac", marginBottom: 10, background: "#1d1a2a", padding: "6px 8px", borderRadius: 3, lineHeight: 1.5 }}>
+            GIF は256色・音声なし・無限ループです。Alpha は1-bit透過になるため半透明は保持されません。
           </div>
         )}
 
