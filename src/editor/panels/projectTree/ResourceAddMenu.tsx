@@ -16,7 +16,7 @@ const ITEMS: {
 }[] = [
   { label: "Comp", title: "タイムラインコンポを追加", run: (p) => p.onAddTimelineComp() },
   { label: "HTML", title: "HTML コンポを追加", run: (p) => void p.onAddHtmlComp() },
-  { label: "Image", title: "画像 Footage をインポート", run: (p) => p.onImportImage() },
+  { label: "Image / SVG", title: "画像・SVG をレイヤーとしてインポート", run: (p) => p.onImportImage() },
   { label: "Video", title: "動画 Footage をインポート", run: (p) => p.onImportVideo() },
   { label: "Audio", title: "音声 Footage をインポート", run: (p) => p.onImportAudio() },
 ];

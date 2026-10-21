@@ -3506,3 +3506,15 @@ GPT 5.6 指摘（ユーザー経由）を採用。`ImageAssetCache` の症状（
 2. 60s の固定 deadline（`remoteFrameProducer` の `timeoutMs`）を、ホスト自身の実測フレーム時間から導く。失敗ブロックが 2 分を食うのは設計として誤り。
 3. benchmark を空コンプ 320×180 でなく実コンプの短ブロックにする（`Available compute` が実態と無関係な値を出している）。
 4. 結果転送: worker が PNG → zip → base64 → JSON chunk、host が展開 → canvas → PNG 再エンコード。実測 transportMs は renderMs とほぼ同等（6.5s vs 7.7s）。バイナリのフレーム単位ストリームにして zip へ直挿しする案（codex 提案）。
+
+### 2026-10-21 (Codex) - 本番版から SVG レイヤー読み込みを修正
+
+- 起点: GitHub Production deployment 5862325402 の成功 SHA `4aaf2f14a431533473f311ceced7c2dd81177b5b`（Cloudflare deploy workflow も同 SHA で成功）。ここから `feat/svg-layer-import` を作成。push・本番デプロイは未実施。
+- spec §11 に先に散文を追記。既存 image アセット / レイヤーを利用し、INV / §5 / project.json 形式は不変。SVG 内部のパス分解は対象外。
+- 原因: import の `probeImageFile` が SVG 非対応の `createImageBitmap` に依存し、例外が store で握りつぶされ寸法が 100×100 に落ちていた。SVG は拡張子から MIME を正規化し `Image.decode()` で寸法取得。寸法 meta のない旧 SVG も cache で同じデコーダーを利用。temporary URL は成功・失敗とも解放。
+- UI はリソースメニューを Image / SVG、file input に .svg を明記。元バイト列・既存ベクター描画・proxy 縮小除外を維持。位置・回転・拡大縮小・不透明度の既存 KF を使用。
+- 影響地図: import → asset meta → shared ImageAssetCache → existing image renderer（preview / nested comp / browser export / bundle）。resolve・型 dispatch・compositor は変更なし。runtime 変更に合わせ player 再ビルド済み。
+- 検証: typecheck / build / playerBuildFreshness / 関連テスト PASS。全体は NODE_OPTIONS=--import=fake-indexeddb/auto を付け、npm test -- --exclude '**/.claude/**' --maxWorkers=2 --minWorkers=1 で **154 files / 1473 tests 全 PASS**。通常 npm test は既存 multiSelect 系テストの IndexedDB/alert 未定義エラーと、別 checkout の二重収集あり。
+- 実 Chrome + Playwright: file input → SVG image layer 作成（誤 MIME / 大文字拡張子）、viewBox のみ SVG、保存・再読込、project zip 元バイト列往復、proxy 縮小なし、位置 KF frame 0→2 移動を確認。PNG / MP4 / WebM / HTML bundle の生成成功。preview と PNG export の frame 0/2、実 bundle player の frame 2 は meanAbsDiff=0、目視確認済み。
+- 恒久回帰ハーネス verify-svg-layer.mjs を追加。localhost:5187 の dev server（MAFTER_TEST_URL で変更可）と installed Chrome を使用し、成果物は OS temp に生成。bundled Chromium の H.264 flush がこの環境で停止したため実 Chrome で検証。
+- Next: ブランチのレビュー、必要なら push / PR / deploy。SVG 内部のパス編集や SVG 自体の時間アニメーションのフレーム制御は未実装。

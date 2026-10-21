@@ -235,7 +235,7 @@ export function ProjectPanel() {
             onCreateCompFromAsset={addCompositionFromAsset}
             onConvertSplitToPacked={(assetId) => { void convertSplitAssetToPackedFromAssetMenu(assetId); }}
           />
-          <input ref={imageInput} type="file" accept="image/*" style={{ display: "none" }}
+          <input ref={imageInput} type="file" accept="image/*,.svg" style={{ display: "none" }}
             onChange={(e) => { const f = e.target.files?.[0]; if (f) void onImportImage(f); e.target.value = ""; }} />
           <input ref={videoInput} type="file" accept="video/*,.mp4,.webm,.mov,.m4v" style={{ display: "none" }}
             onChange={(e) => { const f = e.target.files?.[0]; if (f) void onImportVideo(f); e.target.value = ""; }} />
