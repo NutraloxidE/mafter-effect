@@ -3518,3 +3518,7 @@ GPT 5.6 指摘（ユーザー経由）を採用。`ImageAssetCache` の症状（
 - 実 Chrome + Playwright: file input → SVG image layer 作成（誤 MIME / 大文字拡張子）、viewBox のみ SVG、保存・再読込、project zip 元バイト列往復、proxy 縮小なし、位置 KF frame 0→2 移動を確認。PNG / MP4 / WebM / HTML bundle の生成成功。preview と PNG export の frame 0/2、実 bundle player の frame 2 は meanAbsDiff=0、目視確認済み。
 - 恒久回帰ハーネス verify-svg-layer.mjs を追加。localhost:5187 の dev server（MAFTER_TEST_URL で変更可）と installed Chrome を使用し、成果物は OS temp に生成。bundled Chromium の H.264 flush がこの環境で停止したため実 Chrome で検証。
 - Next: ブランチのレビュー、必要なら push / PR / deploy。SVG 内部のパス編集や SVG 自体の時間アニメーションのフレーム制御は未実装。
+
+### 2026-10-22 (Codex) - SVG レイヤー本番反映
+
+- ユーザーが本番デプロイを承認。origin/main が実装起点 4aaf2f1 のままであることを fetch 後に確認。検証済み feat/svg-layer-import を PR 経由で main に反映し、既存の GitHub Actions / Vercel の本番デプロイ結果を確認する。
