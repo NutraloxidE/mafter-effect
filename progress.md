@@ -3522,3 +3522,15 @@ GPT 5.6 指摘（ユーザー経由）を採用。`ImageAssetCache` の症状（
 ### 2026-10-22 (Codex) - SVG レイヤー本番反映
 
 - ユーザーが本番デプロイを承認。origin/main が実装起点 4aaf2f1 のままであることを fetch 後に確認。検証済み feat/svg-layer-import を PR 経由で main に反映し、既存の GitHub Actions / Vercel の本番デプロイ結果を確認する。
+- 完了: PR #76 を squash merge、main SHA は `40bd13c8ff556640e73762dafda274e8a05b3a14`。Vercel Production deployment 7244259061 / 7MarJqqrYjezuRm1s1rVm41QWVrv が success。独自ドメイン https://maftereffect.gycp.party/ は Vercel 配信で、新 entry `/assets/index-Cnlr1KCl.js` を確認。実 Chrome の本番 file input から SVG を読み込み、image layer の自然寸法 160×80 と描画を確認（PASS）。
+- 制限: Cloudflare 用 GitHub Actions run 39725973535 は、アカウントの支払い失敗または spending limit を理由に runner 起動前で failure。Cloudflare Pages / signaling worker はこの run では更新されていない。SVG 修正は editor のみで worker 変更なし。本番独自ドメインの Vercel 反映は上記の通り完了。Cloudflare 側も更新する場合はアカウントの Billing & plans 解消後に workflow 再実行が必要。
+
+### 2026-10-22 (Codex) - Project リソースの外部ファイル D&D
+
+- ユーザー要請: リソース追加メニューのファイル読み込みを D&D でも行い、main push と本番デプロイまで実施。origin/main 40bd13c から feat/resource-file-drop を作成。
+- spec §20.5 UI に先に散文追加。画像 / SVG / 動画 / 音声を Project パネル全体で受け付け、複数ファイルを種類自動判定して順番に import。メニューの file input と直列キューを共有し、多重 drop でも asset 登録を競合させない。メニューの複数選択にも対応。空 Comp / HTML 作成はメニューを維持。
+- 外部 Files drag のみ capture で受け、copy カーソルとドロップ表示、ブラウザのページ遷移防止。内部ツリー移動 / Timeline 配置 MIME は横取りしない。非対応・失敗はファイル名つきで表示し後続を継続。animated GIF/WebP の video asset は addVideoLayer に振り分ける。
+- 影響地図: editor import UI → 既存 store import / addLayer → 既存 asset meta / renderer / export。スキーマ・INV・直列化・描画 runtime は変更なし。npm run build に含まれる player 再ビルドで public/player.js 差分なし。
+- 検証: typecheck / build PASS。IndexedDB mock preload を付け .claude checkout を除いた全体テスト 155 files / 1486 tests 全 PASS。resourceFileKind の 13 ケースを追加。
+- 恒久 Playwright ハーネス verify-resource-drop.mjs を追加（MAFTER_TEST_URL、既定 localhost:5188、installed Chrome、成果物は OS temp）。実 SVG / canvas PNG / MediaRecorder WebM / PCM WAV の混在ドロップ、連続キュー、overlay enter/leave、順序と kind と寸法、保存再読込、読み込み失敗注入後の継続、非対応 file の表示、menu 複数選択、内部 MIME 非横取り、bin への内部移動を PASS。screenshot を目視。
+- Next: この変更を main に反映し、本番 Vercel deployment と本番 URL の D&D を確認する。Cloudflare Actions の既知 billing block は前項参照。

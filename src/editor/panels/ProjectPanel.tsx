@@ -9,6 +9,7 @@ import { DRAG_MIME } from "./dragMime";
 import { ProjectTreeView } from "./projectTree/ProjectTreeView";
 import { feedbackCollector } from "../feedbackCollector";
 import { FeedbackSendModal } from "../FeedbackPrompt";
+import { resourceFileKind, type ResourceFileKind } from "../resourceFileKind";
 
 export { DRAG_MIME } from "./dragMime";
 
@@ -58,6 +59,11 @@ export function ProjectPanel() {
   const [zipBusy, setZipBusy] = useState(false);
   const [zipStatus, setZipStatus] = useState<string | null>(null);
   const [showFeedbackModal, setShowFeedbackModal] = useState(false);
+  const [fileDragActive, setFileDragActive] = useState(false);
+  const [importBusy, setImportBusy] = useState(false);
+  const [importErrors, setImportErrors] = useState<string[]>([]);
+  const importQueue = useRef<Promise<void>>(Promise.resolve());
+  const fileDragDepth = useRef(0);
 
   const registeredComponents = pluginsVersion >= 0
     ? globalPluginRegistry.getComponentDefs().filter((def) => !BUILTIN_COMPONENT_TYPES.has(def.type))
@@ -143,7 +149,9 @@ export function ProjectPanel() {
   const onImportImage = async (file: File) => {
     const assetId = await importImageAsset(file);
     if (assetId) {
-      const layerId = addImageLayer(assetId, file.name.replace(/\.[^.]+$/, ""));
+      const asset = useEditorStore.getState().project?.assets.find((a) => a.id === assetId);
+      const addLayer = asset?.kind === "video" ? addVideoLayer : addImageLayer;
+      const layerId = addLayer(assetId, file.name.replace(/\.[^.]+$/, ""));
       if (layerId) selectObjects([layerId]);
     }
   };
@@ -156,13 +164,74 @@ export function ProjectPanel() {
     }
   };
 
+  const importFiles = (files: File[], forcedKind?: ResourceFileKind) => {
+    importQueue.current = importQueue.current.then(async () => {
+      setImportBusy(true);
+      const errors: string[] = [];
+      setImportErrors([]);
+      try {
+        for (const file of files) {
+          const kind = forcedKind ?? resourceFileKind(file);
+          try {
+            if (!kind) throw new Error("対応していないファイル形式です");
+            if (kind === "image") await onImportImage(file);
+            else if (kind === "video") await onImportVideo(file);
+            else await onImportAudio(file);
+          } catch (error) {
+            errors.push(`${file.name}: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+      } finally {
+        setImportErrors(errors);
+        setImportBusy(false);
+      }
+    });
+  };
+
   const deleteAsset = deleteAssetId ? project?.assets.find((a) => a.id === deleteAssetId) : undefined;
   const deleteAssetRefCount = deleteAssetId && project
     ? countAssetReferences(project, deleteAssetId)
     : 0;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "#1c1c1c", color: "#ccc", fontSize: 12, userSelect: "none" }}>
+    <div
+      data-resource-drop-zone
+      onDragEnterCapture={(e) => {
+        if (!project || !e.dataTransfer.types.includes("Files")) return;
+        e.preventDefault();
+        fileDragDepth.current++;
+        setFileDragActive(true);
+      }}
+      onDragOverCapture={(e) => {
+        if (!project || !e.dataTransfer.types.includes("Files")) return;
+        e.preventDefault();
+        e.stopPropagation();
+        e.dataTransfer.dropEffect = "copy";
+      }}
+      onDragLeaveCapture={(e) => {
+        if (!e.dataTransfer.types.includes("Files")) return;
+        fileDragDepth.current = Math.max(0, fileDragDepth.current - 1);
+        if (fileDragDepth.current === 0) setFileDragActive(false);
+      }}
+      onDropCapture={(e) => {
+        if (!project || !e.dataTransfer.types.includes("Files")) return;
+        e.preventDefault();
+        e.stopPropagation();
+        fileDragDepth.current = 0;
+        setFileDragActive(false);
+        importFiles(Array.from(e.dataTransfer.files));
+      }}
+      style={{ position: "relative", display: "flex", flexDirection: "column", height: "100%", background: "#1c1c1c", color: "#ccc", fontSize: 12, userSelect: "none" }}
+    >
+      {fileDragActive && (
+        <div style={{ position: "absolute", inset: 0, zIndex: 20, pointerEvents: "none", display: "flex", alignItems: "center", justifyContent: "center", background: "#244766dd", border: "2px dashed #8ac8ff", color: "#fff", padding: 12, textAlign: "center" }}>
+          画像・SVG・動画・音声をドロップして追加
+        </div>
+      )}
+      <div role="status" aria-live="polite">
+        {importBusy && <div style={{ padding: "6px 8px" }}>リソースを読み込み中…</div>}
+        {importErrors.length > 0 && <div role="alert" style={{ padding: "6px 8px", color: "#f88", overflowWrap: "anywhere" }}>{importErrors.map((error, i) => <div key={i}>{error}</div>)}</div>}
+      </div>
       {/* header — project actions */}
       <div style={{ padding: "6px 8px", background: "#222", borderBottom: "1px solid #333", flexShrink: 0 }}>
         <div style={{ fontWeight: "bold", color: "#ddd", marginBottom: 4 }}>
@@ -235,12 +304,12 @@ export function ProjectPanel() {
             onCreateCompFromAsset={addCompositionFromAsset}
             onConvertSplitToPacked={(assetId) => { void convertSplitAssetToPackedFromAssetMenu(assetId); }}
           />
-          <input ref={imageInput} type="file" accept="image/*,.svg" style={{ display: "none" }}
-            onChange={(e) => { const f = e.target.files?.[0]; if (f) void onImportImage(f); e.target.value = ""; }} />
-          <input ref={videoInput} type="file" accept="video/*,.mp4,.webm,.mov,.m4v" style={{ display: "none" }}
-            onChange={(e) => { const f = e.target.files?.[0]; if (f) void onImportVideo(f); e.target.value = ""; }} />
-          <input ref={audioInput} type="file" accept="audio/*" style={{ display: "none" }}
-            onChange={(e) => { const f = e.target.files?.[0]; if (f) void onImportAudio(f); e.target.value = ""; }} />
+          <input ref={imageInput} type="file" multiple accept="image/*,.svg" style={{ display: "none" }}
+            onChange={(e) => { importFiles(Array.from(e.target.files ?? []), "image"); e.target.value = ""; }} />
+          <input ref={videoInput} type="file" multiple accept="video/*,.mp4,.webm,.mov,.m4v" style={{ display: "none" }}
+            onChange={(e) => { importFiles(Array.from(e.target.files ?? []), "video"); e.target.value = ""; }} />
+          <input ref={audioInput} type="file" multiple accept="audio/*" style={{ display: "none" }}
+            onChange={(e) => { importFiles(Array.from(e.target.files ?? []), "audio"); e.target.value = ""; }} />
         </div>
       )}
 
