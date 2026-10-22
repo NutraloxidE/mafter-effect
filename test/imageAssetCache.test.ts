@@ -1,9 +1,41 @@
 import "fake-indexeddb/auto";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createProject } from "../src/core/createProject";
 import { MemoryFs } from "../src/fs/MemoryFs";
 import { IndexedDbFs } from "../src/fs/IndexedDbFs";
-import { ImageAssetCache, mimeFromPath } from "../src/runtime/imageAssetCache";
+import { ImageAssetCache, mimeFromPath, probeImageFile } from "../src/runtime/imageAssetCache";
+
+describe("SVG image probing", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("uses the image decoder and SVG MIME even when the OS supplies an incorrect type", async () => {
+    const bitmap = vi.fn().mockRejectedValue(new Error("SVG not supported"));
+    const revoke = vi.spyOn(URL, "revokeObjectURL");
+    vi.stubGlobal("createImageBitmap", bitmap);
+    vi.stubGlobal("Image", class {
+      src = "";
+      naturalWidth = 640;
+      naturalHeight = 320;
+      decode = async () => {};
+    });
+    const file = new File(['<svg xmlns="http://www.w3.org/2000/svg" width="640" height="320"/>'], "art.SVG", { type: "application/octet-stream" });
+    expect(await probeImageFile(file)).toEqual({ width: 640, height: 320, mime: "image/svg+xml" });
+    expect(bitmap).not.toHaveBeenCalled();
+    expect(revoke).toHaveBeenCalledOnce();
+    revoke.mockRestore();
+  });
+
+  it("releases the temporary URL when SVG decoding fails", async () => {
+    const revoke = vi.spyOn(URL, "revokeObjectURL");
+    vi.stubGlobal("Image", class {
+      src = "";
+      decode = async () => { throw new Error("Invalid SVG"); };
+    });
+    await expect(probeImageFile(new File(["broken"], "broken.svg"))).rejects.toThrow("Invalid SVG");
+    expect(revoke).toHaveBeenCalledOnce();
+    revoke.mockRestore();
+  });
+});
 
 /** 1×1 赤 PNG */
 const TINY_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";

@@ -561,7 +561,9 @@ async function decodeImageEntry(
     }
   }
   if (!size) {
-    size = bitmap
+    size = isVector && typeof Image !== "undefined"
+      ? await decodeImageSize(buf, mime)
+      : bitmap
       ? { width: bitmap.width, height: bitmap.height }
       : { width: 100, height: 100 };
   }
@@ -602,8 +604,11 @@ async function decodeImageEntry(
 
 /** import 時: File から natural size を取得（store 用）。 */
 export async function probeImageFile(file: File): Promise<{ width: number; height: number; mime: string }> {
-  const mime = file.type || mimeFromPath(file.name);
+  const mime = /\.svg$/i.test(file.name) ? "image/svg+xml" : file.type || mimeFromPath(file.name);
   const ab = await file.arrayBuffer();
+  if (mime === "image/svg+xml") {
+    return { ...await decodeImageSize(new Uint8Array(ab), mime), mime };
+  }
   if (typeof createImageBitmap === "function") {
     const bitmap = await createImageBitmap(new Blob([ab], { type: mime }));
     const result = { width: bitmap.width, height: bitmap.height, mime };
@@ -611,6 +616,20 @@ export async function probeImageFile(file: File): Promise<{ width: number; heigh
     return result;
   }
   return { width: 100, height: 100, mime };
+}
+
+async function decodeImageSize(bytes: Uint8Array, mime: string): Promise<ImageSize> {
+  // Chromium's bitmap decoder rejects SVG; the image decoder preserves vector sizing.
+  const url = URL.createObjectURL(new Blob([bytes as Uint8Array<ArrayBuffer>], { type: mime }));
+  try {
+    const image = new Image();
+    image.src = url;
+    await image.decode();
+    if (image.naturalWidth <= 0 || image.naturalHeight <= 0) throw new Error("Image has no intrinsic size");
+    return { width: image.naturalWidth, height: image.naturalHeight };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 async function decodeVideoEntry(

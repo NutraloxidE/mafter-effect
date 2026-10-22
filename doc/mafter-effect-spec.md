@@ -851,6 +851,13 @@ interface FileSystem {
 - アセット blob は IDB に格納。**容量制限/eviction は実害になり得る**ため注記。大規模アセットは OPFS への移行を §16 で検討。
 - **preview 起動最適化（2026-07, preview-rendering-pipeline-optimization-plan）**: `ImageAssetCache` の動画デコード（`decodeVideoEntry`）は非同期で、Blob 構築を Web Worker（`videoBlobDecode.ts` / `videoBlob.worker.ts`）へオフロードする。`URL.createObjectURL` は worker 発行の `blob:` URL が `<video>` から参照できないため必ずメインスレッドで呼ぶ。`url`/`size` の中身・戻り値の意味は不変（INV-2）。`IndexedDbFs` に `readBatch(paths): Promise<Map<string, Uint8Array>>`（単一 readonly トランザクションで一括取得、IndexedDbFs 固有・`FileSystem` インターフェース非拡張）を追加。`ImageAssetCache.loadFromProject` は起動時 comp が参照する asset を先に読む `priorityAssetIds` オプションと、N 件ずつのバッチ + バッチ間 `requestAnimationFrame` yield でロードする（ロード順序のみの変更、`byId`/`byPath` の最終内容・project.json 直列化とは無関係）。`deserializeProject`（serialize.ts）は `Uint8Array | string` を受理し、`Uint8Array` はモジュールスコープの `TextDecoder` で直接デコードする（`readText` の中間 string を経由しない）。`serializeProject` の出力形式は不変。
 
+### SVG 画像の読み込み（2026-10-21）
+
+- Project の Image / SVG から `.svg` を既存の `image` アセット・レイヤーとして読み込む。元の SVG バイト列を保存し、拡大時にもベクターを維持する。SVG 内部のパス分解は対象外。
+- SVG の MIME は拡張子から `image/svg+xml` に正規化し、寸法はブラウザの画像デコーダーで取得する（`createImageBitmap` に依存しない）。`width` / `height`、`viewBox` のみの SVG はブラウザの固有寸法に従う。
+- 位置・回転・スケール・不透明度の既存キーフレームを利用する。preview / nested comp / PNG・mp4・webm export / HTML bundle は既存 image 経路を共有し、SVG はプレビュー縮小の対象にしない。
+- 保存・再読込・project zip は元 SVG と寸法メタデータを保持する。スクリプトを実行しない画像コンテキストで表示し、外部リソースの埋め込みや SVG 自身の時間アニメーションのフレーム制御は対象外。
+
 ### §11.3 FS → module loader（確定）
 
 expression / HTML comp の `script.js` / plugin entry は、すべて fake FS 上の JS。IDB のパスは直接 `import()` できないため、共通の loader を 1 個立てる:
