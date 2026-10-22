@@ -1477,6 +1477,8 @@ moveProjectEntries(entries, targetBinId, index): void
 - 検索: 名前フィルタ + マッチ祖先 bin を自動展開
 - ツリー内 DnD: フォルダ行へドロップで移動（`application/x-mafter-project-tree`）。Timeline 配置 DnD（`application/x-mafter-item`）とは別 MIME
 
+**外部ファイル D&D（2026-10-22）**: OS から Project パネルへ画像（SVG 含む）・動画・音声をドロップすると、リソース追加メニューと同じ import / layer 作成を行う。拡張子と MIME で種類を判定し、複数ファイルは渡された順に直列処理する。新規素材は従来どおりルート末尾、現在の timeline comp に対応レイヤーを追加（timeline がなければ素材のみ）。アニメ GIF/WebP は既存の動画 footage 判定を尊重する。ファイルドラッグ時は受け入れ表示と copy カーソルを出し、ブラウザによるファイルへのページ遷移を防ぐ。非対応ファイル・読み込み失敗はファイル名つきで表示し、残りは継続する。内部のツリー移動 / Timeline 配置の MIME は横取りしない。Comp / HTML の空コンポ作成は既存メニューを維持する。INV / §5 / 直列化形式は変更しない。
+
 ### §20.6 Project アイテムのコピー / 貼り付け（確定 2026-07-21）
 
 Project パネルの comp / footage / bin は、右クリックメニューの「コピー」「貼り付け」と
